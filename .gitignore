@@ -16,6 +16,7 @@ prisma/dev.db*
 .planning/
 .superpowers/
 .tools/
+.worktrees/
 ai-context/
 scripts/tmp/
 scripts/.experiment-results.json
