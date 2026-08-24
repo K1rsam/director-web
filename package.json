@@ -28,6 +28,7 @@
     "verify:account-seed": "tsx scripts/verify-account-seed.ts",
     "verify:auth-ui": "tsx scripts/verify-auth-ui.ts",
     "verify:account-isolation": "tsx scripts/verify-account-isolation.ts",
+    "verify:auth-boundaries": "tsx scripts/verify-auth-boundaries.ts",
     "verify:all": "npm run verify:import && npm run verify:project-entry && npm run verify:ui && npm run verify:task-package && npm run verify:studio && npm run verify:codex-cli && npm run verify:episode-quality && npm run verify:episode-pipeline && npm run verify:project-foundation && npm run verify:release",
     "context:export": "tsx scripts/context-export.ts"
   },

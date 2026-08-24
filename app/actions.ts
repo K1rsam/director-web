@@ -2,34 +2,30 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireSessionUser } from "@/lib/auth";
+import { requireEpisodeAccess, requireProjectAccess, requireSessionUser } from "@/lib/auth";
 import { readProjectSubmission, resolveProjectDestination } from "@/lib/project-entry";
-
-async function requirePermission(_permission: "canOperate" | "canReview" | "canOverrideFinal") {
-  await requireSessionUser();
-}
 
 export type ProjectCreationState = { error: string };
 
 export async function archiveProjectAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
   const { prisma } = await import("@/lib/prisma");
   await prisma.project.update({ where: { id: projectId }, data: { archivedAt: new Date() } });
   revalidatePath("/");
 }
 
 export async function restoreProjectAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
   const { prisma } = await import("@/lib/prisma");
   await prisma.project.update({ where: { id: projectId }, data: { archivedAt: null } });
   revalidatePath("/");
 }
 
 export async function deleteProjectAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
   const { prisma } = await import("@/lib/prisma");
   // 所有子表（分集/资产/任务包/快照/流水线/问题卡/会话/契约等）均配置了 Cascade，删除项目即整体清理
   await prisma.project.delete({ where: { id: projectId } });
@@ -74,8 +70,8 @@ export async function importProjectAction(
 }
 
 export async function setProjectExecutionModeAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
   const executionMode = String(formData.get("executionMode") ?? "CLI");
   if (executionMode !== "CLI" && executionMode !== "API") throw new Error("无效的执行方式。");
   const { prisma } = await import("@/lib/prisma");
@@ -97,27 +93,30 @@ export async function setProjectExecutionModeAction(formData: FormData) {
 }
 
 export async function prepareEpisodeAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
   const episodeId = String(formData.get("episodeId") ?? "");
+  await requireProjectAccess(projectId);
+  await requireEpisodeAccess(projectId, episodeId);
   const { prepareEpisodeProduction } = await import("@/lib/workflow");
   await prepareEpisodeProduction(projectId, episodeId);
   revalidatePath("/");
 }
 
 export async function startEpisodePipelineAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
   const episodeId = String(formData.get("episodeId") ?? "");
+  await requireProjectAccess(projectId);
+  await requireEpisodeAccess(projectId, episodeId);
   const { queueEpisodePipeline } = await import("@/lib/episode-pipeline");
   await queueEpisodePipeline(projectId, episodeId);
   revalidatePath(`/projects/${projectId}/episodes/${episodeId}`);
 }
 
 export async function repairOpenIssuesAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
   const episodeId = String(formData.get("episodeId") ?? "");
+  await requireProjectAccess(projectId);
+  await requireEpisodeAccess(projectId, episodeId);
   const includeSuggestions = formData.get("includeSuggestions") === "1";
   // 强制重跑：绕过收敛门禁（上一轮 BLOCKER 未减少时），供人工确认卡状态后使用
   const force = formData.get("force") === "1";
@@ -128,9 +127,10 @@ export async function repairOpenIssuesAction(formData: FormData) {
 
 /** 停止本集正在执行的流水线（worker 进程 + 批次状态）：页面「停止」按钮调用。 */
 export async function stopPipelineAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
   const episodeId = String(formData.get("episodeId") ?? "");
+  await requireProjectAccess(projectId);
+  await requireEpisodeAccess(projectId, episodeId);
   const { prisma } = await import("@/lib/prisma");
   const runs = await prisma.pipelineRun.findMany({
     where: { projectId, episodeId, status: { in: ["QUEUED", "RUNNING"] } },
@@ -169,9 +169,10 @@ export async function stopPipelineAction(formData: FormData) {
 
 /** 确认保留建议卡：把 OPEN 的 MAJOR/MINOR 卡豁免（EXCEPTED），不再显示为待处理。 */
 export async function acknowledgeIssueAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
   const episodeId = String(formData.get("episodeId") ?? "");
+  await requireProjectAccess(projectId);
+  await requireEpisodeAccess(projectId, episodeId);
   const issueId = String(formData.get("issueId") ?? "");
   const { prisma } = await import("@/lib/prisma");
   const issue = await prisma.workflowIssue.findFirst({ where: { id: issueId, episodeId, status: "OPEN" } });
@@ -186,9 +187,10 @@ export async function acknowledgeIssueAction(formData: FormData) {
 
 /** 全部确认保留：本集所有 OPEN 的建议卡（MAJOR/MINOR）一次性豁免。 */
 export async function acknowledgeAllSuggestionsAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
   const episodeId = String(formData.get("episodeId") ?? "");
+  await requireProjectAccess(projectId);
+  await requireEpisodeAccess(projectId, episodeId);
   const { prisma } = await import("@/lib/prisma");
   await prisma.workflowIssue.updateMany({
     where: { episodeId, status: "OPEN", severity: { in: ["MAJOR", "MINOR"] } },
@@ -198,9 +200,10 @@ export async function acknowledgeAllSuggestionsAction(formData: FormData) {
 }
 
 export async function runSingleStageAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
   const episodeId = String(formData.get("episodeId") ?? "");
+  await requireProjectAccess(projectId);
+  await requireEpisodeAccess(projectId, episodeId);
   const stageCode = String(formData.get("stageCode") ?? "");
   if (!/^E[0-5]$/.test(stageCode)) throw new Error("无效的岗位编号。");
   const { queueSingleStagePipeline } = await import("@/lib/episode-pipeline");
@@ -209,9 +212,10 @@ export async function runSingleStageAction(formData: FormData) {
 }
 
 export async function resetEpisodeShotsAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
   const episodeId = String(formData.get("episodeId") ?? "");
+  await requireProjectAccess(projectId);
+  await requireEpisodeAccess(projectId, episodeId);
   const { prisma } = await import("@/lib/prisma");
   await prisma.workflowIssue.deleteMany({ where: { episodeId } });
   await prisma.compiledPromptVersion.deleteMany({ where: { unit: { episodeId } } });
@@ -229,9 +233,10 @@ export async function resetEpisodeShotsAction(formData: FormData) {
 
 /** #14 提示词版本：恢复历史版本为当前显示（selectedAt 置顶，不做内容修改）。 */
 export async function restorePromptVersionAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
   const episodeId = String(formData.get("episodeId") ?? "");
+  await requireProjectAccess(projectId);
+  await requireEpisodeAccess(projectId, episodeId);
   const versionId = String(formData.get("versionId") ?? "");
   const { prisma } = await import("@/lib/prisma");
   const version = await prisma.compiledPromptVersion.findFirst({
@@ -248,9 +253,10 @@ export async function restorePromptVersionAction(formData: FormData) {
 
 /** #14 提示词版本：手动编辑当前单元提示词并存为新版本（标记为手动稿，不覆盖编译产物）。 */
 export async function saveManualPromptVersionAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
   const episodeId = String(formData.get("episodeId") ?? "");
+  await requireProjectAccess(projectId);
+  await requireEpisodeAccess(projectId, episodeId);
   const unitId = String(formData.get("unitId") ?? "");
   const content = String(formData.get("content") ?? "").trim();
   if (!content) throw new Error("提示词内容不能为空。");
@@ -274,32 +280,32 @@ export async function saveManualPromptVersionAction(formData: FormData) {
 }
 
 export async function preprocessProjectAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
   const { preprocessProjectProduction } = await import("@/lib/workflow");
   await preprocessProjectProduction(projectId);
   revalidatePath("/");
 }
 
 export async function startProjectFoundationAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
   const { queueProjectFoundation } = await import("@/lib/project-foundation");
   await queueProjectFoundation(projectId);
   revalidatePath(`/projects/${projectId}`);
 }
 
 export async function confirmAllAssetsAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
   const { prisma } = await import("@/lib/prisma");
   await prisma.asset.updateMany({ where: { projectId, status: "needs_confirmation" }, data: { status: "confirmed" } });
   revalidatePath(`/projects/${projectId}`);
 }
 
 export async function decidePresentationContractAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
   const contractId = String(formData.get("contractId") ?? "");
   const answer = String(formData.get("answer") ?? "").trim();
   if (!contractId || !answer) throw new Error("缺少确认信息。");
@@ -314,8 +320,8 @@ export async function decidePresentationContractAction(formData: FormData) {
 }
 
 export async function skipPresentationContractAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
   const contractId = String(formData.get("contractId") ?? "");
   const { prisma } = await import("@/lib/prisma");
   await prisma.presentationContract.updateMany({
@@ -326,8 +332,8 @@ export async function skipPresentationContractAction(formData: FormData) {
 }
 
 export async function runFoundationStageAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
   const stageCode = String(formData.get("stageCode") ?? "");
   if (stageCode !== "P1" && stageCode !== "P2") throw new Error("无效的第一阶段岗位。");
   const { queueSingleFoundationStage } = await import("@/lib/project-foundation");
@@ -337,8 +343,8 @@ export async function runFoundationStageAction(formData: FormData) {
 
 /** 停止全剧基础工程（P1/P2 worker 进程组 + 当前批次状态）。 */
 export async function stopProjectFoundationAction(formData: FormData) {
-  await requirePermission("canOperate");
   const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
   const { prisma } = await import("@/lib/prisma");
   const runs = await prisma.pipelineRun.findMany({
     where: {
