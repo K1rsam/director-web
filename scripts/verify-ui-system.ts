@@ -4,6 +4,7 @@ import { deriveProjectGuidance } from "../lib/ui-guidance";
 
 const root = join(import.meta.dirname, "..");
 const chrome = readFileSync(join(root, "app/ui/app-chrome.tsx"), "utf8");
+const accountMenu = readFileSync(join(root, "app/ui/account-menu.tsx"), "utf8");
 const styles = readFileSync(join(root, "app/globals.css"), "utf8");
 const layout = readFileSync(join(root, "app/layout.tsx"), "utf8");
 const projectPage = readFileSync(join(root, "app/projects/[projectId]/page.tsx"), "utf8");
@@ -31,6 +32,10 @@ for (const source of currentWorkflowSources) {
 
 for (const token of ["appChrome", "appSidebar", "appTopbar", "appMain"]) {
   if (!chrome.includes(token)) throw new Error(`Shared chrome is missing ${token}`);
+}
+
+if (!chrome.includes("AccountMenu") || !accountMenu.includes("logoutAction")) {
+  throw new Error("Shared chrome must expose the signed-in account and logout action");
 }
 
 if (!styles.includes("--ui-canvas") || !styles.includes("position: sticky") || !styles.includes("position: fixed")) {

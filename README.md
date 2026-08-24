@@ -24,6 +24,24 @@ npm run dev
 
 默认地址：`http://localhost:3000`。
 
+## 私有测试账号
+
+当前版本不开放注册。首次运行时，在本机设置临时密码并初始化账号：
+
+```bash
+TEST_ACCOUNT_INITIAL_PASSWORD='<仅在本机填写>' npm run accounts:seed
+```
+
+系统会建立 `tester01`、`tester02`、`tester03`、`tester04`、`tester05` 五个账号；命令可重复运行，不会重复创建。无归属的历史项目会自动分配给 `tester01`，每个账号之后只能看到和操作自己的项目。
+
+登录会话默认保持 30 天。需要更换某个账号的密码时运行：
+
+```bash
+TEST_ACCOUNT_INITIAL_PASSWORD='<新密码>' npm run accounts:seed -- --rotate tester01
+```
+
+换密会同时退出该账号的现有会话。临时弱密码只适合私有测试，公开访问前必须更换；密码不要写入源码、README 或提交到 Git。
+
 ## 执行方式
 
 - CLI：用户在本机登录 Codex；应用通过 `codex exec` 运行岗位，并按岗位保存可续接会话。
