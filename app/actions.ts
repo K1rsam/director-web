@@ -1,17 +1,12 @@
 "use server";
 
-import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { getCurrentUser, getPermissions } from "@/lib/auth";
+import { requireSessionUser } from "@/lib/auth";
 import { readProjectSubmission, resolveProjectDestination } from "@/lib/project-entry";
 
-async function requirePermission(permission: "canOperate" | "canReview" | "canOverrideFinal") {
-  const current = getCurrentUser(await headers());
-  const permissions = getPermissions(current.role);
-  if (!permissions[permission]) {
-    throw new Error("当前账号无权执行此操作。");
-  }
+async function requirePermission(_permission: "canOperate" | "canReview" | "canOverrideFinal") {
+  await requireSessionUser();
 }
 
 export type ProjectCreationState = { error: string };

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { AccountMenu } from "./account-menu";
 
 type EpisodeLink = { id: string; number: number; title: string; state?: string };
 
@@ -60,7 +61,8 @@ export function AppChrome({
         ) : null}
 
         <div className="sidebarFooter">
-          <span>工作流</span><strong>P1 · P2 · E0–E5</strong>
+          <div className="sidebarWorkflow"><span>工作流</span><strong>P1 · P2 · E0–E5</strong></div>
+          <AccountMenu />
         </div>
       </aside>
 

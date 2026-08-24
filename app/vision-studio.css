@@ -694,3 +694,110 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
   .visionRouteForward .appMain, .visionRouteBack .appMain, [data-route-label], .navContext { transform: none !important; }
 }
+
+/* Private account entry */
+.loginShell {
+  position: relative;
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  overflow: hidden;
+  background: var(--vision-page-backdrop);
+  padding: 28px 18px;
+  color: var(--vision-text);
+}
+.loginShell::before,
+.loginShell::after {
+  position: absolute;
+  width: 34rem;
+  height: 34rem;
+  border-radius: 50%;
+  pointer-events: none;
+  filter: blur(4px);
+  content: "";
+}
+.loginShell::before { top: -21rem; right: -9rem; background: rgba(125, 92, 238, .12); }
+.loginShell::after { bottom: -23rem; left: -10rem; background: rgba(95, 164, 255, .15); }
+.loginCard {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 420px);
+  border: 1px solid rgba(255,255,255,.88);
+  border-radius: var(--vision-radius-xl);
+  background: linear-gradient(145deg, rgba(255,255,255,.82), rgba(247,248,255,.61));
+  box-shadow: var(--vision-shadow-float);
+  padding: 34px;
+  backdrop-filter: blur(30px) saturate(155%);
+  -webkit-backdrop-filter: blur(30px) saturate(155%);
+}
+.loginBrand { display: flex; align-items: center; gap: 10px; }
+.loginBrand > span {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 1px solid rgba(255,255,255,.76);
+  border-radius: 13px;
+  background: linear-gradient(145deg, #7e91ff, #7550e8);
+  box-shadow: 0 11px 25px rgba(95,80,222,.30), inset 0 1px rgba(255,255,255,.55);
+  color: white;
+  font-weight: 760;
+}
+.loginBrand div { display: grid; gap: 2px; }
+.loginBrand strong { color: var(--vision-text); font-size: 14px; }
+.loginBrand small { color: var(--vision-faint); font-size: 8px; letter-spacing: .14em; text-transform: uppercase; }
+.loginHeading { margin: 34px 0 25px; }
+.loginHeading p { margin: 0 0 8px; color: var(--vision-primary); font-size: 9px; font-weight: 780; letter-spacing: .18em; }
+.loginHeading h1 { margin: 0; color: var(--vision-text); font-size: 27px; letter-spacing: -.045em; }
+.loginHeading span { display: block; margin-top: 10px; color: var(--vision-muted); font-size: 12px; line-height: 1.7; }
+.loginForm { display: grid; gap: 15px; }
+.loginForm label { display: grid; gap: 7px; }
+.loginForm label > span { color: #59657e; font-size: 11px; font-weight: 720; }
+.loginForm input {
+  width: 100%;
+  min-height: 46px;
+  border: 1px solid var(--vision-line);
+  border-radius: 13px;
+  outline: 0;
+  background: rgba(255,255,255,.78);
+  box-shadow: inset 0 1px rgba(255,255,255,.96), 0 7px 20px rgba(59,70,118,.04);
+  padding: 0 14px;
+  color: var(--vision-text);
+  font: inherit;
+  font-size: 13px;
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast), background var(--motion-fast);
+}
+.loginForm input::placeholder { color: #aab3c6; }
+.loginForm input:focus { border-color: rgba(103,94,228,.46); background: rgba(255,255,255,.96); box-shadow: 0 0 0 4px rgba(103,94,228,.09); }
+.loginForm > button {
+  min-height: 47px;
+  margin-top: 3px;
+  border: 1px solid rgba(255,255,255,.72);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(99,115,246,.98), rgba(119,79,235,.98));
+  box-shadow: 0 14px 32px rgba(82,78,205,.27), inset 0 1px rgba(255,255,255,.48);
+  color: white;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 760;
+  cursor: pointer;
+  transition: transform var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast);
+}
+.loginForm > button:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 18px 38px rgba(78,72,199,.32), inset 0 1px rgba(255,255,255,.56); }
+.loginForm > button:focus-visible { outline: 2px solid rgba(103,94,228,.60); outline-offset: 3px; }
+.loginError { margin: -3px 0 0; border-radius: 10px; background: rgba(255,239,243,.74); padding: 9px 11px; color: var(--vision-bad); font-size: 11px; }
+.loginFootnote { margin: 22px 0 0; color: var(--vision-faint); font-size: 9px; line-height: 1.6; text-align: center; }
+
+.sidebarWorkflow { display: grid; gap: 3px; }
+.accountMenu { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 8px; border-top: 1px solid var(--vision-line); padding-top: 12px; }
+.accountAvatar { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 10px; background: linear-gradient(145deg, #eef1ff, #f3edff); color: #675bd8 !important; font-size: 11px !important; font-weight: 800; }
+.accountMenu > div { display: grid; min-width: 0; gap: 1px; }
+.accountMenu > div strong { overflow: hidden; color: var(--vision-text); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.accountMenu > div small { overflow: hidden; color: var(--vision-faint); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.accountMenu button { border: 0; background: transparent; padding: 4px; color: var(--vision-muted); font-size: 8px; cursor: pointer; }
+.accountMenu button:hover { color: var(--vision-primary); }
+
+@media (max-width: 520px) {
+  .loginCard { border-radius: 24px; padding: 26px 22px; }
+  .loginHeading { margin-top: 28px; }
+}
