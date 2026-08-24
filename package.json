@@ -1,0 +1,54 @@
+{
+  "name": "director-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "typecheck": "tsc --noEmit",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "verify:import": "tsx scripts/verify-import.ts",
+    "verify:task-package": "tsx scripts/verify-task-package.ts",
+    "verify:e8": "python3 scripts/verify_e8_pipeline.py",
+    "verify:studio": "tsx scripts/verify-studio.ts && tsx scripts/verify-scene-structure.ts",
+    "verify:project-entry": "tsx scripts/verify-project-entry.ts",
+    "verify:ui": "tsx scripts/verify-ui-system.ts",
+    "verify:codex-cli": "tsx scripts/verify-codex-cli.ts",
+    "verify:codex-cli:live": "tsx scripts/verify-codex-cli-live.ts",
+    "verify:deepseek-api": "tsx --env-file=.env scripts/verify-deepseek-api.ts",
+    "verify:episode-quality": "tsx scripts/verify-episode-quality.ts",
+    "verify:episode-pipeline": "tsx scripts/verify-episode-pipeline.ts",
+    "verify:project-foundation": "tsx scripts/verify-project-foundation.ts",
+    "verify:release": "tsx scripts/verify-release-bundle.ts",
+    "verify:all": "npm run verify:import && npm run verify:project-entry && npm run verify:ui && npm run verify:task-package && npm run verify:studio && npm run verify:codex-cli && npm run verify:episode-quality && npm run verify:episode-pipeline && npm run verify:project-foundation && npm run verify:release",
+    "context:export": "tsx scripts/context-export.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "6.19.3",
+    "mammoth": "latest",
+    "next": "latest",
+    "playwright": "^1.61.1",
+    "react": "latest",
+    "react-dom": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "prisma": "6.19.3",
+    "tsx": "latest",
+    "typescript": "latest"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "esbuild@0.28.1": true,
+    "sharp@0.34.5": true,
+    "@prisma/client@6.19.3": true,
+    "@prisma/engines@6.19.3": true,
+    "prisma@6.19.3": true
+  },
+  "overrides": {
+    "postcss": "8.5.10"
+  }
+}

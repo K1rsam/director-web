@@ -1,0 +1,29 @@
+node_modules/
+.next/
+dist/
+coverage/
+.wrangler/
+
+.env
+.env.*
+!.env.example
+
+prisma/dev.db*
+*.tsbuildinfo
+.DS_Store
+
+# 本机调试、项目数据与会话交接，不进入源码仓库
+.planning/
+.superpowers/
+.tools/
+ai-context/
+scripts/tmp/
+scripts/.experiment-results.json
+scripts/.experiment-raw/
+ep1-e0-output.json
+
+# 独立的第三方实验仓库，不属于本应用源码
+TencentDB-Agent-Memory/
+
+# 内部实施记录不属于产品发布包
+docs/superpowers/

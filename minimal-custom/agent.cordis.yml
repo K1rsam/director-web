@@ -1,0 +1,66 @@
+# 用户自建极简预设：复刻官方 `minimal`（极简模式）组合。
+#
+# 官方版位于 DSH 安装目录 config/agent-presets/minimal/，升级会被覆盖，
+# 因此复制为本地用户预设，之后可以自由修改。
+#
+# 本预设的特点：
+# - 人设就是完整 system prompt（complete: true），全局身份、Web 指引、
+#   工具指引等都不会再往提示词里追加内容；
+# - 不注入运行时上下文快照（includeRuntimeContext: false），最省 token；
+# - 模型只拿到两个工具：持久 `bash` 和 `str_replace_editor`；
+# - 不做上下文压缩（compaction），长会话上下文会自然增长。
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: You are a helpful software engineer assistant.
+    complete: true
+    includeRuntimeContext: false
+
+# 持久 shell 是一个 agent 自有的服务，所以放在条目级 realm 里。
+# 后端仍然消费 host 的沙箱策略与子进程实现，工具则注册进本 agent 的作用域目录。
+- id: persistent-shell
+  name: cordis:group
+  group: true
+  isolate:
+    terminals: true
+  config:
+    - id: pty
+      name: '@deepseek-ai/dsh-terminal'
+
+    - id: terminal-bash
+      name: '@deepseek-ai/dsh-terminal-bash'
+      config:
+        timeoutMs: 300000
+
+    - id: persistent-bash
+      name: '@deepseek-ai/dsh-tool-bash-persistent'
+      config:
+        timeoutMs: 300000
+        description: |-
+          Run commands in a bash shell
+          * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
+          * You don't have access to the internet via this tool.
+          * You do have access to a mirror of common linux and python packages via apt and pip.
+          * State is persistent across command calls and discussions with the user.
+          * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.
+          * Please avoid commands that may produce a very large amount of output.
+          * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.
+
+# 裸的本地文件系统只在本预设内遮蔽 host 的沙箱化 provider。
+# 编辑器与它共享同一 realm，且要求绝对路径。
+- id: filesystem
+  name: cordis:group
+  group: true
+  isolate:
+    fs: true
+  config:
+    - id: fs-local
+      name: '@deepseek-ai/dsh-fs-local'
+      config:
+        cwd: !!js process.env.DSH_CWD ?? process.cwd()
+
+    - id: str-replace-editor
+      name: '@deepseek-ai/dsh-tool-str-replace-editor'
+      config:
+        maxOutputChars: 16000
