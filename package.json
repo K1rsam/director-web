@@ -37,7 +37,7 @@
   "dependencies": {
     "@prisma/client": "6.19.3",
     "mammoth": "latest",
-    "next": "latest",
+    "next": "16.3.2",
     "playwright": "^1.61.1",
     "react": "latest",
     "react-dom": "latest"
@@ -59,6 +59,6 @@
     "prisma@6.19.3": true
   },
   "overrides": {
-    "postcss": "8.5.10"
+    "deepmerge-ts": "8.0.2"
   }
 }
