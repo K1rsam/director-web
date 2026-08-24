@@ -51,21 +51,37 @@ export async function authenticateCredentials(
   }
 
   if (!passwordMatches) {
-    const previousFailures =
-      user.lockedUntil && user.lockedUntil.getTime() <= now.getTime()
-        ? 0
-        : user.failedLoginCount;
-    const failedLoginCount = previousFailures + 1;
-    await db.user.update({
-      where: { id: user.id },
-      data: {
-        failedLoginCount,
-        lockedUntil:
-          failedLoginCount >= LOGIN_FAILURE_LIMIT
-            ? new Date(now.getTime() + LOGIN_LOCK_DURATION_MS)
-            : null
-      }
-    });
+    const lockedUntil = new Date(now.getTime() + LOGIN_LOCK_DURATION_MS);
+    await db.$executeRaw`
+      UPDATE "User"
+      SET
+        "failedLoginCount" = CASE
+          WHEN "lockedUntil" IS NOT NULL AND "lockedUntil" > ${now}
+            THEN "failedLoginCount"
+          WHEN "lockedUntil" IS NOT NULL AND "lockedUntil" <= ${now}
+            THEN 1
+          WHEN "failedLoginCount" >= ${LOGIN_FAILURE_LIMIT}
+            THEN ${LOGIN_FAILURE_LIMIT}
+          ELSE "failedLoginCount" + 1
+        END,
+        "lockedUntil" = CASE
+          WHEN "lockedUntil" IS NOT NULL AND "lockedUntil" > ${now}
+            THEN "lockedUntil"
+          WHEN (
+            CASE
+              WHEN "lockedUntil" IS NOT NULL AND "lockedUntil" <= ${now}
+                THEN 1
+              WHEN "failedLoginCount" >= ${LOGIN_FAILURE_LIMIT}
+                THEN ${LOGIN_FAILURE_LIMIT}
+              ELSE "failedLoginCount" + 1
+            END
+          ) >= ${LOGIN_FAILURE_LIMIT}
+            THEN ${lockedUntil}
+          ELSE NULL
+        END,
+        "updatedAt" = ${now}
+      WHERE "id" = ${user.id}
+    `;
     return null;
   }
 

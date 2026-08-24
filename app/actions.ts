@@ -36,9 +36,9 @@ export async function importProjectAction(
   _previousState: ProjectCreationState,
   formData: FormData
 ): Promise<ProjectCreationState> {
+  const currentUser = await requireSessionUser("/projects/new");
   let projectId = "";
   try {
-    const currentUser = await requireSessionUser("/projects/new");
     const submission = await readProjectSubmission(formData);
     const workflow = await import("@/lib/workflow");
     const result = submission.mode === "upload"

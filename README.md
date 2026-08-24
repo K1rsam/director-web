@@ -18,11 +18,13 @@
 npm ci
 cp .env.example .env
 npx prisma generate
-npx prisma migrate deploy
+npm run database:migrate
 npm run dev
 ```
 
 默认地址：`http://localhost:3000`。
+
+升级已有数据库前先停止正在运行的网站。迁移命令会自动建立带时间戳的 SQLite 备份，并识别早期由 `prisma db push` 写入的旧结构；若检测到结构只完成了一部分，会停止升级而不继续改库。
 
 ## 私有测试账号
 

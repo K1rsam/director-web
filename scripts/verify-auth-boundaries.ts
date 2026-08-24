@@ -19,7 +19,12 @@ function actionSource(name: string): string {
   return actions.slice(start, next === -1 ? undefined : next);
 }
 
-assert.ok(actionSource("importProjectAction").includes("requireSessionUser"));
+const importProjectSource = actionSource("importProjectAction");
+assert.ok(importProjectSource.includes("requireSessionUser"));
+assert.ok(
+  importProjectSource.indexOf("requireSessionUser") < importProjectSource.indexOf("try {"),
+  "importProjectAction must not swallow the login redirect"
+);
 
 for (const name of [
   "archiveProjectAction",

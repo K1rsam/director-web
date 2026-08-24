@@ -60,9 +60,14 @@ async function main() {
       { failedLoginCount: 0, lockedUntil: null }
     );
 
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      assert.equal(await authenticateCredentials(db, "tester01", "wrong", now), null);
-    }
+    assert.deepEqual(
+      await Promise.all(
+        Array.from({ length: 5 }, () =>
+          authenticateCredentials(db, "tester01", "wrong", now)
+        )
+      ),
+      [null, null, null, null, null]
+    );
     const locked = await db.user.findUniqueOrThrow({ where: { id: tester.id } });
     assert.equal(locked.failedLoginCount, 5);
     assert.equal(locked.lockedUntil?.getTime(), now.getTime() + FIFTEEN_MINUTES_MS);
