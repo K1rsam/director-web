@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
+    "accounts:seed": "tsx --env-file=.env scripts/seed-test-accounts.ts",
     "verify:import": "tsx scripts/verify-import.ts",
     "verify:task-package": "tsx scripts/verify-task-package.ts",
     "verify:e8": "python3 scripts/verify_e8_pipeline.py",
@@ -24,6 +25,7 @@
     "verify:auth-schema": "tsx scripts/verify-auth-schema.ts",
     "verify:auth-crypto": "tsx scripts/verify-auth-crypto.ts",
     "verify:auth-service": "tsx scripts/verify-auth-service.ts",
+    "verify:account-seed": "tsx scripts/verify-account-seed.ts",
     "verify:all": "npm run verify:import && npm run verify:project-entry && npm run verify:ui && npm run verify:task-package && npm run verify:studio && npm run verify:codex-cli && npm run verify:episode-quality && npm run verify:episode-pipeline && npm run verify:project-foundation && npm run verify:release",
     "context:export": "tsx scripts/context-export.ts"
   },
