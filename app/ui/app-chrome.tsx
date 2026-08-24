@@ -74,6 +74,7 @@ export function AppChrome({
               <Link href={projectId ? `/?projectId=${projectId}` : "/"}>所有项目</Link>
               {projectId ? <Link href={`/projects/${projectId}`}>{activeSection === "projects" && projectLabel ? projectLabel : "全剧工作台"}</Link> : null}
               <Link href="/projects/new">新建项目</Link>
+              <div className="mobileAccountMenu"><AccountMenu /></div>
             </nav>
           </details>
           <div className="topbarIdentity" data-route-label><small>{eyebrow}</small><strong>{title}</strong></div>

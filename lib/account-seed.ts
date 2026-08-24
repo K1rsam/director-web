@@ -28,13 +28,15 @@ export async function seedTestAccounts(
 
   let created = 0;
   for (const [index, username] of TEST_USERNAMES.entries()) {
+    const email = `${username}@accounts.invalid`;
+    const name = `测试账号 ${String(index + 1).padStart(2, "0")}`;
     const existing = await db.user.findUnique({ where: { username } });
     if (!existing) {
       await db.user.create({
         data: {
           username,
-          email: `${username}@local.invalid`,
-          name: `测试账号 ${String(index + 1).padStart(2, "0")}`,
+          email,
+          name,
           passwordHash: await hashPassword(password)
         }
       });
@@ -48,6 +50,8 @@ export async function seedTestAccounts(
         db.user.update({
           where: { id: existing.id },
           data: {
+            email,
+            name,
             passwordHash,
             failedLoginCount: 0,
             lockedUntil: null
@@ -55,6 +59,11 @@ export async function seedTestAccounts(
         }),
         db.session.deleteMany({ where: { userId: existing.id } })
       ]);
+    } else {
+      await db.user.update({
+        where: { id: existing.id },
+        data: { email, name }
+      });
     }
   }
 

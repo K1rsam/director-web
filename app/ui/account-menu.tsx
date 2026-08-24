@@ -13,7 +13,7 @@ export async function AccountMenu() {
       <span className="accountAvatar" aria-hidden="true">{label.slice(0, 1)}</span>
       <div><strong>{label}</strong><small>@{user.username}</small></div>
       <form action={logoutAction}>
-        <button type="submit" title="退出当前账号">退出</button>
+        <button type="submit" title="退出当前账号">退出登录</button>
       </form>
     </div>
   );

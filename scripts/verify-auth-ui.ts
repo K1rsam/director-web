@@ -26,6 +26,8 @@ for (const token of [
   "SESSION_DURATION_MS",
   "logoutAction",
   "AccountMenu",
+  "mobileAccountMenu",
+  "退出登录",
   ".loginShell",
   "/auth/clear-session"
 ]) {

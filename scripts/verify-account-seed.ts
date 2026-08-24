@@ -33,6 +33,7 @@ async function main() {
     );
     const tester01 = users[0];
     const tester02 = users[1];
+    assert.equal(tester01.email, "tester01@accounts.invalid");
     assert.equal(await verifyPassword(password, tester01.passwordHash), true);
     assert.equal(
       await db.projectRole.count({

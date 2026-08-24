@@ -796,6 +796,8 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
 .accountMenu > div small { overflow: hidden; color: var(--vision-faint); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .accountMenu button { border: 0; background: transparent; padding: 4px; color: var(--vision-muted); font-size: 8px; cursor: pointer; }
 .accountMenu button:hover { color: var(--vision-primary); }
+.mobileAccountMenu { margin-top: 4px; border-top: 1px solid var(--vision-line); padding: 10px 4px 2px; }
+.mobileAccountMenu .accountMenu { border-top: 0; padding-top: 0; }
 
 @media (max-width: 520px) {
   .loginCard { border-radius: 24px; padding: 26px 22px; }
