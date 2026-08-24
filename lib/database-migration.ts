@@ -14,8 +14,134 @@ type MigrationOptions = {
   quiet?: boolean;
 };
 
-type SqliteColumn = { name: string };
+type SqliteColumn = {
+  name: string;
+  type: string;
+  notnull: bigint | number;
+  dflt_value: string | null;
+  pk: bigint | number;
+};
 type SqliteObject = { name: string };
+type SqliteIndex = { name: string; unique: bigint | number };
+type SqliteIndexColumn = { name: string };
+type SqliteForeignKey = {
+  table: string;
+  from: string;
+  to: string;
+  on_update: string;
+  on_delete: string;
+};
+
+type TableSignature = {
+  columns: Array<{
+    name: string;
+    type: string;
+    notNull: boolean;
+    primaryKey?: boolean;
+    defaultValue?: string | null;
+  }>;
+  indexes: Array<{ name: string; unique: boolean; columns: string[] }>;
+  projectForeignKey: boolean;
+};
+
+const TABLE_SIGNATURES: Record<string, TableSignature> = {
+  PresentationContract: {
+    columns: [
+      { name: "id", type: "TEXT", notNull: true, primaryKey: true },
+      { name: "projectId", type: "TEXT", notNull: true },
+      { name: "episodeId", type: "TEXT", notNull: false },
+      { name: "category", type: "TEXT", notNull: true },
+      { name: "question", type: "TEXT", notNull: true },
+      { name: "options", type: "TEXT", notNull: true },
+      { name: "evidence", type: "TEXT", notNull: false },
+      { name: "userAnswer", type: "TEXT", notNull: false },
+      { name: "status", type: "TEXT", notNull: true, defaultValue: "'PENDING'" },
+      { name: "round", type: "INTEGER", notNull: true, defaultValue: "1" },
+      { name: "note", type: "TEXT", notNull: false },
+      { name: "decidedAt", type: "DATETIME", notNull: false },
+      {
+        name: "createdAt",
+        type: "DATETIME",
+        notNull: true,
+        defaultValue: "CURRENT_TIMESTAMP"
+      },
+      { name: "updatedAt", type: "DATETIME", notNull: true }
+    ],
+    indexes: [
+      {
+        name: "PresentationContract_projectId_status_idx",
+        unique: false,
+        columns: ["projectId", "status"]
+      }
+    ],
+    projectForeignKey: true
+  },
+  ApiRoleSession: {
+    columns: [
+      { name: "id", type: "TEXT", notNull: true, primaryKey: true },
+      { name: "projectId", type: "TEXT", notNull: true },
+      { name: "episodeId", type: "TEXT", notNull: true, defaultValue: "''" },
+      { name: "stageCode", type: "TEXT", notNull: true },
+      { name: "model", type: "TEXT", notNull: true },
+      { name: "messages", type: "TEXT", notNull: true },
+      { name: "turnCount", type: "INTEGER", notNull: true, defaultValue: "0" },
+      { name: "inputChars", type: "INTEGER", notNull: true, defaultValue: "0" },
+      {
+        name: "createdAt",
+        type: "DATETIME",
+        notNull: true,
+        defaultValue: "CURRENT_TIMESTAMP"
+      },
+      { name: "updatedAt", type: "DATETIME", notNull: true }
+    ],
+    indexes: [
+      {
+        name: "ApiRoleSession_projectId_episodeId_idx",
+        unique: false,
+        columns: ["projectId", "episodeId"]
+      },
+      {
+        name: "ApiRoleSession_projectId_episodeId_stageCode_key",
+        unique: true,
+        columns: ["projectId", "episodeId", "stageCode"]
+      }
+    ],
+    projectForeignKey: true
+  },
+  CliRoleSession: {
+    columns: [
+      { name: "id", type: "TEXT", notNull: true, primaryKey: true },
+      { name: "projectId", type: "TEXT", notNull: true },
+      { name: "episodeId", type: "TEXT", notNull: true, defaultValue: "''" },
+      { name: "stageCode", type: "TEXT", notNull: true },
+      { name: "sessionId", type: "TEXT", notNull: true },
+      { name: "model", type: "TEXT", notNull: true },
+      { name: "reasoningEffort", type: "TEXT", notNull: true },
+      { name: "turnCount", type: "INTEGER", notNull: true, defaultValue: "0" },
+      { name: "inputChars", type: "INTEGER", notNull: true, defaultValue: "0" },
+      {
+        name: "createdAt",
+        type: "DATETIME",
+        notNull: true,
+        defaultValue: "CURRENT_TIMESTAMP"
+      },
+      { name: "updatedAt", type: "DATETIME", notNull: true }
+    ],
+    indexes: [
+      {
+        name: "CliRoleSession_projectId_episodeId_idx",
+        unique: false,
+        columns: ["projectId", "episodeId"]
+      },
+      {
+        name: "CliRoleSession_projectId_episodeId_stageCode_key",
+        unique: true,
+        columns: ["projectId", "episodeId", "stageCode"]
+      }
+    ],
+    projectForeignKey: true
+  }
+};
 
 function resolveSqliteDatabase(databaseUrl: string, schemaPath: string) {
   if (!databaseUrl.startsWith("file:")) {
@@ -53,6 +179,84 @@ async function tableHasColumn(db: PrismaClient, tableName: string, columnName: s
     `PRAGMA table_info("${tableName}")`
   );
   return columns.some((column) => column.name === columnName);
+}
+
+async function tableMatchesSignature(
+  db: PrismaClient,
+  tableName: string,
+  signature: TableSignature
+) {
+  if (!(await tableExists(db, tableName))) return false;
+  const columns = await db.$queryRawUnsafe<SqliteColumn[]>(
+    `PRAGMA table_info("${tableName}")`
+  );
+  const columnsByName = new Map(columns.map((column) => [column.name, column]));
+  const columnsMatch = signature.columns.every((expected) => {
+    const actual = columnsByName.get(expected.name);
+    return Boolean(
+      actual &&
+        actual.type.toUpperCase() === expected.type &&
+        Boolean(Number(actual.notnull)) === expected.notNull &&
+        Boolean(Number(actual.pk)) === Boolean(expected.primaryKey) &&
+        (!("defaultValue" in expected) || actual.dflt_value === expected.defaultValue)
+    );
+  });
+  if (!columnsMatch) return false;
+
+  const indexes = await db.$queryRawUnsafe<SqliteIndex[]>(
+    `PRAGMA index_list("${tableName}")`
+  );
+  const indexesByName = new Map(indexes.map((index) => [index.name, index]));
+  for (const expected of signature.indexes) {
+    const actual = indexesByName.get(expected.name);
+    if (!actual || Boolean(Number(actual.unique)) !== expected.unique) return false;
+    const indexColumns = await db.$queryRawUnsafe<SqliteIndexColumn[]>(
+      `PRAGMA index_info("${expected.name}")`
+    );
+    if (
+      indexColumns.length !== expected.columns.length ||
+      indexColumns.some((column, index) => column.name !== expected.columns[index])
+    ) {
+      return false;
+    }
+  }
+
+  if (signature.projectForeignKey) {
+    const foreignKeys = await db.$queryRawUnsafe<SqliteForeignKey[]>(
+      `PRAGMA foreign_key_list("${tableName}")`
+    );
+    const hasProjectForeignKey = foreignKeys.some(
+      (foreignKey) =>
+        foreignKey.table === "Project" &&
+        foreignKey.from === "projectId" &&
+        foreignKey.to === "id" &&
+        foreignKey.on_update === "CASCADE" &&
+        foreignKey.on_delete === "CASCADE"
+    );
+    if (!hasProjectForeignKey) return false;
+  }
+
+  return true;
+}
+
+async function hasCompleteSchemaSync(db: PrismaClient) {
+  const projectColumns = await db.$queryRawUnsafe<SqliteColumn[]>(
+    `PRAGMA table_info("Project")`
+  );
+  const archivedAt = projectColumns.find((column) => column.name === "archivedAt");
+  if (
+    !archivedAt ||
+    archivedAt.type.toUpperCase() !== "DATETIME" ||
+    Boolean(Number(archivedAt.notnull)) ||
+    archivedAt.dflt_value !== null
+  ) {
+    return false;
+  }
+
+  for (const [tableName, signature] of Object.entries(TABLE_SIGNATURES)) {
+    if (!(await tableMatchesSignature(db, tableName, signature))) return false;
+  }
+  return true;
 }
 
 async function migrationWasApplied(db: PrismaClient, migrationName: string) {
@@ -135,7 +339,7 @@ export async function migrateDatabase(
       await tableHasColumn(db, "CliRoleSession", "episodeId")
     ];
     const baselineApplied = await migrationWasApplied(db, SCHEMA_SYNC_MIGRATION);
-    const completeBaseline = baselineChecks.every(Boolean);
+    const completeBaseline = await hasCompleteSchemaSync(db);
     const partialBaseline = baselineChecks.some(Boolean) && !completeBaseline;
 
     if (baselineApplied && !completeBaseline) {

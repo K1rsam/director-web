@@ -150,12 +150,51 @@ async function verifyFreshDatabase(temporaryDirectory: string) {
   }
 }
 
+async function verifyPartialBaselineIsRejected(temporaryDirectory: string) {
+  const databaseUrl = createBaselineDatabase(temporaryDirectory);
+  const db = new PrismaClient({ datasourceUrl: databaseUrl });
+  try {
+    await db.$executeRawUnsafe(`DROP TABLE "PresentationContract"`);
+    await db.$executeRawUnsafe(`
+      CREATE TABLE "PresentationContract" (
+        "id" TEXT NOT NULL PRIMARY KEY,
+        "projectId" TEXT NOT NULL,
+        "question" TEXT NOT NULL
+      )
+    `);
+  } finally {
+    await db.$disconnect();
+  }
+
+  await assert.rejects(
+    migrateDatabase({
+      databaseUrl,
+      schemaPath: join(process.cwd(), "prisma/schema.prisma"),
+      quiet: true
+    }),
+    /部分结构变更/
+  );
+
+  const unchangedDb = new PrismaClient({ datasourceUrl: databaseUrl });
+  try {
+    const migrationRows = await unchangedDb.$queryRawUnsafe<Array<{ count: bigint }>>(
+      `SELECT COUNT(*) AS "count" FROM "_prisma_migrations"
+       WHERE "migration_name" = '${SCHEMA_SYNC_MIGRATION}'
+         AND "finished_at" IS NOT NULL`
+    );
+    assert.equal(Number(migrationRows[0]?.count ?? 0), 0);
+  } finally {
+    await unchangedDb.$disconnect();
+  }
+}
+
 async function main() {
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "director-database-migration-"));
   try {
     await verifyLegacyDatabaseUpgrade(join(temporaryDirectory, "legacy"));
     mkdirSync(join(temporaryDirectory, "fresh"), { recursive: true });
     await verifyFreshDatabase(join(temporaryDirectory, "fresh"));
+    await verifyPartialBaselineIsRejected(join(temporaryDirectory, "partial"));
     console.log("database migration verification passed");
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
