@@ -11,6 +11,7 @@ import { ModeSwitch } from "../../../../mode-switch";
 import { UnitPromptCard } from "./unit-prompt-card";
 import { ExportEpisodeButtons } from "./export-episode";
 import { WorkspaceGrid } from "./workspace-grid";
+import { requireSessionUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +24,8 @@ export default async function EpisodeStudioPage({
 }) {
   const { projectId, episodeId } = await params;
   const { view = "units", issues = "open" } = await searchParams;
-  const studio = await getEpisodeStudio(projectId, episodeId);
+  const currentUser = await requireSessionUser(`/projects/${projectId}/episodes/${episodeId}`);
+  const studio = await getEpisodeStudio(projectId, episodeId, currentUser.id);
   if (!studio) notFound();
   const shotCount = studio.scenes.reduce((sum, scene) => sum + scene.shots.length, 0);
 

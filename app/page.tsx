@@ -5,7 +5,8 @@ import {
   resolveProjectDestination,
   resolveProjectStyleCover
 } from "@/lib/project-entry";
-import { prisma } from "@/lib/prisma";
+import { requireSessionUser } from "@/lib/auth";
+import { getProjectLibrary } from "@/lib/project-library";
 import { archiveProjectAction, restoreProjectAction } from "@/app/actions";
 import { DeleteProjectButton } from "./delete-project-button";
 import { AppChrome } from "./ui/app-chrome";
@@ -20,50 +21,9 @@ const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
 });
 
 export default async function HomePage({ searchParams }: { searchParams: Promise<{ projectId?: string }> }) {
+  const currentUser = await requireSessionUser("/");
   const { projectId: requestedProjectId } = await searchParams;
-  const projects = await prisma.project.findMany({
-    where: { archivedAt: null },
-    orderBy: { updatedAt: "desc" },
-    select: {
-      id: true,
-      title: true,
-      description: true,
-      style: true,
-      aspectRatio: true,
-      updatedAt: true,
-      _count: {
-        select: {
-          episodes: true,
-          assets: true,
-          sceneSnapshots: true
-        }
-      },
-      episodes: {
-        orderBy: { number: "asc" },
-        select: {
-          id: true,
-          number: true,
-          title: true,
-          _count: { select: { seedanceUnits: true } }
-        }
-      }
-    }
-  });
-
-  const archivedProjects = await prisma.project.findMany({
-    where: { archivedAt: { not: null } },
-    orderBy: { archivedAt: "desc" },
-    select: {
-      id: true,
-      title: true,
-      description: true,
-      style: true,
-      aspectRatio: true,
-      updatedAt: true,
-      archivedAt: true,
-      _count: { select: { episodes: true, assets: true } }
-    }
-  });
+  const { projects, archivedProjects } = await getProjectLibrary(currentUser.id);
   const activeProject = requestedProjectId
     ? projects.find((project) => project.id === requestedProjectId)
     : undefined;

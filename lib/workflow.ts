@@ -9,6 +9,7 @@ import { formatAssetIndex } from "@/lib/assets";
 type Db = PrismaClient;
 
 export type ImportProjectInput = {
+  ownerUserId: string;
   title: string;
   description?: string;
   style?: string;
@@ -47,7 +48,10 @@ export async function importProjectFromText(input: ImportProjectInput, db: Db = 
         style: input.style ?? "真人竖屏短剧写实风格",
         aspectRatio: input.aspectRatio ?? "16:9",
         executionMode: input.executionMode ?? "CLI",
-        ruleVersion: "TASK_SCHEMA_V4"
+        ruleVersion: "TASK_SCHEMA_V4",
+        roles: {
+          create: { userId: input.ownerUserId, role: "ADMIN" }
+        }
       }
     });
 
@@ -74,6 +78,7 @@ export async function importProjectFromFile(input: ImportProjectFileInput, db: D
   const imported = await parseScriptBuffer(input.sourceName, input.buffer);
   return importProjectFromText(
     {
+      ownerUserId: input.ownerUserId,
       title: input.title,
       description: input.description,
       style: input.style,

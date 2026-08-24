@@ -13,12 +13,14 @@ import { SceneStructureTable } from "./scene-structure-table";
 import { PresentationContracts } from "./presentation-contracts";
 import { ModeSwitch } from "../../mode-switch";
 import { StopFoundationButton } from "./stop-foundation-button";
+import { requireSessionUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 export default async function ProjectStudioPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await params;
-  const studio = await getProjectStudio(projectId);
+  const currentUser = await requireSessionUser(`/projects/${projectId}`);
+  const studio = await getProjectStudio(projectId, currentUser.id);
   if (!studio) notFound();
 
   const foundationRuns = studio.projectRuns

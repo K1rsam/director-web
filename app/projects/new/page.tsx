@@ -2,8 +2,10 @@ import Link from "next/link";
 import { PROJECT_STYLE_OPTIONS } from "@/lib/project-entry";
 import { ProjectCreateForm } from "./project-create-form";
 import { AppChrome } from "@/app/ui/app-chrome";
+import { requireSessionUser } from "@/lib/auth";
 
-export default function NewProjectPage() {
+export default async function NewProjectPage() {
+  await requireSessionUser("/projects/new");
   return (
     <AppChrome
       title="创建剧本项目"

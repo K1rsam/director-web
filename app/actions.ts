@@ -42,11 +42,12 @@ export async function importProjectAction(
 ): Promise<ProjectCreationState> {
   let projectId = "";
   try {
-    await requirePermission("canOperate");
+    const currentUser = await requireSessionUser("/projects/new");
     const submission = await readProjectSubmission(formData);
     const workflow = await import("@/lib/workflow");
     const result = submission.mode === "upload"
       ? await workflow.importProjectFromFile({
+          ownerUserId: currentUser.id,
           title: submission.title,
           style: submission.style,
           aspectRatio: submission.aspectRatio,
@@ -55,6 +56,7 @@ export async function importProjectAction(
           buffer: submission.buffer
         })
       : await workflow.importProjectFromText({
+          ownerUserId: currentUser.id,
           title: submission.title,
           style: submission.style,
           aspectRatio: submission.aspectRatio,

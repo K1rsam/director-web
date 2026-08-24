@@ -1,10 +1,13 @@
 import { prisma } from "@/lib/prisma";
+import type { PrismaClient } from "@prisma/client";
 import { assetSceneRefsOf } from "@/lib/assets";
 import { composeShotCells } from "@/lib/shot-cells";
 import { PIPELINE_STAGE_CONFIGS } from "@/lib/episode-pipeline-contracts";
 
 /** 岗位条与流水线契约同源，避免手工维护漂移（E0 叙事节奏 → E5 审查总控）。 */
 export const ROLE_STAGES = PIPELINE_STAGE_CONFIGS.map((stage) => [stage.code, stage.name] as const);
+
+type Db = PrismaClient;
 
 type RunLike = {
   stageCode: string;
@@ -115,9 +118,9 @@ export function deriveActivePipelineScope(runs: readonly ActiveRunLike[]): Activ
   return { kind, stages, label };
 }
 
-export async function getProjectStudio(projectId: string) {
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
+export async function getProjectStudio(projectId: string, userId: string, db: Db = prisma) {
+  const project = await db.project.findFirst({
+    where: { id: projectId, roles: { some: { userId } } },
     include: {
       assets: { orderBy: [{ type: "asc" }, { code: "asc" }] },
       sceneSnapshots: { orderBy: { createdAt: "desc" } },
@@ -194,9 +197,9 @@ export async function getProjectStudio(projectId: string) {
   };
 }
 
-export async function getEpisodeStudio(projectId: string, episodeId: string) {
-  const episode = await prisma.episode.findFirst({
-    where: { id: episodeId, projectId },
+export async function getEpisodeStudio(projectId: string, episodeId: string, userId: string, db: Db = prisma) {
+  const episode = await db.episode.findFirst({
+    where: { id: episodeId, projectId, project: { roles: { some: { userId } } } },
     include: {
       project: {
         include: {
