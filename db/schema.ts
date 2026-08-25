@@ -48,7 +48,7 @@ export const runnerJobs = sqliteTable(
       .notNull()
       .references(() => businessProjects.id, { onDelete: "cascade" }),
     ownerUserId: text("owner_user_id").notNull(),
-    kind: text("kind", { enum: ["smoke", "project_foundation", "episode_pipeline"] }).notNull(),
+    kind: text("kind", { enum: ["smoke", "codex_prompt", "project_foundation", "episode_pipeline"] }).notNull(),
     payload: text("payload").notNull().default("{}"),
     status: text("status", { enum: ["queued", "running", "succeeded", "failed", "canceled"] })
       .notNull()

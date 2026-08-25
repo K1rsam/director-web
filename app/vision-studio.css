@@ -964,3 +964,57 @@ body { background: transparent; font-size: var(--vision-font-body); }
   .sectionHeading { align-items: flex-start; flex-direction: column; }
   .sectionHeading p { max-width: none; text-align: left; }
 }
+
+/* Episode workspace legibility */
+.episodeShell .viewTabs a { font-size: var(--vision-font-body); }
+.episodeShell .viewTabs b { font-size: var(--vision-font-caption); }
+.episodeShell .canvasToolbar > span { font-size: var(--vision-font-small); }
+
+.episodeShell .episodeTopbarAction .episodeToolButton,
+.episodeShell .episodeTopbarAction .resetEpisodeButton { font-size: var(--vision-font-caption) !important; }
+.episodeShell .episodeRoleDeck > summary { min-height: 42px; font-size: var(--vision-font-small); }
+.episodeShell .episodeRoleDeck > summary b { font-size: var(--vision-font-caption); }
+.episodeShell .episodeRoleDeck .roleProgress {
+  height: 82px;
+  min-height: 82px !important;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  padding: 10px 12px !important;
+}
+.episodeShell .episodeRoleDeck .roleProgress > span:first-child,
+.episodeShell .episodeRoleDeck .roleProgress strong { font-size: var(--vision-font-body); }
+.episodeShell .episodeRoleDeck .roleProgress small,
+.episodeShell .episodeRoleDeck .roleProgress em,
+.episodeShell .episodeRoleDeck .roleCardAction { font-size: var(--vision-font-small); }
+
+.episodeShell .storyboardTable { font-size: var(--vision-font-small); }
+.episodeShell .storyboardTable th,
+.episodeShell .storyboardTable td { font-size: var(--vision-font-small); }
+.episodeShell .storyboardTable td:first-child small,
+.episodeShell .revisionTag { font-size: var(--vision-font-caption); }
+
+.episodeShell .unitCardHead span,
+.episodeShell .unitCardHead em { font-size: var(--vision-font-small); }
+.episodeShell .unitCardHead strong { font-size: var(--vision-font-body); }
+.episodeShell .unitCard h3 { font-size: var(--vision-font-body); }
+.episodeShell .unitCard dt,
+.episodeShell .unitCard dd,
+.episodeShell .promptPreview p { font-size: var(--vision-font-small); }
+.episodeShell .promptPreview span { font-size: var(--vision-font-caption); }
+
+.episodeShell .logRow > b,
+.episodeShell .logRow small,
+.episodeShell .logRow > span,
+.episodeShell .logRow summary { font-size: var(--vision-font-small); }
+.episodeShell .logRow strong { font-size: var(--vision-font-body); }
+.episodeShell .logRow h4 { font-size: var(--vision-font-caption); }
+.episodeShell .logRow code,
+.episodeShell .logRow pre { font-size: var(--vision-font-small); }
+
+.episodeShell .issueRow span,
+.episodeShell .issueRow p { font-size: var(--vision-font-small); }
+.episodeShell .issueRow b { font-size: var(--vision-font-body); }
+.episodeShell .issueRow em,
+.episodeShell .issueRow small,
+.episodeShell .issueRow button { font-size: var(--vision-font-caption); }
+
+.appChrome .archiveSection > summary { font-size: var(--vision-font-body); }

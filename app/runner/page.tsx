@@ -6,6 +6,7 @@ import { ensureControlPlaneSchema } from "@/db/ensure-schema";
 import { getDb } from "@/db";
 import { runnerTokens } from "@/db/schema";
 import { requireSessionUser } from "@/lib/auth";
+import { DeepSeekKeySetup } from "./deepseek-key-setup";
 import { RunnerTokenForm } from "./token-form";
 
 export const dynamic = "force-dynamic";
@@ -20,26 +21,26 @@ export default async function RunnerPage() {
     .orderBy(desc(runnerTokens.createdAt));
 
   return (
-    <main className="min-h-screen bg-[#f6f3ed] px-5 py-8 text-[#201c18] sm:px-8">
+    <main className="min-h-screen bg-[#f2f5ff] px-5 py-8 text-[#171d35] sm:px-8">
       <div className="mx-auto max-w-3xl">
-        <Link className="text-sm font-medium text-[#a9341d] hover:underline" href="/">← 返回项目</Link>
-        <h1 className="mt-5 text-3xl font-bold tracking-tight">本地 Runner</h1>
-        <p className="mt-2 text-sm leading-6 text-black/60">Runner 只领取你的任务，并且只能执行代码中允许的固定任务类型。</p>
+        <Link className="text-sm font-medium text-[#6258d5] hover:underline" href="/">← 返回项目</Link>
+        <h1 className="mt-5 text-3xl font-bold tracking-tight">执行方式连接</h1>
+        <p className="mt-2 text-sm leading-6 text-black/60">每位用户使用自己的 API Key 或自己的 Codex CLI。网站不会调用站长的账号或额度。</p>
 
         <div className="mt-6 grid gap-5">
+          <DeepSeekKeySetup />
           <RunnerTokenForm />
 
-          <section className="rounded-2xl border border-black/10 bg-[#201c18] p-5 text-white">
-            <h2 className="font-semibold">设备启动方式</h2>
-            <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm leading-6 text-white/70">
-              <li>在本机打开 <code className="text-white">CL-sites</code> 目录。</li>
-              <li>设置 <code className="text-white">DIRECTOR_SITE_URL</code> 和刚生成的 <code className="text-white">DIRECTOR_RUNNER_TOKEN</code>。</li>
-              <li>运行 <code className="text-white">npm run runner:start</code>。</li>
-            </ol>
+          <section className="rounded-2xl border border-black/10 bg-[#171d35] p-5 text-white">
+            <h2 className="font-semibold">怎么选</h2>
+            <div className="mt-3 grid gap-3 text-sm leading-6 text-white/70 sm:grid-cols-2">
+              <p><b className="text-white">API：</b>粘贴自己的 DeepSeek Key，测试成功后即可关闭此页；只在这台设备生效。</p>
+              <p><b className="text-white">CLI：</b>生成启动器并运行；窗口保持打开时，网站任务才会交给你自己的 Codex。</p>
+            </div>
           </section>
 
           <section className="rounded-2xl border border-black/10 bg-white p-5">
-            <h2 className="font-semibold">已连接令牌</h2>
+            <h2 className="font-semibold">我的 CLI 设备</h2>
             <div className="mt-3 divide-y divide-black/8">
               {tokens.map((token) => (
                 <div key={token.id} className="flex items-center justify-between gap-4 py-3">
@@ -56,7 +57,7 @@ export default async function RunnerPage() {
                   ) : null}
                 </div>
               ))}
-              {tokens.length === 0 ? <p className="py-6 text-center text-sm text-black/45">尚未生成令牌</p> : null}
+              {tokens.length === 0 ? <p className="py-6 text-center text-sm text-black/45">尚未连接 CLI 设备</p> : null}
             </div>
           </section>
         </div>

@@ -78,3 +78,44 @@ test("login and workspace use the L brand glyph", () => {
   assert.doesNotMatch(login, /<span>镜<\/span>/);
   assert.doesNotMatch(chrome, /<span aria-hidden="true">镜<\/span>/);
 });
+
+test("episode production text is readable without enlarging the project workbench", () => {
+  const css = readFileSync("app/vision-studio.css", "utf8");
+  const marker = "/* Episode workspace legibility */";
+  const legibilityLayer = css.slice(css.indexOf(marker));
+
+  assert.notEqual(css.indexOf(marker), -1);
+  assert.match(legibilityLayer, /\.episodeShell \.viewTabs a[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
+  assert.match(legibilityLayer, /\.episodeShell \.episodeRoleDeck \.roleProgress strong[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
+  assert.match(legibilityLayer, /\.episodeShell \.unitCard h3[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
+  assert.match(legibilityLayer, /\.episodeShell \.logRow strong[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
+  assert.match(legibilityLayer, /\.episodeShell \.issueRow b[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
+  assert.match(legibilityLayer, /\.appChrome \.archiveSection > summary[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
+  assert.doesNotMatch(legibilityLayer, /\.foundationRole[^,{]*\{[^}]*font-size:/s);
+});
+
+test("DeepSeek uses each user's browser key without server-side persistence", () => {
+  const setup = readFileSync("app/runner/deepseek-key-setup.tsx", "utf8");
+  const route = readFileSync("app/api/providers/deepseek/test/route.ts", "utf8");
+
+  assert.match(setup, /localStorage\.setItem/);
+  assert.match(setup, /只保存在当前设备/);
+  assert.match(route, /api\.deepseek\.com\/models/);
+  assert.match(route, /authorization:\s*`Bearer \$\{apiKey\}`/);
+  assert.match(route, /getCurrentUser/);
+  assert.doesNotMatch(route, /getDb|getD1|process\.env|DEEPSEEK_API_KEY/);
+});
+
+test("personal runner starts without a CL-sites source directory", () => {
+  const page = readFileSync("app/runner/page.tsx", "utf8");
+  const form = readFileSync("app/runner/token-form.tsx", "utf8");
+  const runner = readFileSync("public/runner/director-runner.mjs", "utf8");
+
+  assert.doesNotMatch(page, /打开\s*<code[^>]*>CL-sites|DIRECTOR_PROJECT_DIR/);
+  assert.match(form, /下载 Windows 启动器/);
+  assert.match(form, /复制 Mac 启动命令/);
+  assert.match(runner, /codex_prompt/);
+  assert.match(runner, /codexCommand[^;]*"codex"/);
+  assert.match(runner, /const commandArgs = \[\s*"exec"/s);
+  assert.doesNotMatch(runner, /CL-sites|DIRECTOR_PROJECT_DIR|run-episode-pipeline|run-project-foundation/);
+});
