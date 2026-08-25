@@ -47,14 +47,27 @@ test("the one-time hosted import endpoint is removed after migration", () => {
   assert.doesNotMatch(readFileSync("db/env.d.ts", "utf8"), /DIRECTOR_IMPORT_TOKEN/);
 });
 
-test("shared chrome uses a fluid readable scale and one vertical page scroll", () => {
+test("shared chrome keeps a responsive scale on a continuous viewport background", () => {
   const css = readFileSync("app/vision-studio.css", "utf8");
   const marker = "/* Responsive display framework */";
+  const responsiveLayer = css.slice(css.indexOf(marker));
   assert.match(css, /--vision-font-body:\s*clamp\(14px,/);
   assert.match(css, /--vision-content-max:\s*2200px/);
-  assert.match(css, /\.appChrome \.appTopbar\s*\{[^}]*top:\s*0;[^}]*margin:\s*0;/s);
+  assert.match(responsiveLayer, /--vision-workspace-offset:\s*calc\(var\(--vision-sidebar-width\) \+ 28px\)/);
+  assert.match(responsiveLayer, /html, body\s*\{[^}]*margin:\s*0;[^}]*background:\s*var\(--vision-page-backdrop\);/s);
+  assert.match(responsiveLayer, /\.appChrome\s*\{[^}]*background:\s*var\(--vision-page-backdrop\);/s);
+  assert.doesNotMatch(responsiveLayer, /\.appChrome::before\s*\{[^}]*display:\s*block;/s);
+  assert.match(responsiveLayer, /\.appChrome \.appTopbar\s*\{[^}]*top:\s*var\(--vision-topbar-inset\);[^}]*width:\s*calc\(100% - 28px\);[^}]*margin:\s*var\(--vision-topbar-inset\) 14px 0;[^}]*border-radius:\s*20px;/s);
   assert.match(css, /\.sceneStructureScroll\s*\{[^}]*max-height:\s*none;[^}]*overflow:\s*visible;/s);
   assert.match(css, /\.sceneStructureScroll \.studioTableScroll\s*\{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*clip;/s);
-  const responsiveLayer = css.slice(css.indexOf(marker));
   assert.doesNotMatch(responsiveLayer, /\bzoom\s*:|transform:\s*scale\(/);
+});
+
+test("login and workspace use the L brand glyph", () => {
+  const login = readFileSync("app/login/page.tsx", "utf8");
+  const chrome = readFileSync("app/ui/app-chrome.tsx", "utf8");
+  assert.match(login, /<span>L<\/span>/);
+  assert.match(chrome, /<span aria-hidden="true">L<\/span>/);
+  assert.doesNotMatch(login, /<span>镜<\/span>/);
+  assert.doesNotMatch(chrome, /<span aria-hidden="true">镜<\/span>/);
 });
