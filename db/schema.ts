@@ -1,27 +1,33 @@
 import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
-export const projects = sqliteTable(
-  "projects",
+export const users = sqliteTable("User", {
+  id: text("id").primaryKey(),
+});
+
+export const businessProjects = sqliteTable(
+  "Project",
   {
     id: text("id").primaryKey(),
-    ownerUserId: text("owner_user_id").notNull(),
     title: text("title").notNull(),
-    description: text("description"),
-    sourceProjectId: text("source_project_id"),
-    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
-    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
   },
-  (table) => [
-    index("idx_projects_owner_updated").on(table.ownerUserId, table.updatedAt),
-    uniqueIndex("idx_projects_owner_source").on(table.ownerUserId, table.sourceProjectId),
-  ],
+);
+
+export const projectRoles = sqliteTable(
+  "ProjectRole",
+  {
+    id: text("id").primaryKey(),
+    userId: text("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
+    projectId: text("projectId").notNull().references(() => businessProjects.id, { onDelete: "cascade" }),
+    role: text("role").notNull(),
+  },
+  (table) => [index("ProjectRole_projectId_idx").on(table.projectId)],
 );
 
 export const runnerTokens = sqliteTable(
   "runner_tokens",
   {
     id: text("id").primaryKey(),
-    ownerUserId: text("owner_user_id").notNull(),
+    ownerUserId: text("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     tokenHash: text("token_hash").notNull(),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
@@ -40,7 +46,7 @@ export const runnerJobs = sqliteTable(
     id: text("id").primaryKey(),
     projectId: text("project_id")
       .notNull()
-      .references(() => projects.id, { onDelete: "cascade" }),
+      .references(() => businessProjects.id, { onDelete: "cascade" }),
     ownerUserId: text("owner_user_id").notNull(),
     kind: text("kind", { enum: ["smoke", "project_foundation", "episode_pipeline"] }).notNull(),
     payload: text("payload").notNull().default("{}"),

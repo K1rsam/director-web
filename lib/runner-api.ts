@@ -2,15 +2,17 @@ import { and, asc, eq, isNull, lt, sql } from "drizzle-orm";
 
 import { ensureControlPlaneSchema } from "@/db/ensure-schema";
 import { getDb } from "@/db";
-import { runnerJobs, runnerTokens } from "@/db/schema";
+import { projectRoles, runnerJobs, runnerTokens, users } from "@/db/schema";
 import { createRunnerToken, hashRunnerToken, parseBearerToken } from "@/lib/runner-auth";
+import {
+  canClaimRunnerJob,
+  runnerIdentityFromRow,
+  type RunnerIdentity,
+} from "@/lib/runner-ownership";
 
 const LEASE_MS = 5 * 60_000;
 
-export type RunnerIdentity = {
-  tokenId: string;
-  ownerUserId: string;
-};
+export type { RunnerIdentity } from "@/lib/runner-ownership";
 
 export async function authenticateRunner(request: Request): Promise<RunnerIdentity | null> {
   const token = parseBearerToken(request.headers.get("authorization"));
@@ -20,14 +22,16 @@ export async function authenticateRunner(request: Request): Promise<RunnerIdenti
   const db = getDb();
   const tokenHash = await hashRunnerToken(token);
   const [record] = await db
-    .select({ tokenId: runnerTokens.id, ownerUserId: runnerTokens.ownerUserId })
+    .select({ tokenId: runnerTokens.id, ownerUserId: runnerTokens.ownerUserId, userId: users.id })
     .from(runnerTokens)
+    .innerJoin(users, eq(users.id, runnerTokens.ownerUserId))
     .where(and(eq(runnerTokens.tokenHash, tokenHash), isNull(runnerTokens.revokedAt)))
     .limit(1);
 
-  if (!record) return null;
-  await db.update(runnerTokens).set({ lastSeenAt: new Date() }).where(eq(runnerTokens.id, record.tokenId));
-  return record;
+  const identity = runnerIdentityFromRow(record);
+  if (!identity) return null;
+  await db.update(runnerTokens).set({ lastSeenAt: new Date() }).where(eq(runnerTokens.id, identity.tokenId));
+  return identity;
 }
 
 export async function claimNextJob(identity: RunnerIdentity, deviceId: string) {
@@ -52,12 +56,23 @@ export async function claimNextJob(identity: RunnerIdentity, deviceId: string) {
     );
 
   const [candidate] = await db
-    .select({ id: runnerJobs.id })
+    .select({
+      id: runnerJobs.id,
+      ownerUserId: runnerJobs.ownerUserId,
+      projectRoleUserId: projectRoles.userId,
+    })
     .from(runnerJobs)
+    .innerJoin(
+      projectRoles,
+      and(
+        eq(projectRoles.projectId, runnerJobs.projectId),
+        eq(projectRoles.userId, identity.ownerUserId),
+      ),
+    )
     .where(and(eq(runnerJobs.ownerUserId, identity.ownerUserId), eq(runnerJobs.status, "queued")))
     .orderBy(asc(runnerJobs.createdAt))
     .limit(1);
-  if (!candidate) return null;
+  if (!candidate || !canClaimRunnerJob(identity, candidate)) return null;
 
   const leaseToken = createRunnerToken();
   const leaseTokenHash = await hashRunnerToken(leaseToken);
@@ -72,7 +87,13 @@ export async function claimNextJob(identity: RunnerIdentity, deviceId: string) {
       leaseExpiresAt,
       updatedAt: now,
     })
-    .where(and(eq(runnerJobs.id, candidate.id), eq(runnerJobs.status, "queued")))
+    .where(
+      and(
+        eq(runnerJobs.id, candidate.id),
+        eq(runnerJobs.ownerUserId, identity.ownerUserId),
+        eq(runnerJobs.status, "queued"),
+      ),
+    )
     .returning({
       id: runnerJobs.id,
       projectId: runnerJobs.projectId,

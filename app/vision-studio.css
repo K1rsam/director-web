@@ -789,13 +789,13 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
 .loginFootnote { margin: 22px 0 0; color: var(--vision-faint); font-size: 9px; line-height: 1.6; text-align: center; }
 
 .sidebarWorkflow { display: grid; gap: 3px; }
-.accountMenu { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 8px; border-top: 1px solid var(--vision-line); padding-top: 12px; }
+.accountMenu { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto auto; align-items: center; gap: 8px; border-top: 1px solid var(--vision-line); padding-top: 12px; }
 .accountAvatar { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 10px; background: linear-gradient(145deg, #eef1ff, #f3edff); color: #675bd8 !important; font-size: 11px !important; font-weight: 800; }
 .accountMenu > div { display: grid; min-width: 0; gap: 1px; }
 .accountMenu > div strong { overflow: hidden; color: var(--vision-text); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .accountMenu > div small { overflow: hidden; color: var(--vision-faint); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
-.accountMenu button { border: 0; background: transparent; padding: 4px; color: var(--vision-muted); font-size: 8px; cursor: pointer; }
-.accountMenu button:hover { color: var(--vision-primary); }
+.accountMenu button, .accountMenu > a { border: 0; background: transparent; padding: 4px; color: var(--vision-muted); font-size: 8px; cursor: pointer; text-decoration: none; }
+.accountMenu button:hover, .accountMenu > a:hover { color: var(--vision-primary); }
 .mobileAccountMenu { margin-top: 4px; border-top: 1px solid var(--vision-line); padding: 10px 4px 2px; }
 .mobileAccountMenu .accountMenu { border-top: 0; padding-top: 0; }
 

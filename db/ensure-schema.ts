@@ -6,20 +6,9 @@ export function ensureControlPlaneSchema(): Promise<void> {
   schemaReady ??= (async () => {
     const d1 = getD1();
     await d1.batch([
-      d1.prepare(`CREATE TABLE IF NOT EXISTS projects (
-        id TEXT PRIMARY KEY NOT NULL,
-        owner_user_id TEXT NOT NULL,
-        title TEXT NOT NULL,
-        description TEXT,
-        source_project_id TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )`),
-      d1.prepare("CREATE INDEX IF NOT EXISTS idx_projects_owner_updated ON projects(owner_user_id, updated_at)"),
-      d1.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_owner_source ON projects(owner_user_id, source_project_id)"),
       d1.prepare(`CREATE TABLE IF NOT EXISTS runner_tokens (
         id TEXT PRIMARY KEY NOT NULL,
-        owner_user_id TEXT NOT NULL,
+        owner_user_id TEXT NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
         name TEXT NOT NULL,
         token_hash TEXT NOT NULL,
         created_at INTEGER NOT NULL,
@@ -30,8 +19,8 @@ export function ensureControlPlaneSchema(): Promise<void> {
       d1.prepare("CREATE INDEX IF NOT EXISTS idx_runner_tokens_owner ON runner_tokens(owner_user_id)"),
       d1.prepare(`CREATE TABLE IF NOT EXISTS runner_jobs (
         id TEXT PRIMARY KEY NOT NULL,
-        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-        owner_user_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES "Project"("id") ON DELETE CASCADE,
+        owner_user_id TEXT NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
         kind TEXT NOT NULL,
         payload TEXT NOT NULL DEFAULT '{}',
         status TEXT NOT NULL DEFAULT 'queued',
