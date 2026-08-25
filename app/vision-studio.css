@@ -994,12 +994,27 @@ body { background: transparent; font-size: var(--vision-font-body); }
 
 .episodeShell .unitCardHead span,
 .episodeShell .unitCardHead em { font-size: var(--vision-font-small); }
+.episodeShell .unitCardHead span { font-size: var(--vision-font-body); }
 .episodeShell .unitCardHead strong { font-size: var(--vision-font-body); }
 .episodeShell .unitCard h3 { font-size: var(--vision-font-body); }
 .episodeShell .unitCard dt,
 .episodeShell .unitCard dd,
 .episodeShell .promptPreview p { font-size: var(--vision-font-small); }
 .episodeShell .promptPreview span { font-size: var(--vision-font-caption); }
+
+.episodeShell .exportEpisodeBar span { font-size: var(--vision-font-body); }
+.episodeShell .exportEpisodeBar .quietButton,
+.episodeShell .copyPromptButton,
+.episodeShell .promptVersionChip { min-height: 34px; font-size: var(--vision-font-small); }
+.episodeShell .seedancePromptTag { font-size: var(--vision-font-body); }
+.episodeShell .seedancePrompt pre {
+  padding: 16px;
+  font-size: var(--vision-font-body);
+  line-height: 1.8;
+}
+.episodeShell .unitInternals summary,
+.episodeShell .unitInternals dt,
+.episodeShell .unitInternals dd { font-size: var(--vision-font-small); }
 
 .episodeShell .logRow > b,
 .episodeShell .logRow small,
@@ -1018,3 +1033,10 @@ body { background: transparent; font-size: var(--vision-font-body); }
 .episodeShell .issueRow button { font-size: var(--vision-font-caption); }
 
 .appChrome .archiveSection > summary { font-size: var(--vision-font-body); }
+
+.accountMenu { grid-template-columns: 34px minmax(0, 1fr) auto auto; }
+.accountAvatar { width: 34px; height: 34px; font-size: var(--vision-font-small) !important; }
+.accountMenu > div strong { font-size: var(--vision-font-small); }
+.accountMenu > div small { font-size: var(--vision-font-caption); }
+.accountMenu button { font-size: var(--vision-font-caption); }
+.accountMenu > a { font-size: var(--vision-font-caption); }

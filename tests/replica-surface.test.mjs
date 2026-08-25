@@ -90,7 +90,12 @@ test("episode production text is readable without enlarging the project workbenc
   assert.match(legibilityLayer, /\.episodeShell \.unitCard h3[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
   assert.match(legibilityLayer, /\.episodeShell \.logRow strong[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
   assert.match(legibilityLayer, /\.episodeShell \.issueRow b[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
+  assert.match(legibilityLayer, /\.episodeShell \.exportEpisodeBar span[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
+  assert.match(legibilityLayer, /\.episodeShell \.seedancePromptTag[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
+  assert.match(legibilityLayer, /\.episodeShell \.seedancePrompt pre[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
   assert.match(legibilityLayer, /\.appChrome \.archiveSection > summary[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
+  assert.match(legibilityLayer, /\.accountMenu > div strong[^{]*\{[^}]*font-size:\s*var\(--vision-font-small\)/s);
+  assert.match(legibilityLayer, /\.accountMenu button[^{]*\{[^}]*font-size:\s*var\(--vision-font-caption\)/s);
   assert.doesNotMatch(legibilityLayer, /\.foundationRole[^,{]*\{[^}]*font-size:/s);
 });
 
