@@ -8,6 +8,7 @@ test("original project library and creation surfaces replace the control prototy
     "app/page.tsx",
     "app/projects/new/page.tsx",
     "app/projects/[projectId]/page.tsx",
+    "app/projects/[projectId]/episodes/[episodeId]/page.tsx",
   ]) {
     assert.equal(existsSync(route), true, route);
   }
@@ -27,4 +28,16 @@ test("foundation execution controls stay visible but cannot enqueue fake work", 
   const actions = readFileSync("app/projects/[projectId]/foundation-actions.tsx", "utf8");
   assert.match(actions, /本地 Runner 执行将在下一阶段接通/);
   assert.doesNotMatch(actions, /runFoundationStageAction|startProjectFoundationAction/);
+});
+
+test("episode execution controls are explicit placeholders while edits and exports remain", () => {
+  const page = readFileSync("app/projects/[projectId]/episodes/[episodeId]/page.tsx", "utf8");
+  const pipelineButton = readFileSync("app/projects/[projectId]/episodes/[episodeId]/episode-pipeline-button.tsx", "utf8");
+  assert.match(page, /执行引擎将在 API\/Runner 阶段接通/);
+  assert.match(page, /acknowledgeIssueAction/);
+  assert.match(page, /resetEpisodeShotsAction/);
+  assert.match(pipelineButton, /disabled/);
+  assert.doesNotMatch(page, /runSingleStageAction|repairOpenIssuesAction|stopPipelineAction/);
+  assert.equal(existsSync("app/api/episodes/[episodeId]/final/route.ts"), true);
+  assert.equal(existsSync("app/api/task-packages/[taskPackageId]/prompt/route.ts"), true);
 });

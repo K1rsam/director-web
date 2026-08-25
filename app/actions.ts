@@ -7,7 +7,7 @@ import { redirect } from "next/navigation";
 import { getD1, getDb } from "@/db";
 import { ensureControlPlaneSchema } from "@/db/ensure-schema";
 import { runnerTokens } from "@/db/schema";
-import { requireProjectAccess, requireSessionUser } from "@/lib/auth";
+import { requireEpisodeAccess, requireProjectAccess, requireSessionUser } from "@/lib/auth";
 import { readProjectSubmission } from "@/lib/project-entry";
 import {
   archiveProject,
@@ -16,6 +16,13 @@ import {
   restoreProject,
   setProjectExecutionMode,
 } from "@/lib/repositories/projects";
+import {
+  acknowledgeAllSuggestions,
+  acknowledgeIssue,
+  resetEpisodeData,
+  restorePromptVersion,
+  saveManualPromptVersion,
+} from "@/lib/repositories/episode-studio";
 import {
   confirmAllAssets,
   decidePresentationContract,
@@ -108,6 +115,52 @@ export async function skipPresentationContractAction(formData: FormData) {
   const contractId = String(formData.get("contractId") ?? "");
   await skipPresentationContract(getD1(), projectId, contractId);
   revalidatePath(`/projects/${projectId}`);
+}
+
+export async function acknowledgeIssueAction(formData: FormData) {
+  const projectId = String(formData.get("projectId") ?? "");
+  const episodeId = String(formData.get("episodeId") ?? "");
+  await requireEpisodeAccess(projectId, episodeId);
+  await acknowledgeIssue(getD1(), projectId, episodeId, String(formData.get("issueId") ?? ""));
+  revalidatePath(`/projects/${projectId}/episodes/${episodeId}`);
+}
+
+export async function acknowledgeAllSuggestionsAction(formData: FormData) {
+  const projectId = String(formData.get("projectId") ?? "");
+  const episodeId = String(formData.get("episodeId") ?? "");
+  await requireEpisodeAccess(projectId, episodeId);
+  await acknowledgeAllSuggestions(getD1(), projectId, episodeId);
+  revalidatePath(`/projects/${projectId}/episodes/${episodeId}`);
+}
+
+export async function restorePromptVersionAction(formData: FormData) {
+  const projectId = String(formData.get("projectId") ?? "");
+  const episodeId = String(formData.get("episodeId") ?? "");
+  await requireEpisodeAccess(projectId, episodeId);
+  await restorePromptVersion(getD1(), projectId, episodeId, String(formData.get("versionId") ?? ""));
+  revalidatePath(`/projects/${projectId}/episodes/${episodeId}`);
+}
+
+export async function saveManualPromptVersionAction(formData: FormData) {
+  const projectId = String(formData.get("projectId") ?? "");
+  const episodeId = String(formData.get("episodeId") ?? "");
+  await requireEpisodeAccess(projectId, episodeId);
+  await saveManualPromptVersion(
+    getD1(),
+    projectId,
+    episodeId,
+    String(formData.get("unitId") ?? ""),
+    String(formData.get("content") ?? ""),
+  );
+  revalidatePath(`/projects/${projectId}/episodes/${episodeId}`);
+}
+
+export async function resetEpisodeShotsAction(formData: FormData) {
+  const projectId = String(formData.get("projectId") ?? "");
+  const episodeId = String(formData.get("episodeId") ?? "");
+  await requireEpisodeAccess(projectId, episodeId);
+  await resetEpisodeData(getD1(), projectId, episodeId);
+  revalidatePath(`/projects/${projectId}/episodes/${episodeId}`);
 }
 
 export async function createRunnerTokenAction(
