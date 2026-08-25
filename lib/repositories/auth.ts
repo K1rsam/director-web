@@ -2,6 +2,7 @@ import {
   createSessionToken,
   hashSessionToken,
   normalizeUsername,
+  PASSWORD_ITERATIONS,
   SESSION_DURATION_MS,
   verifyPassword,
 } from "../auth-crypto.ts";
@@ -9,7 +10,7 @@ import {
 const LOGIN_FAILURE_LIMIT = 5;
 const LOGIN_LOCK_DURATION_MS = 15 * 60 * 1000;
 const DUMMY_PASSWORD_HASH =
-  "pbkdf2-sha256$600000$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  `pbkdf2-sha256$${PASSWORD_ITERATIONS}$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
 
 export type SessionUser = { id: string; username: string; name: string | null };
 
@@ -34,7 +35,7 @@ export async function authenticateCredentials(
     )
     .bind(normalizeUsername(username))
     .first<UserCredentialRow>();
-  const usableHash = user?.passwordHash.startsWith("pbkdf2-sha256$600000$")
+  const usableHash = user?.passwordHash.startsWith(`pbkdf2-sha256$${PASSWORD_ITERATIONS}$`)
     ? user.passwordHash
     : DUMMY_PASSWORD_HASH;
   const passwordMatches = await verifyPassword(password, usableHash);

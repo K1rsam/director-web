@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 type UserRow = {
@@ -102,10 +101,12 @@ class FakeD1 {
   }
 }
 
-test("legacy 600k password hashes use the Workers-compatible Node crypto path", () => {
-  const source = readFileSync("lib/auth-crypto.ts", "utf8");
-  assert.match(source, /from "node:crypto"/);
-  assert.match(source, /pbkdf2\(/);
+test("password hashes stay within the Sites PBKDF2 limit", async () => {
+  const authCrypto = await import("../lib/auth-crypto.ts");
+  assert.equal(authCrypto.PASSWORD_ITERATIONS, 100_000);
+  const hash = await authCrypto.hashPassword("correct-password");
+  assert.match(hash, /^pbkdf2-sha256\$100000\$/);
+  assert.equal(await authCrypto.verifyPassword("correct-password", hash), true);
 });
 
 test("existing PBKDF2 accounts use normalized usernames and lock after five failures", async () => {
