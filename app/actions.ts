@@ -16,6 +16,11 @@ import {
   restoreProject,
   setProjectExecutionMode,
 } from "@/lib/repositories/projects";
+import {
+  confirmAllAssets,
+  decidePresentationContract,
+  skipPresentationContract,
+} from "@/lib/repositories/project-studio";
 import { createRunnerToken, hashRunnerToken } from "@/lib/runner-auth";
 
 export type ProjectCreationState = { error: string };
@@ -77,6 +82,31 @@ export async function setProjectExecutionModeAction(formData: FormData) {
   const value = String(formData.get("executionMode") ?? "CLI");
   if (value !== "CLI" && value !== "API") throw new Error("无效的执行方式。");
   await setProjectExecutionMode(getD1(), projectId, value);
+  revalidatePath(`/projects/${projectId}`);
+}
+
+export async function confirmAllAssetsAction(formData: FormData) {
+  const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
+  await confirmAllAssets(getD1(), projectId);
+  revalidatePath(`/projects/${projectId}`);
+}
+
+export async function decidePresentationContractAction(formData: FormData) {
+  const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
+  const contractId = String(formData.get("contractId") ?? "");
+  const answer = String(formData.get("answer") ?? "").trim();
+  if (!contractId || !answer) throw new Error("缺少确认信息。");
+  await decidePresentationContract(getD1(), projectId, contractId, answer);
+  revalidatePath(`/projects/${projectId}`);
+}
+
+export async function skipPresentationContractAction(formData: FormData) {
+  const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
+  const contractId = String(formData.get("contractId") ?? "");
+  await skipPresentationContract(getD1(), projectId, contractId);
   revalidatePath(`/projects/${projectId}`);
 }
 
