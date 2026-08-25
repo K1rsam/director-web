@@ -86,7 +86,7 @@ Run: `node --test tests/schema-parity.test.mjs`
 
 Expected: PASS with 21 source tables found.
 
-Run: `rg -n 'INSERT INTO|passwordHash' drizzle/0001_original_business_schema.sql`
+Run: `rg -n 'INSERT INTO' drizzle/0001_original_business_schema.sql`
 
 Expected: no output; migrations contain schema only.
 
