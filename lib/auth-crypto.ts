@@ -1,3 +1,5 @@
+import { pbkdf2 } from "node:crypto";
+
 const encoder = new TextEncoder();
 
 export const PASSWORD_ITERATIONS = 600_000;
@@ -32,13 +34,15 @@ async function derivePasswordDigest(
   salt: Uint8Array<ArrayBuffer>,
   iterations = PASSWORD_ITERATIONS,
 ): Promise<Uint8Array<ArrayBuffer>> {
-  const key = await crypto.subtle.importKey("raw", encoder.encode(password), { name: "PBKDF2" }, false, ["deriveBits"]);
-  const digest = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", hash: "SHA-256", salt, iterations },
-    key,
-    PASSWORD_DIGEST_BYTES * 8,
-  );
-  return new Uint8Array(digest);
+  return new Promise((resolve, reject) => {
+    pbkdf2(password, salt, iterations, PASSWORD_DIGEST_BYTES, "sha256", (error, digest) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(Uint8Array.from(digest));
+    });
+  });
 }
 
 function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {
