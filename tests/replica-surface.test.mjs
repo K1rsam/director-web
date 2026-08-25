@@ -46,3 +46,15 @@ test("the one-time hosted import endpoint is removed after migration", () => {
   assert.equal(existsSync("app/api/admin/import/route.ts"), false);
   assert.doesNotMatch(readFileSync("db/env.d.ts", "utf8"), /DIRECTOR_IMPORT_TOKEN/);
 });
+
+test("shared chrome uses a fluid readable scale and one vertical page scroll", () => {
+  const css = readFileSync("app/vision-studio.css", "utf8");
+  const marker = "/* Responsive display framework */";
+  assert.match(css, /--vision-font-body:\s*clamp\(14px,/);
+  assert.match(css, /--vision-content-max:\s*2200px/);
+  assert.match(css, /\.appChrome \.appTopbar\s*\{[^}]*top:\s*0;[^}]*margin:\s*0;/s);
+  assert.match(css, /\.sceneStructureScroll\s*\{[^}]*max-height:\s*none;[^}]*overflow:\s*visible;/s);
+  assert.match(css, /\.sceneStructureScroll \.studioTableScroll\s*\{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*clip;/s);
+  const responsiveLayer = css.slice(css.indexOf(marker));
+  assert.doesNotMatch(responsiveLayer, /\bzoom\s*:|transform:\s*scale\(/);
+});
