@@ -1,19 +1,21 @@
-import type { Metadata } from 'next';
-import './globals.css';
+import type { Metadata } from "next";
+import "./globals.css";
+import "./vision-studio.css";
+import { PageTransition } from "./ui/page-transition";
 
 export const metadata: Metadata = {
-  title: '导演工作台',
-  description: 'Sites + D1 + 本地 Runner 的导演工作控制面',
+  title: "Seedance 分镜导演工作台",
+  description: "从规范化剧本到Seedance分镜单元的结构化导演生产线"
 };
 
 export default function RootLayout({
-  children,
+  children
 }: Readonly<{
   children: React.ReactNode;
 }>) {
   return (
     <html lang="zh-CN">
-      <body>{children}</body>
+      <body><PageTransition>{children}</PageTransition></body>
     </html>
   );
 }
