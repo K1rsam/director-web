@@ -19,7 +19,7 @@ export default async function LoginPage({
     <main className="loginShell">
       <section className="loginCard" aria-labelledby="login-title">
         <div className="loginBrand" aria-hidden="true">
-          <span>镜</span>
+          <span>L</span>
           <div><strong>分镜工作台</strong><small>Director Studio</small></div>
         </div>
         <div className="loginHeading">

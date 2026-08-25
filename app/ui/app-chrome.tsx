@@ -31,7 +31,7 @@ export function AppChrome({
     <div className={`appChrome ${activeSection === "episode" ? "episodeShell" : ""}`}>
       <aside className="appSidebar" aria-label="工作台导航">
         <Link href="/" className="chromeBrand">
-          <span aria-hidden="true">镜</span>
+          <span aria-hidden="true">L</span>
           <div><strong>分镜工作台</strong><small>Director Studio</small></div>
         </Link>
 
