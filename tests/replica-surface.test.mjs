@@ -54,6 +54,7 @@ test("shared chrome keeps a responsive scale on a continuous viewport background
   assert.match(css, /--vision-font-body:\s*clamp\(14px,/);
   assert.match(css, /--vision-content-max:\s*2200px/);
   assert.match(responsiveLayer, /--vision-workspace-offset:\s*calc\(var\(--vision-sidebar-width\) \+ 28px\)/);
+  assert.match(responsiveLayer, /:root\s*\{[^}]*background:\s*var\(--vision-canvas-deep\);/s);
   assert.match(css, /html\s*\{[^}]*background:\s*var\(--vision-canvas-deep\);/s);
   assert.match(css, /body\s*\{[^}]*background:\s*transparent;/s);
   assert.match(css, /\.visionRouteFrame\s*\{[^}]*position:\s*relative;[^}]*isolation:\s*isolate;[^}]*background:\s*transparent;/s);

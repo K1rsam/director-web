@@ -842,7 +842,7 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
   --vision-panel-padding: clamp(20px, 1.5vw, 32px);
   --vision-module-gap: clamp(12px, .9vw, 20px);
   color-scheme: light;
-  background: #edf3fb;
+  background: var(--vision-canvas-deep);
 }
 
 html, body {
