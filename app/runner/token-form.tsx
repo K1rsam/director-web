@@ -30,29 +30,32 @@ export function RunnerTokenForm() {
   }
 
   return (
-    <div className="rounded-2xl border border-black/10 bg-white p-5 shadow-sm">
-      <p className="text-xs font-semibold text-[#6258d5]">CLI 模式</p>
-      <h2 className="mt-1 text-lg font-semibold">连接自己的 Codex CLI</h2>
-      <p className="mt-1 text-sm leading-6 text-black/55">无需项目源码或 CL-sites 文件夹。先确保这台电脑已安装并登录 Codex，再生成专属启动器。</p>
-      <form action={action} className="mt-4 flex gap-2">
-        <input className="min-w-0 flex-1 rounded-xl border border-black/15 px-3 py-2.5 outline-none focus:border-[#d84a2b]" name="name" placeholder="例如：Mac Studio" maxLength={60} required />
-        <button className="rounded-xl bg-[#201c18] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50" disabled={pending} type="submit">
-          {pending ? "生成中" : "生成设备启动器"}
-        </button>
+    <section className="runnerConnectionCard studioCard">
+      <div className="runnerConnectionHeader">
+        <div>
+          <p className="sectionEyebrow">CLI MODE</p>
+          <h2>连接自己的 Codex CLI</h2>
+          <p>无需项目源码或 CL-sites 文件夹。先确保这台电脑已安装并登录 Codex，再生成专属启动器。</p>
+        </div>
+        <span className={`runnerConnectionStatus ${state.token ? "connected" : ""}`}>{state.token ? "已生成" : "未连接"}</span>
+      </div>
+      <form action={action} className="runnerDeviceForm">
+        <label><span>设备名称</span><input name="name" placeholder="例如：Mac Studio" maxLength={60} required /></label>
+        <button className="glassPrimary runnerPrimaryButton" disabled={pending} type="submit">{pending ? "生成中" : "生成设备启动器"}</button>
       </form>
-      {state.error ? <p className="mt-3 text-sm text-red-700">{state.error}</p> : null}
+      {state.error ? <p className="runnerMessage error">{state.error}</p> : null}
       {state.token ? (
-        <div className="mt-4 rounded-xl border border-[#d84a2b]/25 bg-[#fff3ee] p-3">
-          <p className="text-sm font-semibold text-[#a9341d]">选择这台电脑的系统</p>
-          <p className="mt-1 text-xs leading-5 text-black/55">启动器已包含一次性连接令牌，不需要手动配置环境变量。</p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button className="rounded-xl bg-[#201c18] px-4 py-2.5 text-sm font-semibold text-white" onClick={downloadWindowsLauncher} type="button">下载 Windows 启动器</button>
-            <button className="rounded-xl border border-black/15 bg-white px-4 py-2.5 text-sm font-semibold text-black/70" onClick={copyMacCommand} type="button">复制 Mac 启动命令</button>
+        <div className="runnerLauncherPanel">
+          <strong>选择这台电脑的系统</strong>
+          <p>启动器已包含一次性连接令牌，不需要手动配置环境变量。</p>
+          <div className="runnerActions">
+            <button className="glassPrimary runnerPrimaryButton" onClick={downloadWindowsLauncher} type="button">下载 Windows 启动器</button>
+            <button className="quietButton runnerSecondaryButton" onClick={copyMacCommand} type="button">复制 Mac 启动命令</button>
           </div>
-          {copyState ? <p className="mt-2 text-xs font-medium text-emerald-700">{copyState}</p> : null}
+          {copyState ? <p className="runnerMessage success">{copyState}</p> : null}
         </div>
       ) : null}
-    </div>
+    </section>
   );
 }
 

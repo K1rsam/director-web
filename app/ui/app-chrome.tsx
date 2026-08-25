@@ -22,7 +22,7 @@ export function AppChrome({
   projectLabel?: string;
   episodes?: EpisodeLink[];
   activeEpisodeId?: string;
-  activeSection?: "projects" | "project" | "episode" | "new";
+  activeSection?: "projects" | "project" | "episode" | "new" | "runner";
   primaryAction?: ReactNode;
   utility?: ReactNode;
   children: ReactNode;
@@ -39,6 +39,7 @@ export function AppChrome({
           <Link href={projectId ? `/?projectId=${projectId}` : "/"} className={activeSection === "projects" ? "active" : ""}><span className="navIcon" aria-hidden="true">⌂</span><span className="navText">所有项目</span></Link>
           {projectId ? <Link href={`/projects/${projectId}`} className={activeSection === "project" ? "active" : ""}><span className="navIcon" aria-hidden="true">◇</span><span className="navText navContext">{activeSection === "projects" && projectLabel ? projectLabel : "全剧工作台"}</span></Link> : null}
           <Link href="/projects/new" className={activeSection === "new" ? "active" : ""}><span className="navIcon" aria-hidden="true">＋</span><span className="navText">新建项目</span></Link>
+          <Link href="/runner" className={activeSection === "runner" ? "active" : ""}><span className="navIcon" aria-hidden="true">↯</span><span className="navText">API 与 CLI</span></Link>
         </nav>
 
         {activeSection !== "projects" && projectId && episodes.length ? (
@@ -74,6 +75,7 @@ export function AppChrome({
               <Link href={projectId ? `/?projectId=${projectId}` : "/"}>所有项目</Link>
               {projectId ? <Link href={`/projects/${projectId}`}>{activeSection === "projects" && projectLabel ? projectLabel : "全剧工作台"}</Link> : null}
               <Link href="/projects/new">新建项目</Link>
+              <Link href="/runner">API 与 CLI</Link>
               <div className="mobileAccountMenu"><AccountMenu /></div>
             </nav>
           </details>

@@ -92,7 +92,7 @@ test("episode production text is readable without enlarging the project workbenc
   assert.match(legibilityLayer, /\.episodeShell \.issueRow b[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
   assert.match(legibilityLayer, /\.episodeShell \.exportEpisodeBar span[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
   assert.match(legibilityLayer, /\.episodeShell \.seedancePromptTag[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
-  assert.match(legibilityLayer, /\.episodeShell \.seedancePrompt pre[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
+  assert.match(legibilityLayer, /\.episodeShell \.seedancePrompt pre[^{]*\{[^}]*font-size:\s*var\(--vision-font-unit\)/s);
   assert.match(legibilityLayer, /\.appChrome \.archiveSection > summary[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
   assert.match(legibilityLayer, /\.accountMenu > div strong[^{]*\{[^}]*font-size:\s*var\(--vision-font-small\)/s);
   assert.match(legibilityLayer, /\.accountMenu button[^{]*\{[^}]*font-size:\s*var\(--vision-font-caption\)/s);
@@ -123,4 +123,33 @@ test("personal runner starts without a CL-sites source directory", () => {
   assert.match(runner, /codexCommand[^;]*"codex"/);
   assert.match(runner, /const commandArgs = \[\s*"exec"/s);
   assert.doesNotMatch(runner, /CL-sites|DIRECTOR_PROJECT_DIR|run-episode-pipeline|run-project-foundation/);
+});
+
+test("runner settings reuse the shared workbench chrome", () => {
+  const page = readFileSync("app/runner/page.tsx", "utf8");
+  const chrome = readFileSync("app/ui/app-chrome.tsx", "utf8");
+  const apiSetup = readFileSync("app/runner/deepseek-key-setup.tsx", "utf8");
+  const cliSetup = readFileSync("app/runner/token-form.tsx", "utf8");
+  const css = readFileSync("app/vision-studio.css", "utf8");
+
+  assert.match(page, /<AppChrome/);
+  assert.match(page, /activeSection="runner"/);
+  assert.match(page, /runnerSettingsPage/);
+  assert.doesNotMatch(page, /min-h-screen bg-\[#f2f5ff\]/);
+  assert.match(chrome, /"runner"/);
+  assert.match(chrome, /API 与 CLI/);
+  assert.match(apiSetup, /runnerConnectionCard/);
+  assert.match(cliSetup, /runnerConnectionCard/);
+  assert.match(css, /\.runnerConnectionGrid\s*\{[^}]*grid-template-columns:\s*repeat\(2,/s);
+  assert.doesNotMatch(page, /bg-\[#171d35\]/);
+});
+
+test("episode unit copy uses a middle text scale and matching lower corners", () => {
+  const css = readFileSync("app/vision-studio.css", "utf8");
+  const marker = "/* Episode workspace legibility */";
+  const legibilityLayer = css.slice(css.indexOf(marker));
+
+  assert.match(css, /--vision-font-unit:\s*clamp\(13px,[^;]*15px\)/);
+  assert.match(legibilityLayer, /\.episodeShell \.seedancePrompt pre[^{]*\{[^}]*font-size:\s*var\(--vision-font-unit\)/s);
+  assert.match(css, /\.episodeShell \.storyboardCanvas\s*\{[^}]*clip-path:\s*inset\(0 round 26px\)/s);
 });

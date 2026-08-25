@@ -6,6 +6,7 @@ import { ensureControlPlaneSchema } from "@/db/ensure-schema";
 import { getDb } from "@/db";
 import { runnerTokens } from "@/db/schema";
 import { requireSessionUser } from "@/lib/auth";
+import { AppChrome } from "@/app/ui/app-chrome";
 import { DeepSeekKeySetup } from "./deepseek-key-setup";
 import { RunnerTokenForm } from "./token-form";
 
@@ -21,48 +22,65 @@ export default async function RunnerPage() {
     .orderBy(desc(runnerTokens.createdAt));
 
   return (
-    <main className="min-h-screen bg-[#f2f5ff] px-5 py-8 text-[#171d35] sm:px-8">
-      <div className="mx-auto max-w-3xl">
-        <Link className="text-sm font-medium text-[#6258d5] hover:underline" href="/">← 返回项目</Link>
-        <h1 className="mt-5 text-3xl font-bold tracking-tight">执行方式连接</h1>
-        <p className="mt-2 text-sm leading-6 text-black/60">每位用户使用自己的 API Key 或自己的 Codex CLI。网站不会调用站长的账号或额度。</p>
+    <AppChrome
+      title="API 与 CLI"
+      eyebrow="执行设置"
+      activeSection="runner"
+      utility={<div className="runnerTopbarMeta"><span>个人凭证</span><span>本机额度</span></div>}
+      primaryAction={<Link href="/" className="topbarPrimary">返回项目总览</Link>}
+    >
+      <section className="runnerSettingsPage">
+        <header className="runnerHero studioCard">
+          <span className="runnerHeroIcon" aria-hidden="true">↗</span>
+          <div>
+            <p className="sectionEyebrow">PERSONAL EXECUTION</p>
+            <h1>使用你自己的执行额度</h1>
+            <p>API Key 只留在当前浏览器；Codex CLI 只在你自己的电脑运行。网站不会调用站长的账号或额度。</p>
+          </div>
+          <div className="runnerHeroAssurance"><span>账号隔离</span><strong>每位用户独立连接</strong></div>
+        </header>
 
-        <div className="mt-6 grid gap-5">
+        <div className="runnerConnectionGrid">
           <DeepSeekKeySetup />
           <RunnerTokenForm />
-
-          <section className="rounded-2xl border border-black/10 bg-[#171d35] p-5 text-white">
-            <h2 className="font-semibold">怎么选</h2>
-            <div className="mt-3 grid gap-3 text-sm leading-6 text-white/70 sm:grid-cols-2">
-              <p><b className="text-white">API：</b>粘贴自己的 DeepSeek Key，测试成功后即可关闭此页；只在这台设备生效。</p>
-              <p><b className="text-white">CLI：</b>生成启动器并运行；窗口保持打开时，网站任务才会交给你自己的 Codex。</p>
-            </div>
-          </section>
-
-          <section className="rounded-2xl border border-black/10 bg-white p-5">
-            <h2 className="font-semibold">我的 CLI 设备</h2>
-            <div className="mt-3 divide-y divide-black/8">
-              {tokens.map((token) => (
-                <div key={token.id} className="flex items-center justify-between gap-4 py-3">
-                  <div>
-                    <p className="text-sm font-medium">{token.name}</p>
-                    <p className="mt-0.5 text-xs text-black/45">
-                      {token.revokedAt ? "已撤销" : token.lastSeenAt ? `最近连接：${formatTime(token.lastSeenAt)}` : "尚未连接"}
-                    </p>
-                  </div>
-                  {!token.revokedAt ? (
-                    <form action={revokeRunnerTokenAction.bind(null, token.id)}>
-                      <button className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50" type="submit">撤销</button>
-                    </form>
-                  ) : null}
-                </div>
-              ))}
-              {tokens.length === 0 ? <p className="py-6 text-center text-sm text-black/45">尚未连接 CLI 设备</p> : null}
-            </div>
-          </section>
         </div>
-      </div>
-    </main>
+
+        <section className="runnerChoiceGuide studioCard">
+          <header className="runnerSectionHeader">
+            <div><p className="sectionEyebrow">QUICK GUIDE</p><h2>怎么选择</h2></div>
+            <p>两种方式都使用用户自己的额度，不需要项目源码。</p>
+          </header>
+          <div className="runnerChoiceGrid">
+            <article><span>01</span><div><strong>直接使用 API</strong><p>粘贴自己的 DeepSeek Key，测试成功后即可关闭本页；只在这台设备生效。</p></div></article>
+            <article><span>02</span><div><strong>使用 Codex CLI</strong><p>生成启动器并保持窗口运行，网站任务才会交给这台电脑上的 Codex。</p></div></article>
+          </div>
+        </section>
+
+        <section className="runnerDeviceCard studioCard">
+          <header className="runnerSectionHeader">
+            <div><p className="sectionEyebrow">CLI DEVICES</p><h2>我的 CLI 设备</h2></div>
+            <p>{tokens.filter((token) => !token.revokedAt).length} 台可用设备</p>
+          </header>
+          <div className="runnerDeviceList">
+            {tokens.map((token) => (
+              <div key={token.id} className="runnerDeviceRow">
+                <span className={`runnerDeviceDot ${token.revokedAt ? "revoked" : ""}`} aria-hidden="true" />
+                <div>
+                  <strong>{token.name}</strong>
+                  <small>{token.revokedAt ? "已撤销" : token.lastSeenAt ? `最近连接：${formatTime(token.lastSeenAt)}` : "尚未连接"}</small>
+                </div>
+                {!token.revokedAt ? (
+                  <form action={revokeRunnerTokenAction.bind(null, token.id)}>
+                    <button className="runnerRevokeButton" type="submit">撤销</button>
+                  </form>
+                ) : null}
+              </div>
+            ))}
+            {tokens.length === 0 ? <p className="runnerDeviceEmpty">尚未连接 CLI 设备</p> : null}
+          </div>
+        </section>
+      </section>
+    </AppChrome>
   );
 }
 

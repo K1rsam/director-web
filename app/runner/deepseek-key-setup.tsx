@@ -62,24 +62,23 @@ export function DeepSeekKeySetup() {
   }
 
   return (
-    <section className="rounded-2xl border border-black/10 bg-white p-5 shadow-sm">
-      <div className="flex items-start justify-between gap-4">
+    <section className="runnerConnectionCard studioCard">
+      <div className="runnerConnectionHeader">
         <div>
-          <p className="text-xs font-semibold text-[#6258d5]">API 模式</p>
-          <h2 className="mt-1 text-lg font-semibold">连接自己的 DeepSeek</h2>
-          <p className="mt-1 text-sm leading-6 text-black/55">Key 只保存在当前设备，调用时临时转发；网站数据库不会保存。</p>
+          <p className="sectionEyebrow">API MODE</p>
+          <h2>连接自己的 DeepSeek</h2>
+          <p>Key 只保存在当前设备，调用时临时转发；网站数据库不会保存。</p>
         </div>
-        <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${connected ? "bg-emerald-50 text-emerald-700" : "bg-black/5 text-black/45"}`}>
+        <span className={`runnerConnectionStatus ${connected ? "connected" : ""}`}>
           {connected ? "已保存" : "未连接"}
         </span>
       </div>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_190px]">
-        <label className="grid gap-1.5 text-sm font-medium">
-          DeepSeek API Key
+      <div className="runnerFieldGrid">
+        <label>
+          <span>DeepSeek API Key</span>
           <input
             autoComplete="off"
-            className="min-w-0 rounded-xl border border-black/15 px-3 py-2.5 outline-none focus:border-[#6258d5]"
             onChange={(event) => setApiKey(event.target.value)}
             placeholder="粘贴你自己的 Key"
             spellCheck={false}
@@ -87,21 +86,21 @@ export function DeepSeekKeySetup() {
             value={apiKey}
           />
         </label>
-        <label className="grid gap-1.5 text-sm font-medium">
-          模型
-          <select className="rounded-xl border border-black/15 px-3 py-2.5 outline-none focus:border-[#6258d5]" onChange={(event) => setModel(event.target.value)} value={model}>
+        <label>
+          <span>模型</span>
+          <select onChange={(event) => setModel(event.target.value)} value={model}>
             <option value="deepseek-v4-pro">V4 Pro</option>
             <option value="deepseek-v4-flash">V4 Flash</option>
           </select>
         </label>
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <button className="rounded-xl bg-[#6258d5] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50" disabled={pending} onClick={testAndSave} type="button">
+      <div className="runnerActions">
+        <button className="glassPrimary runnerPrimaryButton" disabled={pending} onClick={testAndSave} type="button">
           {pending ? "测试中" : "测试并保存本设备"}
         </button>
-        {apiKey ? <button className="rounded-xl border border-black/10 px-4 py-2.5 text-sm font-medium text-black/60" onClick={clearKey} type="button">删除 Key</button> : null}
-        {message ? <p className={`text-sm ${connected ? "text-emerald-700" : "text-[#a9341d]"}`}>{message}</p> : null}
+        {apiKey ? <button className="quietButton runnerSecondaryButton" onClick={clearKey} type="button">删除 Key</button> : null}
+        {message ? <p className={`runnerMessage ${connected ? "success" : "error"}`}>{message}</p> : null}
       </div>
     </section>
   );
