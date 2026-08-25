@@ -5,18 +5,18 @@ import { revokeRunnerTokenAction } from "@/app/actions";
 import { ensureControlPlaneSchema } from "@/db/ensure-schema";
 import { getDb } from "@/db";
 import { runnerTokens } from "@/db/schema";
-import { requireSiteUser } from "@/lib/site-user";
+import { requireSessionUser } from "@/lib/auth";
 import { RunnerTokenForm } from "./token-form";
 
 export const dynamic = "force-dynamic";
 
 export default async function RunnerPage() {
-  const user = await requireSiteUser("/runner");
+  const user = await requireSessionUser("/runner");
   await ensureControlPlaneSchema();
   const tokens = await getDb()
     .select()
     .from(runnerTokens)
-    .where(eq(runnerTokens.ownerUserId, user.userId))
+    .where(eq(runnerTokens.ownerUserId, user.id))
     .orderBy(desc(runnerTokens.createdAt));
 
   return (

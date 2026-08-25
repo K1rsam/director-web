@@ -5,7 +5,7 @@ import { createProjectAction, enqueueSmokeAction } from "@/app/actions";
 import { ensureControlPlaneSchema } from "@/db/ensure-schema";
 import { getDb } from "@/db";
 import { projects, runnerJobs } from "@/db/schema";
-import { requireSiteUser } from "@/lib/site-user";
+import { requireSessionUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -18,19 +18,19 @@ const statusText: Record<string, string> = {
 };
 
 export default async function Home() {
-  const user = await requireSiteUser("/");
+  const user = await requireSessionUser("/");
   await ensureControlPlaneSchema();
   const db = getDb();
   const [projectList, jobs] = await Promise.all([
     db
       .select()
       .from(projects)
-      .where(eq(projects.ownerUserId, user.userId))
+      .where(eq(projects.ownerUserId, user.id))
       .orderBy(desc(projects.updatedAt)),
     db
       .select()
       .from(runnerJobs)
-      .where(eq(runnerJobs.ownerUserId, user.userId))
+      .where(eq(runnerJobs.ownerUserId, user.id))
       .orderBy(desc(runnerJobs.createdAt))
       .limit(20),
   ]);
@@ -57,7 +57,7 @@ export default async function Home() {
       <div className="mx-auto grid max-w-6xl gap-6 px-5 py-8 sm:px-8 lg:grid-cols-[minmax(0,1fr)_340px]">
         <section className="space-y-6">
           <div>
-            <p className="text-sm text-black/50">{user.displayName}</p>
+            <p className="text-sm text-black/50">{user.name || user.username}</p>
             <h1 className="mt-1 text-3xl font-bold tracking-tight">项目与执行任务</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-black/60">
               项目和任务状态保存在 D1；Codex CLI 只在你的本地 Runner 中运行。
