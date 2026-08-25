@@ -41,3 +41,8 @@ test("episode execution controls are explicit placeholders while edits and expor
   assert.equal(existsSync("app/api/episodes/[episodeId]/final/route.ts"), true);
   assert.equal(existsSync("app/api/task-packages/[taskPackageId]/prompt/route.ts"), true);
 });
+
+test("the one-time hosted import endpoint is removed after migration", () => {
+  assert.equal(existsSync("app/api/admin/import/route.ts"), false);
+  assert.doesNotMatch(readFileSync("db/env.d.ts", "utf8"), /DIRECTOR_IMPORT_TOKEN/);
+});
