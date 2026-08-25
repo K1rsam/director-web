@@ -2,7 +2,6 @@ import { desc, eq } from "drizzle-orm";
 import Link from "next/link";
 
 import { createProjectAction, enqueueSmokeAction } from "@/app/actions";
-import { chatGPTSignOutPath } from "@/app/chatgpt-auth";
 import { ensureControlPlaneSchema } from "@/db/ensure-schema";
 import { getDb } from "@/db";
 import { projects, runnerJobs } from "@/db/schema";
@@ -50,7 +49,7 @@ export default async function Home() {
           </div>
           <nav className="flex items-center gap-4 text-sm">
             <Link className="font-medium text-[#a9341d] hover:underline" href="/runner">Runner 设置</Link>
-            <a className="text-black/55 hover:text-black" href={chatGPTSignOutPath("/")}>退出</a>
+            <span className="rounded-full bg-[#e7f4e5] px-2.5 py-1 text-xs font-medium text-[#2f6f35]">公开访问</span>
           </nav>
         </div>
       </header>

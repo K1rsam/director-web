@@ -1,21 +1,26 @@
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
 import {
-  chatGPTSignInPath,
-  getChatGPTUser,
-  type ChatGPTUser,
-} from "@/app/chatgpt-auth";
+  PUBLIC_SESSION_COOKIE_NAME,
+  resolvePublicSession,
+  sanitizeReturnTo,
+} from "@/lib/public-session";
 
-const LOCAL_USER: ChatGPTUser = {
-  userId: "local-preview-user",
-  displayName: "本地预览",
-  email: "local-preview@example.invalid",
-  fullName: "本地预览",
+export type SiteUser = {
+  userId: string;
+  displayName: string;
 };
 
-export async function requireSiteUser(returnTo: string): Promise<ChatGPTUser> {
-  const user = await getChatGPTUser();
-  if (user) return user;
-  if (process.env.NODE_ENV !== "production") return LOCAL_USER;
-  redirect(chatGPTSignInPath(returnTo));
+export async function requireSiteUser(returnTo: string): Promise<SiteUser> {
+  const cookieStore = await cookies();
+  const session = resolvePublicSession(cookieStore.get(PUBLIC_SESSION_COOKIE_NAME)?.value);
+  if (session.created) {
+    redirect(`/session/start?returnTo=${encodeURIComponent(sanitizeReturnTo(returnTo))}`);
+  }
+
+  return {
+    userId: session.sessionId,
+    displayName: `访客设备 ${session.sessionId.slice(0, 6)}`,
+  };
 }
