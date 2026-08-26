@@ -32,7 +32,8 @@ type Bible = {
 
 export function ProjectBibleViewer({ content }: { content: string }) {
   const [rawOpen, setRawOpen] = useState(false);
-  const [sectionOpen, setSectionOpen] = useState<Set<string>>(new Set(["contract", "episodes"]));
+  // 逐集推进可能包含上百集，默认收起，避免把整张全剧工作台撑成长页面。
+  const [sectionOpen, setSectionOpen] = useState<Set<string>>(new Set(["contract"]));
 
   let bible: Bible | null = null;
   let placeholder = false;
@@ -153,3 +154,4 @@ export function ProjectBibleViewer({ content }: { content: string }) {
     </div>
   );
 }
+
