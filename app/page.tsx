@@ -45,7 +45,7 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
     >
       <section className="projectLibrary">
         {projects.length ? (
-          <div className="projectCardGrid">
+          <div className={`projectCardGrid ${projects.length === 1 ? "singleProject" : ""}`}>
             {projects.map((project, index) => {
               const unitEpisodeCount = project.episodes.filter(
                 (episode) => episode._count.seedanceUnits > 0
@@ -154,3 +154,4 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
     </AppChrome>
   );
 }
+
