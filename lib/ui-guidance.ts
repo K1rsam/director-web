@@ -85,7 +85,7 @@ export function deriveProjectGuidance(input: {
       eyebrow: unfinished.shotCount ? "继续上次工作" : "推荐下一步",
       title: `${unfinished.shotCount ? "继续制作" : "开始制作"}第 ${unfinished.number} 集`,
       description: unfinished.shotCount ? "从上次完成的岗位继续，不必重新生成已有结果。" : "基础工程已就绪，可以开始拆解本集分镜。",
-      actionLabel: unfinished.shotCount ? `继续制作第 ${unfinished.number} 集` : `开始第 ${unfinished.number} 集`,
+      actionLabel: `进入第${unfinished.number}集`,
       episodeId: unfinished.id
     };
   }
