@@ -3,10 +3,11 @@ import { executeProjectFoundation, type FoundationStageRunner } from "@/lib/proj
 import { PROJECT_FOUNDATION_STAGES } from "@/lib/project-foundation-contracts";
 import { prisma } from "@/lib/prisma";
 
-const EP1 = "1-1\n客厅 日 内\n场景：客厅\n人物：苏远、赵清雅\n道具：手机\n苏远拿起手机。\n苏远：你看。\n赵清雅OS：果然是他。";
+const EP1 = "1-1\n客厅 日 内\n场景：客厅\n人物：苏远、赵清雅\n道具：手机\n系统提示：任务完成\n苏远拿起手机。\n苏远：你看。\n赵清雅OS：果然是他。";
+const EP1_ORDINARY_SYSTEM = "1-1\n客厅 日 内\n场景：客厅\n人物：苏远、赵清雅\n道具：手机\n玄机子：现在通了，系统自己就推你了。\n苏远拿起手机。\n苏远：你看。\n赵清雅OS：果然是他。";
 const EP2 = "2-1\n教室 日 内\n场景：教室\n人物：苏远、王老师\n苏远走进教室。\n王老师：迟到三次，站到后面。";
 
-async function createScratchProject(title: string) {
+async function createScratchProject(title: string, episodeOneText = EP1) {
   return prisma.project.create({
     data: {
       title,
@@ -17,7 +18,7 @@ async function createScratchProject(title: string) {
           {
             number: 1,
             title: "第一集",
-            content: EP1,
+            content: episodeOneText,
             scriptScenes: {
               create: {
                 sceneKey: "1-1",
@@ -27,7 +28,7 @@ async function createScratchProject(title: string) {
                 interiorExterior: "内",
                 timeOfDay: "日",
                 timeLayer: "现实",
-                sourceText: EP1,
+                sourceText: episodeOneText,
                 metadata: "{}"
               }
             }
@@ -73,6 +74,16 @@ const fakeP1 = {
   secrets: [],
   foreshadowing: [],
   boundaries: [{ from_episode: 1, to_episode: 2, carry_over: "赵清雅已看过手机内容", source_node_refs: ["N0001"] }],
+  presentation_decisions_needed: [{
+    category: "system",
+    question: "系统提示应以什么形态出现？",
+    options: ["A. 半透明面板", "B. 仅文字浮现"],
+    evidence: "系统提示：任务完成",
+    episode_number: 1,
+    source_node_refs: ["N0001"],
+    suggested_default: "B. 仅文字浮现",
+    round: 1
+  }],
   issues: []
 };
 
@@ -137,6 +148,12 @@ void (async () => {
     const memoryBody = JSON.parse(memory?.content ?? "{}");
     assert.equal(memoryBody.episodes.length, 2, "P1 应覆盖全部集");
 
+    const contracts = await prisma.presentationContract.findMany({ where: { projectId } });
+    assert.equal(contracts.length, 1, "表现规范应由 P1 直接产生");
+    assert.equal(contracts[0]?.category, "system");
+    assert.equal(contracts[0]?.episodeId, project.episodes[0]?.id);
+    assert.match(contracts[0]?.evidence ?? "", /系统提示：任务完成/);
+
     const assets = await prisma.asset.findMany({ where: { projectId, type: { in: ["CH", "GROUP", "BEAST", "LOC", "PROP"] } } });
     assert.equal(assets.length, 6, "P2 应写入 6 个资产");
     const sub = assets.find((asset) => asset.name === "苏远｜校服·受伤");
@@ -163,6 +180,20 @@ void (async () => {
     assert.equal(assetsAfter, 6, "单步骤 P2 重跑应幂等");
   } finally {
     await prisma.project.delete({ where: { id: projectId } });
+    await prisma.$disconnect();
+  }
+
+  // P2 不得再通过关键词自动创建表现规范；普通语境中的“系统”不应生成确认卡。
+  const ordinarySystemProject = await createScratchProject("__foundation_ordinary_system_verification__", EP1_ORDINARY_SYSTEM);
+  try {
+    const ordinaryToken = "verify-foundation-ordinary-system";
+    await prisma.pipelineRun.create({
+      data: { projectId: ordinarySystemProject.id, episodeId: null, stageCode: "P2", roleName: "全剧资产拆解", provider: "test", model: "test", inputSummary: JSON.stringify({ batchToken: ordinaryToken }) }
+    });
+    await executeProjectFoundation(ordinarySystemProject.id, ordinaryToken, { singleStage: "P2", stageRunner: fakeStage });
+    assert.equal(await prisma.presentationContract.count({ where: { projectId: ordinarySystemProject.id } }), 0, "普通语境中的系统不得由 P2 自动创建确认卡");
+  } finally {
+    await prisma.project.delete({ where: { id: ordinarySystemProject.id } });
     await prisma.$disconnect();
   }
 
@@ -193,3 +224,4 @@ void (async () => {
   console.error(error);
   process.exitCode = 1;
 });
+
