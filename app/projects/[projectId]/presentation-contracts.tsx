@@ -29,7 +29,7 @@ export function PresentationContracts({
         <div><span>PRESENTATION CONTRACTS</span><h3>表现规范确认（P1 发现，需你拍板）</h3></div>
         <em>{pending.length}待确认 · {confirmed.length}已锁定</em>
       </div>
-      <p className="contractHint">剧本里出现系统、Q版、特效、血腥等非常规表现元素时，先定"怎么演"再生成分镜——否则 Seedance 无法判断 Q版苏远 该以什么形态出现，资产也无法提前建立。选 A/B/C 或输入自定义方案。</p>
+      <p className="contractHint">P1 会结合原文上下文判断是否确实存在需要定义表现方式的剧情元素；只有明确需要拍板的项目才会显示在这里。选 A/B/C 或输入自定义方案。</p>
       {pending.length ? [...pending].sort((a, b) => a.round - b.round || a.category.localeCompare(b.category)).map((contract) => (
         <article className="contractCard" key={contract.id}>
           <div className="contractHead">
@@ -75,3 +75,4 @@ export function PresentationContracts({
     </section>
   );
 }
+
