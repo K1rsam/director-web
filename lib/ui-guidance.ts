@@ -20,6 +20,8 @@ export function deriveProjectGuidance(input: {
   pendingContracts: number;
   planningReady: boolean;
   assetsReady: boolean;
+  foundationActive?: boolean;
+  foundationReady?: boolean;
   episodes: ProjectEpisodeGuidanceInput[];
 }): ProjectGuidance {
   if (input.pendingContracts > 0) {
@@ -32,7 +34,17 @@ export function deriveProjectGuidance(input: {
     };
   }
 
-  if (!input.planningReady || !input.assetsReady) {
+  if (input.foundationActive) {
+    return {
+      kind: "foundation",
+      eyebrow: "正在整理",
+      title: "正在整理全剧基础工程",
+      description: "P1 完成后会继续执行 P2；完成后再进入单集分镜生产。",
+      actionLabel: "查看 P1/P2 进度"
+    };
+  }
+
+  if (input.foundationReady === false || !input.planningReady || !input.assetsReady) {
     return {
       kind: "foundation",
       eyebrow: "推荐下一步",
@@ -87,3 +99,4 @@ export function deriveProjectGuidance(input: {
     episodeId: input.episodes.at(-1)?.id
   };
 }
+
