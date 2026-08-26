@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { parseEpisodeNumber, parseScriptFile, splitEpisodes } from "@/lib/import-script";
+import { cleanEpisodeTitle, parseEpisodeNumber, parseScriptFile, splitEpisodes } from "@/lib/import-script";
 import { importProjectFromText } from "@/lib/workflow";
 import { prisma } from "@/lib/prisma";
 
@@ -26,6 +26,9 @@ async function main() {
   assert.deepEqual(zeroNumberEpisodes.map((episode) => episode.number), [1, 2]);
   assert.match(zeroNumberEpisodes[0]?.title ?? "", /原集号为第0集，不是有效集号，已自动整理为第1集/);
   assert.match(zeroNumberEpisodes[1]?.title ?? "", /原集号为第0集，不是有效集号，已自动整理为第2集/);
+  assert.equal(cleanEpisodeTitle(zeroNumberEpisodes[0]?.title, 1), "第1集");
+  assert.equal(cleanEpisodeTitle(zeroNumberEpisodes[1]?.title, 2), "第2集");
+  assert.equal(cleanEpisodeTitle("第 1 集", 3), "第3集");
 
   const fallback = splitEpisodes("没有集标题的剧本正文");
   assert.equal(fallback.length, 1);
