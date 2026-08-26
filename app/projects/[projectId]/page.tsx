@@ -123,8 +123,8 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
       <section className="studioSection" id="phase-one">
         <PresentationContracts
           projectId={projectId}
-          pending={contracts.map((c) => ({ id: c.id, category: c.category, question: c.question, options: JSON.parse(c.options), evidence: c.evidence, userAnswer: c.userAnswer, episodeNumber: null, round: c.round, decidedAt: c.decidedAt }))}
-          confirmed={confirmedContracts.map((c) => ({ id: c.id, category: c.category, question: c.question, options: JSON.parse(c.options), evidence: c.evidence, userAnswer: c.userAnswer, episodeNumber: null, round: c.round, decidedAt: c.decidedAt }))}
+          pending={contracts.map((c) => ({ id: c.id, category: c.category, question: c.question, options: JSON.parse(c.options), evidence: c.evidence, userAnswer: c.userAnswer, episodeNumber: studio.episodes.find((episode) => episode.id === c.episodeId)?.number ?? null, round: c.round, decidedAt: c.decidedAt }))}
+          confirmed={confirmedContracts.map((c) => ({ id: c.id, category: c.category, question: c.question, options: JSON.parse(c.options), evidence: c.evidence, userAnswer: c.userAnswer, episodeNumber: studio.episodes.find((episode) => episode.id === c.episodeId)?.number ?? null, round: c.round, decidedAt: c.decidedAt }))}
         />
         <div className="sectionHeading">
           <div><span className="sectionIndex">01</span><h2>全剧基础工程</h2></div>
