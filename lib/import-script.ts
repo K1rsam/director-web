@@ -134,10 +134,13 @@ export function normalizeEpisodeNumbers(episodes: ImportedEpisode[]): ImportedEp
 }
 
 const EPISODE_NORMALIZATION_NOTE = /（原集号(?:为第[^）]*?集，不是有效集号|与前文重复)，已自动整理为第\d+集）/g;
+const GENERIC_EPISODE_TITLE = /^第\s*(?:\d+|[零〇一二两三四五六七八九十百]+)\s*集(?:\s*(?:页眉|标题|正文))?$/;
 
 /** 仅清理界面标题中的系统规范化说明，保留数据库里的原始导入信息。 */
 export function cleanEpisodeTitle(title: string | null | undefined, fallbackNumber?: number) {
   const cleaned = (title ?? "").replace(EPISODE_NORMALIZATION_NOTE, "").replace(/\s{2,}/g, " ").trim();
+  // 原稿的“第0集”或重复“第1集”只代表页眉，不应覆盖已经整理后的正式集号。
+  if (fallbackNumber && GENERIC_EPISODE_TITLE.test(cleaned)) return `第${fallbackNumber}集`;
   return cleaned || (fallbackNumber ? `第${fallbackNumber}集` : "未命名集");
 }
 
