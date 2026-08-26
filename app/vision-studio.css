@@ -381,6 +381,14 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
   box-shadow: inset 0 1px rgba(255,255,255,.84), 0 12px 32px rgba(59,69,116,.055);
   padding: var(--vision-module-gap);
 }
+.foundationControlHeader { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: var(--vision-module-gap); border-bottom: 1px solid rgba(220,224,241,.72); padding: 2px 2px 12px; }
+.foundationControlHeader > div { display: grid; gap: 3px; min-width: 0; }
+.foundationControlHeader strong { color: var(--vision-text); font-size: 12px; letter-spacing: -.01em; }
+.foundationControlHeader span, .foundationRunnerNote { color: var(--vision-muted); font-size: 9px; line-height: 1.55; }
+.foundationRunAllButton { min-height: 34px; border: 1px solid rgba(103,94,228,.22); border-radius: 999px; background: linear-gradient(135deg, #7167e7, #8469e9); box-shadow: 0 8px 18px rgba(100,88,208,.16); padding: 0 16px; color: #fff; font-size: 10px; font-weight: 800; white-space: nowrap; cursor: pointer; }
+.foundationRunAllButton:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 11px 22px rgba(100,88,208,.22); }
+.foundationRunAllButton:disabled { cursor: not-allowed; opacity: .58; }
+.foundationRunnerNote { margin: -4px 2px 12px; }
 .foundationRail {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -431,6 +439,9 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .foundationRole.done > span:first-child, .foundationRole.done em { color: var(--vision-good) !important; }
 .foundationRole.running { border-color: rgba(102,94,228,.32) !important; background: linear-gradient(140deg, rgba(255,255,255,.82), rgba(241,239,255,.62)) !important; box-shadow: 0 12px 34px rgba(91,82,193,.12), inset 0 1px white !important; }
 .foundationRole.running::before { background: rgba(103,94,228,.78); }
+.foundationRole.queued { border-color: rgba(214,169,75,.26) !important; background: linear-gradient(140deg, rgba(255,255,255,.80), rgba(255,250,237,.58)) !important; }
+.foundationRole.queued::before { background: rgba(214,169,75,.70); }
+.foundationRole.queued > span:first-child, .foundationRole.queued em { color: #b47d25 !important; }
 .foundationRole.failed { border-color: rgba(217,88,110,.25) !important; background: linear-gradient(140deg, rgba(255,255,255,.82), rgba(255,241,245,.54)) !important; }
 .foundationRole.failed::before { background: rgba(217,88,110,.75); }
 .foundationRole.failed > span:first-child, .foundationRole.failed em { color: var(--vision-bad) !important; }
@@ -952,6 +963,11 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 .episodeStudioList > article { min-height: 108px; gap: var(--vision-module-gap); padding: 18px var(--vision-panel-padding); }
 .episodeNumber { font-size: clamp(28px, 2vw, 36px); }
 .episodeCounts b { font-size: var(--vision-font-heading); }
+.appChrome .episodeStudioList > article { min-height: 82px; gap: 12px; padding: 12px 16px; }
+.appChrome .episodeStudioList .episodeNumber { font-size: 24px; }
+.appChrome .episodeStudioList .episodeSummary h3 { font-size: 14px; line-height: 1.35; }
+.appChrome .episodeStudioList .episodeSummary p { font-size: 10px; line-height: 1.45; }
+.appChrome .episodeStudioList .episodeCounts b { font-size: 14px; }
 
 @media (max-width: 1320px) {
   .workflowGuidance { grid-template-columns: 54px minmax(280px, 1fr) auto; }
