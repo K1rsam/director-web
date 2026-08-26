@@ -1248,3 +1248,70 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 .accountMenu > div small { font-size: var(--vision-font-caption); }
 .accountMenu button { font-size: var(--vision-font-caption); }
 
+/* 全剧工作台：流程状态不抢执行入口，分集与统计信息保持清晰层级。 */
+.appChrome .sidebarEpisodes > p { font-size: 11px; }
+.appChrome .sidebarEpisodes a { font-size: 11px; }
+.appChrome .sidebarEpisodes a b { font-size: 10px; }
+.appChrome .sidebarEpisodes a i { font-size: 11px; }
+.appChrome .topbarNextStep {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  border: 1px solid rgba(105,94,221,.16);
+  border-radius: 999px;
+  background: rgba(247,246,255,.82);
+  box-shadow: inset 0 1px #fff;
+  color: #655bd6;
+  padding: 0 12px;
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+.appChrome .sceneStructureHead .cardHeader h3 { font-size: 20px; }
+.appChrome .sceneStructureHead .cardHeader em { font-size: 12px; font-weight: 750; }
+.appChrome .episodeStudioList .episodeNumber {
+  width: 44px;
+  height: 44px;
+  font-size: 24px;
+}
+.appChrome .episodeStudioList .episodeSummary h3 {
+  max-width: 42vw;
+  font-size: 15px;
+}
+.appChrome .episodeStudioList .stateDot { font-size: 12px; }
+.appChrome .episodeStudioList .episodeCounts {
+  gap: 0;
+  align-items: stretch;
+}
+.appChrome .episodeStudioList .episodeCounts span {
+  min-width: 64px;
+  gap: 4px;
+  padding: 0 11px;
+  line-height: 1.25;
+}
+.appChrome .episodeStudioList .episodeCounts b {
+  font-size: 18px;
+  line-height: 1;
+}
+.appChrome .episodeStudioList .episodeCounts small {
+  color: #7a849a;
+  font-size: 11px;
+  line-height: 1;
+}
+.appChrome .episodeStudioList .episodeCounts .countMuted {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.appChrome .episodeStudioList .primaryLink {
+  min-height: 34px;
+  gap: 8px;
+  padding: 0 13px;
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .appChrome .episodeStudioList > article { grid-template-columns: 48px minmax(0, 1fr); }
+}
+
