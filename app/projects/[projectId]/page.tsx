@@ -26,8 +26,15 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
   const foundationRuns = studio.projectRuns
     .filter((run) => run.stageCode === "P1" || run.stageCode === "P2")
     .map((run) => ({ stageCode: run.stageCode, status: run.status, model: run.model, duration: run.duration, error: run.error }));
-  const foundationActive = studio.projectRuns.some((run) => run.status === "进行中" || run.status === "排队中");
-  const activeFoundationStage = foundationRuns.find((run) => run.status === "进行中" || run.status === "排队中")?.stageCode;
+  const activeFoundationRun = foundationRuns.find((run) => run.status === "进行中" || run.status === "排队中");
+  const foundationActive = Boolean(activeFoundationRun);
+  const foundationReady = (["P1", "P2"] as const).every((stageCode) => foundationRuns.some((run) => run.stageCode === stageCode && run.status === "已完成"));
+  const activeFoundationStage = activeFoundationRun?.stageCode;
+  const foundationStatusLabel = activeFoundationRun?.status === "排队中"
+    ? `${activeFoundationStage ?? "P1"} 排队中`
+    : activeFoundationStage
+      ? `正在运行 ${activeFoundationStage}`
+      : "正在整理 P1–P2";
 
   const contracts = await prisma.presentationContract.findMany({
     where: { projectId, status: "PENDING" },
@@ -57,6 +64,8 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
     pendingContracts: contracts.length,
     planningReady: studio.firstPhase.planningReady,
     assetsReady: studio.firstPhase.assetsReady,
+    foundationActive,
+    foundationReady,
     episodes: episodeStates
   });
   const guidanceHref = guidance.kind === "contracts"
@@ -70,7 +79,7 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
     <form action={startProjectFoundationAction}>
       <input name="projectId" type="hidden" value={projectId} />
       <button type="submit" className="glassPrimary" disabled={foundationActive}>
-        {foundationActive ? `正在运行 ${activeFoundationStage ?? "P1–P2"}` : guidance.actionLabel}
+        {foundationActive ? foundationStatusLabel : guidance.actionLabel}
       </button>
     </form>
   ) : null;
@@ -85,12 +94,12 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
       primaryAction={guidance.kind === "foundation" ? (
         <form action={startProjectFoundationAction}>
           <input name="projectId" type="hidden" value={projectId} />
-          <button type="submit" disabled={foundationActive}>{foundationActive ? "正在整理…" : guidance.actionLabel}</button>
+          <button type="submit" disabled={foundationActive}>{foundationActive ? foundationStatusLabel : guidance.actionLabel}</button>
         </form>
       ) : (
         <Link href={guidanceHref} className="topbarPrimary">{guidance.actionLabel}</Link>
       )}
-      utility={<><div className="projectTopbarMeta" aria-label={`视觉风格 ${studio.project.style}，画幅 ${studio.project.aspectRatio}，${studio.episodes.length} 集`}><span>{studio.project.style}</span><span>{studio.project.aspectRatio}</span><span>{studio.episodes.length} 集</span></div><ModeSwitch projectId={studio.project.id} current={studio.project.executionMode} compact /><span className="topbarStatus"><i className={foundationActive ? "live" : ""} />{foundationActive ? `正在运行 ${activeFoundationStage ?? "P1–P2"}` : "工作台已就绪"}</span><form action={stopProjectFoundationAction} className="topbarStopForm"><input name="projectId" type="hidden" value={projectId} /><StopFoundationButton active={foundationActive} /></form></>}
+      utility={<><div className="projectTopbarMeta" aria-label={`视觉风格 ${studio.project.style}，画幅 ${studio.project.aspectRatio}，${studio.episodes.length} 集`}><span>{studio.project.style}</span><span>{studio.project.aspectRatio}</span><span>{studio.episodes.length} 集</span></div><ModeSwitch projectId={studio.project.id} current={studio.project.executionMode} compact /><span className="topbarStatus"><i className={foundationActive ? "live" : ""} />{foundationActive ? foundationStatusLabel : "工作台已就绪"}</span><form action={stopProjectFoundationAction} className="topbarStopForm"><input name="projectId" type="hidden" value={projectId} /><StopFoundationButton active={foundationActive} /></form></>}
     >
       <div className="projectDashboard">
         <WorkflowGuidance
@@ -184,3 +193,4 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
     </AppChrome>
   );
 }
+
