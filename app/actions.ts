@@ -152,7 +152,7 @@ export async function importProjectAction(
 function formatProjectCreationError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (/Unique constraint failed.*projectId.*number/i.test(message)) {
-    return "剧本中存在重复集号，系统未能创建项目。请重新导入，或先整理集号。";
+    return "导入失败：分集编号发生冲突，常见原因是剧本页眉重复，或出现“第0集”等无效集号。请检查每个“第X集”标题后重试。";
   }
   if (/database is locked|SQLITE_BUSY|P2034/i.test(message)) {
     return "本地数据库正在被其他任务占用，请停止正在运行的任务后重试。";
@@ -160,8 +160,8 @@ function formatProjectCreationError(error: unknown): string {
   if (/Unsupported script file type/i.test(message)) {
     return "剧本格式不受支持，请上传 TXT、MD 或 DOCX 文件。";
   }
-  if (/^[A-Za-z]:\\|node_modules[\\/]|\.next[\\/]/i.test(message)) {
-    return "项目创建失败，请检查剧本内容后重试。";
+  if (/Promise\.all|invocation in|[A-Za-z]:\\|node_modules[\\/]|\.next[\\/]/i.test(message)) {
+    return "项目创建失败：导入剧本时发生内部错误。请检查分集标题是否从“第1集”开始且集号唯一；如果仍然失败，请保留剧本和此提示交给管理员。";
   }
   return message.length <= 240 ? message : "项目创建失败，请检查剧本内容后重试。";
 }
