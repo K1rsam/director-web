@@ -53,8 +53,9 @@ function SubmitButton({ active, hasContent, activeLabel }: { active: boolean; ha
   const busy = active || pending;
   return (
     <button type="submit" className={`episodePipelineButton ${hasContent ? "rerun" : "firstRun"}`} disabled={busy}>
-      <strong>{busy ? activeLabel ?? "正在生成 E0–E5…" : hasContent ? "重新生成整集" : "一键生成本集分镜"}</strong>
+      <strong>{busy ? activeLabel ?? "正在执行 E0–E5…" : hasContent ? "重新执行本集 E0–E5" : "开始本集 E0–E5"}</strong>
       {!busy && !hasContent ? <small>自动运行 E0–E5</small> : null}
     </button>
   );
 }
+
