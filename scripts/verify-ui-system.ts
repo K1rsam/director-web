@@ -88,6 +88,10 @@ if (projectPage.includes('href="#next-action"') || !projectPage.includes("guidan
   throw new Error("Project top action must open the recommended destination directly instead of scrolling");
 }
 
+if (!projectPage.includes("topbarNextStep") || !projectPage.includes("进入本集")) {
+  throw new Error("Project workspace must separate the next-step status from the episode entry action");
+}
+
 if (homePage.includes("episodes={activeProject?.episodes") || !homePage.includes("projectLabel={activeProject?.title}")) {
   throw new Error("Project library must hide episode navigation and label the recent project explicitly");
 }
@@ -105,7 +109,7 @@ if (episodePage.includes('<i aria-hidden="true">↗</i>')) {
 }
 
 const pipelineButton = readFileSync(join(root, "app/projects/[projectId]/episodes/[episodeId]/episode-pipeline-button.tsx"), "utf8");
-for (const label of ["一键生成本集分镜", "自动运行 E0–E5", "重新生成整集"]) {
+for (const label of ["开始本集 E0–E5", "自动运行 E0–E5", "重新执行本集 E0–E5"]) {
   if (!pipelineButton.includes(label)) throw new Error(`Episode pipeline button is missing the clear state label: ${label}`);
 }
 
@@ -294,3 +298,4 @@ if (continueEpisode.kind !== "continue" || continueEpisode.episodeId !== "e3") {
 }
 
 console.log("light UI system verification passed");
+
