@@ -291,6 +291,13 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
   backdrop-filter: blur(22px) saturate(140%);
   -webkit-backdrop-filter: blur(22px) saturate(140%);
 }
+.projectLibrary .projectCardGrid.singleProject {
+  width: min(100%, 1040px);
+  margin-inline: auto;
+  grid-template-columns: minmax(0, 960px);
+  justify-content: center;
+}
+.projectLibrary .projectCardGrid.singleProject .projectPoster { min-height: 220px; }
 .appChrome .projectCard {
   position: relative;
   isolation: isolate;
@@ -722,6 +729,8 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
   .projectCardGrid, .foundationRail { grid-template-columns: 1fr; }
   .libraryHeading, .projectDashboard > .studioSection { padding: 18px; }
   .projectLibrary .projectCardGrid { border-radius: 22px; padding: 10px; }
+  .projectLibrary .projectCardGrid.singleProject { width: 100%; grid-template-columns: 1fr; }
+  .projectLibrary .projectCardGrid.singleProject .projectPoster { min-height: 200px; }
   .episodeRoleDeck > .roleProgressRail { overflow-x: auto; padding: 12px !important; }
   .workflowGuidance { grid-template-columns: 48px minmax(0,1fr); padding: 18px; }
   .workflowGuidance .guidanceMeta, .workflowGuidance .glassPrimary, .workflowGuidance form { grid-column: 1 / -1; }
