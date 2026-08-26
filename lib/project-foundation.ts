@@ -597,15 +597,39 @@ async function cancelQueuedFoundation(projectId: string, batchToken: string, rea
 }
 
 async function launchFoundationWorker(projectId: string, batchToken: string, singleStage?: string) {
-  const executable = path.join(process.cwd(), "node_modules", ".bin", "tsx");
+  // Windows 下 node_modules/.bin/tsx 是 Unix shell 包装脚本，直接 spawn 会以 ENOENT 静默失败。
+  // 直接用当前 Node 启动 tsx CLI，Windows、macOS、Linux 的行为一致。
+  const executable = process.execPath;
+  const tsxCli = path.join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
   const script = path.join(process.cwd(), "scripts", "run-project-foundation.ts");
-  const args = [script, projectId, batchToken];
+  const args = [tsxCli, script, projectId, batchToken];
   if (singleStage) args.push(singleStage);
   const child = spawn(executable, args, {
     cwd: process.cwd(),
     env: process.env,
     detached: true,
     stdio: "ignore"
+  });
+  const markLaunchFailure = (detail: unknown) => {
+    const raw = detail instanceof Error ? detail.message : String(detail ?? "unknown");
+    console.error(`[project-foundation] worker failed to start: ${raw}`);
+    void prisma.pipelineRun.updateMany({
+      where: {
+        projectId,
+        episodeId: null,
+        inputSummary: { contains: batchToken },
+        status: { in: ["QUEUED", "RUNNING"] }
+      },
+      data: {
+        status: "FAILED",
+        finishedAt: new Date(),
+        error: "后台执行进程启动失败：本机执行器没有成功启动。请重新运行该岗位；如果仍失败，请检查项目依赖。"
+      }
+    }).catch((error) => console.error("[project-foundation] failed to persist launch error", error));
+  };
+  child.once("error", markLaunchFailure);
+  child.once("exit", (code, signal) => {
+    if (code !== 0) markLaunchFailure(`exit=${code ?? "null"}, signal=${signal ?? "null"}`);
   });
   const pid = child.pid;
   if (pid) {
@@ -642,3 +666,4 @@ function safeJson(value: string | null | undefined): Record<string, unknown> {
 function isSceneFragment(asset: { name: string; type: string }): boolean {
   return asset.type === "LOC" && /->|快切|各处|各地|同时|转场/.test(asset.name);
 }
+
