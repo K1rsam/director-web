@@ -944,6 +944,14 @@ body { background: transparent; font-size: var(--vision-font-body); }
 .appChrome .studioTableScroll td { font-size: var(--vision-font-small); line-height: 1.7; }
 .appChrome .studioTableScroll th,
 .appChrome .studioTableScroll td { padding: clamp(11px, .8vw, 16px); }
+.appChrome .studioGrid.twoColumns { align-items: start; }
+.appChrome .assetIndexTabs .compactTable {
+  height: clamp(360px, 48vh, 540px);
+  min-height: 360px;
+  max-height: 540px;
+}
+.appChrome .assetIndexTabs .studioTableScroll th,
+.appChrome .assetIndexTabs .studioTableScroll td { padding: 9px 11px; line-height: 1.45; }
 .sceneStructureScroll { max-height: none; overflow: visible; }
 .sceneStructureScroll .studioTableScroll {
   max-height: none;
@@ -962,11 +970,40 @@ body { background: transparent; font-size: var(--vision-font-body); }
 .episodeStudioList > article { min-height: 108px; gap: var(--vision-module-gap); padding: 18px var(--vision-panel-padding); }
 .episodeNumber { font-size: clamp(28px, 2vw, 36px); }
 .episodeCounts b { font-size: var(--vision-font-heading); }
-.appChrome .episodeStudioList > article { min-height: 82px; gap: 12px; padding: 12px 16px; }
-.appChrome .episodeStudioList .episodeNumber { font-size: 24px; }
-.appChrome .episodeStudioList .episodeSummary h3 { font-size: 14px; line-height: 1.35; }
-.appChrome .episodeStudioList .episodeSummary p { font-size: 10px; line-height: 1.45; }
-.appChrome .episodeStudioList .episodeCounts b { font-size: 14px; }
+.appChrome .episodeStudioList > article {
+  min-height: 88px;
+  grid-template-columns: 52px minmax(220px, 1fr) auto auto;
+  gap: 16px;
+  padding: 13px 16px;
+  border-radius: 15px;
+}
+.appChrome .episodeStudioList .episodeNumber {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: 12px;
+  background: #f1efff;
+  color: #6860d9;
+  font-size: 22px;
+  line-height: 1;
+}
+.appChrome .episodeStudioList .episodeSummary > div { gap: 8px; margin-bottom: 4px; }
+.appChrome .episodeStudioList .episodeSummary h3 { max-width: 42vw; font-size: 14px; font-weight: 780; line-height: 1.35; }
+.appChrome .episodeStudioList .episodeSummary p { margin: 0; color: #7a849a; font-size: 11px; line-height: 1.45; }
+.appChrome .episodeStudioList .episodeCounts { gap: 0; align-items: center; }
+.appChrome .episodeStudioList .episodeCounts span { min-width: 56px; padding: 0 9px; line-height: 1.35; }
+.appChrome .episodeStudioList .episodeCounts b { font-size: 16px; line-height: 1; }
+.appChrome .episodeStudioList .primaryLink { min-height: 32px; gap: 8px; padding: 0 12px; font-size: 10px; white-space: nowrap; }
+
+@media (max-width: 760px) {
+  .appChrome .assetIndexTabs .compactTable { height: 320px; min-height: 320px; }
+  .appChrome .episodeStudioList > article { grid-template-columns: 44px minmax(0, 1fr); gap: 10px 12px; }
+  .appChrome .episodeStudioList .episodeCounts,
+  .appChrome .episodeStudioList .primaryLink { grid-column: 2; }
+  .appChrome .episodeStudioList .episodeCounts { justify-content: flex-start; }
+  .appChrome .episodeStudioList .episodeSummary h3 { max-width: none; }
+}
 
 @media (max-width: 1320px) {
   .workflowGuidance { grid-template-columns: 54px minmax(280px, 1fr) auto; }
