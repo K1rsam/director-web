@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { extractEpisodeAssetCandidates, type DirectorAsset } from "@/lib/assets";
-import { parseScriptBuffer, parseScriptContent } from "@/lib/import-script";
+import { parseScriptBuffer, parseScriptContent, type ImportedScript } from "@/lib/import-script";
 import { prisma } from "@/lib/prisma";
 import { preprocessProject } from "@/lib/project-preprocess";
 import { buildSceneSnapshot, buildTaskSchemaV4Payload, validateTaskSchemaV4Payload } from "@/lib/task-package";
@@ -23,6 +23,8 @@ export type ImportProjectFileInput = Omit<ImportProjectInput, "sourceText"> & {
   buffer: Buffer;
 };
 
+type ImportProjectMetadata = Omit<ImportProjectInput, "sourceText">;
+
 export type OneClickProductionOptions = {
   projectId: string;
   episodeId: string;
@@ -39,6 +41,11 @@ export type GenerationOutcome = {
 
 export async function importProjectFromText(input: ImportProjectInput, db: Db = prisma) {
   const imported = parseScriptContent(input.sourceName, input.sourceText);
+
+  return importParsedProject(input, imported, db);
+}
+
+async function importParsedProject(input: ImportProjectMetadata, imported: ImportedScript, db: Db) {
 
   const result = await db.$transaction(async (tx) => {
     const project = await tx.project.create({
@@ -76,19 +83,7 @@ export async function importProjectFromText(input: ImportProjectInput, db: Db = 
 
 export async function importProjectFromFile(input: ImportProjectFileInput, db: Db = prisma) {
   const imported = await parseScriptBuffer(input.sourceName, input.buffer);
-  return importProjectFromText(
-    {
-      ownerUserId: input.ownerUserId,
-      title: input.title,
-      description: input.description,
-      style: input.style,
-      aspectRatio: input.aspectRatio,
-      executionMode: input.executionMode,
-      sourceName: imported.sourceName,
-      sourceText: imported.episodes.map((episode) => `${episode.title}\n${episode.content}`).join("\n\n")
-    },
-    db
-  );
+  return importParsedProject(input, imported, db);
 }
 
 export async function prepareEpisodeProduction(projectId: string, episodeId: string, db: Db = prisma) {
@@ -237,3 +232,4 @@ export function buildChatGptPrompt(payload: unknown) {
     JSON.stringify(payload, null, 2)
   ].join("\n\n");
 }
+
