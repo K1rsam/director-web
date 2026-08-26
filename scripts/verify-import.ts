@@ -20,7 +20,12 @@ async function main() {
 
   const repeatedNumberEpisodes = splitEpisodes("第1集 片段A\n正文A\n第1集 片段B\n正文B");
   assert.deepEqual(repeatedNumberEpisodes.map((episode) => episode.number), [1, 2]);
-  assert.match(repeatedNumberEpisodes[1]?.title ?? "", /自动整理为第2集/);
+  assert.match(repeatedNumberEpisodes[1]?.title ?? "", /原集号与前文重复，已自动整理为第2集/);
+
+  const zeroNumberEpisodes = splitEpisodes("第0集 页眉\n正文A\n第0集 页眉\n正文B");
+  assert.deepEqual(zeroNumberEpisodes.map((episode) => episode.number), [1, 2]);
+  assert.match(zeroNumberEpisodes[0]?.title ?? "", /原集号为第0集，不是有效集号，已自动整理为第1集/);
+  assert.match(zeroNumberEpisodes[1]?.title ?? "", /原集号为第0集，不是有效集号，已自动整理为第2集/);
 
   const fallback = splitEpisodes("没有集标题的剧本正文");
   assert.equal(fallback.length, 1);
