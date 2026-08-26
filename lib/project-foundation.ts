@@ -307,96 +307,6 @@ async function executeP2(
   const merged = mergeP2Outputs(outputs);
   const issues = validateFoundationP2(merged, context);
   raiseOnBlockers("P2", issues);
-  // 自动契约兜底：每个"非常规表现类别"独立成条、各自专属选项（不套模板、不混合提问），
-  // 剧本机械命中哪类就挂哪类的 PENDING 契约；最终由用户逐条确认后统一提交给岗位
-  const scriptText = [...context.episodeScenes.values()].flatMap((episode) =>
-    episode.scenes.flatMap((scene) => scene.source_nodes.map((node) => `${node.speaker ?? ""} ${node.text}`))
-  ).join("\n");
-  const autoContracts: Array<{ category: string; question: string; options: string[]; evidence: string }> = [];
-  if (/Q版|萌版|q版/.test(scriptText)) {
-    autoContracts.push({
-      category: "q_version",
-      question: "剧本出现 Q版 角色（如 Q版苏远吐槽），Q版 应该以什么形态与真人画面互动？",
-      options: [
-        "A. 剧情画面内互动：Q版 形象（如漂浮在肩头/身边）与真人同框，说话人写 XXQ版，画面携带 Q版 造型",
-        "B. 独立 Q版 单元：Q版 段落脱离剧情画面，单独成 2D 风格 Q版 分镜单元（Q版 人物在 Q版 场景动作对白）",
-        "C. 插入式过场：Q版 仅在吐槽/内心戏时短暂插入（1-2秒过场），不参与主线对白",
-        "D. 用户自定义"
-      ],
-      evidence: "剧本说话人/正文出现 Q版（如 Q版苏远：…）"
-    });
-  }
-  if (/系统|签到|商城|面板|提示窗口|任务完成/.test(scriptText)) {
-    autoContracts.push({
-      category: "system",
-      question: "剧本出现系统提示（签到成功/商城/面板/任务），系统应该以什么形态出现？",
-      options: [
-        "A. 半透明系统面板：悬浮在说话人前方/侧方的 2D 面板（PROP 资产），出现时画面携带面板",
-        "B. 3D 虚拟造型：系统以 3D 光效/虚拟形象漂浮或落在人物肩上，以对话形式互动",
-        "C. 仅文字浮现：屏幕内浮现简洁文字提示（无实体形象），声音/台词承载",
-        "D. 用户自定义"
-      ],
-      evidence: "剧本出现系统提示类语句"
-    });
-  }
-  if (/断肢|血腥|血浆|残肢|撕咬|怪物化|开膛/.test(scriptText)) {
-    autoContracts.push({
-      category: "blood",
-      question: "剧本含血腥/断肢/怪物化表达，Seedance 生成时如何降尺度处理？",
-      options: [
-        "A. 遮挡化：伤口用纱布/暗色痕迹/衣物遮挡，动作带遮挡，不出血不见骨",
-        "B. 反应替代：血腥瞬间切人物震惊反应+后果台词，不直接生成血腥画面",
-        "C. 暗化处理：低照度/剪影/失焦呈现，保留张力不出细节",
-        "D. 用户自定义"
-      ],
-      evidence: "剧本出现血腥/断肢/怪物化描述"
-    });
-  }
-  if (/回忆|闪回|梦境|前世|曾经/.test(scriptText)) {
-    autoContracts.push({
-      category: "flashback",
-      question: "剧本出现回忆/闪回/梦境段落，时间层应该怎么表现？",
-      options: [
-        "A. 色调区分：回忆段统一冷调/低饱和+柔光，与现时剧情用色调区分",
-        "B. 转场区分：以闪白/溶接转场进入回忆，画面内容正常",
-        "C. 画幅/虚化：回忆用边缘虚化或轻微胶片质感区分",
-        "D. 用户自定义"
-      ],
-      evidence: "剧本出现回忆/闪回/梦境段"
-    });
-  }
-  if (/屏幕出现字幕|弹幕|等级提示|状态栏|属性面板/.test(scriptText)) {
-    autoContracts.push({
-      category: "hud",
-      question: "剧本出现屏幕字幕/弹幕/等级提示等 UI 元素，应该怎么表现？",
-      options: [
-        "A. 画面内 UI 实体：字幕/弹幕做成画面内的 UI 元素（PROP/特效），伴随说话人出现",
-        "B. 语音承载：UI 信息转成 OS/台词承载，画面不出现文字",
-        "C. 仅关键信息浮现：重要数值/提示短暂浮现，其余省略",
-        "D. 用户自定义"
-      ],
-      evidence: "剧本出现屏幕字幕/弹幕/等级提示"
-    });
-  }
-  for (const auto of autoContracts) {
-    const existing = await prisma.presentationContract.findFirst({
-      where: { projectId, category: auto.category }
-    });
-    if (!existing) {
-      await prisma.presentationContract.create({
-        data: {
-          projectId,
-          episodeId: null,
-          category: auto.category,
-          question: auto.question,
-          options: JSON.stringify(auto.options),
-          evidence: auto.evidence,
-          status: "PENDING",
-          round: 1
-        }
-      });
-    }
-  }
   await persistP2(context, merged);
 
   return {
@@ -435,20 +345,40 @@ async function persistP1(context: ReturnType<typeof loadFoundationContext>, outp
       metadata: JSON.stringify({ schema: output.schema, source: "P1" })
     }
   });
-  // 表现规范待确认清单落库：每次 P1 重跑先清掉同类别未确认项，再按新清单重建（已确认的保留）
+  // 表现规范待确认清单只由 P1 产生：每次 P1 重跑撤下本轮未再确认的旧待处理项，已确认的保留。
   const decisions = Array.isArray(output.presentation_decisions_needed) ? output.presentation_decisions_needed : [];
+  const decisionEpisodeIds = new Map(
+    context.episodes.map((episode) => [episode.number, episode.id])
+  );
+  const decisionKeys = new Set(
+    decisions.map((decision) => `${decisionEpisodeIds.get(decision.episode_number ?? -1) ?? ""}|${decision.category}`)
+  );
+  const pendingContracts = await prisma.presentationContract.findMany({
+    where: { projectId: context.projectId, status: "PENDING" },
+    select: { id: true, episodeId: true, category: true }
+  });
+  const stalePendingIds = pendingContracts
+    .filter((contract) => !decisionKeys.has(`${contract.episodeId ?? ""}|${contract.category}`))
+    .map((contract) => contract.id);
+  if (stalePendingIds.length) {
+    await prisma.presentationContract.updateMany({
+      where: { projectId: context.projectId, id: { in: stalePendingIds } },
+      data: { status: "SKIPPED", note: "P1 本轮未确认该表现元素，已撤下旧待确认项。", decidedAt: new Date() }
+    });
+  }
   const pendingByKey = new Map<string, string>();
-  for (const existing of await prisma.presentationContract.findMany({ where: { projectId: context.projectId, status: "PENDING" } })) {
+  for (const existing of pendingContracts.filter((contract) => !stalePendingIds.includes(contract.id))) {
     pendingByKey.set(`${existing.episodeId ?? ""}|${existing.category}`, existing.id);
   }
   for (const decision of decisions) {
-    const key = `|${decision.category}`;
+    const episodeId = decisionEpisodeIds.get(decision.episode_number ?? -1) ?? null;
+    const key = `${episodeId ?? ""}|${decision.category}`;
     const existingId = pendingByKey.get(key);
     // 轮次：同类别已确认/历史契约的最大轮次 +1（或 P1 显式给出的 round）
     const round = decision.round ?? 1;
     const data = {
       projectId: context.projectId,
-      episodeId: null,
+      episodeId,
       category: decision.category,
       question: decision.question,
       options: JSON.stringify(decision.options ?? []),
