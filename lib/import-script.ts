@@ -101,8 +101,8 @@ export function splitEpisodes(text: string): ImportedEpisode[] {
 
 /**
  * Word/Markdown 导入经常会把页眉里的「第 N 集」重复带入正文，或者用户会把
- * 多段素材暂时标成同一个集号。Episode.projectId_number 是硬唯一约束，因此在
- * 落库前把重复/非法集号稳定地整理成未占用的正整数，避免整个项目事务回滚。
+ * 多段素材暂时标成同一个集号，或者页眉带入「第0集」这类无效集号。Episode.projectId_number
+ * 是硬唯一约束，因此在落库前把重复/非法集号稳定地整理成未占用的正整数，避免整个项目事务回滚。
  * 已经合法且唯一的显式集号保持不变；只有冲突的后续段落才会顺延。
  */
 export function normalizeEpisodeNumbers(episodes: ImportedEpisode[]): ImportedEpisode[] {
@@ -120,10 +120,15 @@ export function normalizeEpisodeNumbers(episodes: ImportedEpisode[]): ImportedEp
     nextAvailable = Math.max(nextAvailable, number + 1);
 
     if (candidate === number) return episode;
+
+    const adjustmentReason = candidate === null
+      ? `原集号${Number.isFinite(episode.number) ? `为第${episode.number}集` : "无效"}，不是有效集号`
+      : "原集号与前文重复";
+
     return {
       ...episode,
       number,
-      title: `${episode.title}（集号重复，已自动整理为第${number}集）`
+      title: `${episode.title}（${adjustmentReason}，已自动整理为第${number}集）`
     };
   });
 }
