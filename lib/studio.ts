@@ -3,6 +3,7 @@ import type { PrismaClient } from "@prisma/client";
 import { assetSceneRefsOf } from "@/lib/assets";
 import { composeShotCells } from "@/lib/shot-cells";
 import { PIPELINE_STAGE_CONFIGS } from "@/lib/episode-pipeline-contracts";
+import { cleanEpisodeTitle } from "@/lib/import-script";
 
 /** 岗位条与流水线契约同源，避免手工维护漂移（E0 叙事节奏 → E5 审查总控）。 */
 export const ROLE_STAGES = PIPELINE_STAGE_CONFIGS.map((stage) => [stage.code, stage.name] as const);
@@ -175,7 +176,7 @@ export async function getProjectStudio(projectId: string, userId: string, db: Db
     episodes: project.episodes.map((episode) => ({
       id: episode.id,
       number: episode.number,
-      title: episode.title ?? `第${episode.number}集`,
+      title: cleanEpisodeTitle(episode.title, episode.number),
       contentPreview: compactText(episode.content, 120),
       scenes: episode.scriptScenes,
       shotCount: episode._count.storyboardShots,
@@ -243,14 +244,14 @@ export async function getEpisodeStudio(projectId: string, episodeId: string, use
     episode: {
       id: episode.id,
       number: episode.number,
-      title: episode.title ?? `第${episode.number}集`,
+      title: cleanEpisodeTitle(episode.title, episode.number),
       content: episode.content,
       infoPackage: episode.taskPackages[0]?.payload ?? "尚未生成本集信息包。"
     },
     episodeNav: episode.project.episodes.map((item) => ({
       id: item.id,
       number: item.number,
-      title: item.title ?? `第${item.number}集`,
+      title: cleanEpisodeTitle(item.title, item.number),
       shotCount: item._count.storyboardShots,
       unitCount: item._count.seedanceUnits,
       status: buildRoleProgress(item.pipelineRuns).some((role) => role.status === "进行中")
@@ -373,3 +374,4 @@ export function compactText(value: string, maxLength = 240): string {
   const text = value.replace(/\s+/g, " ").trim();
   return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
 }
+
