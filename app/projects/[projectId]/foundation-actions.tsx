@@ -36,6 +36,20 @@ export function FoundationActions({
 
   return (
     <div className="foundationControlRoom" id="foundation-actions">
+      <div className="foundationControlHeader">
+        <div>
+          <strong>P1 → P2</strong>
+          <span>一键执行全剧基础策划与资产拆解</span>
+        </div>
+        <form action={startProjectFoundationAction} className="foundationRunAll" onSubmit={(event) => {
+          if (!window.confirm("确定按 P1 → P2 顺序执行全剧基础工程吗？")) event.preventDefault();
+        }}>
+          <input name="projectId" type="hidden" value={projectId} />
+          <button type="submit" className="foundationRunAllButton" disabled={active}>
+            {active ? "P1/P2 执行中…" : "一键执行 P1 + P2"}
+          </button>
+        </form>
+      </div>
       <div className="foundationRail" aria-label="全剧基础工程岗位">
         <article className={`foundationRole automatic ${preprocessReady ? "done" : ""}`}>
           <span>P0</span>
@@ -46,7 +60,7 @@ export function FoundationActions({
       {(["P1", "P2"] as const).map((code) => {
         const run = statusOf(code);
         const className = run
-          ? run.status === "已完成" ? "done" : run.status === "进行中" ? "running" : run.status === "失败" ? "failed" : ""
+          ? run.status === "已完成" ? "done" : run.status === "进行中" ? "running" : run.status === "排队中" ? "queued" : run.status === "失败" ? "failed" : ""
           : "";
         const actionLabel = run?.status === "已完成" ? "重跑" : run?.status === "失败" ? "再试一次" : "运行";
         return (
@@ -89,3 +103,4 @@ export function FoundationActions({
     </div>
   );
 }
+
