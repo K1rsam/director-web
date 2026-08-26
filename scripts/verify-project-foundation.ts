@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { executeProjectFoundation, type FoundationStageRunner } from "@/lib/project-foundation";
-import { PROJECT_FOUNDATION_STAGES } from "@/lib/project-foundation-contracts";
+import {
+  inspectP1ChunkCoverage,
+  mergeP1Outputs,
+  PROJECT_FOUNDATION_STAGES,
+  reanchorP1PresentationDecisions,
+  validateFoundationP1,
+  type FoundationContext
+} from "@/lib/project-foundation-contracts";
 import { prisma } from "@/lib/prisma";
 
 const EP1 = "1-1\n客厅 日 内\n场景：客厅\n人物：苏远、赵清雅\n道具：手机\n系统提示：任务完成\n苏远拿起手机。\n苏远：你看。\n赵清雅OS：果然是他。";
@@ -109,6 +116,71 @@ const fakeBadP2 = {
   issues: []
 };
 
+// 分片回归：同一表现类别在不同集出现时必须保留为两条，不得互相拼接引用。
+const p1ChunkOne = { ...fakeP1, episodes: [fakeP1.episodes[0]], presentation_decisions_needed: [fakeP1.presentation_decisions_needed![0]] };
+const p1ChunkTwo = {
+  ...fakeP1,
+  episodes: [fakeP1.episodes[1]],
+  presentation_decisions_needed: [{ ...fakeP1.presentation_decisions_needed![0], episode_number: 2, evidence: "王老师：迟到三次，站到后面。", source_node_refs: ["N0001"] }]
+};
+const mergedChunkOutput = mergeP1Outputs([p1ChunkOne, p1ChunkTwo]);
+assert.deepEqual(mergedChunkOutput.presentation_decisions_needed?.map((item) => item.episode_number), [1, 2], "表现规范合并必须按集号隔离");
+assert.deepEqual(inspectP1ChunkCoverage(p1ChunkOne, [1, 2]), {
+  expected: [1, 2],
+  actual: [1],
+  missing: [2],
+  unexpected: [],
+  duplicates: [],
+  invalid: 0
+}, "P1 分片完整性检查应识别漏集");
+
+// 证据回归：一条表现规范可以由多个被引用源节点按原文顺序组成，但不能靠关键词虚构通过。
+const evidenceContext = {
+  episodes: [{ number: 1 }],
+  episodeScenes: new Map([
+    [1, {
+      number: 1,
+      title: "第一集",
+      scenes: [{
+        scene_id: "1-1",
+        heading: "客厅 日 内",
+        location: "客厅",
+        interior_exterior: "内",
+        time_of_day: "日",
+        weather: null,
+        time_layer: "现实",
+        source_nodes: [
+          { source_node_id: "N0001", speaker: null, text: "一道金光出现。" },
+          { source_node_id: "N0002", speaker: null, text: "门锁掉落。" }
+        ]
+      }]
+    }]
+  ]),
+  episodeNodeIds: new Map([[1, new Set(["N0001", "N0002"])]]),
+  existingAssets: [],
+  contracts: [],
+  scriptContainsQVersion: false
+} as unknown as FoundationContext;
+const multiNodeEvidence = {
+  ...fakeP1,
+  episodes: [{ ...fakeP1.episodes[0], source_node_refs: ["N0001"] }],
+  presentation_decisions_needed: [{
+    category: "power",
+    question: "灵力如何呈现？",
+    options: ["A", "B"],
+    evidence: "一道金光出现。门锁掉落。",
+    episode_number: 1,
+    source_node_refs: ["N0001", "N0002"]
+  }]
+};
+assert.equal(validateFoundationP1(multiNodeEvidence, evidenceContext).length, 0, "跨多个源节点的连续证据应通过门禁");
+assert.ok(validateFoundationP1({ ...multiNodeEvidence, presentation_decisions_needed: [{ ...multiNodeEvidence.presentation_decisions_needed![0], evidence: "原文不存在" }] }, evidenceContext).some((issue) => issue.code === "PRESENTATION_DECISION_UNGROUNDED"), "无原文证据仍应被门禁拦截");
+assert.deepEqual(
+  reanchorP1PresentationDecisions({ ...multiNodeEvidence, presentation_decisions_needed: [{ ...multiNodeEvidence.presentation_decisions_needed![0], source_node_refs: ["N9999"] }] }, evidenceContext).presentation_decisions_needed?.[0]?.source_node_refs,
+  ["N0001", "N0002"],
+  "原文证据存在时应自动修正错位的源节点引用"
+);
+
 async function fakeStage(stageCode: string): Promise<{
   data: Record<string, unknown>;
   sessionId: string | null;
@@ -170,6 +242,32 @@ void (async () => {
     const runs = await prisma.pipelineRun.findMany({ where: { projectId, inputSummary: { contains: batchToken } } });
     assert.equal(runs.filter((run) => run.status === "SUCCEEDED").length, 2, "P1/P2 都应成功");
 
+    // P1 漏集回归：首轮漏掉一个集号时，流水线应自动补齐并继续执行 P2。
+    const repairToken = "verify-foundation-p1-repair";
+    await prisma.$transaction(PROJECT_FOUNDATION_STAGES.map((stage) => prisma.pipelineRun.create({
+      data: {
+        projectId,
+        episodeId: null,
+        stageCode: stage.code,
+        roleName: stage.name,
+        provider: "test",
+        model: stage.model,
+        inputSummary: JSON.stringify({ batchToken: repairToken })
+      }
+    })));
+    let repairCalls = 0;
+    const repairStage: FoundationStageRunner = async (stageCode) => {
+      if (stageCode === "P1") {
+        repairCalls += 1;
+        return { data: repairCalls === 1 ? { ...fakeP1, episodes: [fakeP1.episodes[0]] } : fakeP1, sessionId: `repair-${repairCalls}`, stdout: "", stderr: "" };
+      }
+      return { data: fakeP2, sessionId: "repair-p2", stdout: "", stderr: "" };
+    };
+    await executeProjectFoundation(projectId, repairToken, { stageRunner: repairStage });
+    assert.equal(repairCalls, 2, "P1 漏集后应自动发起一次补齐调用");
+    const repairedRun = await prisma.pipelineRun.findFirst({ where: { projectId, stageCode: "P1", inputSummary: { contains: repairToken } } });
+    assert.match(repairedRun?.outputSummary ?? "", /"repairs": 1/, "P1 应记录自动补齐次数");
+
     // 单步骤：P2 单独重跑（重复幂等）
     const singleToken = "verify-foundation-single";
     await prisma.pipelineRun.create({
@@ -211,7 +309,7 @@ void (async () => {
       });
     } catch (error) {
       threw = true;
-      assert.match(String((error as Error).message), /门禁失败/, "应报告门禁失败");
+      assert.match(String((error as Error).message), /基础资料校验未通过/, "应报告基础资料校验失败");
     }
     assert.equal(threw, true, "脏名资产应被 P3 拦截");
   } finally {
@@ -224,4 +322,3 @@ void (async () => {
   console.error(error);
   process.exitCode = 1;
 });
-

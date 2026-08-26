@@ -130,6 +130,15 @@ export type P1Output = {
   }>;
 };
 
+export type P1ChunkCoverage = {
+  expected: number[];
+  actual: number[];
+  missing: number[];
+  unexpected: number[];
+  duplicates: number[];
+  invalid: number;
+};
+
 export type P2Asset = {
   name: string;
   /** CH 人物（主人物与服装/状态分资产同为 CH，靠 parent_name 区分）｜GROUP 群像｜BEAST 非人｜LOC 场景｜PROP 道具 */
@@ -295,6 +304,57 @@ export function compactP1Prior(output: P1Output): string {
   });
 }
 
+/** 检查 P1 单个分片是否完整，避免模型漏掉分片末尾的集数后才在全剧门禁阶段失败。 */
+export function inspectP1ChunkCoverage(
+  output: Pick<P1Output, "episodes">,
+  expectedEpisodeNumbers: number[]
+): P1ChunkCoverage {
+  const expected = [...new Set(expectedEpisodeNumbers.filter((number) => Number.isInteger(number)))].sort((a, b) => a - b);
+  const counts = new Map<number, number>();
+  let invalid = 0;
+  for (const episode of output.episodes ?? []) {
+    const number = episode?.number;
+    if (!Number.isInteger(number)) {
+      invalid += 1;
+      continue;
+    }
+    counts.set(number, (counts.get(number) ?? 0) + 1);
+  }
+  const actual = [...counts.keys()].sort((a, b) => a - b);
+  const expectedSet = new Set(expected);
+  return {
+    expected,
+    actual,
+    missing: expected.filter((number) => !counts.has(number)),
+    unexpected: actual.filter((number) => !expectedSet.has(number)),
+    duplicates: actual.filter((number) => (counts.get(number) ?? 0) > 1),
+    invalid
+  };
+}
+
+/**
+ * 用 P1 自己给出的原文证据反查源节点，修正模型偶尔错位的 source_node_refs。
+ * 这里只做确定性的文本定位，不替 P1 判断是否需要表现规范。
+ */
+export function reanchorP1PresentationDecisions(output: P1Output, context: FoundationContext): P1Output {
+  const decisions = output.presentation_decisions_needed?.map((decision) => {
+    const episodeNumber = decision.episode_number;
+    const sourceEpisode = typeof episodeNumber === "number" ? context.episodeScenes.get(episodeNumber) : undefined;
+    if (!sourceEpisode || !decision.evidence?.trim()) return decision;
+    const sourceNodes = sourceEpisode.scenes.flatMap((scene) => scene.source_nodes);
+    const clauses = splitPresentationEvidence(decision.evidence);
+    const matchedRefs = clauses
+      .map((clause) => sourceNodes.find((node) => normalizePresentationEvidence(`${node.speaker ?? ""}：${node.text}`).includes(normalizePresentationEvidence(clause))))
+      .filter((node): node is SourceNode => Boolean(node))
+      .map((node) => node.source_node_id);
+    if (clauses.length && matchedRefs.length === clauses.length) {
+      return { ...decision, source_node_refs: [...new Set(matchedRefs)] };
+    }
+    return decision;
+  });
+  return decisions ? { ...output, presentation_decisions_needed: decisions } : output;
+}
+
 /** P2 已确认资产名（作为下一分片的 prior_assets，避免重名）。 */
 export function compactP2Prior(outputs: P2Output[]): string {
   const names = new Set<string>();
@@ -334,9 +394,12 @@ export function mergeP1Outputs(outputs: P1Output[]): P1Output {
     boundaries.push(...(output.boundaries ?? []));
     issues.push(...(output.issues ?? []));
     for (const decision of output.presentation_decisions_needed ?? []) {
-      const existing = presentationDecisions.get(decision.category);
+      // 同一类别可以在不同集出现；必须带集号合并，否则分片间会把第 72 集的
+      // source_node_refs 拼到第 52 集上，导致正确的表现规范被门禁误判。
+      const decisionKey = `${decision.episode_number ?? "missing"}|${decision.category}`;
+      const existing = presentationDecisions.get(decisionKey);
       if (!existing) {
-        presentationDecisions.set(decision.category, {
+        presentationDecisions.set(decisionKey, {
           ...decision,
           source_node_refs: [...new Set(decision.source_node_refs ?? [])]
         });
@@ -415,10 +478,26 @@ export function validateFoundationP1(output: P1Output, context: FoundationContex
     const sourceNodes = sourceEpisode?.scenes.flatMap((scene) => scene.source_nodes) ?? [];
     const referencedNodes = sourceNodes.filter((node) => refs.includes(node.source_node_id));
     const evidence = normalizePresentationEvidence(decision.evidence ?? "");
-    const evidenceGrounded = evidence.length >= 4 && referencedNodes.some((node) => {
+    const evidenceInOneNode = referencedNodes.some((node) => {
       const source = normalizePresentationEvidence(`${node.speaker ?? ""}：${node.text}`);
       return source.includes(evidence);
     });
+    // 一条证据可以合理地跨越多个相邻源节点（例如动作、音效、结果各占一行）。
+    // 仍要求所有引用节点真实存在，并按原文顺序拼接后逐字可定位，避免放松为“关键词命中”。
+    const evidenceInReferencedNodes = normalizePresentationEvidence(
+      sourceNodes
+        .filter((node) => refs.includes(node.source_node_id))
+        .map((node) => `${node.speaker ?? ""}：${node.text}`)
+        .join("")
+    ).includes(evidence);
+    const evidenceClausesGrounded = splitPresentationEvidence(decision.evidence ?? "").every((clause) => {
+      const normalizedClause = normalizePresentationEvidence(clause);
+      return normalizedClause.length >= 2 && referencedNodes.some((node) => {
+        const source = normalizePresentationEvidence(`${node.speaker ?? ""}：${node.text}`);
+        return source.includes(normalizedClause);
+      });
+    });
+    const evidenceGrounded = evidence.length >= 4 && (evidenceInOneNode || evidenceInReferencedNodes || evidenceClausesGrounded);
     if (!decision.category || !decision.question || !Array.isArray(decision.options) || decision.options.length < 2 ||
       !Number.isInteger(episodeNumber) || !sourceEpisode || !refs.length || refs.length !== referencedNodes.length || !evidenceGrounded) {
       issues.push({
@@ -436,8 +515,15 @@ export function validateFoundationP1(output: P1Output, context: FoundationContex
 
 function normalizePresentationEvidence(value: string) {
   return value
-    .replace(/[\s,，。.!！？?：:；;、"“”‘’（）()【】[\]]/g, "")
+    .replace(/[\s,，。.!！？?：:；;、"“”‘’（）()【】[\]△]/g, "")
     .trim();
+}
+
+function splitPresentationEvidence(value: string) {
+  return value
+    .split(/[。！？!?；;]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
 }
 
 const P2_ALLOWED_TYPES = new Set(["CH", "GROUP", "BEAST", "LOC", "PROP"]);
@@ -523,4 +609,3 @@ export function requireP2(value: Record<string, unknown>): P2Output {
   if (!Array.isArray(value.assets)) throw new Error("P2返回缺少assets数组。");
   return value as unknown as P2Output;
 }
-

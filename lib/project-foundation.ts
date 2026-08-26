@@ -19,12 +19,14 @@ import {
   buildFoundationPrompt,
   compactP1Prior,
   compactP2Prior,
+  inspectP1ChunkCoverage,
   loadFoundationContext,
   mergeP1Outputs,
   mergeP2Outputs,
   PROJECT_FOUNDATION_STAGES,
   requireP1,
   requireP2,
+  reanchorP1PresentationDecisions,
   validateFoundationP1,
   validateFoundationP2,
   type FoundationIssue,
@@ -222,23 +224,68 @@ async function executeP1(
   let inputChars = 0;
   let stdout = "";
   let stderr = "";
+  let repairCount = 0;
 
   for (const chunk of chunks) {
     const input = buildFoundationInput(context, chunk.episodes, "P1", prior);
-    const prompt = buildFoundationPrompt("P1", input);
+    const scopeLine = `本次 P1 分片只处理第 ${formatEpisodeNumbers(chunk.episodes)} 集；episodes 必须逐一覆盖这些集号，不得漏集、重复或输出其它集。`;
+    const prompt = buildFoundationPrompt("P1", input, scopeLine);
     inputChars += prompt.length;
-    const result = stageRunner
-      ? await stageRunner("P1", prompt)
-      : await runRoleByProvider({
+    const runP1Call = (callPrompt: string, sessionMode: "fresh" | "resume") => stageRunner
+      ? stageRunner("P1", callPrompt)
+      : runRoleByProvider({
           provider,
           projectId,
           role: roleFor("P1"),
-          prompt,
-          sessionMode: outputs.length > 0 ? "resume" : "fresh"
+          prompt: callPrompt,
+          sessionMode
         });
+    let result = await runP1Call(prompt, outputs.length > 0 ? "resume" : "fresh");
     stdout += result.stdout;
     stderr += result.stderr;
-    const output = requireP1(result.data);
+    let output = requireP1(result.data);
+    let coverage = inspectP1ChunkCoverage(output, chunk.episodes);
+
+    // 模型偶尔会漏掉分片最后一集。只补缺失集，避免重新消耗整片上下文；
+    // 修复结果再与原分片合并，最终仍由全剧门禁做确定性校验。
+    if (coverage.missing.length || coverage.duplicates.length || coverage.invalid) {
+      repairCount += 1;
+      const repairInput = buildFoundationInput(context, coverage.missing.length ? coverage.missing : chunk.episodes, "P1", prior);
+      const repairScope = [
+        `这是 P1 分片完整性修复。原分片要求覆盖第 ${formatEpisodeNumbers(chunk.episodes)} 集。`,
+        coverage.missing.length ? `当前已返回的集号中缺少第 ${formatEpisodeNumbers(coverage.missing)} 集，请只补齐这些集。` : "请重新返回这一整片的完整 episodes 数组。",
+        "不要遗漏、重复或输出不在原分片范围内的集号；返回前先逐一核对集号。"
+      ].join(" ");
+      const repairPrompt = buildFoundationPrompt("P1", repairInput, repairScope);
+      inputChars += repairPrompt.length;
+      const repairResult = await runP1Call(repairPrompt, "resume");
+      stdout += repairResult.stdout;
+      stderr += repairResult.stderr;
+      const repairOutput = requireP1(repairResult.data);
+      const repairCoverage = inspectP1ChunkCoverage(repairOutput, chunk.episodes);
+      const repairNumbers = new Set(repairCoverage.actual);
+      const stillMissing = coverage.missing.filter((number) => !repairNumbers.has(number));
+      if (repairCoverage.invalid || repairCoverage.unexpected.length || repairCoverage.duplicates.length || stillMissing.length) {
+        throw new Error(
+          `P1 第 ${formatEpisodeNumbers(chunk.episodes)} 集分片返回不完整：${formatP1CoverageProblem({
+            ...repairCoverage,
+            missing: stillMissing
+          })}。系统已尝试自动补齐，但仍无法形成完整分片。`
+        );
+      }
+      output = mergeP1Outputs([output, repairOutput]);
+      coverage = inspectP1ChunkCoverage(output, chunk.episodes);
+    }
+
+    if (coverage.missing.length || coverage.duplicates.length || coverage.invalid) {
+      throw new Error(`P1 第 ${formatEpisodeNumbers(chunk.episodes)} 集分片返回不完整：${formatP1CoverageProblem(coverage)}。`);
+    }
+    // 分片模型偶尔会把 prior 中的旧集一起回显；丢弃越界 episode，避免覆盖其它分片的结果。
+    if (coverage.unexpected.length) {
+      const expected = new Set(chunk.episodes);
+      output = { ...output, episodes: output.episodes.filter((episode) => expected.has(episode.number)) };
+    }
+    output = reanchorP1PresentationDecisions(output, context);
     outputs.push(output);
     prior = compactP1Prior(mergeP1Outputs(outputs));
   }
@@ -261,6 +308,7 @@ async function executeP1(
       secrets: merged.secrets.length,
       foreshadowing: merged.foreshadowing.length,
       boundaries: merged.boundaries.length,
+      repairs: repairCount,
       issues
     }
   };
@@ -327,9 +375,26 @@ async function executeP2(
 
 function raiseOnBlockers(stage: string, issues: FoundationIssue[]) {
   const blockers = issues.filter((issue) => issue.severity === "BLOCKER");
-  if (blockers.length) {
-    throw new Error(`${stage} 基础库门禁失败：${blockers.map((item) => `${item.code}@${item.coordinate}`).join("、")}`);
-  }
+  if (!blockers.length) return;
+  const details = blockers.map((item) => {
+    if (item.code === "EPISODE_MISSING") return `${item.evidence}（缺少该集的策划条目）`;
+    if (item.code === "PRESENTATION_DECISION_UNGROUNDED") return `${item.evidence}（表现规范证据无法对应原文节点）`;
+    return `${item.evidence || item.coordinate}（${item.code}）`;
+  });
+  throw new Error(`${stage} 基础资料校验未通过：${details.join("；")}`);
+}
+
+function formatEpisodeNumbers(numbers: number[]) {
+  return numbers.length ? numbers.join("、") : "无";
+}
+
+function formatP1CoverageProblem(coverage: ReturnType<typeof inspectP1ChunkCoverage>) {
+  const problems: string[] = [];
+  if (coverage.missing.length) problems.push(`缺少第 ${formatEpisodeNumbers(coverage.missing)} 集`);
+  if (coverage.duplicates.length) problems.push(`第 ${formatEpisodeNumbers(coverage.duplicates)} 集重复`);
+  if (coverage.invalid) problems.push(`${coverage.invalid} 条集号无效`);
+  if (coverage.unexpected.length) problems.push(`多出第 ${formatEpisodeNumbers(coverage.unexpected)} 集`);
+  return problems.join("；") || "集号覆盖异常";
 }
 
 /** P1 落库：替换 PROJECT_MEMORY 为结构化项目圣经 V2。 */
@@ -596,4 +661,3 @@ function safeJson(value: string | null | undefined): Record<string, unknown> {
 function isSceneFragment(asset: { name: string; type: string }): boolean {
   return asset.type === "LOC" && /->|快切|各处|各地|同时|转场/.test(asset.name);
 }
-
