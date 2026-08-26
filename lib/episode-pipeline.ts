@@ -1178,9 +1178,12 @@ export async function failActiveBatch(projectId: string, episodeId: string, batc
 }
 
 async function launchWorker(projectId: string, episodeId: string, batchToken: string, singleStage?: string, stageList?: string) {
-  const executable = path.join(process.cwd(), "node_modules", ".bin", "tsx");
+  // Windows 下 node_modules/.bin/tsx 是 Unix shell 包装脚本，直接 spawn 会以 ENOENT 静默失败。
+  // 直接用当前 Node 启动 tsx CLI，保持后台 worker 的跨平台行为一致。
+  const executable = process.execPath;
+  const tsxCli = path.join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
   const script = path.join(process.cwd(), "scripts", "run-episode-pipeline.ts");
-  const args = [script, projectId, episodeId, batchToken];
+  const args = [tsxCli, script, projectId, episodeId, batchToken];
   if (singleStage) args.push(singleStage);
   if (stageList) args.push(stageList);
   const child = spawn(executable, args, {
@@ -1188,6 +1191,27 @@ async function launchWorker(projectId: string, episodeId: string, batchToken: st
     env: process.env,
     detached: true,
     stdio: "ignore"
+  });
+  const markLaunchFailure = (detail: unknown) => {
+    const raw = detail instanceof Error ? detail.message : String(detail ?? "unknown");
+    console.error(`[episode-pipeline] worker failed to start: ${raw}`);
+    void prisma.pipelineRun.updateMany({
+      where: {
+        projectId,
+        episodeId,
+        inputSummary: { contains: batchToken },
+        status: { in: ["QUEUED", "RUNNING"] }
+      },
+      data: {
+        status: "FAILED",
+        finishedAt: new Date(),
+        error: "后台执行进程启动失败：本机执行器没有成功启动。请重新运行本集；如果仍失败，请检查项目依赖。"
+      }
+    }).catch((error) => console.error("[episode-pipeline] failed to persist launch error", error));
+  };
+  child.once("error", markLaunchFailure);
+  child.once("exit", (code, signal) => {
+    if (code !== 0) markLaunchFailure(`exit=${code ?? "null"}, signal=${signal ?? "null"}`);
   });
   // 记录 worker 进程 PID（进程组组长）：页面「停止」按钮用它 kill 整个 detached 进程组
   //（tsx wrapper + 实际 node 进程同组），没有它只能等批次跑完或从命令行杀进程
@@ -5964,3 +5988,4 @@ function bindingStrings(value: unknown): string[] {
   if (isRecord(value)) return Object.entries(value).map(([key, item]) => `${key} ${typeof item === "string" ? item : JSON.stringify(item)}`);
   return [];
 }
+
