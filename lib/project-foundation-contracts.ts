@@ -121,6 +121,9 @@ export type P1Output = {
     question: string;
     options: string[];
     evidence: string;
+    /** P1 判断该项确实属于需要定义表现方式的剧情元素时，必须给出可定位证据。 */
+    episode_number?: number;
+    source_node_refs?: string[];
     suggested_default?: string;
     /** 轮次：P1 每次重跑输出清单的轮次（同类别已有契约则 +1），供 UI 按轮分组 */
     round?: number;
@@ -270,6 +273,9 @@ export function buildFoundationPrompt(stageCode: FoundationStageCode, input: unk
   return [
     `使用 $${stage?.skill} 完成当前${stageCode}岗位任务。`,
     ...(scopeLine ? [scopeLine] : []),
+    ...(stageCode === "P1" ? [
+      "表现规范由 P1 直接做语义判断：只有当原文明确存在需要定义视觉/听觉呈现方式的剧情内非常规元素时，才输出 presentation_decisions_needed。普通语境中的“系统”或“面板”等词（例如平台推荐算法、系统管理、系统自动处理）不得生成 system 确认项；不能仅凭关键词推断。每条确认项必须带 episode_number、真实存在的 source_node_refs，以及可在这些源节点中逐字找到的 evidence；无法判断或无法锚定原文时，不要输出确认项，改在 issues 中说明。"
+    ] : []),
     "只处理INPUT_JSON，不修改任何本地文件，不输出分析过程、Markdown或自评分。",
     "严格遵守该Skill的字段所有权和Output Contract，只返回一个合法JSON对象。",
     "遇到真实问题按契约输出issue；不得为了过审谎报完成。",
@@ -284,7 +290,8 @@ export function compactP1Prior(output: P1Output): string {
     episodes: output.episodes.map((e) => ({ number: e.number, one_line_progress: e.one_line_progress, end_state: e.end_state })),
     relationships: output.relationships,
     secrets: output.secrets,
-    story_contract: output.story_contract
+    story_contract: output.story_contract,
+    presentation_decisions_needed: output.presentation_decisions_needed ?? []
   });
 }
 
@@ -305,6 +312,7 @@ export function mergeP1Outputs(outputs: P1Output[]): P1Output {
   const boundaries: P1Output["boundaries"] = [];
   const immutableFacts: P1Fact[] = [];
   const issues: FoundationIssue[] = [];
+  const presentationDecisions = new Map<string, NonNullable<P1Output["presentation_decisions_needed"]>[number]>();
   let storyContract: P1Output["story_contract"] = { genre: "", perspective: "", core_desire: "", immutable_facts: [] };
 
   for (const output of outputs) {
@@ -325,6 +333,19 @@ export function mergeP1Outputs(outputs: P1Output[]): P1Output {
     foreshadowing.push(...(output.foreshadowing ?? []));
     boundaries.push(...(output.boundaries ?? []));
     issues.push(...(output.issues ?? []));
+    for (const decision of output.presentation_decisions_needed ?? []) {
+      const existing = presentationDecisions.get(decision.category);
+      if (!existing) {
+        presentationDecisions.set(decision.category, {
+          ...decision,
+          source_node_refs: [...new Set(decision.source_node_refs ?? [])]
+        });
+        continue;
+      }
+      existing.source_node_refs = [...new Set([...(existing.source_node_refs ?? []), ...(decision.source_node_refs ?? [])])];
+      if (!existing.evidence && decision.evidence) existing.evidence = decision.evidence;
+      if (!existing.episode_number && decision.episode_number) existing.episode_number = decision.episode_number;
+    }
   }
   storyContract.immutable_facts = immutableFacts;
   return {
@@ -335,6 +356,7 @@ export function mergeP1Outputs(outputs: P1Output[]): P1Output {
     secrets,
     foreshadowing,
     boundaries,
+    presentation_decisions_needed: [...presentationDecisions.values()],
     issues
   };
 }
@@ -386,7 +408,36 @@ export function validateFoundationP1(output: P1Output, context: FoundationContex
       }
     }
   }
+  for (const [index, decision] of (output.presentation_decisions_needed ?? []).entries()) {
+    const episodeNumber = decision.episode_number;
+    const refs = decision.source_node_refs ?? [];
+    const sourceEpisode = typeof episodeNumber === "number" ? context.episodeScenes.get(episodeNumber) : undefined;
+    const sourceNodes = sourceEpisode?.scenes.flatMap((scene) => scene.source_nodes) ?? [];
+    const referencedNodes = sourceNodes.filter((node) => refs.includes(node.source_node_id));
+    const evidence = normalizePresentationEvidence(decision.evidence ?? "");
+    const evidenceGrounded = evidence.length >= 4 && referencedNodes.some((node) => {
+      const source = normalizePresentationEvidence(`${node.speaker ?? ""}：${node.text}`);
+      return source.includes(evidence);
+    });
+    if (!decision.category || !decision.question || !Array.isArray(decision.options) || decision.options.length < 2 ||
+      !Number.isInteger(episodeNumber) || !sourceEpisode || !refs.length || refs.length !== referencedNodes.length || !evidenceGrounded) {
+      issues.push({
+        coordinate: `P1.presentation_decisions_needed.${index}`,
+        code: "PRESENTATION_DECISION_UNGROUNDED",
+        severity: "BLOCKER",
+        owner: "P1",
+        expected: "表现规范必须由 P1 语义判断，并绑定集号、真实源节点和原文证据",
+        evidence: `${decision.category || "未命名类别"} 未能通过原文锚定校验`
+      });
+    }
+  }
   return issues;
+}
+
+function normalizePresentationEvidence(value: string) {
+  return value
+    .replace(/[\s,，。.!！？?：:；;、"“”‘’（）()【】[\]]/g, "")
+    .trim();
 }
 
 const P2_ALLOWED_TYPES = new Set(["CH", "GROUP", "BEAST", "LOC", "PROP"]);
@@ -472,3 +523,4 @@ export function requireP2(value: Record<string, unknown>): P2Output {
   if (!Array.isArray(value.assets)) throw new Error("P2返回缺少assets数组。");
   return value as unknown as P2Output;
 }
+
