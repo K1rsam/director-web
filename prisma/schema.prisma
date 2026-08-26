@@ -78,6 +78,25 @@ model User {
   updatedAt        DateTime       @updatedAt
   roles            ProjectRole[]
   sessions         Session[]
+  providerCredentials UserProviderCredential[]
+}
+
+model UserProviderCredential {
+  id               String   @id @default(cuid())
+  userId           String
+  provider         String   @default("DEEPSEEK")
+  apiKeyCiphertext String
+  apiKeyHint       String?
+  apiBase          String   @default("https://api.deepseek.com")
+  model            String   @default("deepseek-chat")
+  lastTestedAt     DateTime?
+  lastError        String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@index([userId, updatedAt])
 }
 
 model Session {
@@ -475,3 +494,4 @@ model FinalScript {
   @@index([projectId])
   @@index([episodeId])
 }
+

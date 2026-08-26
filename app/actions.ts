@@ -7,6 +7,86 @@ import { readProjectSubmission, resolveProjectDestination } from "@/lib/project-
 
 export type ProjectCreationState = { error: string };
 
+export type ProviderConnectionState = {
+  ok: boolean;
+  message: string;
+  provider?: "DEEPSEEK" | "CLI";
+  models?: string[];
+  version?: string;
+};
+
+export async function saveDeepSeekCredentialAction(
+  _previousState: ProviderConnectionState,
+  formData: FormData
+): Promise<ProviderConnectionState> {
+  const currentUser = await requireSessionUser("/runner");
+  const apiKey = String(formData.get("apiKey") ?? "");
+  const apiBase = String(formData.get("apiBase") ?? "");
+  const model = String(formData.get("model") ?? "");
+  try {
+    const credentials = await import("@/lib/provider-credentials");
+    const tested = await credentials.testDeepSeekConnection({ apiKey, apiBase, model });
+    await credentials.saveDeepSeekCredential(currentUser.id, { apiKey, apiBase, model }, tested);
+    revalidatePath("/runner");
+    return {
+      ok: true,
+      provider: "DEEPSEEK",
+      models: tested.models,
+      message: tested.models.length
+        ? `连接成功，已发现 ${tested.models.length} 个可用模型。`
+        : "连接成功，但服务端没有返回模型列表。"
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      provider: "DEEPSEEK",
+      message: error instanceof Error ? error.message : "DeepSeek 连接失败，请检查配置。"
+    };
+  }
+}
+
+export async function removeDeepSeekCredentialAction(
+  _previousState: ProviderConnectionState,
+  _formData: FormData
+): Promise<ProviderConnectionState> {
+  const currentUser = await requireSessionUser("/runner");
+  try {
+    const credentials = await import("@/lib/provider-credentials");
+    await credentials.deleteDeepSeekCredential(currentUser.id);
+    revalidatePath("/runner");
+    return { ok: true, provider: "DEEPSEEK", message: "已删除当前账号保存的 DeepSeek Key。" };
+  } catch (error) {
+    return {
+      ok: false,
+      provider: "DEEPSEEK",
+      message: error instanceof Error ? error.message : "删除失败，请重试。"
+    };
+  }
+}
+
+export async function checkCodexCliAction(
+  _previousState: ProviderConnectionState,
+  _formData: FormData
+): Promise<ProviderConnectionState> {
+  await requireSessionUser("/runner");
+  try {
+    const { assertCodexCliReady } = await import("@/lib/codex-cli");
+    const readiness = await assertCodexCliReady();
+    return {
+      ok: true,
+      provider: "CLI",
+      version: readiness.version,
+      message: "本机 Codex CLI 已安装并处于登录状态，可以执行 CLI 项目。"
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      provider: "CLI",
+      message: error instanceof Error ? error.message : "无法确认本机 Codex CLI 状态。"
+    };
+  }
+}
+
 export async function archiveProjectAction(formData: FormData) {
   const projectId = String(formData.get("projectId") ?? "");
   await requireProjectAccess(projectId);
@@ -390,3 +470,4 @@ export async function stopProjectFoundationAction(formData: FormData) {
   }
   revalidatePath(`/projects/${projectId}`);
 }
+

@@ -47,12 +47,16 @@ TEST_ACCOUNT_INITIAL_PASSWORD='<新密码>' npm run accounts:seed -- --rotate te
 ## 执行方式
 
 - CLI：用户在本机登录 Codex；应用通过 `codex exec` 运行岗位，并按岗位保存可续接会话。
-- API：在 `.env` 配置 `DEEPSEEK_API_KEY`；岗位 Skill 会由仓库直接加载并作为系统提示发送。
+- API：登录后打开“API 与 CLI”，输入自己的 DeepSeek Key，系统先调用 `/models` 验证，再按当前账号加密保存。项目选择 API 后，流水线读取项目管理员账号的凭证；Key 不写入浏览器 `localStorage`。保留 `.env` 中的 `DEEPSEEK_API_KEY` 作为本机兼容回退。
+- CLI：在“API 与 CLI”点击本机检测，系统只检查 `codex --version` 和 `codex login status`，不消耗模型额度；通过后项目可继续使用本机 Codex 执行链路。
+
+账号级 API 凭证使用 `DIRECTOR_CREDENTIAL_KEY` 加密后写入 SQLite。复制 `.env.example` 后，请在本机设置一个随机的 32+ 字符值；该值不能提交到 Git，也不能在更换后忘记备份，否则已保存的凭证无法解密。
 
 ## 验证
 
 ```bash
 npm run typecheck
+npm run verify:provider-credentials
 npm run verify:all
 npm run build
 ```
@@ -67,3 +71,4 @@ npm run verify:deepseek-api
 ## 数据与密钥
 
 `.env`、本地 SQLite、测试输出、剧本数据和会话交接文件均被 Git 忽略。不要提交 Codex 登录文件或任何 API Key。
+

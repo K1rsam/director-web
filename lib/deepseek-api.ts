@@ -1,3 +1,5 @@
+import { getProjectDeepSeekCredential, normalizeDeepSeekBase } from "@/lib/provider-credentials";
+
 /**
  * DeepSeek API 适配器（API 执行模式）
  *
@@ -33,6 +35,10 @@ export type DeepSeekJsonRequest = {
   thinking?: "enabled" | "disabled";
   /** 思考程度（flash）：low | high | max；请求级 > DEEPSEEK_API_REASONING_EFFORT > 默认 high */
   reasoningEffort?: "low" | "high" | "max";
+  /** 请求级凭证覆盖；未提供时按 projectId 对应项目管理员的账号凭证解析。 */
+  apiKey?: string;
+  apiBase?: string;
+  projectId?: string;
 };
 
 export type DeepSeekJsonResult<T> = {
@@ -42,7 +48,6 @@ export type DeepSeekJsonResult<T> = {
   stderr: string;
 };
 
-const API_BASE = process.env.DEEPSEEK_API_BASE ?? "https://api.deepseek.com";
 const DEFAULT_TIMEOUT_MS = 15 * 60_000;
 
 /** flash 家族（deepseek-v4-flash 等）：官方输出上限 384K tokens、上下文 1M。 */
@@ -93,10 +98,16 @@ export async function runDeepSeekJson<T>(request: DeepSeekJsonRequest): Promise<
 }
 
 async function runDeepSeekJsonOnce<T>(request: DeepSeekJsonRequest): Promise<DeepSeekJsonResult<T>> {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
+  const projectCredential = !request.apiKey && request.projectId
+    ? await getProjectDeepSeekCredential(request.projectId)
+    : null;
+  const apiKey = request.apiKey ?? projectCredential?.apiKey ?? process.env.DEEPSEEK_API_KEY;
   if (!apiKey) {
-    throw new Error("缺少 DEEPSEEK_API_KEY：API 执行模式需要在 .env 中配置 DeepSeek 平台 Key。");
+    throw new Error("没有可用的 DeepSeek API Key：请在“API 与 CLI”中连接当前账号的 Key，或在本机 .env 配置 DEEPSEEK_API_KEY。");
   }
+  const apiBase = normalizeDeepSeekBase(
+    request.apiBase ?? projectCredential?.apiBase ?? process.env.DEEPSEEK_API_BASE
+  );
 
   const startedAt = Date.now();
   const isReasoner = request.model.includes("reasoner");
@@ -139,7 +150,7 @@ async function runDeepSeekJsonOnce<T>(request: DeepSeekJsonRequest): Promise<Dee
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), request.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   try {
-    const response = await fetch(`${API_BASE}/chat/completions`, {
+    const response = await fetch(`${apiBase}/chat/completions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -217,3 +228,4 @@ export function parseApiJson<T>(content: string): T {
     throw new Error(`DeepSeek 返回内容不是合法JSON：${error instanceof Error ? error.message : String(error)}（原文前 400 字：${content.slice(0, 400)}）`);
   }
 }
+

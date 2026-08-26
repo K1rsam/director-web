@@ -13,6 +13,7 @@
 import { runCodexJson } from "@/lib/codex-cli";
 import { isFlashModel, resolveApiOutputCap, runDeepSeekJson } from "@/lib/deepseek-api";
 import { loadStageSkillText } from "@/lib/pipeline-skills";
+import { getProjectDeepSeekCredential } from "@/lib/provider-credentials";
 import { prisma } from "@/lib/prisma";
 
 export type PipelineProvider = "CLI" | "API";
@@ -188,7 +189,10 @@ export async function runApiRoleJson(input: {
 }): Promise<RoleRunResult> {
   const { role, prompt } = input;
   const system = await loadStageSkillText(role.skill);
-  const model = resolveApiModel(role.code, role.apiReasoner ?? false);
+  const projectCredential = input.projectId
+    ? await getProjectDeepSeekCredential(input.projectId)
+    : null;
+  const model = projectCredential?.model ?? resolveApiModel(role.code, role.apiReasoner ?? false);
   const sessionKey = input.projectId && input.episodeId && !input.noSession
     ? { projectId: input.projectId, episodeId: input.episodeId, stageCode: role.code }
     : null;
@@ -228,7 +232,10 @@ export async function runApiRoleJson(input: {
     messages,
     system: null,
     model,
-    maxTokens: input.maxTokens ?? resolveApiMaxTokens(model)
+    maxTokens: input.maxTokens ?? resolveApiMaxTokens(model),
+    apiKey: projectCredential?.apiKey,
+    apiBase: projectCredential?.apiBase,
+    projectId: input.projectId
   });
 
   // 写入/续写会话历史（首轮也写，供修复轮续接）
@@ -285,3 +292,4 @@ export async function runRoleByProvider(input: {
         sessionMode: input.sessionMode ?? "fresh"
       });
 }
+

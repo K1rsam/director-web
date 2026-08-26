@@ -41,14 +41,43 @@
   --motion-ease: cubic-bezier(.22, .8, .28, 1);
 }
 
-html { color-scheme: light; }
-html, body { min-height: 100%; background: var(--vision-page-backdrop); }
-body { min-height: 100vh; color: var(--vision-text); }
-.visionRouteFrame, .visionRouteFrame > div { min-height: 100vh; background: var(--vision-page-backdrop); }
+html {
+  min-height: 100%;
+  color-scheme: light;
+  background: var(--vision-canvas-deep);
+}
+/* Keep all scrollbars on the browser's normal light/default appearance. */
+*, *::before, *::after {
+  scrollbar-color: auto;
+  scrollbar-width: auto;
+}
+body {
+  min-height: 100vh;
+  background: transparent;
+  color: var(--vision-text);
+}
+.visionRouteFrame {
+  position: relative;
+  isolation: isolate;
+  min-height: 100vh;
+  background: transparent;
+}
+.visionRouteFrame::before {
+  position: fixed;
+  z-index: -1;
+  inset: 0;
+  pointer-events: none;
+  background: var(--vision-page-backdrop);
+  content: "";
+}
+.visionRouteFrame > div {
+  min-height: 100vh;
+  background: transparent;
+}
 
 .appChrome {
   isolation: isolate;
-  background: var(--vision-page-backdrop);
+  background: transparent;
   color: var(--vision-text);
 }
 .appChrome::after {
@@ -620,7 +649,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
   .episodeShell .episodeDashboard { display: flex; height: 100%; min-height: 0; flex-direction: column; gap: 14px; }
   .episodeShell .parallelRunningHint, .episodeShell .episodeRoleDeck { flex: 0 0 auto; margin: 0; }
   .episodeShell .workspaceGrid.no-rail { display: block; flex: 1 1 auto; height: auto; min-height: 0; overflow: hidden; }
-  .episodeShell .storyboardCanvas { display: flex; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; isolation: isolate; clip-path: inset(0 round 22px); }
+  .episodeShell .storyboardCanvas { display: flex; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; isolation: isolate; border-radius: 22px !important; clip-path: inset(0 round 22px); }
   .episodeShell .canvasToolbar { position: sticky; z-index: 6; top: 0; flex: 0 0 auto; }
   .episodeShell .storyboardTableWrap,
   .episodeShell .unitList,
@@ -702,7 +731,7 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
   min-height: 100dvh;
   place-items: center;
   overflow: hidden;
-  background: var(--vision-page-backdrop);
+  background: transparent;
   padding: 28px 18px;
   color: var(--vision-text);
 }
@@ -789,13 +818,13 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
 .loginFootnote { margin: 22px 0 0; color: var(--vision-faint); font-size: 9px; line-height: 1.6; text-align: center; }
 
 .sidebarWorkflow { display: grid; gap: 3px; }
-.accountMenu { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 8px; border-top: 1px solid var(--vision-line); padding-top: 12px; }
+.accountMenu { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto auto; align-items: center; gap: 8px; border-top: 1px solid var(--vision-line); padding-top: 12px; }
 .accountAvatar { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 10px; background: linear-gradient(145deg, #eef1ff, #f3edff); color: #675bd8 !important; font-size: 11px !important; font-weight: 800; }
 .accountMenu > div { display: grid; min-width: 0; gap: 1px; }
 .accountMenu > div strong { overflow: hidden; color: var(--vision-text); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .accountMenu > div small { overflow: hidden; color: var(--vision-faint); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
-.accountMenu button { border: 0; background: transparent; padding: 4px; color: var(--vision-muted); font-size: 8px; cursor: pointer; }
-.accountMenu button:hover { color: var(--vision-primary); }
+.accountMenu button, .accountMenu > a { border: 0; background: transparent; padding: 4px; color: var(--vision-muted); font-size: 8px; cursor: pointer; text-decoration: none; }
+.accountMenu button:hover, .accountMenu > a:hover { color: var(--vision-primary); }
 .mobileAccountMenu { margin-top: 4px; border-top: 1px solid var(--vision-line); padding: 10px 4px 2px; }
 .mobileAccountMenu .accountMenu { border-top: 0; padding-top: 0; }
 
@@ -803,3 +832,366 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
   .loginCard { border-radius: 24px; padding: 26px 22px; }
   .loginHeading { margin-top: 28px; }
 }
+
+/* Responsive display framework */
+:root {
+  --vision-font-caption: clamp(11px, calc(9.75px + .08vw), 13px);
+  --vision-font-small: clamp(12px, calc(10.5px + .10vw), 14px);
+  --vision-font-unit: clamp(13px, calc(11.75px + .08vw), 15px);
+  --vision-font-body: clamp(14px, calc(12.5px + .12vw), 16px);
+  --vision-font-heading: clamp(18px, calc(16px + .25vw), 26px);
+  --vision-sidebar-width: clamp(220px, 12.5vw, 252px);
+  --vision-workspace-offset: calc(var(--vision-sidebar-width) + 28px);
+  --vision-content-max: 2200px;
+  --vision-page-gutter: clamp(16px, 1.5vw, 32px);
+  --vision-section-gap: clamp(24px, 1.6vw, 36px);
+  --vision-panel-padding: clamp(20px, 1.5vw, 32px);
+  --vision-module-gap: clamp(12px, .9vw, 20px);
+  color-scheme: light;
+  background: var(--vision-canvas-deep);
+}
+
+html, body {
+  min-width: 320px;
+  margin: 0;
+  background: var(--vision-page-backdrop);
+}
+
+html { background: var(--vision-page-backdrop); }
+body { background: var(--vision-page-backdrop); font-size: var(--vision-font-body); }
+.appChrome { min-height: 100dvh; background: transparent; font-size: var(--vision-font-body); }
+.appSidebar { width: var(--vision-sidebar-width); }
+.appWorkspace { min-width: 0; margin-left: var(--vision-workspace-offset); }
+.appChrome .appTopbar {
+  top: var(--vision-topbar-inset);
+  width: auto;
+  min-height: clamp(68px, 4.3vw, 76px);
+  margin: var(--vision-topbar-inset) var(--vision-page-gutter) 0;
+  border-radius: 20px;
+  padding: 10px var(--vision-page-gutter);
+}
+.appMain { width: 100%; padding: var(--vision-page-gutter) var(--vision-page-gutter) clamp(56px, 5vw, 88px); }
+.projectLibrary, .projectDashboard, .episodeDashboard,
+.appChrome .projectLibrary { width: 100%; max-width: var(--vision-content-max); }
+.createPage, .newProjectPage, .appChrome .createProjectPage { width: 100%; max-width: 1600px; }
+
+.chromeBrand strong { font-size: var(--vision-font-body); }
+.chromeBrand small, .topbarIdentity small,
+.libraryTopbarMeta, .projectTopbarMeta,
+.sectionEyebrow, .projectHeroMeta p,
+.cardHeader span, .posterFrame { font-size: var(--vision-font-caption); }
+.sidebarNav a, .sidebarEpisodes a,
+.sidebarFooter strong, .topbarStatus,
+.guidanceMeta, .phaseStep small,
+.foundationRole small, .foundationRole em,
+.cardHeader em, .assetTabBar button,
+.projectProgress > div, .projectProgress b,
+.projectCardFooter > span, .aspectBadge,
+.styleOptionCopy small, .createFormFooter p,
+.episodeSummary p, .episodeCounts span { font-size: var(--vision-font-small); }
+.topbarIdentity strong { font-size: clamp(16px, calc(14px + .18vw), 19px); }
+.sidebarNav a { min-height: clamp(42px, 2.7vw, 48px); }
+
+.libraryHeading h1, .createPageHeading h1,
+.projectHeroMeta h2 { font-size: clamp(28px, calc(22px + .65vw), 40px); }
+.guidanceCopy h1 { font-size: clamp(22px, calc(18px + .45vw), 32px); }
+.sectionHeading h2, .formSectionHeader h2,
+.projectTitleRow h2, .episodeSummary h3,
+.cardHeader h3 { font-size: var(--vision-font-heading); }
+.sectionLead, .createPageHeading > p:last-child,
+.guidanceCopy > span, .sectionHeading p,
+.formSectionHeader p, .scriptPasteField,
+.styleFieldset > p, .biblePlaceholder p { font-size: var(--vision-font-body); }
+
+.workflowGuidance { grid-template-columns: clamp(48px, 3vw, 60px) minmax(320px, 1fr) auto auto; gap: var(--vision-module-gap); padding: var(--vision-panel-padding); }
+.foundationRail { grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: var(--vision-module-gap); }
+.foundationRole { min-height: clamp(82px, 5vw, 96px); height: auto; padding: 12px 14px !important; }
+.foundationRole strong, .phaseStep strong,
+.styleOptionCopy strong, .scriptDropzone strong,
+.basicConfigGrid label, .styleFieldset legend { font-size: var(--vision-font-body); }
+.foundationCardAction, .maintenancePanel > summary,
+.maintenancePanel p { font-size: var(--vision-font-small); }
+
+.cardHeader { min-height: 72px; padding: 18px var(--vision-panel-padding); }
+.appChrome .studioCard, .appChrome .sceneStructureCard,
+.appChrome .contractSection { padding: var(--vision-panel-padding); }
+.appChrome .studioCard:has(> .cardHeader),
+.appChrome .studioCard:has(> .sceneStructureHead) { padding: 0; }
+.studioGrid.twoColumns { grid-template-columns: repeat(2, minmax(460px, 1fr)); }
+.projectCardGrid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: var(--vision-module-gap); }
+
+.bibleSectionHead, .bibleKeyValue b,
+.bibleFactList li, .bibleEpisodeHead b,
+.bibleEpisodeHead span, .bibleEpisodeStates,
+.bibleLine b, .bibleLine span, .biblePlaceholder p,
+.assetTabBar button, .quietButton, .primaryLink,
+.continueLink { font-size: var(--vision-font-small); }
+.bibleKeyValue span, .bibleFactList b,
+.bibleEpisode small, .assetTabBar button b { font-size: var(--vision-font-caption); }
+
+.appChrome .studioTableScroll table { font-size: var(--vision-font-body); }
+.appChrome .studioTableScroll th { font-size: var(--vision-font-small); }
+.appChrome .studioTableScroll td { font-size: var(--vision-font-small); line-height: 1.7; }
+.appChrome .studioTableScroll th,
+.appChrome .studioTableScroll td { padding: clamp(11px, .8vw, 16px); }
+.sceneStructureScroll { max-height: none; overflow: visible; }
+.sceneStructureScroll .studioTableScroll {
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: clip;
+  scrollbar-gutter: stable;
+}
+.sceneStructureScroll .sceneTable { max-height: none; }
+.sceneStructureTable { min-width: 1120px; }
+
+.basicConfigGrid input, .basicConfigGrid select,
+.scriptPasteField textarea, .sourceTabs button { font-size: var(--vision-font-body); }
+.scriptDropzone small, .scriptDropzone em,
+.styleOptionCopy small, .createFooterInfo p { font-size: var(--vision-font-small); }
+
+.episodeStudioList > article { min-height: 108px; gap: var(--vision-module-gap); padding: 18px var(--vision-panel-padding); }
+.episodeNumber { font-size: clamp(28px, 2vw, 36px); }
+.episodeCounts b { font-size: var(--vision-font-heading); }
+
+@media (max-width: 1320px) {
+  .workflowGuidance { grid-template-columns: 54px minmax(280px, 1fr) auto; }
+  .workflowGuidance .guidanceMeta { display: none; }
+  .foundationRail { grid-template-columns: repeat(2, minmax(220px, 1fr)); }
+  .studioGrid.twoColumns { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 980px) {
+  .appWorkspace { margin-left: 0; }
+  .appChrome .appTopbar { border-radius: 16px; }
+}
+
+@media (max-width: 760px) {
+  .workflowGuidance { grid-template-columns: 1fr; }
+  .foundationRail { grid-template-columns: 1fr; }
+  .sectionHeading { align-items: flex-start; flex-direction: column; }
+  .sectionHeading p { max-width: none; text-align: left; }
+}
+
+/* Runner settings */
+.runnerSettingsPage {
+  display: grid;
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
+  gap: var(--vision-section-gap);
+}
+.runnerTopbarMeta { display: flex; align-items: center; gap: 7px; }
+.runnerTopbarMeta span {
+  border: 1px solid var(--vision-line);
+  border-radius: 999px;
+  background: rgba(255,255,255,.52);
+  padding: 6px 10px;
+  color: var(--vision-muted);
+  font-size: var(--vision-font-caption);
+}
+.runnerHero.studioCard {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  padding: var(--vision-panel-padding) !important;
+  background: linear-gradient(130deg, rgba(255,255,255,.90), rgba(246,244,255,.78)) !important;
+}
+.runnerHeroIcon {
+  display: grid;
+  width: 58px;
+  height: 58px;
+  place-items: center;
+  border: 1px solid rgba(106,94,226,.16);
+  border-radius: 19px;
+  background: linear-gradient(145deg, rgba(248,250,255,.96), rgba(242,238,255,.9));
+  box-shadow: var(--vision-shadow-sm);
+  color: var(--vision-primary);
+  font-size: 25px;
+}
+.runnerHero h1 { margin: 4px 0 7px; font-size: clamp(24px, calc(20px + .7vw), 36px); letter-spacing: -.035em; }
+.runnerHero > div > p:last-child { max-width: 850px; margin: 0; color: var(--vision-muted); font-size: var(--vision-font-body); line-height: 1.7; }
+.runnerHeroAssurance { display: grid; gap: 5px; min-width: 190px; border-left: 1px solid var(--vision-line); padding-left: 22px; }
+.runnerHeroAssurance span { color: var(--vision-faint); font-size: var(--vision-font-caption); }
+.runnerHeroAssurance strong { color: var(--vision-text); font-size: var(--vision-font-small); }
+
+.runnerConnectionGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--vision-module-gap); align-items: stretch; }
+.runnerConnectionCard.studioCard { display: flex; min-height: 350px; flex-direction: column; padding: var(--vision-panel-padding) !important; }
+.runnerConnectionHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.runnerConnectionHeader > div { min-width: 0; }
+.runnerConnectionHeader h2, .runnerSectionHeader h2 { margin: 5px 0 7px; font-size: var(--vision-font-heading); letter-spacing: -.025em; }
+.runnerConnectionHeader > div > p:last-child, .runnerSectionHeader > p { margin: 0; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.7; }
+.runnerConnectionStatus {
+  flex: 0 0 auto;
+  border: 1px solid var(--vision-line);
+  border-radius: 999px;
+  background: rgba(241,244,250,.86);
+  padding: 6px 10px;
+  color: var(--vision-faint);
+  font-size: var(--vision-font-caption);
+  font-weight: 700;
+}
+.runnerConnectionStatus.connected { border-color: rgba(36,154,124,.20); background: rgba(237,250,246,.86); color: var(--vision-good); }
+.runnerFieldGrid { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 12px; margin-top: 28px; }
+.runnerFieldGrid label, .runnerDeviceForm label { display: grid; min-width: 0; gap: 8px; color: var(--vision-text); font-size: var(--vision-font-small); font-weight: 700; }
+.runnerCredentialForm { display: flex; min-height: 0; flex: 1; flex-direction: column; }
+.runnerWideField { display: grid; min-width: 0; gap: 8px; margin-top: 12px; color: var(--vision-text); font-size: var(--vision-font-small); font-weight: 700; }
+.runnerCredentialMeta { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 12px; color: var(--vision-faint); font-size: var(--vision-font-caption); line-height: 1.5; }
+.runnerConnectionNote { margin: 12px 0 0; color: var(--vision-muted); font-size: var(--vision-font-caption); line-height: 1.55; }
+.runnerFieldGrid input, .runnerFieldGrid select, .runnerDeviceForm input {
+  width: 100%;
+  min-width: 0;
+  min-height: 46px;
+  border: 1px solid var(--vision-line);
+  border-radius: 13px;
+  outline: none;
+  background: rgba(249,250,255,.88);
+  padding: 0 13px;
+  color: var(--vision-text);
+  font: inherit;
+  font-size: var(--vision-font-small);
+  transition: border-color var(--motion-fast), background var(--motion-fast), box-shadow var(--motion-fast);
+}
+.runnerWideField input {
+  width: 100%;
+  min-width: 0;
+  min-height: 46px;
+  border: 1px solid var(--vision-line);
+  border-radius: 13px;
+  outline: none;
+  background: rgba(249,250,255,.88);
+  padding: 0 13px;
+  color: var(--vision-text);
+  font: inherit;
+  font-size: var(--vision-font-small);
+  transition: border-color var(--motion-fast), background var(--motion-fast), box-shadow var(--motion-fast);
+}
+.runnerFieldGrid input:focus, .runnerFieldGrid select:focus, .runnerDeviceForm input:focus { border-color: rgba(103,94,228,.42); background: white; box-shadow: 0 0 0 4px rgba(103,94,228,.08); }
+.runnerWideField input:focus { border-color: rgba(103,94,228,.42); background: white; box-shadow: 0 0 0 4px rgba(103,94,228,.08); }
+.runnerActions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: auto; padding-top: 24px; }
+.runnerPrimaryButton, .runnerSecondaryButton { min-height: 42px; padding: 0 16px; font-size: var(--vision-font-small); font-weight: 750; cursor: pointer; }
+.runnerMessage { flex: 1 1 100%; margin: 0; font-size: var(--vision-font-small); line-height: 1.5; }
+.runnerMessage.success { color: var(--vision-good); }
+.runnerMessage.error { color: var(--vision-bad); }
+.runnerDeviceForm { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; margin-top: 28px; }
+.runnerLauncherPanel { margin-top: 18px; border: 1px solid rgba(103,94,228,.16); border-radius: 16px; background: linear-gradient(135deg, rgba(247,248,255,.96), rgba(244,240,255,.82)); padding: 15px; }
+.runnerLauncherPanel > strong { color: var(--vision-text); font-size: var(--vision-font-small); }
+.runnerLauncherPanel > p { margin: 6px 0 0; color: var(--vision-muted); font-size: var(--vision-font-caption); line-height: 1.65; }
+.runnerLauncherPanel .runnerActions { margin-top: 0; padding-top: 14px; }
+
+.runnerChoiceGuide.studioCard, .runnerDeviceCard.studioCard { padding: var(--vision-panel-padding) !important; }
+.runnerSectionHeader { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
+.runnerSectionHeader > p { max-width: 520px; text-align: right; }
+.runnerChoiceGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
+.runnerChoiceGrid article { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 14px; border: 1px solid var(--vision-line); border-radius: 16px; background: rgba(249,250,255,.70); padding: 16px; }
+.runnerChoiceGrid article > span { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 12px; background: rgba(241,239,255,.92); color: var(--vision-primary); font-size: var(--vision-font-caption); font-weight: 800; }
+.runnerChoiceGrid strong { font-size: var(--vision-font-body); }
+.runnerChoiceGrid p { margin: 6px 0 0; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.65; }
+.runnerDeviceList { display: grid; margin-top: 18px; border-top: 1px solid var(--vision-line); }
+.runnerDeviceRow { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 13px; min-height: 66px; border-bottom: 1px solid var(--vision-line); }
+.runnerDeviceDot { width: 8px; height: 8px; border-radius: 50%; background: var(--vision-good); box-shadow: 0 0 0 4px rgba(36,154,124,.10); }
+.runnerDeviceDot.revoked { background: var(--vision-faint); box-shadow: none; }
+.runnerDeviceRow > div { display: grid; gap: 4px; }
+.runnerDeviceRow strong { font-size: var(--vision-font-small); }
+.runnerDeviceRow small { color: var(--vision-muted); font-size: var(--vision-font-caption); }
+.runnerRevokeButton { border: 1px solid rgba(217,88,110,.24); border-radius: 10px; background: rgba(255,244,246,.82); padding: 7px 11px; color: var(--vision-bad); font: inherit; font-size: var(--vision-font-caption); cursor: pointer; }
+.runnerDeviceEmpty { margin: 0; padding: 32px 0 12px; color: var(--vision-faint); font-size: var(--vision-font-small); text-align: center; }
+
+@media (max-width: 1180px) {
+  .runnerConnectionGrid { grid-template-columns: 1fr; }
+  .runnerConnectionCard.studioCard { min-height: 0; }
+}
+@media (max-width: 760px) {
+  .runnerTopbarMeta { display: none; }
+  .runnerHero.studioCard { grid-template-columns: 48px minmax(0, 1fr); }
+  .runnerHeroIcon { width: 48px; height: 48px; border-radius: 16px; }
+  .runnerHeroAssurance { grid-column: 1 / -1; border-top: 1px solid var(--vision-line); border-left: 0; padding-top: 14px; padding-left: 0; }
+  .runnerFieldGrid, .runnerDeviceForm, .runnerChoiceGrid { grid-template-columns: 1fr; }
+  .runnerSectionHeader { align-items: flex-start; flex-direction: column; }
+  .runnerSectionHeader > p { text-align: left; }
+}
+
+/* Episode workspace legibility */
+.episodeShell .viewTabs a { font-size: var(--vision-font-body); }
+.episodeShell .viewTabs b { font-size: var(--vision-font-caption); }
+.episodeShell .canvasToolbar > span { font-size: var(--vision-font-small); }
+
+.episodeShell .episodeTopbarAction .episodeToolButton,
+.episodeShell .episodeTopbarAction .resetEpisodeButton { font-size: var(--vision-font-caption) !important; }
+.episodeShell .episodeRoleDeck > summary { min-height: 42px; font-size: var(--vision-font-small); }
+.episodeShell .episodeRoleDeck > summary b { font-size: var(--vision-font-caption); }
+.episodeShell .episodeRoleDeck .roleProgress {
+  height: 82px;
+  min-height: 82px !important;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  padding: 10px 12px !important;
+}
+.episodeShell .episodeRoleDeck .roleProgress > span:first-child,
+.episodeShell .episodeRoleDeck .roleProgress strong { font-size: var(--vision-font-body); }
+.episodeShell .episodeRoleDeck .roleProgress small,
+.episodeShell .episodeRoleDeck .roleProgress em,
+.episodeShell .episodeRoleDeck .roleCardAction { font-size: var(--vision-font-small); }
+
+.episodeShell .storyboardTable { font-size: var(--vision-font-small); }
+.episodeShell .storyboardTable th,
+.episodeShell .storyboardTable td { font-size: var(--vision-font-small); }
+.episodeShell .storyboardTable td:first-child small,
+.episodeShell .revisionTag { font-size: var(--vision-font-caption); }
+
+.episodeShell .unitCardHead span,
+.episodeShell .unitCardHead em { font-size: var(--vision-font-small); }
+.episodeShell .unitCardHead span { font-size: var(--vision-font-body); }
+.episodeShell .unitCardHead strong { font-size: var(--vision-font-body); }
+.episodeShell .unitCard h3 { font-size: var(--vision-font-body); }
+.episodeShell .unitCard dt,
+.episodeShell .unitCard dd,
+.episodeShell .promptPreview p { font-size: var(--vision-font-small); }
+.episodeShell .promptPreview span { font-size: var(--vision-font-caption); }
+
+.episodeShell .exportEpisodeBar span { font-size: var(--vision-font-body); }
+.episodeShell .exportEpisodeBar .quietButton,
+.episodeShell .copyPromptButton,
+.episodeShell .promptVersionChip { min-height: 34px; font-size: var(--vision-font-small); }
+.episodeShell .seedancePromptTag { font-size: var(--vision-font-body); }
+.episodeShell .seedancePrompt pre {
+  padding: 16px;
+  font-size: var(--vision-font-unit);
+  line-height: 1.72;
+}
+.episodeShell .unitInternals summary,
+.episodeShell .unitInternals dt,
+.episodeShell .unitInternals dd { font-size: var(--vision-font-small); }
+
+.episodeShell .logRow > b,
+.episodeShell .logRow small,
+.episodeShell .logRow > span,
+.episodeShell .logRow summary { font-size: var(--vision-font-small); }
+.episodeShell .logRow strong { font-size: var(--vision-font-body); }
+.episodeShell .logRow h4 { font-size: var(--vision-font-caption); }
+.episodeShell .logRow code,
+.episodeShell .logRow pre { font-size: var(--vision-font-small); }
+
+.episodeShell .issueRow span,
+.episodeShell .issueRow p { font-size: var(--vision-font-small); }
+.episodeShell .issueRow b { font-size: var(--vision-font-body); }
+.episodeShell .issueRow em,
+.episodeShell .issueRow small,
+.episodeShell .issueRow button { font-size: var(--vision-font-caption); }
+
+.appChrome .archiveSection > summary { font-size: var(--vision-font-body); }
+
+.sidebarFooter { gap: 10px; padding: 12px; }
+.sidebarWorkflow { padding: 0 6px; }
+.accountMenu {
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  border: 1px solid rgba(255,255,255,.76);
+  border-radius: 15px;
+  background: rgba(255,255,255,.44);
+  box-shadow: inset 0 1px rgba(255,255,255,.90), 0 8px 22px rgba(61,70,120,.06);
+  padding: 9px;
+}
+.accountAvatar { width: 34px; height: 34px; font-size: var(--vision-font-small) !important; }
+.accountMenu > div strong { font-size: var(--vision-font-small); }
+.accountMenu > div small { font-size: var(--vision-font-caption); }
+.accountMenu button { font-size: var(--vision-font-caption); }
+
