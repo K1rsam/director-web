@@ -19,7 +19,7 @@ export function EpisodePipelineButton({
       disabled
       title="执行引擎将在 API/Runner 阶段接通"
     >
-      <strong>{active ? activeLabel ?? "历史执行状态" : hasContent ? "重新生成整集" : "一键生成本集分镜"}</strong>
+      <strong>{active ? activeLabel ?? "正在执行 E0–E5…" : hasContent ? "重新执行本集 E0–E5" : "开始本集 E0–E5"}</strong>
       {!active && !hasContent ? <small>API/Runner 接通后可用</small> : null}
     </button>
   );

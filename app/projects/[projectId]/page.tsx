@@ -73,6 +73,12 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
       {foundationActive ? foundationStatusLabel : guidance.actionLabel}
     </button>
   ) : null;
+  const guidedEpisodeNumber = guidance.episodeId
+    ? studio.episodes.find((episode) => episode.id === guidance.episodeId)?.number
+    : null;
+  const topbarNextStep = guidance.kind === "continue" && guidedEpisodeNumber
+    ? `下一步：第${guidedEpisodeNumber}集`
+    : null;
 
   return (
     <AppChrome
@@ -83,6 +89,8 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
       episodes={episodeStates.map(({ id, number, title, state }) => ({ id, number, title, state }))}
       primaryAction={guidance.kind === "foundation" ? (
         <button type="button" disabled title="线上展示版需要连接个人 Runner 后执行">{foundationActive ? foundationStatusLabel : guidance.actionLabel}</button>
+      ) : topbarNextStep ? (
+        <span className="topbarNextStep" aria-label={topbarNextStep}>{topbarNextStep}</span>
       ) : (
         <Link href={guidanceHref} className="topbarPrimary">{guidance.actionLabel}</Link>
       )}
@@ -169,7 +177,11 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
                   <div><h3>{episode.title}</h3><span className={`stateDot ${finished ? "ok" : failed ? "bad" : running ? "live" : ""}`}>{status}</span></div>
                   <p>{episode.contentPreview}</p>
                 </div>
-                <div className="episodeCounts"><span><b>{episode.scenes.length}</b> 场</span><span><b>{episode.shotCount}</b> 镜号</span><span>{episode.unitCount ? <><b>{episode.unitCount}</b> 单元</> : <b className="countMuted">尚未生成</b>}</span></div>
+                <div className="episodeCounts" aria-label={`${episode.scenes.length} 场，${episode.shotCount} 镜号，${episode.unitCount ? `${episode.unitCount} 单元` : "尚未生成"}`}>
+                  <span><b>{episode.scenes.length}</b><small>场</small></span>
+                  <span><b>{episode.shotCount}</b><small>镜号</small></span>
+                  <span>{episode.unitCount ? <><b>{episode.unitCount}</b><small>单元</small></> : <b className="countMuted">尚未生成</b>}</span>
+                </div>
                 <Link href={`/projects/${studio.project.id}/episodes/${episode.id}`} className="primaryLink">{episode.shotCount ? "继续制作" : "进入本集"}<span>→</span></Link>
               </article>
             );
