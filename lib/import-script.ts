@@ -133,6 +133,14 @@ export function normalizeEpisodeNumbers(episodes: ImportedEpisode[]): ImportedEp
   });
 }
 
+const EPISODE_NORMALIZATION_NOTE = /（原集号(?:为第[^）]*?集，不是有效集号|与前文重复)，已自动整理为第\d+集）/g;
+
+/** 仅清理界面标题中的系统规范化说明，保留数据库里的原始导入信息。 */
+export function cleanEpisodeTitle(title: string | null | undefined, fallbackNumber?: number) {
+  const cleaned = (title ?? "").replace(EPISODE_NORMALIZATION_NOTE, "").replace(/\s{2,}/g, " ").trim();
+  return cleaned || (fallbackNumber ? `第${fallbackNumber}集` : "未命名集");
+}
+
 export function parseEpisodeNumber(value: string): number | null {
   const compact = value.trim();
   if (/^\d+$/.test(compact)) {
