@@ -1,4 +1,5 @@
 import { composeShotCells } from "../shot-cells.ts";
+import { cleanEpisodeTitle } from "../import-script.ts";
 
 const ROLE_STAGES = [
   ["E0", "叙事节奏"],
@@ -205,7 +206,7 @@ export async function getEpisodeStudio(
     episode: {
       id: episode.id,
       number: Number(episode.number),
-      title: episode.title ?? `第${episode.number}集`,
+      title: cleanEpisodeTitle(episode.title, Number(episode.number)),
       content: episode.content,
       infoPackage: packageResult.results[0]?.payload ?? "尚未生成本集信息包。",
     },
@@ -214,7 +215,7 @@ export async function getEpisodeStudio(
       return {
         id: item.id,
         number: Number(item.number),
-        title: item.title ?? `第${item.number}集`,
+        title: cleanEpisodeTitle(item.title, Number(item.number)),
         shotCount: Number(item.shotCount),
         unitCount: Number(item.unitCount),
         status: runs.some(isActiveRun) ? "进行中" : Number(item.unitCount) > 0 ? "已生成" : "未开始",

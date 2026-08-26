@@ -1,3 +1,5 @@
+import { cleanEpisodeTitle } from "../import-script.ts";
+
 const ROLE_STAGES = [
   ["E0", "叙事节奏"],
   ["E1", "结构导演"],
@@ -160,7 +162,7 @@ export async function getProjectStudio(projectId: string, userId: string, db: D1
     episodes: episodeResult.results.map((episode) => ({
       id: episode.id,
       number: Number(episode.number),
-      title: episode.title ?? `第${episode.number}集`,
+      title: cleanEpisodeTitle(episode.title, Number(episode.number)),
       contentPreview: compactText(episode.content, 120),
       scenes: sceneResult.results.filter((scene) => scene.episodeId === episode.id),
       shotCount: Number(episode.shotCount),

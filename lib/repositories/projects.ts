@@ -1,4 +1,4 @@
-import { parseScriptContent } from "../import-script.ts";
+import { cleanEpisodeTitle, parseScriptContent } from "../import-script.ts";
 import { resolveProjectDestination } from "../project-entry.ts";
 import { extractScriptScenes } from "../scene-structure.ts";
 
@@ -230,7 +230,7 @@ function mapEpisode(row: EpisodeRow) {
   return {
     id: row.id,
     number: Number(row.number),
-    title: row.title,
+    title: cleanEpisodeTitle(row.title, row.number),
     _count: { seedanceUnits: Number(row.unitCount) },
   };
 }
