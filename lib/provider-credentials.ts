@@ -203,7 +203,7 @@ export async function deleteDeepSeekCredential(userId: string): Promise<void> {
 export async function getDeepSeekCredentialStatus(userId: string): Promise<DeepSeekCredentialStatus> {
   const credential = await prisma.userProviderCredential.findUnique({
     where: { userId_provider: { userId, provider: DEEPSEEK_PROVIDER } },
-    select: { apiBase: true, model: true, apiKeyHint: true, lastTestedAt: true, lastError: true }
+    select: { apiBase: true, model: true, apiKeyHint: true, apiKeyCiphertext: true, lastTestedAt: true, lastError: true }
   });
   if (!credential) {
     return {

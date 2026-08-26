@@ -142,11 +142,28 @@ export async function importProjectAction(
         });
     projectId = result.project.id;
   } catch (error) {
-    return { error: error instanceof Error ? error.message : "项目创建失败，请重试。" };
+    return { error: formatProjectCreationError(error) };
   }
 
   revalidatePath("/");
   redirect(resolveProjectDestination(projectId));
+}
+
+function formatProjectCreationError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/Unique constraint failed.*projectId.*number/i.test(message)) {
+    return "剧本中存在重复集号，系统未能创建项目。请重新导入，或先整理集号。";
+  }
+  if (/database is locked|SQLITE_BUSY|P2034/i.test(message)) {
+    return "本地数据库正在被其他任务占用，请停止正在运行的任务后重试。";
+  }
+  if (/Unsupported script file type/i.test(message)) {
+    return "剧本格式不受支持，请上传 TXT、MD 或 DOCX 文件。";
+  }
+  if (/^[A-Za-z]:\\|node_modules[\\/]|\.next[\\/]/i.test(message)) {
+    return "项目创建失败，请检查剧本内容后重试。";
+  }
+  return message.length <= 240 ? message : "项目创建失败，请检查剧本内容后重试。";
 }
 
 export async function setProjectExecutionModeAction(formData: FormData) {

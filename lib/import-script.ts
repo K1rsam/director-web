@@ -81,7 +81,7 @@ export function splitEpisodes(text: string): ImportedEpisode[] {
     ];
   }
 
-  return matches.map((match, index) => {
+  const episodes = matches.map((match, index) => {
     const headingStart = match.index ?? 0;
     const contentStart = headingStart + match[0].length;
     const nextStart = matches[index + 1]?.index ?? normalized.length;
@@ -93,6 +93,37 @@ export function splitEpisodes(text: string): ImportedEpisode[] {
       number: parsedNumber,
       title: rawTitle,
       content: normalized.slice(contentStart, nextStart).trim()
+    };
+  });
+
+  return normalizeEpisodeNumbers(episodes);
+}
+
+/**
+ * Word/Markdown 导入经常会把页眉里的「第 N 集」重复带入正文，或者用户会把
+ * 多段素材暂时标成同一个集号。Episode.projectId_number 是硬唯一约束，因此在
+ * 落库前把重复/非法集号稳定地整理成未占用的正整数，避免整个项目事务回滚。
+ * 已经合法且唯一的显式集号保持不变；只有冲突的后续段落才会顺延。
+ */
+export function normalizeEpisodeNumbers(episodes: ImportedEpisode[]): ImportedEpisode[] {
+  const used = new Set<number>();
+  let nextAvailable = 1;
+
+  return episodes.map((episode) => {
+    const candidate = Number.isInteger(episode.number) && episode.number > 0 ? episode.number : null;
+    let number = candidate;
+    if (number === null || used.has(number)) {
+      while (used.has(nextAvailable)) nextAvailable += 1;
+      number = nextAvailable;
+    }
+    used.add(number);
+    nextAvailable = Math.max(nextAvailable, number + 1);
+
+    if (candidate === number) return episode;
+    return {
+      ...episode,
+      number,
+      title: `${episode.title}（集号重复，已自动整理为第${number}集）`
     };
   });
 }
@@ -156,3 +187,4 @@ function parseChineseNumber(value: string): number | null {
 
   return null;
 }
+
