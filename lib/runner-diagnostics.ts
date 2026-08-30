@@ -67,6 +67,7 @@ export async function recordRunnerDiagnostics(identity: RunnerIdentity, body: Di
   if (body.scope === "minimal") {
     envelopes = [body];
   } else {
+    if (!("requestId" in body) || !("events" in body)) throw new Error("详细诊断上传请求格式无效。");
     requestId = body.requestId;
     const request = await firstRow<{ id: string }>(d1, `
       SELECT id FROM runner_diagnostic_upload_requests

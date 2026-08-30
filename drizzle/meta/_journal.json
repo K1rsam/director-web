@@ -29,6 +29,13 @@
       "when": 1787631652029,
       "tag": "0003_sites_password_compat",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1788093726134,
+      "tag": "0004_runner_diagnostic_logs",
+      "breakpoints": true
     }
   ]
 }
