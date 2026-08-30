@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "overlayBase": "TO_BE_SET_AFTER_MIGRATION",
+  "overlayBase": "24881e2baf56952d1f8b9d74599196b5c46f4e7d",
   "meaning": {
     "common_once": "公共代码：只改 main，生成 Sites 时自动带过去",
     "dual_until_split": "当前同一路径仍有平台差异：改动需要同时检查 main 和 sites-online",
