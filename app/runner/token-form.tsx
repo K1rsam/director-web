@@ -71,7 +71,7 @@ function windowsLauncher(siteUrl: string, token: string, projectDir: string): st
     "where curl.exe >nul 2>nul || (echo 当前 Windows 找不到 curl.exe，无法下载最新 Runner。 & pause & exit /b 1)",
     'set "RUNNER_DIR=%LOCALAPPDATA%\\DirectorRunner"',
     'if not exist "%RUNNER_DIR%" mkdir "%RUNNER_DIR%"',
-    `set "RUNNER_URL=${siteUrl}/runner/director-runner.mjs"`,
+    `set "RUNNER_URL=${siteUrl}/runner/director-runner.mjs?download=1"`,
     `curl.exe --fail --silent --show-error --location --retry 2 --connect-timeout 20 "%RUNNER_URL%" --output "%RUNNER_DIR%\\runner.mjs.new"`,
     `if errorlevel 1 (echo 无法下载最新 Runner，已停止，不会运行旧版本。请检查网络后重新打开。 & del /q "%RUNNER_DIR%\\runner.mjs.new" >nul 2>nul & pause & exit /b 1)`,
     `move /y "%RUNNER_DIR%\\runner.mjs.new" "%RUNNER_DIR%\\runner.mjs" >nul`,
