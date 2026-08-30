@@ -15,8 +15,9 @@ const STATUS_REFRESH_MS = 5 * 60_000;
 let lastStatusAttemptAt = 0;
 
 await verifyCodex();
-await refreshCodexStatus(true);
-console.log(`\n✓ 本机 Codex 已登录`);
+const initialStatusSynced = await refreshCodexStatus(true);
+console.log(`\n✓ 本机 Codex CLI 已就绪（登录状态由本机 app-server 检查）`);
+console.log(initialStatusSynced ? "✓ 本机账号、额度与用量状态已同步到线上" : "! 本机账号已就绪，但线上额度状态暂未同步");
 console.log(`✓ 分镜工作台已连接：${deviceId}`);
 console.log("保持此窗口打开即可使用 CLI；按 Ctrl+C 可停止。\n");
 
@@ -32,6 +33,11 @@ while (true) {
     await executeAndReport(job);
   } catch (error) {
     console.error(`连接异常：${messageOf(error)}`);
+    if (isFatalRunnerError(error)) {
+      console.error("Runner 已停止：请回网站“API 与 CLI”重新生成这台设备的启动器，再重新打开。\n");
+      process.exitCode = 1;
+      break;
+    }
     await delay(10_000);
   }
 }
@@ -41,9 +47,9 @@ async function verifyCodex() {
     throw new Error("Node.js 版本过低，请安装 Node.js 18 或更高版本。");
   }
   try {
-    await runProcess(codexCommand, ["login", "status"], null, 20_000);
+    await runProcess(codexCommand, ["--version"], null, 20_000);
   } catch (error) {
-    throw new Error(`本机 Codex CLI 检测失败：${messageOf(error)}。如果提示未登录，请在终端运行 codex login 后重新打开启动器。`);
+    throw new Error(`本机 Codex CLI 不可用：${messageOf(error)}。请在本机终端运行 codex，按提示完成登录后重新打开启动器。`);
   }
 }
 
@@ -59,10 +65,15 @@ async function refreshCodexStatus(force = false) {
       headers,
       body: JSON.stringify({ status }),
     });
-    if (!response.ok) throw new Error(`回传本机状态失败（${response.status}）`);
-    console.log("✓ 本机账号、额度与用量状态已同步到线上");
+    if (!response.ok) throw await runnerHttpError(response, "回传本机状态");
+    return true;
   } catch (error) {
+    if (isLocalCodexAuthError(error)) {
+      throw new Error("本机 Codex 尚未完成登录。请在本机终端运行 codex，按提示完成登录后重新打开启动器。");
+    }
+    if (isFatalRunnerError(error)) throw error;
     console.warn(`本机额度状态暂时未同步：${messageOf(error)}`);
+    return false;
   }
 }
 
@@ -86,7 +97,7 @@ async function readCodexStatus() {
   const warnings = [];
   const accountPayload = readRpcResult(responses, "2", "账号状态", warnings);
   const accountRecord = asRecord(asRecord(accountPayload)?.account);
-  if (!accountRecord) throw new Error("Codex CLI 尚未登录，请先在本机终端执行 codex login。");
+  if (!accountRecord) throw new Error("Codex CLI 尚未完成登录，请在本机终端运行 codex 并按提示完成登录。");
 
   const ratePayload = readRpcResult(responses, "3", "额度状态", warnings);
   const usagePayload = readRpcResult(responses, "4", "用量状态", warnings);
@@ -175,7 +186,7 @@ function runCodexAppServerStatus(timeoutMs) {
       if (settled) return;
       const detail = stderr.trim() || stdout.trim();
       finish(detail && /not logged in|login|unauthorized|authentication/i.test(detail)
-        ? new Error("Codex CLI 尚未登录，请先在本机终端执行 codex login。")
+        ? new Error("Codex CLI 尚未完成登录，请在本机终端运行 codex 并按提示完成登录。")
         : new Error(`Codex CLI 状态读取失败（code=${code ?? "null"}, signal=${signal ?? "none"}）。`));
     });
     child.stdin.on("error", () => {
@@ -198,7 +209,7 @@ function runCodexAppServerStatus(timeoutMs) {
       },
     });
     send({ method: "initialized", params: {} });
-    send({ id: 2, method: "account/read", params: { refreshToken: true } });
+    send({ id: 2, method: "account/read", params: { refreshToken: false } });
     send({ id: 3, method: "account/rateLimits/read", params: null });
     send({ id: 4, method: "account/usage/read", params: null });
   });
@@ -331,8 +342,40 @@ async function claim() {
     body: JSON.stringify({ deviceId }),
   });
   if (response.status === 204) return null;
-  if (!response.ok) throw new Error(`领取任务失败（${response.status}）`);
+  if (!response.ok) throw await runnerHttpError(response, "领取任务");
   return (await response.json()).job;
+}
+
+async function runnerHttpError(response, operation) {
+  let detail = "";
+  try {
+    const body = await response.json();
+    if (body && typeof body.error === "string") detail = body.error.trim();
+  } catch {
+    // 只使用状态码，不读取或输出任何响应原文。
+  }
+  const status = response.status;
+  let message;
+  if (status === 401) {
+    message = `线上设备令牌无效或已撤销（${operation}，401）。请回网站“API 与 CLI”重新生成这台设备的启动器。`;
+  } else if (status === 403) {
+    message = `线上拒绝这台设备的连接（${operation}，403）。这不是本机 Codex 登录问题，请确认启动器来自当前 Site，并重新生成后再试。`;
+  } else if (status === 404) {
+    message = `线上 Runner 接口不存在（${operation}，404）。请从当前 Site 重新下载启动器。`;
+  } else {
+    message = `线上${operation}失败（${status}）${detail ? `：${detail.slice(0, 180)}` : ""}`;
+  }
+  const error = new Error(message);
+  error.runnerStatus = status;
+  return error;
+}
+
+function isFatalRunnerError(error) {
+  return Boolean(error && typeof error === "object" && [401, 403, 404].includes(error.runnerStatus));
+}
+
+function isLocalCodexAuthError(error) {
+  return /not logged in|login required|unauthorized|authentication|尚未完成登录|尚未登录/i.test(messageOf(error));
 }
 
 async function executeAndReport(job) {
