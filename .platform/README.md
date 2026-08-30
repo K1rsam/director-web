@@ -36,7 +36,16 @@ node .platform/materialize-sites.mjs `
 
 生成目录包含完整 Sites 源码，但不包含 `.platform` 工具目录，也不会把线下专属文件带到 Sites。
 
+## 日常修改流程
+
+1. 先用 `change-scope.mjs` 判断文件范围。
+2. `main-only`：只提交并推送 `main`；重新生成 Sites 时会自动带入公共改动。
+3. `sites-only`：只在 overlay 工作树提交并推送 `sites-online`。
+4. `both`：先检查线下和 Sites 的运行时差异，再分别提交；不要把生成目录当成第三套源码。
+5. `main` 有新的公共提交后，先把 overlay rebase 到最新 `main`，再继续 Sites 专属修改；生成工具始终以已提交的 Git 内容为准。
+
+建议把生成目录当作一次性发布产物；当前已有的 `director-workbench-sites` 源目录仍可用于 Sites 构建和部署，但它不再是公共代码的第二个编辑入口。
+
 ## 当前迁移状态
 
 迁移完成前，`dual_until_split` 是明确的临时区。后续把这 55 个同路径差异逐步抽成公共模块后，才把它们从 `dual_until_split` 改为 `common_once` 或专属分类。遇到未归类的新文件，工具会停止并要求先补边界清单，避免误把线下代码发布到 Sites。
-
