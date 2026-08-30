@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { getD1 } from "@/db";
 import { getCurrentUser } from "@/lib/auth";
+import { getFinalScriptExport } from "@/lib/repositories/episode-studio";
 
 export async function GET(_request: Request, context: { params: Promise<{ episodeId: string }> }) {
   const user = await getCurrentUser();
@@ -8,21 +9,14 @@ export async function GET(_request: Request, context: { params: Promise<{ episod
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
   const { episodeId } = await context.params;
-  const finalScript = await prisma.finalScript.findFirst({
-    where: {
-      episodeId,
-      project: { roles: { some: { userId: user.id } } }
-    },
-    include: { project: true, episode: true },
-    orderBy: { version: "desc" }
-  });
+  const finalScript = await getFinalScriptExport(getD1(), episodeId, user.id);
 
   if (!finalScript) {
     return NextResponse.json({ error: "Final script not found." }, { status: 404 });
   }
 
-  const projectTitle = finalScript.project.title;
-  const episodeTitle = finalScript.episode?.title ?? `第${finalScript.episode?.number ?? ""}集`;
+  const projectTitle = finalScript.projectTitle;
+  const episodeTitle = finalScript.episodeTitle ?? `第${finalScript.number ?? ""}集`;
   const fileName = encodeURIComponent(`${projectTitle}_${episodeTitle}_v${finalScript.version}.md`);
 
   return new Response(finalScript.content, {

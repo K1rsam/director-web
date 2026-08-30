@@ -1,26 +1,25 @@
 import { redirect } from "next/navigation";
-import { sanitizeReturnTo } from "@/lib/auth-crypto";
+
 import { getCurrentUser } from "@/lib/auth";
+import { sanitizeReturnTo } from "@/lib/auth-crypto";
 import { LoginForm } from "./login-form";
 
 export const dynamic = "force-dynamic";
 
 export default async function LoginPage({
-  searchParams
+  searchParams,
 }: {
   searchParams: Promise<{ returnTo?: string }>;
 }) {
   const { returnTo: requestedReturnTo } = await searchParams;
   const returnTo = sanitizeReturnTo(requestedReturnTo);
-  if (await getCurrentUser()) {
-    redirect(returnTo);
-  }
+  if (await getCurrentUser()) redirect(returnTo);
 
   return (
     <main className="loginShell">
       <section className="loginCard" aria-labelledby="login-title">
         <div className="loginBrand" aria-hidden="true">
-          <span>镜</span>
+          <span>L</span>
           <div><strong>分镜工作台</strong><small>Director Studio</small></div>
         </div>
         <div className="loginHeading">

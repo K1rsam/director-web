@@ -458,12 +458,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .foundationCardAction { position: absolute; right: 13px; bottom: 11px; color: #8a92a8; font-size: 8px; font-weight: 800; transition: color var(--motion-fast), transform var(--motion-fast), opacity var(--motion-fast); }
 .foundationStageForm:hover .foundationCardAction { transform: translateX(2px); color: #5f56d1; }
 .foundationRole .roleRunError { position: absolute; right: 12px; bottom: 27px; left: 13px; overflow: hidden; color: var(--vision-bad); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
-.foundationFailureDetails { margin-top: 10px; border: 1px solid rgba(217,88,110,.18); border-radius: 12px; background: rgba(255,244,247,.42); color: var(--vision-muted); font-size: 10px; }
-.foundationFailureDetails summary { cursor: pointer; padding: 8px 11px; color: var(--vision-bad); font-weight: 750; }
-.foundationFailureDetails > div { display: grid; gap: 5px; padding: 0 11px 10px; line-height: 1.55; }
-.foundationFailureDetails p { margin: 0; color: var(--vision-text); }
-.foundationFailureDetails ul { display: grid; gap: 3px; margin: 0; padding-left: 17px; }
-.foundationFailureDetails li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maintenancePanel { margin-top: 11px; border: 1px solid rgba(255,255,255,.70); border-radius: 15px; background: rgba(255,255,255,.38); color: var(--vision-muted); }
 .maintenancePanel > summary { display: flex; min-height: 42px; align-items: center; justify-content: space-between; padding: 0 14px; color: #707b93; font-size: 9px; font-weight: 750; cursor: pointer; list-style: none; }
 .maintenancePanel > summary::-webkit-details-marker { display: none; }
@@ -473,63 +467,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .maintenancePanel > div { display: flex; align-items: center; justify-content: space-between; gap: 18px; border-top: 1px solid var(--vision-line); padding: 13px 14px; }
 .maintenancePanel p { margin: 0; color: var(--vision-muted); font-size: 9px; }
 .maintenancePanel .foundationRunAll { margin: 0; }
-
-/* Page-owned episode batch monitor: visible control for the detached worker. */
-.batchMonitorCard {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 22px;
-  overflow: hidden;
-  margin: 0 0 var(--vision-section-gap);
-  border: 1px solid rgba(255,255,255,.84);
-  border-radius: 22px;
-  background: linear-gradient(135deg, rgba(247,248,255,.84), rgba(244,240,255,.72));
-  box-shadow: inset 0 1px rgba(255,255,255,.92), 0 14px 34px rgba(59,69,116,.07);
-  padding: var(--vision-panel-padding);
-  backdrop-filter: blur(22px) saturate(140%);
-  -webkit-backdrop-filter: blur(22px) saturate(140%);
-}
-.batchMonitorCard::before {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 4px;
-  background: linear-gradient(180deg, #7887f5, #9a72e9);
-  content: "";
-}
-.batchMonitorCopy { min-width: 0; }
-.batchMonitorEyebrow { display: block; margin-bottom: 5px; color: #7567df; font-size: var(--vision-font-caption); font-weight: 850; letter-spacing: .16em; }
-.batchMonitorCopy h2 { margin: 0 0 7px; color: var(--vision-text); font-size: var(--vision-font-heading); letter-spacing: -.025em; }
-.batchMonitorCopy > p { max-width: 920px; margin: 0; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.7; }
-.batchMonitorMeta { display: flex; flex-wrap: wrap; gap: 7px 16px; margin-top: 12px; color: var(--vision-faint); font-size: var(--vision-font-caption); }
-.batchMonitorMeta span { display: inline-flex; align-items: center; gap: 5px; }
-.batchMonitorMeta span::before { width: 5px; height: 5px; border-radius: 50%; background: #7b70e7; content: ""; }
-.batchMonitorMessage { margin-top: 10px !important; color: var(--vision-primary) !important; font-size: var(--vision-font-caption) !important; }
-.batchMonitorMessage.blocked, .batchMonitorMessage.bad { color: var(--vision-bad) !important; }
-.batchMonitorSkippedNotice { color: #6a5bc8 !important; }
-.batchMonitorLegacyNotice { color: #6a5bc8 !important; }
-.batchMonitorLegacyDetails { margin-top: 8px; color: var(--vision-faint); font-size: var(--vision-font-caption); }
-.batchMonitorLegacyDetails summary { color: var(--vision-faint); cursor: pointer; }
-.batchMonitorLegacyDetails p { margin: 6px 0 0; color: var(--vision-faint); }
-.batchMonitorActions { display: grid; min-width: 164px; justify-items: stretch; gap: 10px; }
-.batchMonitorActions form { margin: 0; }
-.batchMonitorStatus { display: inline-flex; align-items: center; justify-content: center; gap: 7px; color: var(--vision-faint); font-size: var(--vision-font-caption); font-weight: 750; white-space: nowrap; }
-.batchMonitorStatus i { width: 7px; height: 7px; border-radius: 50%; background: #aab2c4; box-shadow: 0 0 0 4px rgba(170,178,196,.12); }
-.batchMonitorStatus.active { color: #6259d5; }
-.batchMonitorStatus.active i { background: #6d70e8; box-shadow: 0 0 0 4px rgba(109,112,232,.12); animation: uiPulse 1.5s ease-in-out infinite; }
-.batchMonitorStatus.success { color: var(--vision-good); }
-.batchMonitorStatus.success i { background: var(--vision-good); box-shadow: 0 0 0 4px rgba(36,154,124,.11); }
-.batchMonitorStatus.blocked { color: var(--vision-bad); }
-.batchMonitorStatus.blocked i { background: var(--vision-bad); box-shadow: 0 0 0 4px rgba(217,88,110,.11); }
-.batchMonitorButton { display: inline-flex; width: 100%; min-height: 38px; align-items: center; justify-content: center; gap: 8px; border: 1px solid rgba(103,94,228,.22); border-radius: 12px; padding: 0 14px; font: inherit; font-size: var(--vision-font-small); font-weight: 800; cursor: pointer; transition: transform var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast), opacity var(--motion-fast); }
-.batchMonitorButton.primary { background: linear-gradient(135deg, #7167e7, #8469e9); box-shadow: 0 10px 22px rgba(100,88,208,.18), inset 0 1px rgba(255,255,255,.4); color: #fff; }
-.batchMonitorButton.stop { border-color: rgba(217,88,110,.22); background: rgba(255,244,247,.82); color: var(--vision-bad); }
-.batchMonitorButton:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 13px 26px rgba(82,78,205,.20), inset 0 1px rgba(255,255,255,.5); }
-.batchMonitorButton.stop:hover:not(:disabled) { box-shadow: 0 10px 22px rgba(217,88,110,.13); }
-.batchMonitorButton:disabled { cursor: not-allowed; opacity: .55; }
 
 /* Reading surfaces */
 .phaseStep, .studioCard, .sceneStructureCard, .episodeStudioList > article, .storyboardCanvas, .unitCard, .logView > section, .createFormSection, .createFormFooter, .projectEmptyState {
@@ -544,7 +481,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .cardHeader { border-color: var(--vision-line) !important; background: linear-gradient(135deg, rgba(249,250,255,.96), rgba(247,245,255,.88)) !important; }
 .cardHeader h3, .bibleSectionHead, .studioTable td, .sceneStructureHead h3 { color: var(--vision-text) !important; }
 .cardHeader > div > span, .cardHeader em { color: #6a60d9 !important; }
-.cardHeaderActions { flex-wrap: wrap; justify-content: flex-end; }
 .bibleSectionHead, .bibleEpisode, .assetTabBar, .studioTable th { border-color: var(--vision-line) !important; background: transparent !important; }
 .bibleEpisode, .studioTable tbody tr { transition: background var(--motion-fast); }
 .bibleEpisode:hover, .studioTable tbody tr:hover { background: #fbfaff !important; }
@@ -649,9 +585,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .unitList, .logView { padding: 16px !important; }
 .exportEpisodeBar { border-radius: 16px !important; background: rgba(249,250,255,.88) !important; }
 .unitCard, .logView > section { border-radius: 20px !important; background: rgba(255,255,255,.97) !important; box-shadow: 0 12px 34px rgba(48,58,100,.06), inset 0 1px white !important; transition: transform var(--motion-panel), border-color var(--motion-panel), box-shadow var(--motion-panel); }
-.appChrome .logView > section { display: flex; min-height: 0; flex-direction: column; }
-.appChrome .logEntries,
-.appChrome .issueEntries { min-height: 0; overflow: auto; }
 .unitCard:hover { transform: translateY(-2px); border-color: rgba(105,94,224,.20) !important; box-shadow: 0 18px 42px rgba(65,59,139,.085), inset 0 1px white !important; }
 .promptPreview, .seedancePrompt pre, .logRow details, .promptManualEdit textarea { border-color: #e8ebf3 !important; border-radius: 14px !important; background: #fcfdff !important; color: #56637b !important; }
 .promptVersionChip { border-radius: 999px !important; background: rgba(255,255,255,.86) !important; }
@@ -734,13 +667,11 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
   .episodeShell .episodeDashboard { display: flex; height: 100%; min-height: 0; flex-direction: column; gap: 14px; }
   .episodeShell .parallelRunningHint, .episodeShell .episodeRoleDeck { flex: 0 0 auto; margin: 0; }
   .episodeShell .workspaceGrid.no-rail { display: block; flex: 1 1 auto; height: auto; min-height: 0; overflow: hidden; }
-  .episodeShell .storyboardCanvas { display: flex; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; isolation: isolate; border-radius: 22px !important; clip-path: inset(0 round 22px); }
+  .episodeShell .storyboardCanvas { display: flex; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; isolation: isolate; border-radius: 26px !important; clip-path: inset(0 round 26px); }
   .episodeShell .canvasToolbar { position: sticky; z-index: 6; top: 0; flex: 0 0 auto; }
   .episodeShell .storyboardTableWrap,
-  .episodeShell .unitList { flex: 1 1 auto; height: auto; min-height: 0; max-height: none; overflow: auto; }
-  .episodeShell .logView { flex: 1 1 auto; height: auto; min-height: 0; max-height: none; overflow: hidden; }
-  .episodeShell .logEntries,
-  .episodeShell .issueEntries { flex: 1 1 auto; min-height: 0; overflow: auto; scrollbar-gutter: stable; }
+  .episodeShell .unitList,
+  .episodeShell .logView { flex: 1 1 auto; height: auto; min-height: 0; max-height: none; overflow: auto; }
   .episodeShell .unitList { align-content: start; grid-auto-rows: max-content; }
   .episodeShell .unitCard { height: max-content; }
   .episodeShell .seedancePrompt pre { max-height: none; overflow: visible; }
@@ -943,11 +874,10 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
 html, body {
   min-width: 320px;
   margin: 0;
-  background: var(--vision-page-backdrop);
 }
 
-html { background: var(--vision-page-backdrop); }
-body { background: var(--vision-page-backdrop); font-size: var(--vision-font-body); }
+html { background: var(--vision-canvas-deep); }
+body { background: transparent; font-size: var(--vision-font-body); }
 .appChrome { min-height: 100dvh; background: transparent; font-size: var(--vision-font-body); }
 .appSidebar { width: var(--vision-sidebar-width); }
 .appWorkspace { min-width: 0; margin-left: var(--vision-workspace-offset); }
@@ -1101,8 +1031,391 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   .foundationRail { grid-template-columns: 1fr; }
   .sectionHeading { align-items: flex-start; flex-direction: column; }
   .sectionHeading p { max-width: none; text-align: left; }
-  .batchMonitorCard { grid-template-columns: 1fr; gap: 16px; }
-  .batchMonitorActions { min-width: 0; justify-items: stretch; }
+}
+
+/* 同步本地工作台的可读密度：分集导航独立滚动，账号栏不再遮住最后一集。 */
+.appChrome .appSidebar { height: calc(100dvh - 28px); min-height: 0; }
+.appChrome .sidebarEpisodes { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.appChrome .sidebarEpisodeScroller {
+  min-height: 0;
+  max-height: none;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding-bottom: 12px;
+}
+.appChrome .sidebarFooter { flex: 0 0 auto; margin-top: 0; }
+.appChrome .sidebarEpisodes > p,
+.appChrome .sidebarEpisodes a,
+.appChrome .sidebarWorkflow span,
+.appChrome .sidebarWorkflow strong { font-size: var(--vision-font-small); }
+.appChrome .sidebarEpisodes a b { font-size: var(--vision-font-small); }
+.appChrome .sidebarEpisodes a i { font-size: var(--vision-font-caption); }
+.appChrome .projectTopbarMeta { font-size: var(--vision-font-small); }
+
+/* 80 集按十集收起，避免页面首屏被长列表推走。 */
+.episodeStudioGroups { display: grid; gap: 10px; }
+.episodeStudioGroup {
+  overflow: hidden;
+  border: 1px solid rgba(220,224,241,.84);
+  border-radius: 16px;
+  background: rgba(255,255,255,.38);
+}
+.episodeStudioGroup > summary {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 15px;
+  color: var(--vision-text);
+  cursor: pointer;
+  list-style: none;
+}
+.episodeStudioGroup > summary::-webkit-details-marker { display: none; }
+.episodeStudioGroup > summary::before {
+  width: 16px;
+  color: #7567df;
+  content: "＋";
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+}
+.episodeStudioGroup[open] > summary::before { content: "−"; }
+.episodeStudioGroup > summary > span { font-size: var(--vision-font-unit); font-weight: 800; }
+.episodeStudioGroup > summary > em {
+  margin-left: auto;
+  color: var(--vision-muted);
+  font-size: var(--vision-font-small);
+  font-style: normal;
+  white-space: nowrap;
+}
+.episodeStudioGroup > .episodeStudioList {
+  border-top: 1px solid var(--vision-line);
+  padding: 10px;
+}
+
+/* 项目策划和资产索引同高；超出内容只在资产表内部滚动。 */
+.foundationReferenceGrid { align-items: stretch; }
+@media (min-width: 1321px) {
+  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .cardHeader {
+    flex: 0 0 auto;
+  }
+  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .bibleViewer,
+  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .assetIndexTabs {
+    min-height: 0;
+    flex: 1 1 auto;
+  }
+  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .bibleViewer,
+  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .biblePlaceholder {
+    flex: 0 0 auto;
+  }
+  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .assetIndexTabs {
+    display: flex;
+    flex-direction: column;
+  }
+  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid .assetIndexTabs .compactTable {
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    flex: 1 1 auto;
+    overflow: auto;
+  }
+}
+
+/* 表现规范沿用全局字号，并将已锁定内容压缩成可展开条，不抢主工作区。 */
+.appChrome .projectDashboard .contractSectionCompact {
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.appChrome .projectDashboard .contractCompactDetails,
+.appChrome .projectDashboard .contractConfirmed {
+  border: 1px solid rgba(210,216,239,.84);
+  border-radius: 12px;
+  background: rgba(255,255,255,.48);
+}
+.appChrome .projectDashboard .contractCompactDetails > summary,
+.appChrome .projectDashboard .contractConfirmed > summary {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 14px;
+  color: var(--vision-text);
+  cursor: pointer;
+  font-size: var(--vision-font-unit);
+  font-weight: 800;
+  list-style: none;
+}
+.appChrome .projectDashboard .contractCompactDetails > summary::-webkit-details-marker,
+.appChrome .projectDashboard .contractConfirmed > summary::-webkit-details-marker { display: none; }
+.appChrome .projectDashboard .contractCompactDetails > summary::after,
+.appChrome .projectDashboard .contractConfirmed > summary::after {
+  margin-left: auto;
+  color: var(--vision-primary);
+  content: "＋";
+}
+.appChrome .projectDashboard .contractCompactDetails[open] > summary::after,
+.appChrome .projectDashboard .contractConfirmed[open] > summary::after { content: "−"; }
+.appChrome .projectDashboard .contractCompactDetails > summary > span {
+  color: var(--vision-primary);
+  font-size: var(--vision-font-caption);
+  letter-spacing: .12em;
+}
+.appChrome .projectDashboard .contractCompactDetails > summary > b,
+.appChrome .projectDashboard .contractConfirmed > summary > span {
+  font-size: var(--vision-font-small);
+}
+.appChrome .projectDashboard .contractCompactDetails > summary > em,
+.appChrome .projectDashboard .contractCompactDetails > summary > i {
+  color: var(--vision-good);
+  font-size: var(--vision-font-small);
+  font-style: normal;
+  white-space: nowrap;
+}
+.appChrome .projectDashboard .contractCompactDetails > summary > i { color: var(--vision-muted); }
+.appChrome .projectDashboard .contractCompactBody,
+.appChrome .projectDashboard .contractConfirmedList {
+  border-top: 1px solid var(--vision-line);
+  padding: 10px 12px 12px;
+}
+.appChrome .projectDashboard .contractCompactBody .contractConfirmedList {
+  border-top: 0;
+  padding: 0;
+}
+.appChrome .projectDashboard .contractHint {
+  margin: 8px 0 14px;
+  color: var(--vision-muted);
+  font-size: var(--vision-font-body);
+  line-height: 1.6;
+}
+.appChrome .projectDashboard .contractCard {
+  position: relative;
+  margin: 0 0 12px;
+  border: 1px solid rgba(210,216,239,.92);
+  border-radius: 16px;
+  background: rgba(255,255,255,.62);
+  box-shadow: var(--vision-shadow-sm);
+  padding: 20px 22px;
+}
+.appChrome .projectDashboard .contractHead {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+}
+.appChrome .projectDashboard .contractHead > span,
+.appChrome .projectDashboard .contractCategoryBadge {
+  border: 1px solid rgba(189,129,40,.34);
+  border-radius: 999px;
+  background: rgba(255,249,231,.72);
+  padding: 3px 9px;
+  color: var(--vision-warn);
+  font-size: var(--vision-font-small);
+  line-height: 1.2;
+}
+.appChrome .projectDashboard .contractHead > b {
+  min-width: 0;
+  color: var(--vision-text);
+  font-size: var(--vision-font-body);
+  line-height: 1.5;
+}
+.appChrome .projectDashboard .contractHead > em {
+  color: var(--vision-muted);
+  font-size: var(--vision-font-unit);
+  font-style: normal;
+  line-height: 1.45;
+  text-align: right;
+  white-space: nowrap;
+}
+.appChrome .projectDashboard .contractEvidence,
+.appChrome .projectDashboard .contractConfirmedQuestion {
+  margin: 9px 0 0;
+  color: var(--vision-muted);
+  font-size: var(--vision-font-unit);
+  line-height: 1.6;
+}
+.appChrome .projectDashboard .contractDecisionForm {
+  display: grid;
+  gap: 11px;
+  margin-top: 14px;
+  border-top: 1px solid var(--vision-line);
+  padding-top: 13px;
+}
+.appChrome .projectDashboard .contractScopeEditor {
+  display: grid;
+  grid-template-columns: minmax(180px, .55fr) minmax(360px, 1.45fr);
+  align-items: start;
+  gap: 10px 18px;
+}
+.appChrome .projectDashboard .contractScopeLabel { display: grid; gap: 3px; }
+.appChrome .projectDashboard .contractScopeLabel strong { font-size: var(--vision-font-body); line-height: 1.35; }
+.appChrome .projectDashboard .contractScopeLabel span,
+.appChrome .projectDashboard .contractScopeHelp,
+.appChrome .projectDashboard .contractOptionsLabel,
+.appChrome .projectDashboard .contractEditNote {
+  color: var(--vision-muted);
+  font-size: var(--vision-font-small);
+  line-height: 1.6;
+}
+.appChrome .projectDashboard .contractScopeControls {
+  display: grid;
+  grid-template-columns: minmax(250px, .9fr) minmax(220px, 1.1fr);
+  gap: 8px;
+}
+.appChrome .projectDashboard .contractScopeControls select,
+.appChrome .projectDashboard .contractScopeControls input,
+.appChrome .projectDashboard .contractCustom input {
+  min-width: 0;
+  min-height: 42px;
+  border: 1px solid rgba(199,207,233,.96);
+  border-radius: 10px;
+  background: rgba(255,255,255,.78);
+  color: var(--vision-text);
+  font: inherit;
+  font-size: var(--vision-font-unit);
+  outline: 0;
+  padding: 0 11px;
+}
+.appChrome .projectDashboard .contractScopeControls select:focus,
+.appChrome .projectDashboard .contractScopeControls input:focus,
+.appChrome .projectDashboard .contractCustom input:focus {
+  border-color: var(--vision-primary);
+  box-shadow: 0 0 0 3px rgba(103,94,228,.12);
+}
+.appChrome .projectDashboard .contractScopeHelp { grid-column: 2; margin: -3px 0 0; }
+.appChrome .projectDashboard .contractOptionsLabel { margin: 0; }
+.appChrome .projectDashboard .contractOptions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 10px;
+}
+.appChrome .projectDashboard .contractOptions > button,
+.appChrome .projectDashboard .contractCustom > button,
+.appChrome .projectDashboard .contractSkip {
+  min-height: 60px;
+  border: 1px solid rgba(198,207,235,.98);
+  border-radius: 11px;
+  background: rgba(250,251,255,.90);
+  color: var(--vision-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--vision-font-unit);
+  line-height: 1.45;
+  padding: 10px 13px;
+  text-align: left;
+}
+.appChrome .projectDashboard .contractOptions > button { display: flex; align-items: flex-start; gap: 8px; }
+.appChrome .projectDashboard .contractOptions > button b { color: var(--vision-primary); font-size: var(--vision-font-body); }
+.appChrome .projectDashboard .contractOptions > button span { min-width: 0; overflow-wrap: anywhere; }
+.appChrome .projectDashboard .contractCustom {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+.appChrome .projectDashboard .contractCustom > button { color: var(--vision-primary); white-space: nowrap; }
+.appChrome .projectDashboard .contractSkipForm { margin-top: 1px; }
+.appChrome .projectDashboard .contractSkip {
+  min-height: 38px;
+  background: transparent;
+  color: var(--vision-muted);
+  font-size: var(--vision-font-small);
+}
+.appChrome .projectDashboard .contractEpisodeChoices {
+  grid-column: 2;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid rgba(210,216,239,.84);
+  border-radius: 11px;
+  background: rgba(248,249,255,.62);
+  padding: 8px 10px 9px;
+}
+.appChrome .projectDashboard .contractEpisodeChoices legend {
+  padding: 0 4px;
+  color: var(--vision-muted);
+  font-size: var(--vision-font-small);
+}
+.appChrome .projectDashboard .contractEpisodeChoices > div {
+  display: flex;
+  max-height: 92px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  overflow: auto;
+}
+.appChrome .projectDashboard .contractEpisodeChoices label {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(206,214,239,.9);
+  border-radius: 9px;
+  background: rgba(255,255,255,.78);
+  padding: 0 9px;
+  color: var(--vision-text);
+  font-size: var(--vision-font-small);
+  cursor: pointer;
+}
+.appChrome .projectDashboard .contractEpisodeChoices input { width: 15px; height: 15px; accent-color: var(--vision-primary); }
+.appChrome .projectDashboard .contractConfirmedItem {
+  overflow: hidden;
+  border: 1px solid rgba(211,217,237,.90);
+  border-radius: 11px;
+  background: rgba(255,255,255,.68);
+}
+.appChrome .projectDashboard .contractConfirmedItem > summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 42px;
+  padding: 0 11px;
+  cursor: pointer;
+  list-style: none;
+}
+.appChrome .projectDashboard .contractConfirmedItem > summary::-webkit-details-marker { display: none; }
+.appChrome .projectDashboard .contractConfirmedItem > summary > b {
+  overflow: hidden;
+  font-size: var(--vision-font-unit);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.appChrome .projectDashboard .contractConfirmedItem > summary > em,
+.appChrome .projectDashboard .contractConfirmedItem > summary > i {
+  color: var(--vision-good);
+  font-size: var(--vision-font-small);
+  font-style: normal;
+  white-space: nowrap;
+}
+.appChrome .projectDashboard .contractConfirmedItem > summary > i { color: var(--vision-primary); }
+.appChrome .projectDashboard .contractConfirmedItemBody { border-top: 1px solid var(--vision-line); padding: 12px; }
+.appChrome .projectDashboard .contractEditNote { margin: 0; }
+.appChrome .projectDashboard .contractConfirmedList { display: grid; gap: 7px; }
+.appChrome .projectDashboard .contractSection .cardHeader > em { font-size: var(--vision-font-unit); }
+
+@media (max-width: 900px) {
+  .appChrome .projectDashboard .contractScopeEditor { grid-template-columns: 1fr; }
+  .appChrome .projectDashboard .contractScopeHelp,
+  .appChrome .projectDashboard .contractEpisodeChoices { grid-column: auto; }
+}
+@media (max-width: 680px) {
+  .appChrome .projectDashboard .contractHead { grid-template-columns: 1fr; gap: 6px; }
+  .appChrome .projectDashboard .contractHead > em { text-align: left; }
+  .appChrome .projectDashboard .contractScopeControls,
+  .appChrome .projectDashboard .contractOptions { grid-template-columns: 1fr; }
+  .appChrome .projectDashboard .contractCustom { grid-column: auto; }
+  .appChrome .projectDashboard .contractConfirmedItem > summary { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .appChrome .projectDashboard .contractConfirmedItem > summary > em { grid-column: 2; grid-row: 2; }
+  .appChrome .projectDashboard .contractConfirmedItem > summary > i { grid-column: 3; grid-row: 1 / span 2; }
 }
 
 /* Runner settings */
@@ -1165,13 +1478,8 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   font-weight: 700;
 }
 .runnerConnectionStatus.connected { border-color: rgba(36,154,124,.20); background: rgba(237,250,246,.86); color: var(--vision-good); }
-.runnerConnectionStatus.attention { border-color: rgba(217,88,110,.22); background: rgba(255,244,246,.86); color: var(--vision-bad); }
 .runnerFieldGrid { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 12px; margin-top: 28px; }
 .runnerFieldGrid label, .runnerDeviceForm label { display: grid; min-width: 0; gap: 8px; color: var(--vision-text); font-size: var(--vision-font-small); font-weight: 700; }
-.runnerCredentialForm { display: flex; min-height: 0; flex: 1; flex-direction: column; }
-.runnerWideField { display: grid; min-width: 0; gap: 8px; margin-top: 12px; color: var(--vision-text); font-size: var(--vision-font-small); font-weight: 700; }
-.runnerCredentialMeta { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 12px; color: var(--vision-faint); font-size: var(--vision-font-caption); line-height: 1.5; }
-.runnerConnectionNote { margin: 12px 0 0; color: var(--vision-muted); font-size: var(--vision-font-caption); line-height: 1.55; }
 .runnerFieldGrid input, .runnerFieldGrid select, .runnerDeviceForm input {
   width: 100%;
   min-width: 0;
@@ -1186,55 +1494,17 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   font-size: var(--vision-font-small);
   transition: border-color var(--motion-fast), background var(--motion-fast), box-shadow var(--motion-fast);
 }
-.runnerWideField input {
-  width: 100%;
-  min-width: 0;
-  min-height: 46px;
-  border: 1px solid var(--vision-line);
-  border-radius: 13px;
-  outline: none;
-  background: rgba(249,250,255,.88);
-  padding: 0 13px;
-  color: var(--vision-text);
-  font: inherit;
-  font-size: var(--vision-font-small);
-  transition: border-color var(--motion-fast), background var(--motion-fast), box-shadow var(--motion-fast);
-}
 .runnerFieldGrid input:focus, .runnerFieldGrid select:focus, .runnerDeviceForm input:focus { border-color: rgba(103,94,228,.42); background: white; box-shadow: 0 0 0 4px rgba(103,94,228,.08); }
-.runnerWideField input:focus { border-color: rgba(103,94,228,.42); background: white; box-shadow: 0 0 0 4px rgba(103,94,228,.08); }
 .runnerActions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: auto; padding-top: 24px; }
 .runnerPrimaryButton, .runnerSecondaryButton { min-height: 42px; padding: 0 16px; font-size: var(--vision-font-small); font-weight: 750; cursor: pointer; }
 .runnerMessage { flex: 1 1 100%; margin: 0; font-size: var(--vision-font-small); line-height: 1.5; }
 .runnerMessage.success { color: var(--vision-good); }
 .runnerMessage.error { color: var(--vision-bad); }
 .runnerDeviceForm { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; margin-top: 28px; }
-.runnerCliCheckResult { display: grid; grid-template-columns: 8px minmax(0, 1fr); align-items: start; gap: 10px; margin-top: 16px; border: 1px solid var(--vision-line); border-radius: 13px; background: rgba(249,250,255,.65); padding: 12px 13px; }
-.runnerCliCheckResult strong { color: var(--vision-text); font-size: var(--vision-font-small); }
-.runnerCliCheckResult p { margin: 4px 0 0; color: var(--vision-muted); font-size: var(--vision-font-caption); line-height: 1.5; }
-.runnerCliCheckDot { width: 8px; height: 8px; margin-top: 4px; border-radius: 50%; background: var(--vision-faint); box-shadow: 0 0 0 4px rgba(139,145,170,.10); }
-.runnerCliCheckResult.pending .runnerCliCheckDot { background: #7567df; box-shadow: 0 0 0 4px rgba(117,103,223,.11); }
-.runnerCliCheckResult.success { border-color: rgba(36,154,124,.20); background: rgba(237,250,246,.62); }
-.runnerCliCheckResult.success .runnerCliCheckDot { background: var(--vision-good); box-shadow: 0 0 0 4px rgba(36,154,124,.11); }
-.runnerCliCheckResult.error { border-color: rgba(217,88,110,.22); background: rgba(255,244,246,.62); }
-.runnerCliCheckResult.error .runnerCliCheckDot { background: var(--vision-bad); box-shadow: 0 0 0 4px rgba(217,88,110,.11); }
-.runnerCliCheckResult.error p { color: var(--vision-bad); }
-.runnerCliStatusPanel { margin-top: 12px; border: 1px solid rgba(103,94,228,.16); border-radius: 16px; background: linear-gradient(135deg, rgba(247,248,255,.90), rgba(244,240,255,.68)); padding: 13px; }
-.runnerCliStatusHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.runnerCliStatusHeader > div { display: grid; gap: 3px; min-width: 0; }
-.runnerCliStatusEyebrow { color: #7567df; font-size: 8px; font-weight: 850; letter-spacing: .14em; }
-.runnerCliStatusHeader strong { color: var(--vision-text); font-size: var(--vision-font-small); }
-.runnerCliStatusHeader time { color: var(--vision-faint); font-size: var(--vision-font-caption); white-space: nowrap; }
-.runnerCliStatusNote { margin: 8px 0 0; color: var(--vision-muted); font-size: var(--vision-font-caption); line-height: 1.5; }
-.runnerCliStatusGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
-.runnerCliStatusGrid article { display: grid; min-width: 0; gap: 3px; border: 1px solid rgba(220,224,241,.86); border-radius: 11px; background: rgba(255,255,255,.56); padding: 9px 10px; }
-.runnerCliStatusGrid article > span { color: var(--vision-faint); font-size: 9px; }
-.runnerCliStatusGrid article > strong { overflow: hidden; color: var(--vision-text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.runnerCliStatusGrid article > small { overflow: hidden; color: var(--vision-muted); font-size: 8.5px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-.runnerCliStatusFooter { display: flex; flex-wrap: wrap; gap: 5px 14px; margin-top: 9px; color: var(--vision-muted); font-size: 9px; line-height: 1.4; }
-.runnerCliStatusWarning { margin: 8px 0 0; color: #b47d25; font-size: 9px; line-height: 1.45; }
-.runnerCliCheckForm { display: grid; gap: 10px; margin-top: auto; padding-top: 16px; }
-.runnerCliCheckForm > .runnerPrimaryButton { width: 100%; }
-.runnerPrimaryButton:disabled { cursor: wait; opacity: .62; }
+.runnerLauncherPanel { margin-top: 18px; border: 1px solid rgba(103,94,228,.16); border-radius: 16px; background: linear-gradient(135deg, rgba(247,248,255,.96), rgba(244,240,255,.82)); padding: 15px; }
+.runnerLauncherPanel > strong { color: var(--vision-text); font-size: var(--vision-font-small); }
+.runnerLauncherPanel > p { margin: 6px 0 0; color: var(--vision-muted); font-size: var(--vision-font-caption); line-height: 1.65; }
+.runnerLauncherPanel .runnerActions { margin-top: 0; padding-top: 14px; }
 
 .runnerChoiceGuide.studioCard, .runnerDeviceCard.studioCard { padding: var(--vision-panel-padding) !important; }
 .runnerSectionHeader { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
@@ -1254,6 +1524,44 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 .runnerRevokeButton { border: 1px solid rgba(217,88,110,.24); border-radius: 10px; background: rgba(255,244,246,.82); padding: 7px 11px; color: var(--vision-bad); font: inherit; font-size: var(--vision-font-caption); cursor: pointer; }
 .runnerDeviceEmpty { margin: 0; padding: 32px 0 12px; color: var(--vision-faint); font-size: var(--vision-font-small); text-align: center; }
 
+.runnerStatusCard.studioCard { padding: var(--vision-panel-padding) !important; }
+.runnerStatusHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+.runnerStatusHeader > div:first-child { min-width: 0; }
+.runnerStatusHeader h2 { margin: 5px 0 7px; font-size: var(--vision-font-heading); letter-spacing: -.025em; }
+.runnerStatusHeader p { max-width: 720px; margin: 0; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.7; }
+.runnerStatusActions { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; }
+.runnerStatusSyncState { border: 1px solid var(--vision-line); border-radius: 999px; background: rgba(241,244,250,.86); padding: 7px 11px; color: var(--vision-faint); font-size: var(--vision-font-caption); font-weight: 700; white-space: nowrap; }
+.runnerStatusSyncState.synced { border-color: rgba(36,154,124,.20); background: rgba(237,250,246,.86); color: var(--vision-good); }
+.runnerStatusRefresh { min-height: 38px; padding: 0 13px; color: var(--vision-primary); font-size: var(--vision-font-small); font-weight: 750; cursor: pointer; }
+.runnerStatusRefresh:disabled { cursor: wait; opacity: .65; }
+.runnerStatusDeviceGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; margin-top: 20px; }
+.runnerStatusDevice { min-width: 0; border: 1px solid rgba(103,94,228,.16); border-radius: 16px; background: linear-gradient(135deg, rgba(249,250,255,.88), rgba(244,240,255,.62)); padding: 15px; }
+.runnerStatusDevice > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.runnerStatusDevice > header > div { display: grid; min-width: 0; gap: 4px; }
+.runnerStatusDevice > header strong { overflow: hidden; color: var(--vision-text); font-size: var(--vision-font-small); text-overflow: ellipsis; white-space: nowrap; }
+.runnerStatusDevice > header small { color: var(--vision-muted); font-size: var(--vision-font-caption); }
+.runnerStatusDeviceReady { color: var(--vision-good); font-size: var(--vision-font-caption); font-weight: 750; white-space: nowrap; }
+.runnerStatusDevice.pending { display: flex; min-height: 92px; flex-direction: column; justify-content: center; }
+.runnerStatusDevice.pending > header { align-items: center; }
+.runnerStatusDevice.pending > header span { color: var(--vision-faint); font-size: var(--vision-font-caption); }
+.runnerStatusDevice.pending > p { margin: 7px 0 0; color: var(--vision-muted); font-size: var(--vision-font-small); }
+.runnerStatusIdentity { display: grid; gap: 4px; margin-top: 13px; border-top: 1px solid var(--vision-line); padding-top: 12px; }
+.runnerStatusIdentity strong { overflow: hidden; color: var(--vision-text); font-size: var(--vision-font-body); text-overflow: ellipsis; white-space: nowrap; }
+.runnerStatusIdentity span { color: var(--vision-muted); font-size: var(--vision-font-caption); }
+.runnerStatusMetricGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.runnerStatusMetric { display: grid; min-width: 0; gap: 4px; border: 1px solid rgba(103,94,228,.11); border-radius: 12px; background: rgba(255,255,255,.58); padding: 10px; }
+.runnerStatusMetric span { color: var(--vision-muted); font-size: var(--vision-font-caption); }
+.runnerStatusMetric strong { overflow: hidden; color: var(--vision-text); font-size: var(--vision-font-small); text-overflow: ellipsis; white-space: nowrap; }
+.runnerStatusMetric small { overflow: hidden; color: var(--vision-faint); font-size: var(--vision-font-caption); line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.runnerStatusWarning { margin: 11px 0 0; color: var(--vision-bad); font-size: var(--vision-font-caption); line-height: 1.55; }
+.runnerStatusEmpty { margin: 20px 0 0; border: 1px dashed rgba(103,94,228,.22); border-radius: 14px; background: rgba(249,250,255,.58); padding: 18px; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.7; text-align: center; }
+.runnerStatusPendingList { display: grid; gap: 10px; text-align: left; }
+.runnerStatusPendingDevice { display: flex; align-items: center; gap: 12px; }
+.runnerStatusPendingDevice > div { display: grid; gap: 3px; }
+.runnerStatusPendingDevice strong { color: var(--vision-text); font-size: var(--vision-font-small); }
+.runnerStatusPendingDevice small { color: var(--vision-muted); font-size: var(--vision-font-caption); }
+.runnerStatusPendingList > p { margin: 2px 0 0; border-top: 1px solid var(--vision-line); padding-top: 10px; color: var(--vision-faint); font-size: var(--vision-font-caption); }
+
 @media (max-width: 1180px) {
   .runnerConnectionGrid { grid-template-columns: 1fr; }
   .runnerConnectionCard.studioCard { min-height: 0; }
@@ -1263,9 +1571,12 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   .runnerHero.studioCard { grid-template-columns: 48px minmax(0, 1fr); }
   .runnerHeroIcon { width: 48px; height: 48px; border-radius: 16px; }
   .runnerHeroAssurance { grid-column: 1 / -1; border-top: 1px solid var(--vision-line); border-left: 0; padding-top: 14px; padding-left: 0; }
-  .runnerFieldGrid, .runnerDeviceForm, .runnerChoiceGrid { grid-template-columns: 1fr; }
+  .runnerFieldGrid, .runnerDeviceForm, .runnerChoiceGrid, .runnerStatusMetricGrid { grid-template-columns: 1fr; }
   .runnerSectionHeader { align-items: flex-start; flex-direction: column; }
   .runnerSectionHeader > p { text-align: left; }
+  .runnerStatusHeader { flex-direction: column; }
+  .runnerStatusActions { width: 100%; justify-content: space-between; }
+  .runnerStatusDeviceGrid { grid-template-columns: 1fr; }
 }
 
 /* Episode workspace legibility */
@@ -1352,28 +1663,11 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 .accountMenu > div small { font-size: var(--vision-font-caption); }
 .accountMenu button { font-size: var(--vision-font-caption); }
 
-/* 分集列表独立滚动，底部账号栏始终占据自己的空间，不遮住最后几集。 */
-.appChrome .appSidebar { height: calc(100dvh - 28px); min-height: 0; }
-.appChrome .sidebarEpisodes { flex: 1 1 auto; min-height: 0; overflow: hidden; }
-.appChrome .sidebarEpisodeScroller {
-  min-height: 0;
-  max-height: none;
-  flex: 1 1 auto;
-  overflow-y: auto;
-  overflow-x: hidden;
-  overscroll-behavior: contain;
-  padding-bottom: 12px;
-}
-.appChrome .sidebarFooter { flex: 0 0 auto; margin-top: 0; }
-
 /* 全剧工作台：流程状态不抢执行入口，分集与统计信息保持清晰层级。 */
-.appChrome .sidebarEpisodes > p { font-size: var(--vision-font-small); }
-.appChrome .sidebarEpisodes a { font-size: var(--vision-font-small); }
-.appChrome .sidebarEpisodes a b { font-size: var(--vision-font-small); }
-.appChrome .sidebarEpisodes a i { font-size: var(--vision-font-caption); }
-.appChrome .sidebarWorkflow span,
-.appChrome .sidebarWorkflow strong { font-size: var(--vision-font-small); }
-.appChrome .projectTopbarMeta { font-size: var(--vision-font-small); }
+.appChrome .sidebarEpisodes > p { font-size: 11px; }
+.appChrome .sidebarEpisodes a { font-size: 11px; }
+.appChrome .sidebarEpisodes a b { font-size: 10px; }
+.appChrome .sidebarEpisodes a i { font-size: 11px; }
 .appChrome .topbarNextStep {
   display: inline-flex;
   min-height: 32px;
@@ -1384,7 +1678,7 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   box-shadow: inset 0 1px #fff;
   color: #655bd6;
   padding: 0 12px;
-  font-size: var(--vision-font-small);
+  font-size: 11px;
   font-weight: 750;
   white-space: nowrap;
 }
@@ -1436,746 +1730,26 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   .appChrome .episodeStudioList > article { grid-template-columns: 48px minmax(0, 1fr); }
 }
 
-/* 全剧工作台密度：把流程状态压成一行，把规则和已锁定资料按需展开。 */
-.projectDashboard { gap: 16px; }
-.projectDashboard > .workflowGuidance {
-  grid-template-columns: 42px minmax(0, 1fr) auto auto;
-  gap: 12px;
-  min-height: 82px;
-  padding: 15px 18px;
-  border-radius: 18px;
-}
-.projectDashboard > .workflowGuidance::after { width: 160px; height: 160px; top: -92px; right: 7%; }
-.projectDashboard > .workflowGuidance .guidanceSignal { width: 42px; height: 42px; border-radius: 13px; font-size: 17px; }
-.projectDashboard > .workflowGuidance .guidanceCopy { min-width: 0; }
-.projectDashboard > .workflowGuidance .guidanceCopy p { margin-bottom: 2px; font-size: var(--vision-font-small); }
-.projectDashboard > .workflowGuidance .guidanceCopy h1 { margin-bottom: 3px; font-size: var(--vision-font-heading); line-height: 1.2; }
-.projectDashboard > .workflowGuidance .guidanceCopy > span {
-  display: block;
-  overflow: hidden;
-  max-width: min(720px, 100%);
-  color: var(--vision-muted);
-  font-size: var(--vision-font-small);
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.projectDashboard > .workflowGuidance .guidanceMeta { gap: 10px; padding-right: 0; font-size: var(--vision-font-caption); }
-.projectDashboard > .workflowGuidance .glassPrimary,
-.projectDashboard > .workflowGuidance form .glassPrimary {
-  min-height: 36px;
-  padding: 0 13px;
-  border-radius: 10px;
-  font-size: var(--vision-font-small);
-  white-space: nowrap;
-}
-.appChrome .topbarStatus i.attention { background: var(--vision-bad); box-shadow: 0 0 0 4px rgba(217,88,110,.11); }
-
-.projectDashboard > .batchMonitorCard {
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 22px;
-  min-height: 136px;
-  margin: 0;
-  border-radius: 18px;
-  padding: 17px 20px 17px 22px;
-}
-.projectDashboard > .batchMonitorCard .batchMonitorHeading { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-width: 0; }
-.projectDashboard > .batchMonitorCard .batchMonitorHeading > div { min-width: 0; }
- .projectDashboard > .batchMonitorCard .batchMonitorEyebrow { margin-bottom: 2px; font-size: var(--vision-font-caption); }
- .projectDashboard > .batchMonitorCard .batchMonitorCopy h2 { margin: 0; font-size: var(--vision-font-heading); line-height: 1.25; }
-.projectDashboard > .batchMonitorCard .batchMonitorSummary {
-  overflow: hidden;
-  margin-top: 6px;
-  color: var(--vision-muted);
-  font-size: var(--vision-font-small);
-  line-height: 1.5;
-  text-overflow: ellipsis;
-  white-space: normal;
-}
-.projectDashboard > .batchMonitorCard .batchMonitorStatusInline { flex: 0 0 auto; font-size: var(--vision-font-small); }
-.projectDashboard > .batchMonitorCard .batchMonitorMessage { margin-top: 8px !important; font-size: var(--vision-font-small) !important; line-height: 1.5; }
-.projectDashboard > .batchMonitorCard .batchMonitorDetails {
-  margin-top: 9px;
-  border-top: 1px solid rgba(222,225,241,.72);
-  padding-top: 7px;
-}
-.projectDashboard > .batchMonitorCard .batchMonitorDetails > summary {
-  color: var(--vision-faint);
-  font-size: var(--vision-font-small);
-  cursor: pointer;
-  list-style: none;
-}
-.projectDashboard > .batchMonitorCard .batchMonitorDetails > summary::-webkit-details-marker { display: none; }
-.projectDashboard > .batchMonitorCard .batchMonitorDetails > summary::before { margin-right: 5px; color: #7567df; content: "＋"; font-size: 11px; }
-.projectDashboard > .batchMonitorCard .batchMonitorDetails[open] > summary::before { content: "−"; }
-.projectDashboard > .batchMonitorCard .batchMonitorDetailsBody { padding-top: 7px; }
-.projectDashboard > .batchMonitorCard .batchMonitorDetailsBody > p { margin: 0; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.55; }
-.projectDashboard > .batchMonitorCard .batchMonitorMeta { gap: 6px 14px; margin-top: 9px; font-size: var(--vision-font-small); }
-.projectDashboard > .batchMonitorCard .batchMonitorMeta span::before { width: 4px; height: 4px; }
-.projectDashboard > .batchMonitorCard .batchMonitorActions { min-width: 198px; gap: 0; }
-.projectDashboard > .batchMonitorCard .batchMonitorButton { min-height: 40px; border-radius: 11px; padding: 0 14px; font-size: var(--vision-font-small); }
-
-.projectDashboard > .studioSection { padding: 14px; border-radius: 20px; }
-.projectDashboard > .studioSection > .sectionHeading { margin-bottom: 10px; padding-top: 2px; }
-.projectDashboard > .studioSection > .sectionHeading h2 { font-size: var(--vision-font-heading); }
-.projectDashboard > .studioSection > .sectionHeading p { font-size: var(--vision-font-small); }
-
-/* 工作台文字契约：功能性说明、状态和按钮统一使用可读的辅助字号。 */
-.projectDashboard > .studioSection .foundationControlHeader strong { font-size: var(--vision-font-unit); }
-.projectDashboard > .studioSection .foundationControlHeader span,
-.projectDashboard > .studioSection .foundationRunnerNote { font-size: var(--vision-font-small); }
-.projectDashboard > .studioSection .foundationRunAllButton { font-size: var(--vision-font-small); }
-.projectDashboard > .studioSection .foundationRole > span:first-child { font-size: var(--vision-font-caption); }
-.projectDashboard > .studioSection .foundationRole strong { font-size: var(--vision-font-body); }
-.projectDashboard > .studioSection .foundationRole small,
-.projectDashboard > .studioSection .foundationRole em,
-.projectDashboard > .studioSection .foundationCardAction { font-size: var(--vision-font-small); }
-.projectDashboard > .studioSection .maintenancePanel > summary,
-.projectDashboard > .studioSection .maintenancePanel p { font-size: var(--vision-font-small); }
-
-.projectDashboard > .studioSection > .contractSectionCompact {
-  margin: 0 0 10px;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  padding: 0;
-}
-.contractCompactDetails {
-  border: 1px solid rgba(220,224,241,.84);
-  border-radius: 12px;
-  background: rgba(255,255,255,.48);
-}
-.contractCompactDetails > summary {
-  display: flex;
-  min-height: 42px;
-  align-items: center;
-  gap: 9px;
-  padding: 0 13px;
-  color: var(--vision-muted);
-  cursor: pointer;
-  list-style: none;
-}
-.contractCompactDetails > summary::-webkit-details-marker { display: none; }
-.contractCompactDetails > summary::after { margin-left: auto; color: #7567df; content: "＋"; font-size: 13px; }
-.contractCompactDetails[open] > summary::after { content: "−"; }
-.contractCompactDetails > summary > span { color: #7567df; font-size: var(--vision-font-caption); font-weight: 850; letter-spacing: .12em; }
-.contractCompactDetails > summary > b { color: var(--vision-text); font-size: var(--vision-font-small); }
-.contractCompactDetails > summary > em { color: var(--vision-good); font-size: var(--vision-font-caption); font-style: normal; white-space: nowrap; }
-.contractCompactDetails > summary > i { color: var(--vision-faint); font-size: var(--vision-font-caption); font-style: normal; }
-.contractCompactBody { border-top: 1px solid var(--vision-line); padding: 8px 13px 9px; }
-.contractCompactBody p { margin: 4px 0; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.45; }
-.contractCompactBody p b { color: var(--vision-good); }
-
-@media (max-width: 1320px) {
-  .projectDashboard > .workflowGuidance { grid-template-columns: 42px minmax(0, 1fr) auto; }
-}
-
-@media (max-width: 760px) {
-  .projectDashboard { gap: 12px; }
-  .projectDashboard > .workflowGuidance {
-    grid-template-columns: 40px minmax(0, 1fr);
-    min-height: 0;
-    gap: 10px;
-    padding: 12px;
-  }
-  .projectDashboard > .workflowGuidance .guidanceMeta,
-  .projectDashboard > .workflowGuidance .glassPrimary,
-  .projectDashboard > .workflowGuidance form { grid-column: 1 / -1; }
-  .projectDashboard > .workflowGuidance .guidanceCopy > span { white-space: normal; }
-  .projectDashboard > .batchMonitorCard {
-    grid-template-columns: 1fr;
-    gap: 10px;
-    padding: 12px;
-    min-height: 0;
-  }
-  .projectDashboard > .batchMonitorCard .batchMonitorHeading { align-items: flex-start; }
-  .projectDashboard > .batchMonitorCard .batchMonitorSummary { white-space: normal; }
-  .projectDashboard > .batchMonitorCard .batchMonitorActions { min-width: 0; }
-  .projectDashboard > .studioSection { padding: 12px; }
-  .contractCompactDetails > summary { min-height: 40px; gap: 6px; padding: 0 10px; }
-  .contractCompactDetails > summary > span { display: none; }
-}
-
-@media (max-width: 760px) {
-  .runnerCliStatusGrid { grid-template-columns: 1fr; }
-  .runnerCliStatusHeader { align-items: flex-start; flex-direction: column; }
-  .runnerCliStatusGrid article > strong, .runnerCliStatusGrid article > small { white-space: normal; }
-}
-
-/* 全剧工作台：完成态只保留轻量状态，重新生成归入低频维护操作。 */
-.projectDashboard > .studioSection .foundationControlHeader .foundationHeaderState {
-  color: var(--vision-good);
-  font-size: var(--vision-font-small);
-  font-weight: 800;
-  line-height: 1.2;
-  white-space: nowrap;
-}
-.projectDashboard > .studioSection .foundationControlHeader .foundationHeaderState.running { color: #6259d5; }
-
-/* 批量状态与操作按钮保持同一水平线，避免状态漂在卡片上方。 */
-.projectDashboard > .batchMonitorCard .batchMonitorActions {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 14px;
-}
-.projectDashboard > .batchMonitorCard .batchMonitorActions > form { flex: 0 0 auto; }
-.projectDashboard > .batchMonitorCard .batchMonitorActions > form .batchMonitorButton { width: auto; min-width: 198px; }
-
-/* 80 集按十集分组，默认只展开当前需要继续处理的分组。 */
-.episodeStudioGroups { display: grid; gap: 10px; }
-.episodeStudioGroup {
-  overflow: hidden;
-  border: 1px solid rgba(220,224,241,.84);
-  border-radius: 16px;
-  background: rgba(255,255,255,.38);
-}
-.episodeStudioGroup > summary {
-  display: flex;
-  min-height: 46px;
-  align-items: center;
-  gap: 10px;
-  padding: 0 15px;
-  color: var(--vision-text);
-  cursor: pointer;
-  list-style: none;
-}
-.episodeStudioGroup > summary::-webkit-details-marker { display: none; }
-.episodeStudioGroup > summary::before {
-  width: 16px;
-  color: #7567df;
-  content: "＋";
-  font-size: 13px;
-  font-weight: 700;
-  text-align: center;
-}
-.episodeStudioGroup[open] > summary::before { content: "−"; }
-.episodeStudioGroupTitle { font-size: var(--vision-font-unit); font-weight: 800; }
-.episodeStudioGroupMeta { margin-left: auto; color: var(--vision-muted); font-size: var(--vision-font-small); white-space: nowrap; }
-.episodeStudioGroup > .episodeStudioList {
-  border-top: 1px solid var(--vision-line);
-  padding: 10px;
-}
-
-/* 桌面双栏：两张资料卡由同一网格行拉齐，资产超出时只在表格内部滚动。 */
-@media (min-width: 1321px) {
-  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns { align-items: stretch; }
-  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns > .studioCard {
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-  }
-  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns > .studioCard > .cardHeader { flex: 0 0 auto; }
-  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns > .studioCard > .bibleViewer,
-  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns > .studioCard > .assetIndexTabs {
-    min-height: 0;
-    flex: 1 1 auto;
-  }
-  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns > .studioCard > .bibleViewer,
-  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns > .studioCard > .biblePlaceholder { flex: 0 0 auto; }
-  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns > .studioCard > .assetIndexTabs {
-    display: flex;
-    flex-direction: column;
-  }
-  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns .assetIndexTabs .compactTable {
-    height: auto;
-    min-height: 0;
-    max-height: none;
-    flex: 1 1 auto;
-    overflow: auto;
-  }
-}
-
-@media (max-width: 760px) {
-  .projectDashboard > .batchMonitorCard .batchMonitorActions {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .projectDashboard > .batchMonitorCard .batchMonitorActions > .batchMonitorStatus { justify-content: flex-start; }
-  .projectDashboard > .batchMonitorCard .batchMonitorActions > form,
-  .projectDashboard > .batchMonitorCard .batchMonitorActions > form .batchMonitorButton { width: 100%; }
-  .episodeStudioGroup > summary { min-height: 44px; padding: 0 11px; }
-  .episodeStudioGroupMeta { font-size: var(--vision-font-caption); }
-  .episodeStudioGroup > .episodeStudioList { padding: 8px; }
-}
-
-/* 表现规范：沿用全局四档字号，避免确认区出现一套更小的“孤岛字号”。 */
-.appChrome .projectDashboard .contractSection {
-  color: var(--vision-text);
-}
-.appChrome .projectDashboard .contractSectionCompact {
-  margin: 0 0 10px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-}
-.appChrome .projectDashboard .contractHint {
-  margin: 8px 0 14px;
-  color: var(--vision-muted);
-  font-size: var(--vision-font-small);
-  line-height: 1.55;
-}
-.appChrome .projectDashboard .contractCard {
-  position: relative;
-  margin: 0 0 12px;
-  border: 1px solid rgba(210,216,239,.92);
-  border-radius: 16px;
-  background: rgba(255,255,255,.62);
-  box-shadow: var(--vision-shadow-sm);
-  padding: 16px 18px;
-}
-.appChrome .projectDashboard .contractHead {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 10px;
-}
-.appChrome .projectDashboard .contractHead > span,
-.appChrome .projectDashboard .contractCategoryBadge {
-  flex: 0 0 auto;
-  border: 1px solid rgba(189,129,40,.34);
-  border-radius: 999px;
-  background: rgba(255,249,231,.72);
-  padding: 3px 9px;
-  color: var(--vision-warn);
-  font-size: var(--vision-font-caption);
-  line-height: 1.2;
-}
-.appChrome .projectDashboard .contractHead > b {
-  min-width: 0;
-  color: var(--vision-text);
-  font-size: var(--vision-font-body);
-  line-height: 1.45;
-}
-.appChrome .projectDashboard .contractHead > em {
-  margin-left: 0;
-  color: var(--vision-muted);
-  font-size: var(--vision-font-small);
-  font-style: normal;
-  line-height: 1.45;
-  text-align: right;
-  white-space: nowrap;
-}
-.appChrome .projectDashboard .contractEvidence,
-.appChrome .projectDashboard .contractConfirmedQuestion {
-  margin: 9px 0 0;
-  color: var(--vision-muted);
-  font-size: var(--vision-font-small);
-  line-height: 1.55;
-}
-.appChrome .projectDashboard .contractDecisionForm {
-  display: grid;
-  gap: 11px;
-  margin-top: 14px;
-  border-top: 1px solid var(--vision-line);
-  padding-top: 13px;
-}
-.appChrome .projectDashboard .contractScopeEditor {
-  display: grid;
-  grid-template-columns: minmax(180px, .55fr) minmax(360px, 1.45fr);
-  align-items: start;
-  gap: 10px 18px;
-}
-.appChrome .projectDashboard .contractScopeLabel {
-  display: grid;
-  gap: 3px;
-}
-.appChrome .projectDashboard .contractScopeLabel strong {
-  color: var(--vision-text);
-  font-size: var(--vision-font-unit);
-  line-height: 1.35;
-}
-.appChrome .projectDashboard .contractScopeLabel span,
-.appChrome .projectDashboard .contractScopeHelp,
-.appChrome .projectDashboard .contractOptionsLabel,
-.appChrome .projectDashboard .contractEditNote {
-  color: var(--vision-muted);
-  font-size: var(--vision-font-small);
-  line-height: 1.5;
-}
-.appChrome .projectDashboard .contractScopeControls {
-  display: grid;
-  grid-template-columns: minmax(250px, .9fr) minmax(220px, 1.1fr);
-  gap: 8px;
-}
-.appChrome .projectDashboard .contractScopeControls select,
-.appChrome .projectDashboard .contractScopeControls input,
-.appChrome .projectDashboard .contractCustom input {
-  min-width: 0;
-  min-height: 38px;
-  border: 1px solid rgba(199,207,233,.96);
-  border-radius: 10px;
-  background: rgba(255,255,255,.78);
-  color: var(--vision-text);
-  font: inherit;
-  font-size: var(--vision-font-small);
-  outline: 0;
-  padding: 0 11px;
-}
-.appChrome .projectDashboard .contractScopeControls select:focus,
-.appChrome .projectDashboard .contractScopeControls input:focus,
-.appChrome .projectDashboard .contractCustom input:focus {
-  border-color: var(--vision-primary);
-  box-shadow: 0 0 0 3px rgba(103,94,228,.12);
-}
-.appChrome .projectDashboard .contractScopeHelp {
-  grid-column: 2;
-  margin: -3px 0 0;
-}
-.appChrome .projectDashboard .contractOptionsLabel {
-  margin: 0;
-}
-.appChrome .projectDashboard .contractOptions {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-  align-items: stretch;
-  gap: 8px;
-}
-.appChrome .projectDashboard .contractOptions > button,
-.appChrome .projectDashboard .contractCustom > button,
-.appChrome .projectDashboard .contractSkip {
-  min-height: 42px;
-  border: 1px solid rgba(198,207,235,.98);
-  border-radius: 11px;
-  background: rgba(250,251,255,.90);
-  color: var(--vision-text);
-  cursor: pointer;
-  font: inherit;
-  font-size: var(--vision-font-small);
-  line-height: 1.35;
-  padding: 8px 11px;
-  text-align: left;
-  transition: border-color var(--motion-fast), box-shadow var(--motion-fast), transform var(--motion-fast);
-}
-.appChrome .projectDashboard .contractOptions > button:hover,
-.appChrome .projectDashboard .contractCustom > button:hover,
-.appChrome .projectDashboard .contractSkip:hover {
-  border-color: var(--vision-primary);
-  box-shadow: 0 7px 18px rgba(88,79,189,.10);
-  transform: translateY(-1px);
-}
-.appChrome .projectDashboard .contractOptions > button {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-.appChrome .projectDashboard .contractOptions > button b {
-  flex: 0 0 auto;
-  color: var(--vision-primary);
-  font-size: var(--vision-font-unit);
-}
-.appChrome .projectDashboard .contractOptions > button span {
-  min-width: 0;
-}
-.appChrome .projectDashboard .contractCustom {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-}
-.appChrome .projectDashboard .contractCustom > button {
-  border-color: rgba(103,94,228,.34);
-  background: linear-gradient(135deg, rgba(242,241,255,.96), rgba(249,242,255,.96));
-  color: var(--vision-primary);
-  white-space: nowrap;
-}
-.appChrome .projectDashboard .contractSkipForm {
-  margin-top: 1px;
-}
-.appChrome .projectDashboard .contractSkip {
-  min-height: 34px;
-  background: transparent;
-  color: var(--vision-muted);
-  font-size: var(--vision-font-small);
-  padding: 5px 10px;
-}
-.appChrome .projectDashboard .contractConfirmed {
-  margin-top: 12px;
-  border: 1px solid rgba(210,216,239,.88);
-  border-radius: 14px;
-  background: rgba(255,255,255,.43);
-}
-.appChrome .projectDashboard .contractConfirmed > summary,
-.appChrome .projectDashboard .contractCompactDetails > summary {
-  display: flex;
-  min-height: 44px;
-  align-items: center;
-  gap: 9px;
-  padding: 0 14px;
-  color: var(--vision-text);
-  cursor: pointer;
-  font-size: var(--vision-font-unit);
-  font-weight: 800;
-  list-style: none;
-}
-.appChrome .projectDashboard .contractConfirmed > summary::-webkit-details-marker,
-.appChrome .projectDashboard .contractCompactDetails > summary::-webkit-details-marker,
-.appChrome .projectDashboard .contractConfirmedItem > summary::-webkit-details-marker { display: none; }
-.appChrome .projectDashboard .contractConfirmed > summary::after,
-.appChrome .projectDashboard .contractCompactDetails > summary::after {
-  margin-left: auto;
-  color: var(--vision-primary);
-  content: "＋";
-  font-size: var(--vision-font-unit);
-}
-.appChrome .projectDashboard .contractConfirmed[open] > summary::after,
-.appChrome .projectDashboard .contractCompactDetails[open] > summary::after { content: "−"; }
-.appChrome .projectDashboard .contractConfirmed > summary span {
-  color: var(--vision-muted);
-  font-size: var(--vision-font-small);
-  font-weight: 500;
-}
-.appChrome .projectDashboard .contractConfirmedList {
-  display: grid;
-  gap: 7px;
-  border-top: 1px solid var(--vision-line);
-  padding: 10px 12px 12px;
-}
-.appChrome .projectDashboard .contractConfirmedItem {
-  overflow: hidden;
-  border: 1px solid rgba(211,217,237,.90);
-  border-radius: 11px;
-  background: rgba(255,255,255,.68);
-}
-.appChrome .projectDashboard .contractConfirmedItem > summary {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 9px;
-  min-height: 42px;
-  padding: 0 11px;
-  cursor: pointer;
-  list-style: none;
-}
-.appChrome .projectDashboard .contractConfirmedItem > summary > b {
-  overflow: hidden;
-  color: var(--vision-text);
-  font-size: var(--vision-font-small);
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.appChrome .projectDashboard .contractConfirmedItem > summary > em {
-  color: var(--vision-good);
-  font-size: var(--vision-font-small);
-  font-style: normal;
-  white-space: nowrap;
-}
-.appChrome .projectDashboard .contractConfirmedItem > summary > i {
-  color: var(--vision-primary);
-  font-size: var(--vision-font-small);
-  font-style: normal;
-  white-space: nowrap;
-}
-.appChrome .projectDashboard .contractConfirmedItemBody {
-  border-top: 1px solid var(--vision-line);
-  padding: 12px;
-}
-.appChrome .projectDashboard .contractConfirmedItemBody .contractDecisionForm {
-  margin-top: 11px;
-}
-.appChrome .projectDashboard .contractEditNote {
-  margin: 0;
-}
-.appChrome .projectDashboard .contractCompactDetails {
-  border: 1px solid rgba(210,216,239,.84);
-  border-radius: 12px;
-  background: rgba(255,255,255,.48);
-}
-.appChrome .projectDashboard .contractCompactDetails > summary {
-  min-height: 44px;
-  color: var(--vision-muted);
-}
-.appChrome .projectDashboard .contractCompactDetails > summary > span:first-child {
-  color: var(--vision-primary);
-  font-size: var(--vision-font-caption);
-  letter-spacing: .12em;
-}
-.appChrome .projectDashboard .contractCompactDetails > summary > b {
-  color: var(--vision-text);
-  font-size: var(--vision-font-small);
-}
-.appChrome .projectDashboard .contractCompactDetails > summary > em,
-.appChrome .projectDashboard .contractCompactDetails > summary > i {
-  color: var(--vision-good);
-  font-size: var(--vision-font-small);
-  font-style: normal;
-  white-space: nowrap;
-}
-.appChrome .projectDashboard .contractCompactDetails > summary > i { color: var(--vision-muted); }
-.appChrome .projectDashboard .contractCompactBody {
-  border-top: 1px solid var(--vision-line);
-  padding: 10px 12px 12px;
-}
-.appChrome .projectDashboard .contractCompactBody .contractConfirmedList {
-  border-top: 0;
-  padding: 0;
-}
-
-@media (max-width: 900px) {
-  .appChrome .projectDashboard .contractScopeEditor { grid-template-columns: 1fr; }
-  .appChrome .projectDashboard .contractScopeHelp { grid-column: auto; }
-}
-
-@media (max-width: 680px) {
-  .appChrome .projectDashboard .contractHead { grid-template-columns: 1fr; gap: 6px; }
-  .appChrome .projectDashboard .contractHead > em { text-align: left; }
-  .appChrome .projectDashboard .contractScopeControls { grid-template-columns: 1fr; }
-  .appChrome .projectDashboard .contractConfirmedItem > summary { grid-template-columns: auto minmax(0, 1fr) auto; }
-  .appChrome .projectDashboard .contractConfirmedItem > summary > em { grid-column: 2; grid-row: 2; }
-  .appChrome .projectDashboard .contractConfirmedItem > summary > i { grid-column: 3; grid-row: 1 / span 2; }
-}
-
-/* 表现规范可读性：正文只使用 small/unit/body 三档，caption 仅保留给标签。 */
-.appChrome .projectDashboard .contractSection .cardHeader > em {
-  color: var(--vision-primary);
-  font-size: var(--vision-font-unit);
-  line-height: 1.4;
-}
-.appChrome .projectDashboard .contractSection .contractHint {
-  color: var(--vision-muted);
-  font-size: var(--vision-font-body);
-  line-height: 1.6;
-}
-.appChrome .projectDashboard .contractSection .contractCard {
-  padding: 20px 22px;
-}
-.appChrome .projectDashboard .contractSection .contractHead > span,
-.appChrome .projectDashboard .contractSection .contractCategoryBadge {
-  font-size: var(--vision-font-small);
-}
-.appChrome .projectDashboard .contractSection .contractHead > b {
-  font-size: var(--vision-font-body);
-  line-height: 1.5;
-}
-.appChrome .projectDashboard .contractSection .contractHead > em {
-  font-size: var(--vision-font-unit);
-}
-.appChrome .projectDashboard .contractSection .contractEvidence,
-.appChrome .projectDashboard .contractSection .contractConfirmedQuestion {
-  font-size: var(--vision-font-unit);
-  line-height: 1.6;
-}
-.appChrome .projectDashboard .contractSection .contractScopeLabel strong {
-  font-size: var(--vision-font-body);
-}
-.appChrome .projectDashboard .contractSection .contractScopeLabel span,
-.appChrome .projectDashboard .contractSection .contractScopeHelp,
-.appChrome .projectDashboard .contractSection .contractOptionsLabel,
-.appChrome .projectDashboard .contractSection .contractEditNote {
-  font-size: var(--vision-font-small);
-  line-height: 1.6;
-}
-.appChrome .projectDashboard .contractSection .contractScopeControls select,
-.appChrome .projectDashboard .contractSection .contractScopeControls input,
-.appChrome .projectDashboard .contractSection .contractCustom input {
-  min-height: 42px;
-  font-size: var(--vision-font-unit);
-}
-.appChrome .projectDashboard .contractSection .contractOptions {
-  /* 选项文案通常较长，桌面端固定为两列，避免 4 个方案和自定义输入被挤成一行。 */
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-.appChrome .projectDashboard .contractSection .contractOptions > button,
-.appChrome .projectDashboard .contractSection .contractCustom > button {
-  min-height: 60px;
-  font-size: var(--vision-font-unit);
-  line-height: 1.45;
-  padding: 10px 13px;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-.appChrome .projectDashboard .contractSection .contractOptions > button b {
-  font-size: var(--vision-font-body);
-}
-.appChrome .projectDashboard .contractSection .contractOptions > button span {
-  display: block;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-.appChrome .projectDashboard .contractSection .contractCustom {
-  grid-column: 1 / -1;
-  min-width: 0;
-}
-.appChrome .projectDashboard .contractSection .contractCustom > button {
-  white-space: nowrap;
-}
-.appChrome .projectDashboard .contractSection .contractSkip {
-  min-height: 38px;
-  font-size: var(--vision-font-small);
-}
-.appChrome .projectDashboard .contractEpisodeChoices {
-  grid-column: 2;
-  min-width: 0;
-  margin: 0;
-  border: 1px solid rgba(210,216,239,.84);
-  border-radius: 11px;
-  background: rgba(248,249,255,.62);
-  padding: 8px 10px 9px;
-}
-.appChrome .projectDashboard .contractEpisodeChoices legend {
-  padding: 0 4px;
-  color: var(--vision-muted);
-  font-size: var(--vision-font-small);
-  line-height: 1.4;
-}
-.appChrome .projectDashboard .contractEpisodeChoices > div {
-  display: flex;
-  max-height: 92px;
-  flex-wrap: wrap;
-  gap: 6px 8px;
-  overflow: auto;
-  padding-top: 2px;
-}
-.appChrome .projectDashboard .contractEpisodeChoices label {
-  display: inline-flex;
-  min-height: 32px;
-  align-items: center;
-  gap: 6px;
-  border: 1px solid rgba(206,214,239,.9);
-  border-radius: 9px;
-  background: rgba(255,255,255,.78);
-  padding: 0 9px;
-  color: var(--vision-text);
-  font-size: var(--vision-font-small);
-  cursor: pointer;
-}
-.appChrome .projectDashboard .contractEpisodeChoices label:has(input:checked) {
-  border-color: rgba(103,94,228,.42);
-  background: rgba(241,240,255,.92);
-  color: var(--vision-primary);
-}
-.appChrome .projectDashboard .contractEpisodeChoices input {
-  width: 15px;
-  height: 15px;
-  accent-color: var(--vision-primary);
-}
-.appChrome .projectDashboard .contractConfirmed > summary,
-.appChrome .projectDashboard .contractCompactDetails > summary {
-  min-height: 48px;
-  font-size: var(--vision-font-unit);
-}
-.appChrome .projectDashboard .contractConfirmed > summary span {
-  font-size: var(--vision-font-small);
-}
-.appChrome .projectDashboard .contractConfirmedItem > summary > b {
-  font-size: var(--vision-font-unit);
-}
-.appChrome .projectDashboard .contractConfirmedItem > summary > em,
-.appChrome .projectDashboard .contractConfirmedItem > summary > i,
-.appChrome .projectDashboard .contractCompactDetails > summary > em,
-.appChrome .projectDashboard .contractCompactDetails > summary > i {
-  font-size: var(--vision-font-small);
-}
-.appChrome .projectDashboard .contractCompactDetails > summary > b {
-  font-size: var(--vision-font-unit);
-}
-@media (max-width: 900px) {
-  .appChrome .projectDashboard .contractEpisodeChoices { grid-column: auto; }
-  .appChrome .projectDashboard .contractSection .contractOptions { grid-template-columns: 1fr; }
-  .appChrome .projectDashboard .contractSection .contractCustom { grid-column: auto; }
-}
+/* Final page-level overrides kept last so legacy density rules cannot undo them. */
+.appChrome .appSidebar { height: calc(100dvh - 28px); min-height: 0; }
+.appChrome .sidebarEpisodes { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.appChrome .sidebarEpisodeScroller {
+  min-height: 0;
+  max-height: none;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding-bottom: 12px;
+}
+.appChrome .sidebarFooter { flex: 0 0 auto; margin-top: 0; }
+.appChrome .sidebarEpisodes > p,
+.appChrome .sidebarEpisodes a,
+.appChrome .sidebarEpisodes a b,
+.appChrome .sidebarWorkflow span,
+.appChrome .sidebarWorkflow strong { font-size: var(--vision-font-small); }
+.appChrome .sidebarEpisodes a i { font-size: var(--vision-font-caption); }
+.assetExportButton { white-space: nowrap; }
+.appChrome .foundationReferenceGrid { align-items: stretch; }
+.appChrome .episodeStudioGroup > summary > span { font-size: var(--vision-font-unit); }
+.appChrome .episodeStudioGroup > summary > em { font-size: var(--vision-font-small); }

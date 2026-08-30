@@ -1,6 +1,6 @@
 const encoder = new TextEncoder();
 
-export const PASSWORD_ITERATIONS = 600_000;
+export const PASSWORD_ITERATIONS = 100_000;
 export const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 
 const PASSWORD_ALGORITHM = "pbkdf2-sha256";
@@ -9,12 +9,19 @@ const PASSWORD_DIGEST_BYTES = 32;
 const SESSION_TOKEN_BYTES = 32;
 
 function encodeBase64Url(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("base64url");
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
 function decodeBase64Url(value: string): Uint8Array<ArrayBuffer> | null {
+  if (!/^[A-Za-z0-9_-]*$/.test(value) || value.length % 4 === 1) return null;
   try {
-    return Uint8Array.from(Buffer.from(value, "base64url"));
+    const base64 = value.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytes;
   } catch {
     return null;
   }
@@ -23,37 +30,22 @@ function decodeBase64Url(value: string): Uint8Array<ArrayBuffer> | null {
 async function derivePasswordDigest(
   password: string,
   salt: Uint8Array<ArrayBuffer>,
-  iterations = PASSWORD_ITERATIONS
-): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(password),
-    { name: "PBKDF2" },
-    false,
-    ["deriveBits"]
-  );
+  iterations = PASSWORD_ITERATIONS,
+): Promise<Uint8Array<ArrayBuffer>> {
+  const key = await crypto.subtle.importKey("raw", encoder.encode(password), { name: "PBKDF2" }, false, ["deriveBits"]);
   const digest = await crypto.subtle.deriveBits(
-    {
-      name: "PBKDF2",
-      hash: "SHA-256",
-      salt,
-      iterations
-    },
+    { name: "PBKDF2", hash: "SHA-256", salt, iterations },
     key,
-    PASSWORD_DIGEST_BYTES * 8
+    PASSWORD_DIGEST_BYTES * 8,
   );
-
   return new Uint8Array(digest);
 }
 
 function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-
-  let difference = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    difference |= left[index] ^ right[index];
+  let difference = left.length ^ right.length;
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    difference |= (left[index] ?? 0) ^ (right[index] ?? 0);
   }
   return difference === 0;
 }
@@ -65,19 +57,12 @@ export function normalizeUsername(value: string): string {
 export async function hashPassword(password: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(PASSWORD_SALT_BYTES));
   const digest = await derivePasswordDigest(password, salt);
-  return [
-    PASSWORD_ALGORITHM,
-    PASSWORD_ITERATIONS,
-    encodeBase64Url(salt),
-    encodeBase64Url(digest)
-  ].join("$");
+  return [PASSWORD_ALGORITHM, PASSWORD_ITERATIONS, encodeBase64Url(salt), encodeBase64Url(digest)].join("$");
 }
 
 export async function verifyPassword(password: string, storedHash: string): Promise<boolean> {
   const [algorithm, iterationText, saltText, digestText, extra] = storedHash.split("$");
-  if (extra !== undefined || algorithm !== PASSWORD_ALGORITHM) {
-    return false;
-  }
+  if (extra !== undefined || algorithm !== PASSWORD_ALGORITHM) return false;
 
   const iterations = Number(iterationText);
   const salt = decodeBase64Url(saltText ?? "");
@@ -90,8 +75,7 @@ export async function verifyPassword(password: string, storedHash: string): Prom
     return false;
   }
 
-  const actualDigest = await derivePasswordDigest(password, salt, iterations);
-  return constantTimeEqual(actualDigest, expectedDigest);
+  return constantTimeEqual(await derivePasswordDigest(password, salt, iterations), expectedDigest);
 }
 
 export function createSessionToken(): string {
@@ -104,16 +88,11 @@ export async function hashSessionToken(token: string): Promise<string> {
 }
 
 export function sanitizeReturnTo(value: string | null | undefined): string {
-  if (!value || !value.startsWith("/") || value.startsWith("//") || /\\|%5c/i.test(value)) {
-    return "/";
-  }
-
+  if (!value || !value.startsWith("/") || value.startsWith("//") || /\\|%5c/i.test(value)) return "/";
   try {
     const base = new URL("https://director.local");
     const destination = new URL(value, base);
-    if (destination.origin !== base.origin) {
-      return "/";
-    }
+    if (destination.origin !== base.origin) return "/";
     return `${destination.pathname}${destination.search}${destination.hash}`;
   } catch {
     return "/";

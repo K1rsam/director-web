@@ -27,7 +27,7 @@ export function AppChrome({
   primaryAction?: ReactNode;
   utility?: ReactNode;
   children: ReactNode;
-}) {
+  }) {
   const productionEpisodes = episodes.filter((episode) => episode.number >= 1);
   const projectLibraryHref = projectId ? `/?projectId=${encodeURIComponent(projectId)}` : "/";
   const projectWorkbenchHref = projectId ? `/projects/${encodeURIComponent(projectId)}` : null;
@@ -49,9 +49,7 @@ export function AppChrome({
           <Link href={runnerHref} className={activeSection === "runner" ? "active" : ""}><span className="navIcon" aria-hidden="true">↯</span><span className="navText">API 与 CLI</span></Link>
         </nav>
 
-        {activeSection !== "projects" && projectId && productionEpisodes.length ? (
-          <EpisodeSidebar projectId={projectId} episodes={productionEpisodes} activeEpisodeId={activeEpisodeId} />
-        ) : null}
+        {activeSection !== "projects" && projectId && productionEpisodes.length ? <EpisodeSidebar projectId={projectId} episodes={productionEpisodes} activeEpisodeId={activeEpisodeId} /> : null}
 
         <div className="sidebarFooter">
           <div className="sidebarWorkflow"><span>工作流</span><strong>P1 · P2 · E0–E5</strong></div>

@@ -1,36 +1,44 @@
-node_modules/
-.next/
-dist/
-coverage/
-.wrangler/
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
 
-.env
-.env.*
+# testing
+/coverage
+
+# next.js
+/.next/
+/.vinext/
+/out/
+
+# misc
+.DS_Store
+*.pem
+*.tsbuildinfo
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# local environment
+.env*
 !.env.example
 
-prisma/dev.db*
-*.tsbuildinfo
-.DS_Store
+# deployment and generated files
+.vercel
+next-env.d.ts
+/dist/
+/.wrangler/
+/outputs/
+/work/
+/.worktrees/
 
-# 本机调试、项目数据与会话交接，不进入源码仓库
-.planning/
-.superpowers/
-.tools/
-.worktrees/
-ai-context/
-scripts/tmp/
-scripts/.experiment-results.json
-scripts/.experiment-raw/
-ep1-e0-output.json
-
-# 独立的第三方实验仓库，不属于本应用源码
-TencentDB-Agent-Memory/
-
-# 内部实施记录不属于产品发布包
-docs/superpowers/
-
-# 本机生成物、协议缓存与审计导出，不进入源码仓库
-.tmp-codex-schema/
-.tmp-asset-xlsx-review/
-outputs/
-prisma/backup-before-stale-episode-errors-20260829/
+# local Sites connection profile (metadata only; never commit account details)
+.openai/SITES_CONNECTION_PROFILE.local.md

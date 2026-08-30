@@ -13,7 +13,6 @@ export default async function NewProjectPage({ searchParams }: { searchParams: P
   const { projects } = await getProjectLibrary(currentUser.id);
   const activeProject = requestedProjectId ? projects.find((project) => project.id === requestedProjectId) : undefined;
   const projectLibraryHref = activeProject ? `/?projectId=${encodeURIComponent(activeProject.id)}` : "/";
-
   return (
     <AppChrome
       title="创建剧本项目"

@@ -1,11 +1,9 @@
 /**
  * 表现规范的适用范围。
  *
- * P1 负责判断“哪里确实出现了需要拍板的非常规表现”，用户确认时再决定
- * 这条规则只落到发现的集、指定的集，还是明确扩大到全部正式集。下游岗位
- * 只接收当前任务范围内命中的规则，避免把全剧规则重复灌进每一集。
+ * P1 只负责发现需要拍板的非常规表现；用户确认时再决定规则落到发现集、
+ * 指定集，还是全部正式集。这样下游任务不会无差别携带整套全剧规则。
  */
-
 export const PRESENTATION_SCOPE_MODES = [
   "SOURCE_EPISODES",
   "SELECTED_EPISODES",
@@ -17,7 +15,6 @@ export type PresentationContractScopeMode = (typeof PRESENTATION_SCOPE_MODES)[nu
 export type PresentationContractScopeInput = {
   scope_mode?: string | null;
   target_episode_numbers?: number[] | string | null;
-  /** 兼容旧记录：PresentationContract 只有一个 episodeId。 */
   source_episode_number?: number | null;
 };
 
@@ -41,11 +38,10 @@ export function parsePresentationEpisodeNumbers(value: unknown): number[] {
           }
         })()
       : [];
-
   return [...new Set(values
-    .map((value) => typeof value === "number" ? value : Number(String(value).trim()))
-    .filter((value) => Number.isInteger(value) && value >= 1))]
-    .sort((a, b) => a - b);
+    .map((item) => typeof item === "number" ? item : Number(String(item).trim()))
+    .filter((item) => Number.isInteger(item) && item >= 1))]
+    .sort((left, right) => left - right);
 }
 
 export function normalizePresentationScopeMode(value: unknown): PresentationContractScopeMode {
@@ -54,31 +50,6 @@ export function normalizePresentationScopeMode(value: unknown): PresentationCont
     : "SOURCE_EPISODES";
 }
 
-/**
- * P1 可能在不同分片、不同集里重复发现同一条表现规则。
- * 有 rule_key 时优先使用它；旧/漏填时退回“类别 + 问题”的稳定键，
- * 这样同一规则只生成一张确认卡，不会因为换了主证据集而重复询问。
- */
-export function presentationDecisionKey(input: {
-  category?: unknown;
-  question?: unknown;
-  rule_key?: unknown;
-}): string {
-  const normalize = (value: unknown) => String(value ?? "")
-    .trim()
-    .toLocaleLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, "");
-  const category = normalize(input.category);
-  const ruleKey = normalize(input.rule_key);
-  const question = normalize(input.question);
-  return `${category}|${ruleKey ? `rule:${ruleKey}` : `question:${question}`}`;
-}
-
-/**
- * 把数据库/旧快照中的范围解析成可用于页面和流水线的正式集号。
- * 旧记录没有范围字段时：有 episodeId 就沿用原集；没有 episodeId 则沿用旧
- * 的“项目级规则”语义，视为全部正式集，避免已有项目的生成结果悄悄改变。
- */
 export function resolvePresentationContractScope(
   input: PresentationContractScopeInput,
   formalEpisodeNumbers: readonly number[]
@@ -88,16 +59,14 @@ export function resolvePresentationContractScope(
   if (mode === "ALL_EPISODES") return { mode, episodeNumbers: formal };
 
   const stored = parsePresentationEpisodeNumbers(input.target_episode_numbers);
-  if (stored.length) {
-    return { mode, episodeNumbers: stored.filter((number) => formal.includes(number)) };
-  }
+  if (stored.length) return { mode, episodeNumbers: stored.filter((number) => formal.includes(number)) };
 
   if (Number.isInteger(input.source_episode_number) && Number(input.source_episode_number) >= 1) {
     const source = Number(input.source_episode_number);
     return { mode, episodeNumbers: formal.includes(source) ? [source] : [] };
   }
 
-  // 旧的 episodeId=null 表示项目级契约；没有可用锚点时保守保持全剧适用。
+  // 兼容旧数据：没有 episodeId 的项目级规则保持全剧适用，避免历史结果悄悄改变。
   return mode === "SELECTED_EPISODES"
     ? { mode, episodeNumbers: [] }
     : { mode: "ALL_EPISODES", episodeNumbers: formal };
@@ -122,7 +91,7 @@ export function contractAppliesToAnyEpisode(
 
 export function formatPresentationEpisodeNumbers(numbers: readonly number[]): string {
   const sorted = parsePresentationEpisodeNumbers(numbers);
-  return sorted.length ? sorted.map((number) => `第${number}集`).join("、") : "未指定正式集";
+  return sorted.length ? sorted.map((number) => "第" + number + "集").join("、") : "未指定正式集";
 }
 
 export function formatPresentationContractScope(
@@ -130,6 +99,7 @@ export function formatPresentationContractScope(
   formalEpisodeNumbers: readonly number[]
 ): string {
   const scope = resolvePresentationContractScope(input, formalEpisodeNumbers);
-  if (scope.mode === "ALL_EPISODES") return `全部${formalEpisodeNumbers.length}集`;
-  return formatPresentationEpisodeNumbers(scope.episodeNumbers);
+  return scope.mode === "ALL_EPISODES"
+    ? "全部" + formalEpisodeNumbers.length + "集"
+    : formatPresentationEpisodeNumbers(scope.episodeNumbers);
 }

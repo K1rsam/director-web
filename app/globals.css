@@ -3313,7 +3313,6 @@ html {
 /* ===== 表现规范确认面板 ===== */
 .contractSection { margin: 0 0 24px; }
 .contractHint { color: #8a93a6; font-size: 11px; line-height: 1.7; margin: 8px 0 14px; border-left: 2px solid #756cf5; padding-left: 10px; }
-.episodePreludeNote { margin: -2px 0 16px; border-left: 2px solid #756cf5; padding-left: 10px; color: #7a8498; font-size: 11px; line-height: 1.7; }
 .contractCard { border: 1px solid #242a35; border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: #12161f; }
 .contractHead { display: flex; align-items: center; gap: 10px; }
 .contractHead span { color: #d9b46a; font-size: 9px; border: 1px solid #5a4a2f; border-radius: 10px; padding: 1px 8px; }
@@ -3473,8 +3472,6 @@ html { scroll-behavior: smooth; }
   z-index: 50;
   inset: 16px auto 16px 16px;
   width: 224px;
-  height: calc(100vh - 32px);
-  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -3535,14 +3532,7 @@ html { scroll-behavior: smooth; }
   color: #4d58ce;
 }
 
-.sidebarEpisodes {
-  min-height: 0;
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  padding: 5px 12px 12px;
-}
+.sidebarEpisodes { min-height: 0; padding: 5px 12px 12px; }
 .sidebarEpisodes > p {
   display: flex;
   justify-content: space-between;
@@ -3553,18 +3543,7 @@ html { scroll-behavior: smooth; }
   letter-spacing: .12em;
   text-transform: uppercase;
 }
-.sidebarEpisodes > div {
-  min-height: 0;
-  flex: 1 1 auto;
-  display: grid;
-  align-content: start;
-  gap: 4px;
-  max-height: none;
-  overflow-y: auto;
-  overflow-x: hidden;
-  overscroll-behavior: contain;
-  padding: 0 3px 8px 0;
-}
+.sidebarEpisodes > div { display: grid; gap: 4px; max-height: calc(100vh - 330px); overflow: auto; padding-right: 3px; }
 .sidebarEpisodes a {
   display: grid;
   grid-template-columns: 26px minmax(0, 1fr) 12px;
@@ -3583,10 +3562,9 @@ html { scroll-behavior: smooth; }
 .sidebarEpisodes a i { color: var(--ui-good); font-style: normal; }
 
 .sidebarFooter {
-  flex: 0 0 auto;
   display: grid;
   gap: 3px;
-  margin-top: 0;
+  margin-top: auto;
   border-top: 1px solid var(--ui-line);
   padding: 14px 18px 17px;
 }
@@ -3738,7 +3716,6 @@ html { scroll-behavior: smooth; }
 .appChrome .foundationRole.failed em, .appChrome .roleRunError { color: var(--ui-bad); }
 .appChrome .foundationRunAll .primaryAction { border-color: var(--ui-line-strong); background: #eef0ff; color: #6158d8; box-shadow: none; }
 .appChrome .contractHint { border-color: #7465e4; color: var(--ui-muted); }
-.appChrome .episodePreludeNote { border-color: #7465e4; color: var(--ui-muted); }
 .appChrome .contractCard { border-color: var(--ui-line); background: rgba(249,250,255,.9); }
 .appChrome .contractHead b { color: var(--ui-text); }
 .appChrome .contractHead em, .appChrome .contractEvidence { color: var(--ui-muted); }
