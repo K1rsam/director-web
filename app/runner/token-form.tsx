@@ -6,7 +6,7 @@ import { createRunnerTokenAction, type RunnerTokenState } from "@/app/actions";
 
 const initialState: RunnerTokenState = { token: null, error: null };
 
-export function RunnerTokenForm() {
+export function RunnerTokenForm({ siteBypassToken }: { siteBypassToken: string | null }) {
   const [state, action, pending] = useActionState(createRunnerTokenAction, initialState);
   const [copyState, setCopyState] = useState("");
   const [projectDir, setProjectDir] = useState("E:\\codex-data\\director-web");
@@ -14,7 +14,7 @@ export function RunnerTokenForm() {
   function downloadWindowsLauncher() {
     if (!state.token) return;
     const siteUrl = window.location.origin;
-    const source = windowsLauncher(siteUrl, state.token, projectDir);
+    const source = windowsLauncher(siteUrl, state.token, projectDir, siteBypassToken);
     const url = URL.createObjectURL(new Blob([source], { type: "application/x-msdos-program" }));
     const link = document.createElement("a");
     link.href = url;
@@ -26,7 +26,7 @@ export function RunnerTokenForm() {
   async function copyMacCommand() {
     if (!state.token) return;
     const siteUrl = window.location.origin;
-    await navigator.clipboard.writeText(macCommand(siteUrl, state.token, projectDir));
+    await navigator.clipboard.writeText(macCommand(siteUrl, state.token, projectDir, siteBypassToken));
     setCopyState("已复制：打开终端粘贴并回车");
   }
 
@@ -61,7 +61,9 @@ export function RunnerTokenForm() {
   );
 }
 
-function windowsLauncher(siteUrl: string, token: string, projectDir: string): string {
+function windowsLauncher(siteUrl: string, token: string, projectDir: string, siteBypassToken: string | null): string {
+  const siteHeader = siteBypassToken ? ` --header "OAI-Sites-Authorization: Bearer ${siteBypassToken}"` : "";
+  const siteArg = siteBypassToken ? ` --site-bypass-token "${siteBypassToken}"` : "";
   return [
     "@echo off",
     "chcp 65001 >nul",
@@ -72,17 +74,20 @@ function windowsLauncher(siteUrl: string, token: string, projectDir: string): st
     'set "RUNNER_DIR=%LOCALAPPDATA%\\DirectorRunner"',
     'if not exist "%RUNNER_DIR%" mkdir "%RUNNER_DIR%"',
     `set "RUNNER_URL=${siteUrl}/runner/director-runner.mjs?download=1"`,
-    `curl.exe --fail --silent --show-error --location --retry 2 --connect-timeout 20 "%RUNNER_URL%" --output "%RUNNER_DIR%\\runner.mjs.new"`,
+    `curl.exe --fail --silent --show-error --location --retry 2 --connect-timeout 20${siteHeader} "%RUNNER_URL%" --output "%RUNNER_DIR%\\runner.mjs.new"`,
     `if errorlevel 1 (echo 无法下载最新 Runner，已停止，不会运行旧版本。请检查网络后重新打开。 & del /q "%RUNNER_DIR%\\runner.mjs.new" >nul 2>nul & pause & exit /b 1)`,
     `move /y "%RUNNER_DIR%\\runner.mjs.new" "%RUNNER_DIR%\\runner.mjs" >nul`,
     `if errorlevel 1 (echo 无法更新本机 Runner，已停止，不会运行旧版本。请重新下载启动器。 & pause & exit /b 1)`,
-    `node "%RUNNER_DIR%\\runner.mjs" --site "${siteUrl}" --token "${token}" --project-dir "${projectDir.replaceAll('"', '')}"`,
+    `node "%RUNNER_DIR%\\runner.mjs" --site "${siteUrl}" --token "${token}"${siteArg} --project-dir "${projectDir.replaceAll('"', '')}"`,
     "pause",
     "",
   ].join("\r\n");
 }
 
-function macCommand(siteUrl: string, token: string, projectDir: string): string {
+function macCommand(siteUrl: string, token: string, projectDir: string, siteBypassToken: string | null): string {
   const escapedDir = projectDir.replaceAll("'", "'\\''");
-  return `mkdir -p "$HOME/.director-runner" && curl -fsSL '${siteUrl}/runner/director-runner.mjs' -o "$HOME/.director-runner/runner.mjs" && node "$HOME/.director-runner/runner.mjs" --site '${siteUrl}' --token '${token}' --project-dir '${escapedDir}'`;
+  const escapedBypassToken = siteBypassToken?.replaceAll("'", "'\\''");
+  const siteHeader = escapedBypassToken ? ` -H 'OAI-Sites-Authorization: Bearer ${escapedBypassToken}'` : "";
+  const siteArg = escapedBypassToken ? ` --site-bypass-token '${escapedBypassToken}'` : "";
+  return `mkdir -p "$HOME/.director-runner" && curl -fsSL${siteHeader} '${siteUrl}/runner/director-runner.mjs' -o "$HOME/.director-runner/runner.mjs" && node "$HOME/.director-runner/runner.mjs" --site '${siteUrl}' --token '${token}'${siteArg} --project-dir '${escapedDir}'`;
 }

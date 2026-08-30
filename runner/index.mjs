@@ -6,6 +6,7 @@ appendEnvOption(args, "site", "DIRECTOR_SITE_URL");
 appendEnvOption(args, "token", "DIRECTOR_RUNNER_TOKEN");
 appendEnvOption(args, "device", "DIRECTOR_RUNNER_DEVICE_ID");
 appendEnvOption(args, "project-dir", "DIRECTOR_PROJECT_DIR");
+appendEnvOption(args, "site-bypass-token", "DIRECTOR_SITE_BYPASS_TOKEN");
 process.argv = [process.argv[0], process.argv[1], ...args];
 
 await import("../public/runner/director-runner.mjs");

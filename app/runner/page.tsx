@@ -34,6 +34,7 @@ export default async function RunnerPage({ searchParams }: { searchParams: Promi
     status: parseStoredRunnerStatus(token.statusJson),
   }));
   const hasStatus = devices.some((device) => device.status && !device.revoked);
+  const siteBypassToken = process.env.SIWC_BYPASS_BEARER_TOKEN?.trim() || null;
 
   return (
     <AppChrome
@@ -59,7 +60,7 @@ export default async function RunnerPage({ searchParams }: { searchParams: Promi
 
         <div className="runnerConnectionGrid">
           <DeepSeekKeySetup />
-          <RunnerTokenForm />
+          <RunnerTokenForm siteBypassToken={siteBypassToken} />
         </div>
 
         <CodexStatusPanel devices={devices} />

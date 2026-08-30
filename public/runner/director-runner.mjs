@@ -9,7 +9,12 @@ const siteUrl = requiredUrl(args.site);
 const runnerToken = required(args.token, "缺少设备连接令牌。请从网站重新生成启动器。");
 const deviceId = args.device || hostname();
 const projectDir = args["project-dir"] || process.env.DIRECTOR_PROJECT_DIR || "";
-const headers = { authorization: `Bearer ${runnerToken}`, "content-type": "application/json" };
+const siteBypassToken = args["site-bypass-token"] || process.env.DIRECTOR_SITE_BYPASS_TOKEN || "";
+const headers = {
+  authorization: `Bearer ${runnerToken}`,
+  "content-type": "application/json",
+  ...(siteBypassToken ? { "OAI-Sites-Authorization": `Bearer ${siteBypassToken}` } : {}),
+};
 const codexCommand = process.platform === "win32" ? "codex.cmd" : "codex";
 const STATUS_REFRESH_MS = 5 * 60_000;
 let lastStatusAttemptAt = 0;
