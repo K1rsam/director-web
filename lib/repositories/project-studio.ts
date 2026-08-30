@@ -27,6 +27,8 @@ type AssetRow = {
   status: string;
   episodeId: string | null;
   parentId: string | null;
+  sourceText: string | null;
+  notes: string | null;
   metadata: string | null;
 };
 
@@ -72,6 +74,8 @@ type RunRow = {
 
 type ContractRow = {
   id: string;
+  episodeId: string | null;
+  sourceEpisodeNumber: number | null;
   category: string;
   question: string;
   options: string;
@@ -80,7 +84,29 @@ type ContractRow = {
   status: string;
   round: number;
   decidedAt: number | null;
+  scopeMode: string | null;
+  targetEpisodeNumbers: string | null;
 };
+
+let presentationContractSchemaReady: Promise<void> | null = null;
+
+/** 为旧站点安全补齐表现规范范围字段，不改写已有业务数据。 */
+function ensurePresentationContractSchema(db: D1Database): Promise<void> {
+  presentationContractSchemaReady ??= (async () => {
+    if (typeof (db as D1Database & { batch?: unknown }).batch !== "function") return;
+    const columns = await db.prepare('PRAGMA table_info("PresentationContract")').all<{ name: string }>();
+    const names = new Set(columns.results.map((column) => column.name));
+    const statements: D1PreparedStatement[] = [];
+    if (!names.has("scopeMode")) {
+      statements.push(db.prepare('ALTER TABLE "PresentationContract" ADD COLUMN "scopeMode" TEXT NOT NULL DEFAULT \'SOURCE_EPISODES\''));
+    }
+    if (!names.has("targetEpisodeNumbers")) {
+      statements.push(db.prepare('ALTER TABLE "PresentationContract" ADD COLUMN "targetEpisodeNumbers" TEXT NOT NULL DEFAULT \'[]\''));
+    }
+    if (statements.length) await db.batch(statements);
+  })();
+  return presentationContractSchemaReady;
+}
 
 export async function getProjectStudio(projectId: string, userId: string, db: D1Database) {
   const project = await db
@@ -133,6 +159,7 @@ export async function getProjectStudio(projectId: string, userId: string, db: D1
   ]);
 
   const memory = snapshotResult.results.find((snapshot) => snapshot.sceneKey === "PROJECT_MEMORY");
+  const episodeNumberById = new Map(episodeResult.results.map((episode) => [episode.id, Number(episode.number)]));
   return {
     project: {
       id: project.id,
@@ -157,6 +184,9 @@ export async function getProjectStudio(projectId: string, userId: string, db: D1
       status: asset.status,
       episodeId: asset.episodeId,
       parentId: asset.parentId,
+      sourceText: asset.sourceText,
+      notes: asset.notes,
+      episodeNumber: asset.episodeId ? episodeNumberById.get(asset.episodeId) ?? null : null,
       role: stringValue(parseJsonRecord(asset.metadata).role),
     })),
     episodes: episodeResult.results.map((episode) => ({
@@ -187,26 +217,41 @@ export async function getProjectStudio(projectId: string, userId: string, db: D1
 }
 
 export async function listPresentationContracts(db: D1Database, projectId: string) {
-  const result = await db
-    .prepare(
-      `SELECT "id", "category", "question", "options", "evidence", "userAnswer", "status", "round", "decidedAt"
-       FROM "PresentationContract" WHERE "projectId" = ? AND "status" IN ('PENDING', 'CONFIRMED')
-       ORDER BY "createdAt" ASC`,
-    )
-    .bind(projectId)
-    .all<ContractRow>();
-  const rows = result.results.map((contract) => ({
-    id: contract.id,
-    category: contract.category,
-    question: contract.question,
-    options: parseStringList(contract.options),
-    evidence: contract.evidence,
-    userAnswer: contract.userAnswer,
-    episodeNumber: null,
-    round: Number(contract.round),
-    decidedAt: contract.decidedAt == null ? null : new Date(Number(contract.decidedAt)),
-    status: contract.status,
-  }));
+  await ensurePresentationContractSchema(db);
+  const [result, episodeResult] = await Promise.all([
+    db
+      .prepare(
+        `SELECT "id", "episodeId", "category", "question", "options", "evidence", "userAnswer",
+                "status", "round", "decidedAt", "scopeMode", "targetEpisodeNumbers"
+         FROM "PresentationContract" WHERE "projectId" = ? AND "status" IN ('PENDING', 'CONFIRMED')
+         ORDER BY "createdAt" ASC`,
+      )
+      .bind(projectId)
+      .all<ContractRow>(),
+    db
+      .prepare(`SELECT "id", "number" FROM "Episode" WHERE "projectId" = ?`)
+      .bind(projectId)
+      .all<{ id: string; number: number }>(),
+  ]);
+  const episodeNumbers = new Map(episodeResult.results.map((episode) => [episode.id, Number(episode.number)]));
+  const rows = result.results.map((contract) => {
+    const sourceEpisodeNumber = contract.episodeId ? episodeNumbers.get(contract.episodeId) ?? null : null;
+    return {
+      id: contract.id,
+      sourceEpisodeNumber,
+      category: contract.category,
+      question: contract.question,
+      options: parseStringList(contract.options),
+      evidence: contract.evidence,
+      userAnswer: contract.userAnswer,
+      episodeNumber: sourceEpisodeNumber,
+      scopeMode: contract.scopeMode ?? "SOURCE_EPISODES",
+      targetEpisodeNumbers: contract.targetEpisodeNumbers ?? "[]",
+      round: Number(contract.round),
+      decidedAt: contract.decidedAt == null ? null : new Date(Number(contract.decidedAt)),
+      status: contract.status,
+    };
+  });
   return {
     pending: rows.filter((contract) => contract.status === "PENDING"),
     confirmed: rows.filter((contract) => contract.status === "CONFIRMED"),
@@ -225,15 +270,25 @@ export async function decidePresentationContract(
   projectId: string,
   contractId: string,
   answer: string,
+  scope: { scopeMode?: string; targetEpisodeNumbers?: readonly number[] } = {},
   now = new Date(),
 ): Promise<void> {
+  await ensurePresentationContractSchema(db);
+  const scopeMode = scope.scopeMode === "ALL_EPISODES" || scope.scopeMode === "SELECTED_EPISODES"
+    ? scope.scopeMode
+    : "SOURCE_EPISODES";
+  const targetEpisodeNumbers = JSON.stringify(
+    [...new Set((scope.targetEpisodeNumbers || []).filter((number) => Number.isInteger(number) && number >= 1))]
+      .sort((left, right) => left - right),
+  );
   const result = await db
     .prepare(
       `UPDATE "PresentationContract"
-       SET "userAnswer" = ?, "status" = 'CONFIRMED', "decidedAt" = ?, "updatedAt" = ?
+       SET "userAnswer" = ?, "status" = 'CONFIRMED', "scopeMode" = ?, "targetEpisodeNumbers" = ?,
+           "decidedAt" = ?, "updatedAt" = ?
        WHERE "id" = ? AND "projectId" = ?`,
     )
-    .bind(answer, now.getTime(), now.getTime(), contractId, projectId)
+    .bind(answer, scopeMode, targetEpisodeNumbers, now.getTime(), now.getTime(), contractId, projectId)
     .run();
   if (!result.meta.changes) throw new Error("表现规范不存在。");
 }

@@ -41,7 +41,7 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
           <span>{archivedProjects.length} 个归档</span>
         </div>
       )}
-      primaryAction={<Link href="/projects/new" className="topbarPrimary">新建项目 <span>＋</span></Link>}
+      primaryAction={<Link href={activeProject ? `/projects/new?projectId=${encodeURIComponent(activeProject.id)}` : "/projects/new"} className="topbarPrimary">新建项目 <span>＋</span></Link>}
     >
       <section className="projectLibrary">
         {projects.length ? (

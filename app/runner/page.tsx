@@ -6,14 +6,19 @@ import { ensureControlPlaneSchema } from "@/db/ensure-schema";
 import { getDb } from "@/db";
 import { runnerTokens } from "@/db/schema";
 import { requireSessionUser } from "@/lib/auth";
+import { getProjectLibrary } from "@/lib/project-library";
 import { AppChrome } from "@/app/ui/app-chrome";
 import { DeepSeekKeySetup } from "./deepseek-key-setup";
 import { RunnerTokenForm } from "./token-form";
 
 export const dynamic = "force-dynamic";
 
-export default async function RunnerPage() {
+export default async function RunnerPage({ searchParams }: { searchParams: Promise<{ projectId?: string }> }) {
   const user = await requireSessionUser("/runner");
+  const { projectId: requestedProjectId } = await searchParams;
+  const { projects } = await getProjectLibrary(user.id);
+  const activeProject = requestedProjectId ? projects.find((project) => project.id === requestedProjectId) : undefined;
+  const projectLibraryHref = activeProject ? `/?projectId=${encodeURIComponent(activeProject.id)}` : "/";
   await ensureControlPlaneSchema();
   const tokens = await getDb()
     .select()
@@ -25,9 +30,12 @@ export default async function RunnerPage() {
     <AppChrome
       title="API 与 CLI"
       eyebrow="执行设置"
+      projectId={activeProject?.id}
+      projectLabel={activeProject?.title}
+      episodes={activeProject?.episodes.map(({ id, number, title }) => ({ id, number, title: title ?? `第${number}集` }))}
       activeSection="runner"
       utility={<div className="runnerTopbarMeta"><span>个人凭证</span><span>本机额度</span></div>}
-      primaryAction={<Link href="/" className="topbarPrimary">返回项目总览</Link>}
+      primaryAction={<Link href={projectLibraryHref} className="topbarPrimary">返回项目总览</Link>}
     >
       <section className="runnerSettingsPage">
         <header className="runnerHero studioCard">

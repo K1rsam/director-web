@@ -7,13 +7,15 @@ import { listPresentationContracts } from "@/lib/repositories/project-studio";
 import { deriveProjectGuidance } from "@/lib/ui-guidance";
 import { AppChrome } from "@/app/ui/app-chrome";
 import { WorkflowGuidance } from "@/app/ui/workflow-guidance";
-import { AssetIndexTabs } from "./asset-index-tabs";
+import { AssetExportButton, AssetIndexTabs } from "./asset-index-tabs";
 import { FoundationActions } from "./foundation-actions";
 import { ProjectBibleViewer } from "./project-bible-viewer";
 import { SceneStructureTable } from "./scene-structure-table";
 import { PresentationContracts } from "./presentation-contracts";
 import { ModeSwitch } from "../../mode-switch";
 import { requireSessionUser } from "@/lib/auth";
+import { resolvePresentationContractScope } from "@/lib/presentation-contracts";
+import { FoundationReferenceGrid } from "./foundation-reference-grid";
 
 export const dynamic = "force-dynamic";
 
@@ -38,7 +40,30 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
 
   const { pending: contracts, confirmed: confirmedContracts } = await listPresentationContracts(getD1(), projectId);
 
-  const episodeStates = studio.episodes.map((episode) => {
+  const productionEpisodes = studio.episodes.filter((episode) => episode.number >= 1);
+  const formalEpisodeNumbers = productionEpisodes.map((episode) => episode.number);
+  const contractRow = (contract: (typeof contracts)[number]) => {
+    const scope = resolvePresentationContractScope({
+      scope_mode: contract.scopeMode,
+      target_episode_numbers: contract.targetEpisodeNumbers,
+      source_episode_number: contract.sourceEpisodeNumber
+    }, formalEpisodeNumbers);
+    return {
+      id: contract.id,
+      category: contract.category,
+      question: contract.question,
+      options: contract.options,
+      evidence: contract.evidence,
+      userAnswer: contract.userAnswer,
+      sourceEpisodeNumber: contract.sourceEpisodeNumber,
+      episodeNumbers: scope.episodeNumbers,
+      scopeMode: scope.mode,
+      round: contract.round,
+      decidedAt: contract.decidedAt
+    };
+  };
+
+  const episodeStates = productionEpisodes.map((episode) => {
     const running = episode.roles.some((role) => role.status === "进行中");
     const failed = episode.roles.some((role) => role.status === "失败");
     const finished = episode.roles.at(-1)?.status === "已完成";
@@ -53,6 +78,17 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
       state: failed ? "需处理" : running ? "生成中" : finished ? "已完成" : episode.shotCount ? "待继续" : "未开始"
     };
   });
+  const episodeGroups: Array<{ start: number; episodes: typeof productionEpisodes }> = [];
+  for (const episode of productionEpisodes) {
+    const start = Math.floor((episode.number - 1) / 10) * 10 + 1;
+    let group = episodeGroups.find((item) => item.start === start);
+    if (!group) {
+      group = { start, episodes: [] };
+      episodeGroups.push(group);
+    }
+    group.episodes.push(episode);
+  }
+  episodeGroups.sort((left, right) => left.start - right.start);
   const guidance = deriveProjectGuidance({
     pendingContracts: contracts.length,
     planningReady: studio.firstPhase.planningReady,
@@ -94,7 +130,7 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
       ) : (
         <Link href={guidanceHref} className="topbarPrimary">{guidance.actionLabel}</Link>
       )}
-      utility={<><div className="projectTopbarMeta" aria-label={`视觉风格 ${studio.project.style}，画幅 ${studio.project.aspectRatio}，${studio.episodes.length} 集`}><span>{studio.project.style}</span><span>{studio.project.aspectRatio}</span><span>{studio.episodes.length} 集</span></div><ModeSwitch projectId={studio.project.id} current={studio.project.executionMode} compact /><span className="topbarStatus"><i className={foundationActive ? "live" : ""} />{foundationActive ? foundationStatusLabel : "工作台已就绪"}</span></>}
+      utility={<><div className="projectTopbarMeta" aria-label={`视觉风格 ${studio.project.style}，画幅 ${studio.project.aspectRatio}，${productionEpisodes.length} 集`}><span>{studio.project.style}</span><span>{studio.project.aspectRatio}</span><span>{productionEpisodes.length} 集</span></div><ModeSwitch projectId={studio.project.id} current={studio.project.executionMode} compact /><span className="topbarStatus"><i className={foundationActive ? "live" : ""} />{foundationActive ? foundationStatusLabel : "工作台已就绪"}</span></>}
     >
       <div className="projectDashboard">
         <WorkflowGuidance
@@ -104,14 +140,15 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
           href={guidanceAction ? undefined : guidanceHref}
           actionLabel={guidance.actionLabel}
           action={guidanceAction}
-          meta={<><span>{studio.episodes.filter((episode) => episode.shotCount > 0).length}/{studio.episodes.length} 集已开始</span><span>{studio.assets.length} 项资产</span></>}
+          meta={<><span>{productionEpisodes.filter((episode) => episode.shotCount > 0).length}/{productionEpisodes.length} 集已开始</span><span>{studio.assets.length} 项资产</span></>}
         />
 
       <section className="studioSection" id="phase-one">
         <PresentationContracts
           projectId={projectId}
-          pending={contracts.map((c) => ({ id: c.id, category: c.category, question: c.question, options: c.options, evidence: c.evidence, userAnswer: c.userAnswer, episodeNumber: null, round: c.round, decidedAt: c.decidedAt }))}
-          confirmed={confirmedContracts.map((c) => ({ id: c.id, category: c.category, question: c.question, options: c.options, evidence: c.evidence, userAnswer: c.userAnswer, episodeNumber: null, round: c.round, decidedAt: c.decidedAt }))}
+          pending={contracts.map(contractRow)}
+          confirmed={confirmedContracts.map(contractRow)}
+          formalEpisodeNumbers={formalEpisodeNumbers}
         />
         <div className="sectionHeading">
           <div><span className="sectionIndex">01</span><h2>全剧基础工程</h2></div>
@@ -121,31 +158,55 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
         <FoundationActions
           projectId={studio.project.id}
           active={foundationActive}
+          foundationReady={foundationReady}
           runs={foundationRuns}
-          preprocessReady={studio.episodes.length > 0}
+          preprocessReady={productionEpisodes.length > 0}
           validationReady={studio.firstPhase.sceneCount > 0}
         />
 
-        <div className="studioGrid twoColumns">
-          <article className="studioCard">
+        <FoundationReferenceGrid>
+          <article className="studioCard" data-reference-card="bible">
             <div className="cardHeader"><div><span>PROJECT BIBLE</span><h3>项目策划与全剧索引</h3></div><em>{studio.firstPhase.planningReady ? "已生成" : "未生成"}</em></div>
             <ProjectBibleViewer content={studio.firstPhase.memory} />
           </article>
 
-          <article className="studioCard">
+          <article className="studioCard" data-reference-card="assets">
             <div className="cardHeader">
               <div><span>ASSET INDEX</span><h3>资产名称简表</h3></div>
               <div className="cardHeaderActions">
                 <em>{studio.assets.length}项</em>
+                <AssetExportButton projectTitle={studio.project.title} assets={studio.assets.map((asset) => ({
+                  id: asset.id,
+                  code: asset.code,
+                  type: asset.type,
+                  name: asset.name,
+                  status: asset.status,
+                  parentId: asset.parentId,
+                  role: asset.role,
+                  episodeNumber: asset.episodeNumber,
+                  sourceText: asset.sourceText,
+                  notes: asset.notes
+                }))} />
                 <form action={confirmAllAssetsAction}>
                   <input name="projectId" type="hidden" value={studio.project.id} />
                   <button type="submit" className="quietButton">全部确认</button>
                 </form>
               </div>
             </div>
-            <AssetIndexTabs assets={studio.assets.map((asset) => ({ id: asset.id, code: asset.code, type: asset.type, name: asset.name, status: asset.status, parentId: asset.parentId, role: asset.role }))} />
+            <AssetIndexTabs assets={studio.assets.map((asset) => ({
+              id: asset.id,
+              code: asset.code,
+              type: asset.type,
+              name: asset.name,
+              status: asset.status,
+              parentId: asset.parentId,
+              role: asset.role,
+              episodeNumber: asset.episodeNumber,
+              sourceText: asset.sourceText,
+              notes: asset.notes
+            }))} />
           </article>
-        </div>
+        </FoundationReferenceGrid>
 
         <SceneStructureTable scenes={studio.episodes.flatMap((episode) => episode.scenes.map((scene) => ({
           episodeNumber: episode.number,
@@ -166,26 +227,37 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
           <p>每集独立经过 E0–E5；最终由 Python 编译为一个个可单独发送给 Seedance 的分镜单元。</p>
         </div>
 
-        <div className="episodeStudioList">
-          {studio.episodes.map((episode) => {
-            const episodeState = episodeStates.find((item) => item.id === episode.id)!;
-            const { running, failed, finished, state: status } = episodeState;
-            return (
-              <article key={episode.id}>
-                <div className="episodeNumber">{String(episode.number).padStart(2, "0")}</div>
-                <div className="episodeSummary">
-                  <div><h3>{episode.title}</h3><span className={`stateDot ${finished ? "ok" : failed ? "bad" : running ? "live" : ""}`}>{status}</span></div>
-                  <p>{episode.contentPreview}</p>
-                </div>
-                <div className="episodeCounts" aria-label={`${episode.scenes.length} 场，${episode.shotCount} 镜号，${episode.unitCount ? `${episode.unitCount} 单元` : "尚未生成"}`}>
-                  <span><b>{episode.scenes.length}</b><small>场</small></span>
-                  <span><b>{episode.shotCount}</b><small>镜号</small></span>
-                  <span>{episode.unitCount ? <><b>{episode.unitCount}</b><small>单元</small></> : <b className="countMuted">尚未生成</b>}</span>
-                </div>
-                <Link href={`/projects/${studio.project.id}/episodes/${episode.id}`} className="primaryLink">{episode.shotCount ? "继续制作" : "进入本集"}<span>→</span></Link>
-              </article>
-            );
-          })}
+        <div className="episodeStudioGroups">
+          {episodeGroups.map((group, groupIndex) => (
+            <details className="episodeStudioGroup" key={group.start} open={groupIndex === 0}>
+              <summary>
+                <span>第{group.start}–{group.episodes.at(-1)?.number}集</span>
+                <em>{group.episodes.filter((episode) => episode.shotCount > 0).length}/{group.episodes.length} 集已开始</em>
+              </summary>
+              <div className="episodeStudioList">
+                {group.episodes.map((episode) => {
+                  const episodeState = episodeStates.find((item) => item.id === episode.id)!;
+                  const { running, failed, finished, state: status } = episodeState;
+                  const statusClass = finished ? "ok" : failed ? "bad" : running ? "live" : "";
+                  return (
+                    <article key={episode.id}>
+                      <div className="episodeNumber">{String(episode.number).padStart(2, "0")}</div>
+                      <div className="episodeSummary">
+                        <div><h3>{episode.title}</h3><span className={"stateDot " + statusClass}>{status}</span></div>
+                        <p>{episode.contentPreview}</p>
+                      </div>
+                      <div className="episodeCounts" aria-label={episode.scenes.length + " 场，" + episode.shotCount + " 镜号，" + (episode.unitCount ? episode.unitCount + " 单元" : "尚未生成")}>
+                        <span><b>{episode.scenes.length}</b><small>场</small></span>
+                        <span><b>{episode.shotCount}</b><small>镜号</small></span>
+                        <span>{episode.unitCount ? <><b>{episode.unitCount}</b><small>单元</small></> : <b className="countMuted">尚未生成</b>}</span>
+                      </div>
+                      <Link href={"/projects/" + studio.project.id + "/episodes/" + episode.id} className="primaryLink">{episode.shotCount ? "继续制作" : "进入本集"}<span>→</span></Link>
+                    </article>
+                  );
+                })}
+              </div>
+            </details>
+          ))}
         </div>
       </section>
       </div>

@@ -1033,6 +1033,391 @@ body { background: transparent; font-size: var(--vision-font-body); }
   .sectionHeading p { max-width: none; text-align: left; }
 }
 
+/* 同步本地工作台的可读密度：分集导航独立滚动，账号栏不再遮住最后一集。 */
+.appChrome .appSidebar { height: calc(100dvh - 28px); min-height: 0; }
+.appChrome .sidebarEpisodes { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.appChrome .sidebarEpisodeScroller {
+  min-height: 0;
+  max-height: none;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding-bottom: 12px;
+}
+.appChrome .sidebarFooter { flex: 0 0 auto; margin-top: 0; }
+.appChrome .sidebarEpisodes > p,
+.appChrome .sidebarEpisodes a,
+.appChrome .sidebarWorkflow span,
+.appChrome .sidebarWorkflow strong { font-size: var(--vision-font-small); }
+.appChrome .sidebarEpisodes a b { font-size: var(--vision-font-small); }
+.appChrome .sidebarEpisodes a i { font-size: var(--vision-font-caption); }
+.appChrome .projectTopbarMeta { font-size: var(--vision-font-small); }
+
+/* 80 集按十集收起，避免页面首屏被长列表推走。 */
+.episodeStudioGroups { display: grid; gap: 10px; }
+.episodeStudioGroup {
+  overflow: hidden;
+  border: 1px solid rgba(220,224,241,.84);
+  border-radius: 16px;
+  background: rgba(255,255,255,.38);
+}
+.episodeStudioGroup > summary {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 15px;
+  color: var(--vision-text);
+  cursor: pointer;
+  list-style: none;
+}
+.episodeStudioGroup > summary::-webkit-details-marker { display: none; }
+.episodeStudioGroup > summary::before {
+  width: 16px;
+  color: #7567df;
+  content: "＋";
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+}
+.episodeStudioGroup[open] > summary::before { content: "−"; }
+.episodeStudioGroup > summary > span { font-size: var(--vision-font-unit); font-weight: 800; }
+.episodeStudioGroup > summary > em {
+  margin-left: auto;
+  color: var(--vision-muted);
+  font-size: var(--vision-font-small);
+  font-style: normal;
+  white-space: nowrap;
+}
+.episodeStudioGroup > .episodeStudioList {
+  border-top: 1px solid var(--vision-line);
+  padding: 10px;
+}
+
+/* 项目策划和资产索引同高；超出内容只在资产表内部滚动。 */
+.foundationReferenceGrid { align-items: stretch; }
+@media (min-width: 1321px) {
+  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .cardHeader {
+    flex: 0 0 auto;
+  }
+  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .bibleViewer,
+  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .assetIndexTabs {
+    min-height: 0;
+    flex: 1 1 auto;
+  }
+  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .bibleViewer,
+  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .biblePlaceholder {
+    flex: 0 0 auto;
+  }
+  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .assetIndexTabs {
+    display: flex;
+    flex-direction: column;
+  }
+  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid .assetIndexTabs .compactTable {
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    flex: 1 1 auto;
+    overflow: auto;
+  }
+}
+
+/* 表现规范沿用全局字号，并将已锁定内容压缩成可展开条，不抢主工作区。 */
+.appChrome .projectDashboard .contractSectionCompact {
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.appChrome .projectDashboard .contractCompactDetails,
+.appChrome .projectDashboard .contractConfirmed {
+  border: 1px solid rgba(210,216,239,.84);
+  border-radius: 12px;
+  background: rgba(255,255,255,.48);
+}
+.appChrome .projectDashboard .contractCompactDetails > summary,
+.appChrome .projectDashboard .contractConfirmed > summary {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 14px;
+  color: var(--vision-text);
+  cursor: pointer;
+  font-size: var(--vision-font-unit);
+  font-weight: 800;
+  list-style: none;
+}
+.appChrome .projectDashboard .contractCompactDetails > summary::-webkit-details-marker,
+.appChrome .projectDashboard .contractConfirmed > summary::-webkit-details-marker { display: none; }
+.appChrome .projectDashboard .contractCompactDetails > summary::after,
+.appChrome .projectDashboard .contractConfirmed > summary::after {
+  margin-left: auto;
+  color: var(--vision-primary);
+  content: "＋";
+}
+.appChrome .projectDashboard .contractCompactDetails[open] > summary::after,
+.appChrome .projectDashboard .contractConfirmed[open] > summary::after { content: "−"; }
+.appChrome .projectDashboard .contractCompactDetails > summary > span {
+  color: var(--vision-primary);
+  font-size: var(--vision-font-caption);
+  letter-spacing: .12em;
+}
+.appChrome .projectDashboard .contractCompactDetails > summary > b,
+.appChrome .projectDashboard .contractConfirmed > summary > span {
+  font-size: var(--vision-font-small);
+}
+.appChrome .projectDashboard .contractCompactDetails > summary > em,
+.appChrome .projectDashboard .contractCompactDetails > summary > i {
+  color: var(--vision-good);
+  font-size: var(--vision-font-small);
+  font-style: normal;
+  white-space: nowrap;
+}
+.appChrome .projectDashboard .contractCompactDetails > summary > i { color: var(--vision-muted); }
+.appChrome .projectDashboard .contractCompactBody,
+.appChrome .projectDashboard .contractConfirmedList {
+  border-top: 1px solid var(--vision-line);
+  padding: 10px 12px 12px;
+}
+.appChrome .projectDashboard .contractCompactBody .contractConfirmedList {
+  border-top: 0;
+  padding: 0;
+}
+.appChrome .projectDashboard .contractHint {
+  margin: 8px 0 14px;
+  color: var(--vision-muted);
+  font-size: var(--vision-font-body);
+  line-height: 1.6;
+}
+.appChrome .projectDashboard .contractCard {
+  position: relative;
+  margin: 0 0 12px;
+  border: 1px solid rgba(210,216,239,.92);
+  border-radius: 16px;
+  background: rgba(255,255,255,.62);
+  box-shadow: var(--vision-shadow-sm);
+  padding: 20px 22px;
+}
+.appChrome .projectDashboard .contractHead {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+}
+.appChrome .projectDashboard .contractHead > span,
+.appChrome .projectDashboard .contractCategoryBadge {
+  border: 1px solid rgba(189,129,40,.34);
+  border-radius: 999px;
+  background: rgba(255,249,231,.72);
+  padding: 3px 9px;
+  color: var(--vision-warn);
+  font-size: var(--vision-font-small);
+  line-height: 1.2;
+}
+.appChrome .projectDashboard .contractHead > b {
+  min-width: 0;
+  color: var(--vision-text);
+  font-size: var(--vision-font-body);
+  line-height: 1.5;
+}
+.appChrome .projectDashboard .contractHead > em {
+  color: var(--vision-muted);
+  font-size: var(--vision-font-unit);
+  font-style: normal;
+  line-height: 1.45;
+  text-align: right;
+  white-space: nowrap;
+}
+.appChrome .projectDashboard .contractEvidence,
+.appChrome .projectDashboard .contractConfirmedQuestion {
+  margin: 9px 0 0;
+  color: var(--vision-muted);
+  font-size: var(--vision-font-unit);
+  line-height: 1.6;
+}
+.appChrome .projectDashboard .contractDecisionForm {
+  display: grid;
+  gap: 11px;
+  margin-top: 14px;
+  border-top: 1px solid var(--vision-line);
+  padding-top: 13px;
+}
+.appChrome .projectDashboard .contractScopeEditor {
+  display: grid;
+  grid-template-columns: minmax(180px, .55fr) minmax(360px, 1.45fr);
+  align-items: start;
+  gap: 10px 18px;
+}
+.appChrome .projectDashboard .contractScopeLabel { display: grid; gap: 3px; }
+.appChrome .projectDashboard .contractScopeLabel strong { font-size: var(--vision-font-body); line-height: 1.35; }
+.appChrome .projectDashboard .contractScopeLabel span,
+.appChrome .projectDashboard .contractScopeHelp,
+.appChrome .projectDashboard .contractOptionsLabel,
+.appChrome .projectDashboard .contractEditNote {
+  color: var(--vision-muted);
+  font-size: var(--vision-font-small);
+  line-height: 1.6;
+}
+.appChrome .projectDashboard .contractScopeControls {
+  display: grid;
+  grid-template-columns: minmax(250px, .9fr) minmax(220px, 1.1fr);
+  gap: 8px;
+}
+.appChrome .projectDashboard .contractScopeControls select,
+.appChrome .projectDashboard .contractScopeControls input,
+.appChrome .projectDashboard .contractCustom input {
+  min-width: 0;
+  min-height: 42px;
+  border: 1px solid rgba(199,207,233,.96);
+  border-radius: 10px;
+  background: rgba(255,255,255,.78);
+  color: var(--vision-text);
+  font: inherit;
+  font-size: var(--vision-font-unit);
+  outline: 0;
+  padding: 0 11px;
+}
+.appChrome .projectDashboard .contractScopeControls select:focus,
+.appChrome .projectDashboard .contractScopeControls input:focus,
+.appChrome .projectDashboard .contractCustom input:focus {
+  border-color: var(--vision-primary);
+  box-shadow: 0 0 0 3px rgba(103,94,228,.12);
+}
+.appChrome .projectDashboard .contractScopeHelp { grid-column: 2; margin: -3px 0 0; }
+.appChrome .projectDashboard .contractOptionsLabel { margin: 0; }
+.appChrome .projectDashboard .contractOptions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 10px;
+}
+.appChrome .projectDashboard .contractOptions > button,
+.appChrome .projectDashboard .contractCustom > button,
+.appChrome .projectDashboard .contractSkip {
+  min-height: 60px;
+  border: 1px solid rgba(198,207,235,.98);
+  border-radius: 11px;
+  background: rgba(250,251,255,.90);
+  color: var(--vision-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--vision-font-unit);
+  line-height: 1.45;
+  padding: 10px 13px;
+  text-align: left;
+}
+.appChrome .projectDashboard .contractOptions > button { display: flex; align-items: flex-start; gap: 8px; }
+.appChrome .projectDashboard .contractOptions > button b { color: var(--vision-primary); font-size: var(--vision-font-body); }
+.appChrome .projectDashboard .contractOptions > button span { min-width: 0; overflow-wrap: anywhere; }
+.appChrome .projectDashboard .contractCustom {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+.appChrome .projectDashboard .contractCustom > button { color: var(--vision-primary); white-space: nowrap; }
+.appChrome .projectDashboard .contractSkipForm { margin-top: 1px; }
+.appChrome .projectDashboard .contractSkip {
+  min-height: 38px;
+  background: transparent;
+  color: var(--vision-muted);
+  font-size: var(--vision-font-small);
+}
+.appChrome .projectDashboard .contractEpisodeChoices {
+  grid-column: 2;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid rgba(210,216,239,.84);
+  border-radius: 11px;
+  background: rgba(248,249,255,.62);
+  padding: 8px 10px 9px;
+}
+.appChrome .projectDashboard .contractEpisodeChoices legend {
+  padding: 0 4px;
+  color: var(--vision-muted);
+  font-size: var(--vision-font-small);
+}
+.appChrome .projectDashboard .contractEpisodeChoices > div {
+  display: flex;
+  max-height: 92px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  overflow: auto;
+}
+.appChrome .projectDashboard .contractEpisodeChoices label {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(206,214,239,.9);
+  border-radius: 9px;
+  background: rgba(255,255,255,.78);
+  padding: 0 9px;
+  color: var(--vision-text);
+  font-size: var(--vision-font-small);
+  cursor: pointer;
+}
+.appChrome .projectDashboard .contractEpisodeChoices input { width: 15px; height: 15px; accent-color: var(--vision-primary); }
+.appChrome .projectDashboard .contractConfirmedItem {
+  overflow: hidden;
+  border: 1px solid rgba(211,217,237,.90);
+  border-radius: 11px;
+  background: rgba(255,255,255,.68);
+}
+.appChrome .projectDashboard .contractConfirmedItem > summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 42px;
+  padding: 0 11px;
+  cursor: pointer;
+  list-style: none;
+}
+.appChrome .projectDashboard .contractConfirmedItem > summary::-webkit-details-marker { display: none; }
+.appChrome .projectDashboard .contractConfirmedItem > summary > b {
+  overflow: hidden;
+  font-size: var(--vision-font-unit);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.appChrome .projectDashboard .contractConfirmedItem > summary > em,
+.appChrome .projectDashboard .contractConfirmedItem > summary > i {
+  color: var(--vision-good);
+  font-size: var(--vision-font-small);
+  font-style: normal;
+  white-space: nowrap;
+}
+.appChrome .projectDashboard .contractConfirmedItem > summary > i { color: var(--vision-primary); }
+.appChrome .projectDashboard .contractConfirmedItemBody { border-top: 1px solid var(--vision-line); padding: 12px; }
+.appChrome .projectDashboard .contractEditNote { margin: 0; }
+.appChrome .projectDashboard .contractConfirmedList { display: grid; gap: 7px; }
+.appChrome .projectDashboard .contractSection .cardHeader > em { font-size: var(--vision-font-unit); }
+
+@media (max-width: 900px) {
+  .appChrome .projectDashboard .contractScopeEditor { grid-template-columns: 1fr; }
+  .appChrome .projectDashboard .contractScopeHelp,
+  .appChrome .projectDashboard .contractEpisodeChoices { grid-column: auto; }
+}
+@media (max-width: 680px) {
+  .appChrome .projectDashboard .contractHead { grid-template-columns: 1fr; gap: 6px; }
+  .appChrome .projectDashboard .contractHead > em { text-align: left; }
+  .appChrome .projectDashboard .contractScopeControls,
+  .appChrome .projectDashboard .contractOptions { grid-template-columns: 1fr; }
+  .appChrome .projectDashboard .contractCustom { grid-column: auto; }
+  .appChrome .projectDashboard .contractConfirmedItem > summary { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .appChrome .projectDashboard .contractConfirmedItem > summary > em { grid-column: 2; grid-row: 2; }
+  .appChrome .projectDashboard .contractConfirmedItem > summary > i { grid-column: 3; grid-row: 1 / span 2; }
+}
+
 /* Runner settings */
 .runnerSettingsPage {
   display: grid;
@@ -1303,3 +1688,27 @@ body { background: transparent; font-size: var(--vision-font-body); }
 @media (max-width: 760px) {
   .appChrome .episodeStudioList > article { grid-template-columns: 48px minmax(0, 1fr); }
 }
+
+/* Final page-level overrides kept last so legacy density rules cannot undo them. */
+.appChrome .appSidebar { height: calc(100dvh - 28px); min-height: 0; }
+.appChrome .sidebarEpisodes { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.appChrome .sidebarEpisodeScroller {
+  min-height: 0;
+  max-height: none;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding-bottom: 12px;
+}
+.appChrome .sidebarFooter { flex: 0 0 auto; margin-top: 0; }
+.appChrome .sidebarEpisodes > p,
+.appChrome .sidebarEpisodes a,
+.appChrome .sidebarEpisodes a b,
+.appChrome .sidebarWorkflow span,
+.appChrome .sidebarWorkflow strong { font-size: var(--vision-font-small); }
+.appChrome .sidebarEpisodes a i { font-size: var(--vision-font-caption); }
+.assetExportButton { white-space: nowrap; }
+.appChrome .foundationReferenceGrid { align-items: stretch; }
+.appChrome .episodeStudioGroup > summary > span { font-size: var(--vision-font-unit); }
+.appChrome .episodeStudioGroup > summary > em { font-size: var(--vision-font-small); }

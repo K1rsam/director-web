@@ -8,6 +8,7 @@ import { getD1, getDb } from "@/db";
 import { ensureControlPlaneSchema } from "@/db/ensure-schema";
 import { runnerTokens } from "@/db/schema";
 import { requireEpisodeAccess, requireProjectAccess, requireSessionUser } from "@/lib/auth";
+import { normalizePresentationScopeMode, parsePresentationEpisodeNumbers } from "@/lib/presentation-contracts";
 import { readProjectSubmission } from "@/lib/project-entry";
 import {
   archiveProject,
@@ -103,9 +104,17 @@ export async function decidePresentationContractAction(formData: FormData) {
   const projectId = String(formData.get("projectId") ?? "");
   await requireProjectAccess(projectId);
   const contractId = String(formData.get("contractId") ?? "");
-  const answer = String(formData.get("answer") ?? "").trim();
+  const useCustom = String(formData.get("useCustom") ?? "") === "1";
+  const answer = (useCustom ? String(formData.get("customAnswer") ?? "") : String(formData.get("answer") ?? "")).trim();
   if (!contractId || !answer) throw new Error("缺少确认信息。");
-  await decidePresentationContract(getD1(), projectId, contractId, answer);
+  const scopeMode = normalizePresentationScopeMode(formData.get("scopeMode"));
+  const selected = formData.getAll("targetEpisodeNumber").map((value) => Number(String(value))).filter(Number.isInteger);
+  const typed = parsePresentationEpisodeNumbers(formData.get("targetEpisodeNumbers"));
+  const targetEpisodeNumbers = [...new Set([...selected, ...typed])].sort((left, right) => left - right);
+  if (scopeMode === "SELECTED_EPISODES" && !targetEpisodeNumbers.length) {
+    throw new Error("请选择至少一个适用集，或改为“只应用到发现的相关集”。");
+  }
+  await decidePresentationContract(getD1(), projectId, contractId, answer, { scopeMode, targetEpisodeNumbers });
   revalidatePath(`/projects/${projectId}`);
 }
 

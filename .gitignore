@@ -39,3 +39,6 @@ next-env.d.ts
 /outputs/
 /work/
 /.worktrees/
+
+# local Sites connection profile (metadata only; never commit account details)
+.openai/SITES_CONNECTION_PROFILE.local.md

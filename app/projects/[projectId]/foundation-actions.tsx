@@ -14,12 +14,14 @@ export type FoundationRunView = {
 export function FoundationActions({
   projectId,
   active,
+  foundationReady,
   runs,
   preprocessReady,
   validationReady
 }: {
   projectId: string;
   active: boolean;
+  foundationReady: boolean;
   runs: FoundationRunView[];
   preprocessReady: boolean;
   validationReady: boolean;
@@ -41,7 +43,7 @@ export function FoundationActions({
           <span>一键执行全剧基础策划与资产拆解</span>
         </div>
         <button type="button" className="foundationRunAllButton" disabled title="线上展示版需要连接个人 Runner 后执行">
-          {active ? "P1/P2 执行中…" : "一键执行 P1 + P2（需连接 Runner）"}
+          {active ? "P1/P2 执行中…" : foundationReady ? "P1 + P2 已完成" : "一键执行 P1 + P2（需连接 Runner）"}
         </button>
       </div>
       <p className="foundationRunnerNote">线上版本已同步控制台与执行状态；真正执行需要在“API 与 CLI”中连接个人 Runner。</p>
