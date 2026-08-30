@@ -85,8 +85,8 @@ export { isFlashModel };
 
 /**
  * CLI 岗位调用：会话边界由 sessionMode 显式控制。
- * fresh=全量重跑时新建并替换指针；resume=返修/同批分片在安全阈值内续接；
- * ephemeral=E0 等一次性岗位不持久化。不同集/岗位仍各自隔离。
+ * fresh=全量重跑时新建并替换指针；resume=仅用于确实需要沿用同集上下文的返修；
+ * ephemeral=分片、全剧基础工程和一次性岗位都不持久化。不同集/岗位仍各自隔离。
  */
 export async function runCliRoleJson(input: {
   projectId: string;
@@ -292,4 +292,3 @@ export async function runRoleByProvider(input: {
         sessionMode: input.sessionMode ?? "fresh"
       });
 }
-

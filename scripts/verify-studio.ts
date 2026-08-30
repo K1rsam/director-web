@@ -1,4 +1,4 @@
-import { buildRoleProgress, deriveActivePipelineScope, parseJsonRecord, ROLE_STAGES } from "../lib/studio";
+import { buildRoleProgress, deriveActivePipelineScope, deriveEpisodeProductionStatus, parseJsonRecord, ROLE_STAGES } from "../lib/studio";
 
 const parsed = parseJsonRecord('{"scene":"森林"}');
 if (parsed.scene !== "森林") throw new Error("JSON parse failed");
@@ -37,6 +37,11 @@ if (progress[2].code !== "E2" || progress[2].status !== "已完成" || progress[
   throw new Error("E2 completed state missing");
 }
 if (progress[3].status !== "未开始") throw new Error("Empty role must be pending");
+
+if (deriveEpisodeProductionStatus(progress, true) !== "生成中") throw new Error("排队/执行中的剧集状态应统一为生成中");
+if (deriveEpisodeProductionStatus(progress.map(() => ({ status: "已完成" as const })), true) !== "已完成") {
+  throw new Error("E0–E5 全部完成时应统一显示已完成");
+}
 
 const singleScope = deriveActivePipelineScope([
   { stageCode: "E0", status: "RUNNING", inputSummary: JSON.stringify({ batchToken: "single", singleStage: true }), createdAt: new Date("2026-08-21T10:00:00Z") }

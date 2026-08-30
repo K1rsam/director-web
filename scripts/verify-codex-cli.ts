@@ -1,8 +1,23 @@
 import assert from "node:assert/strict";
 import path from "node:path";
-import { runCodexJson } from "@/lib/codex-cli";
+import { resolveCodexExecutable, runCodexJson } from "@/lib/codex-cli";
+import { classifyExecutionError, formatExecutionErrorForUser, isQuotaError } from "@/lib/execution-errors";
 
 void (async () => {
+  const quotaError = "You've hit your usage limit. Please try again at 1:43 PM, or go to https://chatgpt.com/codex/settings/usage for more.";
+  assert.equal(classifyExecutionError(quotaError), "quota");
+  assert.equal(isQuotaError(quotaError), true);
+  const friendlyQuotaError = formatExecutionErrorForUser(quotaError, { source: "cli" });
+  assert.equal(
+    friendlyQuotaError,
+    "Codex CLI 额度不足，当前无法继续调用模型。请等待 Codex CLI 额度恢复，或切换到 API 执行方式后重试。预计可再次尝试时间：1:43 PM。"
+  );
+  assert.equal(formatExecutionErrorForUser(friendlyQuotaError, { source: "cli" }), friendlyQuotaError);
+  assert.equal(classifyExecutionError("DeepSeek API 请求失败（HTTP 402）：insufficient balance"), "quota");
+  assert.match(formatExecutionErrorForUser("HTTP 429: rate limit exceeded", { source: "cli" }), /批量任务遇到该情况会暂停/);
+  assert.match(formatExecutionErrorForUser("not logged in", { source: "cli" }), /未登录/);
+  assert.match(formatExecutionErrorForUser("ECONNRESET", { source: "cli" }), /网络/);
+
   const result = await runCodexJson<{ ok: boolean; promptReceived: boolean }>({
     prompt: "测试输入",
     schema: {
@@ -28,6 +43,37 @@ void (async () => {
   assert.ok(freshArgs.includes("--disable"), "岗位调用应启用精简运行参数");
   assert.ok(freshArgs.includes("apps"), "岗位调用应关闭 Apps");
   assert.ok(freshArgs.includes("--sandbox"), "新会话应使用只读沙箱");
+
+  if (process.platform === "win32") {
+    const batchExecutable = path.join(process.cwd(), "scripts/fixtures/fake-codex.cmd");
+    const previousConfiguredPath = process.env.CODEX_CLI_PATH;
+    process.env.CODEX_CLI_PATH = `& '${batchExecutable}'`;
+    try {
+      assert.equal(resolveCodexExecutable(), batchExecutable, "应清理 PowerShell 调用符与外层引号");
+    } finally {
+      if (previousConfiguredPath === undefined) delete process.env.CODEX_CLI_PATH;
+      else process.env.CODEX_CLI_PATH = previousConfiguredPath;
+    }
+
+    const batchResult = await runCodexJson<{ ok: boolean; promptReceived: boolean }>({
+      prompt: "测试输入（Windows codex.cmd）",
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ok", "promptReceived"],
+        properties: {
+          ok: { type: "boolean" },
+          promptReceived: { type: "boolean" }
+        }
+      },
+      model: "fake-model",
+      reasoningEffort: "medium",
+      executable: batchExecutable,
+      cwd: process.cwd()
+    });
+    assert.deepEqual(batchResult.data, { ok: true, promptReceived: true });
+    assert.ok(readFakeArgs(batchResult.stdout).includes("model_reasoning_effort=\"medium\""));
+  }
 
   const resumed = await runCodexJson<{ ok: boolean; promptReceived: boolean }>({
     prompt: "测试输入（续接）",

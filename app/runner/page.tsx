@@ -4,6 +4,7 @@ import { AppChrome } from "@/app/ui/app-chrome";
 import { ProviderConnectionPanel } from "@/app/runner/provider-connection-panel";
 import { requireSessionUser } from "@/lib/auth";
 import { getDeepSeekCredentialStatus } from "@/lib/provider-credentials";
+import { getProjectLibrary } from "@/lib/project-library";
 
 export const dynamic = "force-dynamic";
 
@@ -14,17 +15,24 @@ export const dynamic = "force-dynamic";
  * app keeps its existing Prisma/SQLite execution path, so this page is kept as
  * a compatible settings surface without introducing the cloud token protocol.
  */
-export default async function RunnerPage() {
+export default async function RunnerPage({ searchParams }: { searchParams: Promise<{ projectId?: string }> }) {
   const currentUser = await requireSessionUser("/runner");
   const apiStatus = await getDeepSeekCredentialStatus(currentUser.id);
+  const { projectId: requestedProjectId } = await searchParams;
+  const { projects } = await getProjectLibrary(currentUser.id);
+  const activeProject = requestedProjectId ? projects.find((project) => project.id === requestedProjectId) : undefined;
+  const projectLibraryHref = activeProject ? `/?projectId=${encodeURIComponent(activeProject.id)}` : "/";
 
   return (
     <AppChrome
       title="API 与 CLI"
       eyebrow="执行设置"
       activeSection="runner"
+      projectId={activeProject?.id}
+      projectLabel={activeProject?.title}
+      episodes={activeProject?.episodes.map(({ id, number, title }) => ({ id, number, title: title ?? `第${number}集` }))}
       utility={<div className="runnerTopbarMeta"><span>本地执行</span><span>账号隔离</span></div>}
-      primaryAction={<Link href="/" className="topbarPrimary">返回项目总览</Link>}
+      primaryAction={<Link href={projectLibraryHref} className="topbarPrimary">返回项目总览</Link>}
     >
       <section className="runnerSettingsPage">
         <header className="runnerHero studioCard">
@@ -63,4 +71,3 @@ export default async function RunnerPage() {
     </AppChrome>
   );
 }
-

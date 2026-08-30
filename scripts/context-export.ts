@@ -227,8 +227,10 @@ async function main() {
     where: { projectId: project.id },
     orderBy: { number: "asc" },
   });
+  const productionEpisodes = allEpisodes.filter((ep) => ep.number >= 1);
+  const preludeEpisodes = allEpisodes.filter((ep) => ep.number < 1);
   const epSummaries = await Promise.all(
-    allEpisodes.map(async (ep) => {
+    productionEpisodes.map(async (ep) => {
       const [unitCount, shotCount, openIssues, taskPackages] = await Promise.all([
         prisma.seedanceUnit.count({ where: { episodeId: ep.id } }),
         prisma.storyboardShot.count({ where: { episodeId: ep.id } }),
@@ -265,8 +267,15 @@ async function main() {
     stage,
     progress,
     actionLabel,
-    counts: { episodes: epSummaries.length, snapshots: snapshotCount, assets: assetCount, unitEpisodes: unitEpisodeCount },
+    counts: {
+      episodes: epSummaries.length,
+      preludeEpisodes: preludeEpisodes.length,
+      snapshots: snapshotCount,
+      assets: assetCount,
+      unitEpisodes: unitEpisodeCount
+    },
     episodes: epSummaries,
+    preludeContext: preludeEpisodes.map((ep) => ({ number: ep.number, title: ep.title, contentPreview: ep.content.slice(0, 240) })),
     assets: assets.map((a) => ({ code: a.code, type: a.type, name: a.name, status: a.status, parentCode: a.parentId ? assets.find((p) => p.id === a.parentId)?.code ?? null : null })),
   };
 

@@ -4,6 +4,14 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireEpisodeAccess, requireProjectAccess, requireSessionUser } from "@/lib/auth";
 import { readProjectSubmission, resolveProjectDestination } from "@/lib/project-entry";
+import { terminateWorkerProcessTree } from "@/lib/process-control";
+import type { CodexCliStatus } from "@/lib/codex-cli";
+import {
+  PRESENTATION_SCOPE_MODES,
+  parsePresentationEpisodeNumbers,
+  resolvePresentationContractScope,
+  type PresentationContractScopeMode
+} from "@/lib/presentation-contracts";
 
 export type ProjectCreationState = { error: string };
 
@@ -12,7 +20,7 @@ export type ProviderConnectionState = {
   message: string;
   provider?: "DEEPSEEK" | "CLI";
   models?: string[];
-  version?: string;
+  cliStatus?: CodexCliStatus;
 };
 
 export async function saveDeepSeekCredentialAction(
@@ -70,19 +78,29 @@ export async function checkCodexCliAction(
 ): Promise<ProviderConnectionState> {
   await requireSessionUser("/runner");
   try {
-    const { assertCodexCliReady } = await import("@/lib/codex-cli");
-    const readiness = await assertCodexCliReady();
+    const { readCodexCliStatus } = await import("@/lib/codex-cli");
+    const cliStatus = await readCodexCliStatus();
     return {
       ok: true,
       provider: "CLI",
-      version: readiness.version,
-      message: "本机 Codex CLI 已安装并处于登录状态，可以执行 CLI 项目。"
+      cliStatus,
+      message: cliStatus.warnings.length
+        ? `检测通过：已读取本机 Codex /status；${cliStatus.warnings.join(" ")}`
+        : "检测通过：已读取本机 Codex /status，页面显示的是最新账号、额度和用量摘要。"
     };
   } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const message = /not logged in|尚未完成登录|尚未登录/i.test(detail)
+      ? "检测未通过：本机 Codex CLI 尚未完成登录，请在本机终端运行 codex 并按提示完成登录后重试。"
+      : /找不到 Codex CLI|ENOENT|不可用/i.test(detail)
+        ? "检测未通过：未找到可用的 Codex CLI，请在本机终端确认 codex --version 可用。"
+        : /超时|timeout/i.test(detail)
+          ? "检测未通过：Codex CLI 响应超时，请确认本机 CLI 没有被其他任务占用。"
+          : "检测未通过：本机 Codex CLI 当前不可用，请在本机终端确认 CLI 已安装并完成登录后重试。";
     return {
       ok: false,
       provider: "CLI",
-      message: error instanceof Error ? error.message : "无法确认本机 Codex CLI 状态。"
+      message
     };
   }
 }
@@ -152,7 +170,7 @@ export async function importProjectAction(
 function formatProjectCreationError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (/Unique constraint failed.*projectId.*number/i.test(message)) {
-    return "导入失败：分集编号发生冲突，常见原因是剧本页眉重复，或出现“第0集”等无效集号。请检查每个“第X集”标题后重试。";
+    return "导入失败：分集编号发生冲突，常见原因是剧本页眉重复或同一集标题重复。第0集可以作为前置资料保留，请检查重复的“第X集”标题后重试。";
   }
   if (/database is locked|SQLITE_BUSY|P2034/i.test(message)) {
     return "本地数据库正在被其他任务占用，请停止正在运行的任务后重试。";
@@ -161,7 +179,7 @@ function formatProjectCreationError(error: unknown): string {
     return "剧本格式不受支持，请上传 TXT、MD 或 DOCX 文件。";
   }
   if (/Promise\.all|invocation in|[A-Za-z]:\\|node_modules[\\/]|\.next[\\/]/i.test(message)) {
-    return "项目创建失败：导入剧本时发生内部错误。请检查分集标题是否从“第1集”开始且集号唯一；如果仍然失败，请保留剧本和此提示交给管理员。";
+    return "项目创建失败：导入剧本时发生内部错误。请检查分集标题是否唯一；剧名前的人物小传/剧情梗概和第0集会作为前置资料保留。如果仍然失败，请保留剧本和此提示交给管理员。";
   }
   return message.length <= 240 ? message : "项目创建失败，请检查剧本内容后重试。";
 }
@@ -209,16 +227,32 @@ export async function startEpisodePipelineAction(formData: FormData) {
   revalidatePath(`/projects/${projectId}/episodes/${episodeId}`);
 }
 
+/** 页面按钮启动批量剧集监控：按质量门自动补入正式剧集，最多三集并发。 */
+export async function startEpisodeBatchMonitorAction(formData: FormData) {
+  const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
+  const { queueEpisodeBatchMonitor } = await import("@/lib/episode-batch-monitor");
+  await queueEpisodeBatchMonitor(projectId, { requireNoMajors: true });
+  revalidatePath(`/projects/${projectId}`);
+}
+
+/** 页面停止批量监控；只停止调度器，不强制中断已经启动的剧集 worker。 */
+export async function stopEpisodeBatchMonitorAction(formData: FormData) {
+  const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
+  const { stopEpisodeBatchMonitor } = await import("@/lib/episode-batch-monitor");
+  await stopEpisodeBatchMonitor(projectId);
+  revalidatePath(`/projects/${projectId}`);
+}
+
 export async function repairOpenIssuesAction(formData: FormData) {
   const projectId = String(formData.get("projectId") ?? "");
   const episodeId = String(formData.get("episodeId") ?? "");
   await requireProjectAccess(projectId);
   await requireEpisodeAccess(projectId, episodeId);
   const includeSuggestions = formData.get("includeSuggestions") === "1";
-  // 强制重跑：绕过收敛门禁（上一轮 BLOCKER 未减少时），供人工确认卡状态后使用
-  const force = formData.get("force") === "1";
   const { queueRepairPipeline } = await import("@/lib/episode-pipeline");
-  await queueRepairPipeline(projectId, episodeId, { includeSuggestions, force });
+  await queueRepairPipeline(projectId, episodeId, { includeSuggestions });
   revalidatePath(`/projects/${projectId}/episodes/${episodeId}`);
 }
 
@@ -248,18 +282,7 @@ export async function stopPipelineAction(formData: FormData) {
   // 先落状态：UI 立即显示停止，worker 后续覆盖也不影响（它已被终止）
   await failActiveBatch(projectId, episodeId, batchToken, "用户手动停止");
   if (workerPid > 0) {
-    try {
-      // detached 进程组：负 PID 杀组内全部（tsx wrapper + node 实际进程）；先 SIGTERM 再 SIGKILL 兜底
-      process.kill(-workerPid, "SIGTERM");
-    } catch {
-      // 进程已退出，忽略
-    }
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 600));
-      process.kill(-workerPid, "SIGKILL");
-    } catch {
-      // 已退出，忽略
-    }
+    await terminateWorkerProcessTree(workerPid);
   }
   revalidatePath(`/projects/${projectId}/episodes/${episodeId}`);
 }
@@ -278,6 +301,34 @@ export async function acknowledgeIssueAction(formData: FormData) {
   await prisma.workflowIssue.update({
     where: { id: issueId },
     data: { status: "EXCEPTED", updatedAt: new Date() }
+  });
+  revalidatePath(`/projects/${projectId}/episodes/${episodeId}`);
+}
+
+/** 人工确认返修回滚结果：只解除系统审计卡，不修改任何分镜内容。 */
+export async function acknowledgeRepairRegressionAction(formData: FormData) {
+  const projectId = String(formData.get("projectId") ?? "");
+  const episodeId = String(formData.get("episodeId") ?? "");
+  await requireProjectAccess(projectId);
+  await requireEpisodeAccess(projectId, episodeId);
+  const issueId = String(formData.get("issueId") ?? "");
+  const { prisma } = await import("@/lib/prisma");
+  const active = await prisma.pipelineRun.findFirst({
+    where: { projectId, episodeId, status: { in: ["QUEUED", "RUNNING"] } },
+    select: { id: true }
+  });
+  if (active) throw new Error("本集仍有岗位正在执行，请等待执行结束后再确认回滚结果。 ");
+  const issue = await prisma.workflowIssue.findFirst({
+    where: { id: issueId, projectId, episodeId, code: "REPAIR_REGRESSION", status: "OPEN" }
+  });
+  if (!issue) throw new Error("没有找到待确认的返修回归卡。 ");
+  await prisma.workflowIssue.update({
+    where: { id: issue.id },
+    data: {
+      status: "RESOLVED",
+      evidence: `${issue.evidence}；人工确认：接受本轮回滚后的安全状态。`,
+      requestedEffect: "系统审计卡已确认；下一轮返修仍须按当前 OPEN 问题卡定向执行。"
+    }
   });
   revalidatePath(`/projects/${projectId}/episodes/${episodeId}`);
 }
@@ -404,16 +455,63 @@ export async function decidePresentationContractAction(formData: FormData) {
   const projectId = String(formData.get("projectId") ?? "");
   await requireProjectAccess(projectId);
   const contractId = String(formData.get("contractId") ?? "");
-  const answer = String(formData.get("answer") ?? "").trim();
+  const useCustom = String(formData.get("useCustom") ?? "") === "1";
+  const customAnswer = String(formData.get("customAnswer") ?? "").trim();
+  const answer = (useCustom ? customAnswer : String(formData.get("answer") ?? "")).trim();
   if (!contractId || !answer) throw new Error("缺少确认信息。");
   const { prisma } = await import("@/lib/prisma");
   const contract = await prisma.presentationContract.findFirst({ where: { id: contractId, projectId } });
   if (!contract) throw new Error("表现规范不存在。");
+
+  const scopeValue = String(formData.get("scopeMode") ?? "SOURCE_EPISODES");
+  if (!PRESENTATION_SCOPE_MODES.includes(scopeValue as PresentationContractScopeMode)) {
+    throw new Error("表现规范适用范围无效，请重新选择相关集、指定集或全部正式集。");
+  }
+  const projectEpisodes = await prisma.episode.findMany({
+    where: { projectId, number: { gte: 1 } },
+    select: { id: true, number: true },
+    orderBy: { number: "asc" }
+  });
+  const sourceEpisodeNumber = contract.episodeId
+    ? projectEpisodes.find((episode) => episode.id === contract.episodeId)?.number ?? null
+    : null;
+  const typedTargets = formData.getAll("targetEpisodeNumber").map(String);
+  const textTargets = String(formData.get("targetEpisodeNumbers") ?? "").trim();
+  const storedTargets = contract.targetEpisodeNumbers ?? "";
+  const hasExplicitScopeTargets = String(formData.get("targetEpisodeSelectionPresent") ?? "") === "1";
+  const requestedTargets = hasExplicitScopeTargets
+    ? [...typedTargets, textTargets].filter(Boolean).join("、")
+    : storedTargets;
+  const resolvedScope = resolvePresentationContractScope({
+    scope_mode: scopeValue,
+    target_episode_numbers: requestedTargets,
+    source_episode_number: sourceEpisodeNumber
+  }, projectEpisodes.map((episode) => episode.number));
+  if (scopeValue === "SELECTED_EPISODES" && !resolvedScope.episodeNumbers.length) {
+    throw new Error("请至少填写一个正式集号，例如：1、10、20。");
+  }
+  if (scopeValue !== "ALL_EPISODES" && !resolvedScope.episodeNumbers.length) {
+    throw new Error("没有找到可应用的正式集，请检查剧集是否已完成拆分。");
+  }
+  const invalidTargets = parsePresentationEpisodeNumbers(requestedTargets)
+    .filter((number) => !projectEpisodes.some((episode) => episode.number === number));
+  if (scopeValue !== "ALL_EPISODES" && invalidTargets.length) {
+    throw new Error(`指定的第${invalidTargets.join("、")}集不存在，请只填写项目中的正式集号。`);
+  }
   await prisma.presentationContract.update({
     where: { id: contract.id },
-    data: { userAnswer: answer, status: "CONFIRMED", decidedAt: new Date() }
+    data: {
+      userAnswer: answer,
+      status: "CONFIRMED",
+      scopeMode: resolvedScope.mode,
+      targetEpisodeNumbers: resolvedScope.mode === "ALL_EPISODES" ? null : JSON.stringify(resolvedScope.episodeNumbers),
+      decidedAt: new Date()
+    }
   });
   revalidatePath(`/projects/${projectId}`);
+  for (const episode of projectEpisodes.filter((item) => resolvedScope.mode === "ALL_EPISODES" || resolvedScope.episodeNumbers.includes(item.number))) {
+    revalidatePath(`/projects/${projectId}/episodes/${episode.id}`);
+  }
 }
 
 export async function skipPresentationContractAction(formData: FormData) {
@@ -473,18 +571,7 @@ export async function stopProjectFoundationAction(formData: FormData) {
     data: { status: "FAILED", finishedAt: new Date(), error: "用户手动停止" }
   });
   if (workerPid > 0) {
-    try {
-      process.kill(-workerPid, "SIGTERM");
-    } catch {
-      // 进程已经结束。
-    }
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 600));
-      process.kill(-workerPid, "SIGKILL");
-    } catch {
-      // 进程已经结束。
-    }
+    await terminateWorkerProcessTree(workerPid);
   }
   revalidatePath(`/projects/${projectId}`);
 }
-

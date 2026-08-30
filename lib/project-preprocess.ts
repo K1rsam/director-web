@@ -38,6 +38,11 @@ export type ProjectMemorySnapshot = {
     episodeTitle: string;
     summary: string;
   }>;
+  preludeContext: Array<{
+    episodeNumber: number;
+    episodeTitle: string;
+    summary: string;
+  }>;
 };
 
 export async function preprocessProject(projectId: string, db: Db = prisma) {
@@ -66,10 +71,12 @@ export async function preprocessProject(projectId: string, db: Db = prisma) {
       ? { ...asset, name: "通用负面约束", notes: "由最终Python编译阶段统一加入每个Seedance单元。" }
       : asset);
   const memory = buildProjectMemory(project.title, project.episodes, assets);
-  const snapshots = project.episodes.map((episode, index) =>
+  const productionEpisodes = project.episodes.filter((episode) => episode.number >= 1);
+  const snapshots = productionEpisodes.map((episode) =>
     buildEpisodeContextSnapshot({
       episode,
-      previousEpisodes: project.episodes.slice(0, index),
+      // 第0集/无编号前置资料参与上下文，但不生成自己的单集生产快照。
+      previousEpisodes: project.episodes.filter((previous) => previous.number < episode.number),
       assets,
       memory
     })
@@ -107,7 +114,12 @@ export async function preprocessProject(projectId: string, db: Db = prisma) {
     await tx.sceneSnapshot.deleteMany({
       where: {
         projectId,
-        sceneKey: { in: ["PROJECT_MEMORY", ...snapshots.map((snapshot) => `EP-${snapshot.episodeNumber}-CONTEXT`)] }
+        sceneKey: {
+          in: [
+            "PROJECT_MEMORY",
+            ...project.episodes.map((episode) => `EP-${episode.number}-CONTEXT`)
+          ]
+        }
       }
     });
 
@@ -216,16 +228,23 @@ function buildProjectMemory(
   episodes: Array<{ number: number; title: string | null; content: string }>,
   assets: DirectorAsset[]
 ): ProjectMemorySnapshot {
+  const productionEpisodes = episodes.filter((episode) => episode.number >= 1);
+  const preludeEpisodes = episodes.filter((episode) => episode.number < 1);
   return {
     schema: "PROJECT_MEMORY_V1",
     projectTitle,
-    totalEpisodes: episodes.length,
+    totalEpisodes: productionEpisodes.length,
     assetIndex: formatAssetIndex(assets),
     characterHints: assets.filter((asset) => asset.type === "CH").map((asset) => `${asset.id} ${asset.name}：${asset.notes ?? "身份待确认"}`),
     relationshipHints: inferRelationships(episodes.map((episode) => episode.content).join("\n")),
-    episodeTimeline: episodes.map((episode) => ({
+    episodeTimeline: productionEpisodes.map((episode) => ({
       episodeNumber: episode.number,
       episodeTitle: episode.title ?? `第${episode.number}集`,
+      summary: summarizeText(episode.content)
+    })),
+    preludeContext: preludeEpisodes.map((episode) => ({
+      episodeNumber: episode.number,
+      episodeTitle: episode.title ?? `前置资料（第${episode.number}集）`,
       summary: summarizeText(episode.content)
     }))
   };
@@ -240,7 +259,7 @@ function buildEpisodeContextSnapshot(input: {
   const { episode, previousEpisodes, assets, memory } = input;
   const previousStory = previousEpisodes
     .slice(-5)
-    .map((item) => `第${item.number}集：${summarizeText(item.content, 120)}`)
+    .map((item) => `${item.number >= 1 ? `第${item.number}集` : `前置资料（第${item.number}集）`}：${summarizeText(item.content, 120)}`)
     .join("\n");
   const sceneSnapshot = buildSceneSnapshot({ sceneText: episode.content, assets });
 
@@ -291,5 +310,6 @@ function buildContinuityHint(previousEpisodes: Array<{ number: number; content: 
   const currentRisk = /回忆|闪回|与此同时|多年后|第二天|醒来|赶到|回到|继续/.test(currentText)
     ? "本集含时间/地点连续性风险，生成前需锁当前可见状态。"
     : "按本集源文建立当前可见状态。";
-  return previous ? `承接第${previous.number}集结果；${currentRisk}` : currentRisk;
+  const previousLabel = previous ? previous.number >= 1 ? `第${previous.number}集` : `前置资料（第${previous.number}集）` : "";
+  return previous ? `承接${previousLabel}结果；${currentRisk}` : currentRisk;
 }

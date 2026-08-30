@@ -65,17 +65,36 @@ export function readStageModel(code: PipelineStageCode): StageModelConfig {
 function normalizeSourceLines(sourceText: string, sceneKey: string, heading: string | null): string[] {
   const lines = sourceText.replace(/\r\n?/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean);
   const joined: string[] = [];
-  for (const line of lines) {
-    const isHeader = (joined.length === 0 && line === sceneKey) || line === heading || /^(?:场景|人物|道具)[:：]/.test(line) || /^场景\s*[:：]?\s*[^\n：:]{1,30}$/.test(line);
-    if (isHeader) continue;
-    // 行首是句末标点/引号闭合：接回上一行（对话换行截断的修复）
-    if (joined.length && /^[！？。；：，、…）」』"'”]/.test(line)) {
-      joined[joined.length - 1] = `${joined[joined.length - 1]}${line}`;
-      continue;
+  for (const rawLine of lines) {
+    // Word 扁平化可能把场头、人物栏和正文压成：
+    //「1-1电梯 夜/内人物：姜恋△狭窄电梯里……△姜恋按键」。
+    // 去掉场头/元数据前缀，但保留第一个 △ 后的正文，再按 △ 还原源节点。
+    const line = stripInlineSceneHeader(rawLine, sceneKey);
+    if (!line) continue;
+    for (const fragment of line.split("△")) {
+      const candidate = fragment.trim();
+      if (!candidate) continue;
+      const isHeader = (candidate === sceneKey || /^\d+-\d+\s+/.test(candidate)) || candidate === heading || /^(?:场景|人物|道具)[:：]/.test(candidate) || /^场景\s*[:：]?\s*[^\n：:]{1,30}$/.test(candidate);
+      if (isHeader) continue;
+      // 行首是句末标点/引号闭合：接回上一行（对话换行截断的修复）
+      if (joined.length && /^[！？。；：，、…）」』"'”]/.test(candidate)) {
+        joined[joined.length - 1] = `${joined[joined.length - 1]}${candidate}`;
+        continue;
+      }
+      joined.push(candidate);
     }
-    joined.push(line);
   }
   return joined;
+}
+
+function stripInlineSceneHeader(line: string, sceneKey: string): string {
+  if (line === sceneKey || line === sceneKey.replace(/-\d+$/, "")) return "";
+  const numbered = line.match(/^(\d+-\d+)(.*)$/);
+  if (!numbered) return line;
+  const rest = numbered[2];
+  if (/^\s/.test(rest) || !rest) return "";
+  const bodyIndex = rest.indexOf("△");
+  return bodyIndex >= 0 ? rest.slice(bodyIndex + 1).trim() : "";
 }
 
 export function buildSourcePackage(scenes: readonly SceneSource[], options: SourcePackageBuildOptions = {}) {
@@ -121,8 +140,8 @@ function normalizeKnownCharacterNames(values: readonly string[]): string[] {
 function extractSceneCharacterNames(sourceText: string): string[] {
   return sourceText
     .replace(/\r\n?/g, "\n")
-    .split("\n")
-    .map((line) => line.trim().match(/^(?:人物|角色)[:：]\s*(.+)$/)?.[1] ?? "")
+    .split(/[\n△]/)
+    .map((line) => line.trim().match(/(?:人物|角色)[:：]\s*([^\n△]*)/)?.[1] ?? "")
     .filter(Boolean)
     .flatMap((value) => value.split(/[、,，；;\/]/).map((name) => name.trim()).filter(Boolean));
 }

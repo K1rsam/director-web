@@ -41,17 +41,16 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
           <span>{archivedProjects.length} 个归档</span>
         </div>
       )}
-      primaryAction={<Link href="/projects/new" className="topbarPrimary">新建项目 <span>＋</span></Link>}
+      primaryAction={<Link href={activeProject ? `/projects/new?projectId=${encodeURIComponent(activeProject.id)}` : "/projects/new"} className="topbarPrimary">新建项目 <span>＋</span></Link>}
     >
       <section className="projectLibrary">
         {projects.length ? (
           <div className={`projectCardGrid ${projects.length === 1 ? "singleProject" : ""}`}>
             {projects.map((project, index) => {
-              const unitEpisodeCount = project.episodes.filter(
-                (episode) => episode._count.seedanceUnits > 0
-              ).length;
+              const productionEpisodes = project.episodes.filter((episode) => episode.number >= 1);
+              const unitEpisodeCount = productionEpisodes.filter((episode) => episode._count.seedanceUnits > 0).length;
               const state = deriveProjectCardState({
-                episodeCount: project._count.episodes,
+                episodeCount: productionEpisodes.length,
                 snapshotCount: project._count.sceneSnapshots,
                 assetCount: project._count.assets,
                 unitEpisodeCount
@@ -95,7 +94,7 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
                     </div>
 
                     <div className="projectCardFooter">
-                      <span>{project._count.episodes} 集 · 更新于 {dateFormatter.format(project.updatedAt)}</span>
+                      <span>{productionEpisodes.length} 集 · 更新于 {dateFormatter.format(project.updatedAt)}</span>
                       <Link href={destination} className="continueLink">
                         {state.actionLabel}<span aria-hidden="true">→</span>
                       </Link>
@@ -118,7 +117,7 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
           <div className="projectEmptyState">
             <span className="emptyMark" aria-hidden="true">＋</span>
             <h2>还没有剧本项目</h2>
-            <p>上传完整剧本，选择画面风格后即可开始整理全剧资料。</p>
+            <p>上传完整剧本，选择画面风格后即可开始全剧基础工程。</p>
             <Link href="/projects/new" className="secondaryAction">创建第一个项目</Link>
           </div>
         )}
@@ -137,7 +136,7 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
                       <span className="aspectBadge">归档</span>
                     </div>
                     <div className="projectCardFooter">
-                      <span>{project._count.episodes} 集 · 归档于 {dateFormatter.format(project.archivedAt ?? project.updatedAt)}</span>
+                      <span>{project.episodes.filter((episode) => episode.number >= 1).length} 集 · 归档于 {dateFormatter.format(project.archivedAt ?? project.updatedAt)}</span>
                       <form action={restoreProjectAction}>
                         <input name="projectId" type="hidden" value={project.id} />
                         <button type="submit" className="archiveAction" title="恢复到项目列表">恢复</button>
@@ -154,4 +153,3 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
     </AppChrome>
   );
 }
-

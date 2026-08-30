@@ -22,12 +22,24 @@ async function main() {
   assert.deepEqual(repeatedNumberEpisodes.map((episode) => episode.number), [1, 2]);
   assert.match(repeatedNumberEpisodes[1]?.title ?? "", /原集号与前文重复，已自动整理为第2集/);
 
-  const zeroNumberEpisodes = splitEpisodes("第0集 页眉\n正文A\n第0集 页眉\n正文B");
-  assert.deepEqual(zeroNumberEpisodes.map((episode) => episode.number), [1, 2]);
-  assert.match(zeroNumberEpisodes[0]?.title ?? "", /原集号为第0集，不是有效集号，已自动整理为第1集/);
-  assert.match(zeroNumberEpisodes[1]?.title ?? "", /原集号为第0集，不是有效集号，已自动整理为第2集/);
-  assert.equal(cleanEpisodeTitle(zeroNumberEpisodes[0]?.title, 1), "第1集");
-  assert.equal(cleanEpisodeTitle(zeroNumberEpisodes[1]?.title, 2), "第2集");
+  const zeroNumberEpisodes = splitEpisodes("第0集 前置资料\n人物小传：常见青自幼……\n第1集 正式开篇\n正文A\n第2集 后续\n正文B");
+  assert.deepEqual(zeroNumberEpisodes.map((episode) => episode.number), [0, 1, 2]);
+  assert.match(zeroNumberEpisodes[0]?.content ?? "", /人物小传/);
+  assert.equal(cleanEpisodeTitle("第0集 页眉", 0), "第0集");
+  assert.equal(cleanEpisodeTitle(zeroNumberEpisodes[1]?.title, 1), "第1集 正式开篇");
+  assert.equal(cleanEpisodeTitle(zeroNumberEpisodes[2]?.title, 2), "第2集 后续");
+
+  const repeatedPreludeEpisodes = splitEpisodes("第0集 前置资料A\n人物小传A\n第0集 前置资料B\n剧情简述B\n第1集 正式开篇\n正文");
+  assert.deepEqual(repeatedPreludeEpisodes.map((episode) => episode.number), [0, 1]);
+  assert.match(repeatedPreludeEpisodes[0]?.content ?? "", /人物小传A/);
+  assert.match(repeatedPreludeEpisodes[0]?.content ?? "", /剧情简述B/);
+  assert.equal(repeatedPreludeEpisodes[1]?.number, 1);
+
+  const unheadedPreludeEpisodes = splitEpisodes("剧本类型：都市现代\n人物小传：常见青……\n剧情简述：……\n第1集 正式开篇\n正文");
+  assert.deepEqual(unheadedPreludeEpisodes.map((episode) => episode.number), [0, 1]);
+  assert.equal(unheadedPreludeEpisodes[0]?.title, "前置资料（第0集）");
+  assert.match(unheadedPreludeEpisodes[0]?.content ?? "", /剧情简述/);
+  assert.match(unheadedPreludeEpisodes[1]?.content ?? "", /正文/);
   assert.equal(cleanEpisodeTitle("第 1 集", 3), "第3集");
 
   const fallback = splitEpisodes("没有集标题的剧本正文");
@@ -47,6 +59,7 @@ async function main() {
 
   const verifierUserId = randomUUID();
   const verifierTitle = `import-verifier-${verifierUserId}`;
+  const preludeVerifierTitle = `import-prelude-verifier-${verifierUserId}`;
   try {
     await prisma.user.create({
       data: {
@@ -65,8 +78,16 @@ async function main() {
       executionMode: "CLI"
     });
     assert.deepEqual(created.episodes.map((episode) => episode.number), [1, 2]);
+    const createdWithPrelude = await importProjectFromText({
+      ownerUserId: verifierUserId,
+      title: preludeVerifierTitle,
+      sourceName: "prelude-episodes.txt",
+      sourceText: "第0集 前置资料\n人物小传\n第1集 正式开篇\n正文A\n第2集 后续\n正文B",
+      executionMode: "CLI"
+    });
+    assert.deepEqual(createdWithPrelude.episodes.map((episode) => episode.number), [0, 1, 2]);
   } finally {
-    await prisma.project.deleteMany({ where: { title: verifierTitle } });
+    await prisma.project.deleteMany({ where: { title: { in: [verifierTitle, preludeVerifierTitle] } } });
     await prisma.user.deleteMany({ where: { id: verifierUserId } });
     await prisma.$disconnect();
   }
@@ -78,4 +99,3 @@ main().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });
-

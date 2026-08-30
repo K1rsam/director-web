@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { failActiveBatch } from "@/lib/episode-pipeline";
 import { prisma } from "@/lib/prisma";
+import { terminateWorkerProcessTree } from "@/lib/process-control";
 
 void (async () => {
   const project = await prisma.project.create({
@@ -28,13 +29,17 @@ void (async () => {
         { projectId: project.id, episodeId: episode.id, stageCode: "E5", roleName: "审查总控", provider: "test", model: "test", status: "QUEUED", inputSummary: JSON.stringify({ batchToken }) }
       ]
     });
-    // 模拟 launchWorker：spawn detached 进程组（组长 pid 即 workerPid），并写入 inputSummary
-    const child = spawn("sleep", ["60"], { detached: true, stdio: "ignore" });
+    // 模拟 launchWorker：用 Node 自己保持 60 秒，Windows/Linux 均可运行。
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], {
+      detached: true,
+      windowsHide: true,
+      stdio: "ignore"
+    });
     child.unref();
     const workerPid = child.pid!;
     assert.ok(workerPid > 0, "worker 进程应已启动");
-    // 进程组存活探测
-    const aliveBefore = (() => { try { process.kill(-workerPid, 0); return true; } catch { return false; } })();
+    // worker 存活探测
+    const aliveBefore = (() => { try { process.kill(workerPid, 0); return true; } catch { return false; } })();
     assert.equal(aliveBefore, true, "启动后进程组应存活");
     // launchWorker 会把 workerPid 写进 inputSummary（模拟其逻辑）
     const runs = await prisma.pipelineRun.findMany({ where: { projectId: project.id, episodeId: episode.id } });
@@ -46,13 +51,11 @@ void (async () => {
     // ===== stopPipelineAction 核心逻辑 =====
     // 1) 先落状态
     await failActiveBatch(project.id, episode.id, batchToken, "用户手动停止");
-    // 2) SIGTERM → 600ms → SIGKILL 进程组
-    try { process.kill(-workerPid, "SIGTERM"); } catch { /* 已退出 */ }
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    try { process.kill(-workerPid, "SIGKILL"); } catch { /* 已退出 */ }
+    // 2) 跨平台终止 worker 及其子进程
+    await terminateWorkerProcessTree(workerPid);
 
-    // 断言：进程组已死
-    const aliveAfter = (() => { try { process.kill(-workerPid, 0); return true; } catch { return false; } })();
+    // 断言：worker 已死
+    const aliveAfter = (() => { try { process.kill(workerPid, 0); return true; } catch { return false; } })();
     assert.equal(aliveAfter, false, "停止后进程组应已终止");
     // 断言：批次状态已标记
     const after = await prisma.pipelineRun.findMany({ where: { projectId: project.id, episodeId: episode.id } });

@@ -17,4 +17,3 @@ CREATE TABLE "UserProviderCredential" (
 
 CREATE UNIQUE INDEX "UserProviderCredential_userId_provider_key" ON "UserProviderCredential"("userId", "provider");
 CREATE INDEX "UserProviderCredential_userId_updatedAt_idx" ON "UserProviderCredential"("userId", "updatedAt");
-

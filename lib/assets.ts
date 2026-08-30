@@ -24,6 +24,7 @@ export type EpisodeAssetCandidates = {
 
 const GENERIC_SPEAKERS = new Set(["旁白", "画外音", "字幕", "电话", "系统", "系统窗口", "场景", "人物", "道具"]);
 const PROP_WORDS = ["手机", "钥匙", "车钥匙", "药", "药瓶", "针管", "酒杯", "茶杯", "合同", "文件", "照片", "戒指", "项链", "玉佩", "银行卡", "现金", "钱包", "包", "伞", "刀", "剑", "枪", "报名表", "登记册"];
+const NON_CHARACTER_SYSTEM_NAME = /^(?:系统伪人|系统残核|系统音|系统提示|系统通知|系统窗口|系统面板|系统界面|伪人脸(?:残核)?)(?:｜|$)/u;
 
 export function generateAssetId(type: DirectorAssetType, existing: Array<Pick<DirectorAsset, "id">> = []): string {
   const prefix = `${type}-`;
@@ -96,11 +97,11 @@ function createAssets(type: DirectorAssetType, names: string[], existing: Direct
 function extractCharacterNames(text: string): string[] {
   const declared = extractMetadataItems(text, "人物");
   if (declared.length) {
-    return declared.map(characterBaseName).filter(Boolean);
+    return declared.map(characterBaseName).filter((name) => Boolean(name) && !NON_CHARACTER_SYSTEM_NAME.test(name));
   }
   return [...text.matchAll(/(?:^|\n)\s*([^\n：:]{1,20})(?:（[^）]*）)?\s*[：:]/g)]
     .map((match) => normalizeSpeakerName(match[1] ?? ""))
-    .filter((name) => name.length >= 2 && !GENERIC_SPEAKERS.has(name));
+    .filter((name) => name.length >= 2 && !GENERIC_SPEAKERS.has(name) && !NON_CHARACTER_SYSTEM_NAME.test(name));
 }
 
 function extractLocationNames(text: string): string[] {

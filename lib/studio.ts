@@ -4,6 +4,8 @@ import { assetSceneRefsOf } from "@/lib/assets";
 import { composeShotCells } from "@/lib/shot-cells";
 import { PIPELINE_STAGE_CONFIGS } from "@/lib/episode-pipeline-contracts";
 import { cleanEpisodeTitle } from "@/lib/import-script";
+import { summarizeFoundationRuns } from "@/lib/project-foundation-status";
+import { executionErrorSource, formatExecutionErrorForUser } from "@/lib/execution-errors";
 
 /** 岗位条与流水线契约同源，避免手工维护漂移（E0 叙事节奏 → E5 审查总控）。 */
 export const ROLE_STAGES = PIPELINE_STAGE_CONFIGS.map((stage) => [stage.code, stage.name] as const);
@@ -24,6 +26,26 @@ export type RoleProgress = {
   status: "未开始" | "排队中" | "进行中" | "已完成" | "失败";
   model: string;
   duration: string;
+};
+
+export type EpisodeProductionStatus = "未开始" | "生成中" | "已完成" | "需处理" | "待继续";
+
+export type FoundationRunDiagnostics = {
+  chunks?: number;
+  completedChunks?: number;
+  resumedChunks?: number;
+  calls?: number;
+  inputChars?: number;
+  usage?: {
+    source?: string;
+    calls?: number;
+    inputTokens?: number | null;
+    cachedInputTokens?: number | null;
+    outputTokens?: number | null;
+    reasoningTokens?: number | null;
+    totalTokens?: number | null;
+  };
+  validationIssues?: Array<{ code?: string; evidence?: string; coordinate?: string }>;
 };
 
 type ActiveRunLike = {
@@ -75,6 +97,55 @@ function displayDuration(durationMs: number | null): string {
   return `${Math.floor(durationMs / 60_000)}分${Math.round((durationMs % 60_000) / 1000)}秒`;
 }
 
+function foundationRunDiagnostics(run: {
+  inputSummary?: string | null;
+  outputSummary?: string | null;
+}): FoundationRunDiagnostics | null {
+  const input = parseJsonRecord(run.inputSummary);
+  const output = parseJsonRecord(run.outputSummary);
+  const execution = output.execution && typeof output.execution === "object" && !Array.isArray(output.execution)
+    ? output.execution as Record<string, unknown>
+    : {};
+  const source = Object.keys(execution).length ? execution : input;
+  const usageValue = source.usage;
+  const usage = usageValue && typeof usageValue === "object" && !Array.isArray(usageValue)
+    ? usageValue as Record<string, unknown>
+    : null;
+  const numberValue = (value: unknown) => {
+    const number = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(number) ? number : undefined;
+  };
+  const diagnostics: FoundationRunDiagnostics = {
+    chunks: numberValue(source.chunks),
+    completedChunks: numberValue(source.completedChunks),
+    resumedChunks: numberValue(source.resumedChunks),
+    calls: numberValue(source.calls),
+    inputChars: numberValue(source.inputChars),
+    usage: usage ? {
+      source: typeof usage.source === "string" ? usage.source : undefined,
+      calls: numberValue(usage.calls),
+      inputTokens: numberValue(usage.inputTokens) ?? null,
+      cachedInputTokens: numberValue(usage.cachedInputTokens) ?? null,
+      outputTokens: numberValue(usage.outputTokens) ?? null,
+      reasoningTokens: numberValue(usage.reasoningTokens) ?? null,
+      totalTokens: numberValue(usage.totalTokens) ?? null
+    } : undefined,
+    validationIssues: Array.isArray(output.validationIssues)
+      ? output.validationIssues.flatMap((item) => item && typeof item === "object" && !Array.isArray(item)
+          ? [{
+              code: typeof (item as Record<string, unknown>).code === "string" ? (item as Record<string, unknown>).code as string : undefined,
+              evidence: typeof (item as Record<string, unknown>).evidence === "string" ? (item as Record<string, unknown>).evidence as string : undefined,
+              coordinate: typeof (item as Record<string, unknown>).coordinate === "string" ? (item as Record<string, unknown>).coordinate as string : undefined
+            }]
+          : [])
+      : []
+  };
+  const hasValue = diagnostics.chunks !== undefined || diagnostics.completedChunks !== undefined
+    || diagnostics.calls !== undefined || diagnostics.inputChars !== undefined
+    || Boolean(diagnostics.usage) || Boolean(diagnostics.validationIssues?.length);
+  return hasValue ? diagnostics : null;
+}
+
 export function buildRoleProgress(runs: readonly RunLike[]): RoleProgress[] {
   const latestByStage = new Map<string, RunLike>();
   for (const run of [...runs].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())) {
@@ -93,6 +164,59 @@ export function buildRoleProgress(runs: readonly RunLike[]): RoleProgress[] {
         }
       : { code, name, status: "未开始", model: "默认模型", duration: "—" };
   });
+}
+
+/** 全剧工作台与单集页侧栏共用的剧集状态口径。只有 E0–E5 全部完成才显示勾。 */
+export function deriveEpisodeProductionStatus(
+  roles: readonly Pick<RoleProgress, "status">[],
+  hasContent: boolean
+): EpisodeProductionStatus {
+  const active = roles.some((role) => role.status === "进行中" || role.status === "排队中");
+  const failed = roles.some((role) => role.status === "失败");
+  const finished = roles.length > 0 && roles.every((role) => role.status === "已完成");
+  // 没有产生任何分镜内容的技术失败（例如额度耗尽、进程启动失败）只能算“待继续”，
+  // 不能把空集误报成需要返修；只有已有内容的失败才进入人工处理态。
+  if (failed && hasContent) return "需处理";
+  if (failed) return "待继续";
+  if (active) return "生成中";
+  if (finished) return "已完成";
+  return hasContent ? "待继续" : "未开始";
+}
+
+/** 以数据库运行记录计算状态，供单集页导航和全剧页使用同一口径。 */
+export function deriveEpisodeProductionStatusFromRuns(runs: readonly RunLike[], hasContent: boolean) {
+  return deriveEpisodeProductionStatus(buildRoleProgress(runs), hasContent);
+}
+
+export type EpisodeGroupProgress = {
+  total: number;
+  completed: number;
+  started: number;
+  generating: number;
+  needsRepair: number;
+  resumable: number;
+};
+
+/** 分组摘要只在确实完成 E0–E5 时使用“已完成”，避免新项目显示成 0/10 已完成。 */
+export function formatEpisodeGroupProgress({
+  total,
+  completed,
+  started,
+  generating,
+  needsRepair,
+  resumable
+}: EpisodeGroupProgress): string {
+  if (total <= 0) return "暂无集数";
+  if (completed >= total) return `${total}/${total} 集已完成`;
+  if (started <= 0) return `0/${total} 集待生成`;
+
+  const parts = [`${Math.min(completed, total)}/${total} 集已完成`];
+  const waiting = Math.max(total - started, 0);
+  if (waiting > 0) parts.push(`${waiting} 集待生成`);
+  if (generating > 0) parts.push(`${generating} 集生成中`);
+  if (needsRepair > 0) parts.push(`${needsRepair} 集待处理`);
+  if (resumable > 0) parts.push(`${resumable} 集待继续`);
+  return parts.join(" · ");
 }
 
 /** 从真实活动批次判断 UI 应显示“单岗位 / 完整流水线 / 局部修复”，避免全局 busy 布尔值误导用户。 */
@@ -130,7 +254,8 @@ export async function getProjectStudio(projectId: string, userId: string, db: Db
         orderBy: { number: "asc" },
         include: {
           scriptScenes: { orderBy: { sortOrder: "asc" } },
-          pipelineRuns: { orderBy: { createdAt: "desc" }, take: 10 },
+          // 不限制最近 N 条：同一集可能有多轮返修，不能让历史成功的 E0 被重试记录挤出状态统计。
+          pipelineRuns: { orderBy: { createdAt: "desc" } },
           _count: {
             select: {
               storyboardShots: true,
@@ -146,6 +271,45 @@ export async function getProjectStudio(projectId: string, userId: string, db: Db
 
   if (!project) return null;
   const memory = project.sceneSnapshots.find((snapshot) => snapshot.sceneKey === "PROJECT_MEMORY");
+  const [foundationRunRecords, batchMonitorRun] = await Promise.all([
+    // P1/P2 不受全局最近 30 条流水线记录限制；E0–E5 很快会把它们挤出列表。
+    db.pipelineRun.findMany({
+      where: { projectId, episodeId: null, stageCode: { in: ["P1", "P2"] } },
+      orderBy: { createdAt: "asc" },
+      select: {
+        stageCode: true,
+        status: true,
+        inputSummary: true,
+        outputSummary: true,
+        error: true,
+        createdAt: true,
+        startedAt: true,
+        finishedAt: true,
+        durationMs: true,
+        model: true,
+        provider: true,
+        roleName: true
+      }
+    }),
+    db.pipelineRun.findFirst({
+      where: { projectId, episodeId: null, stageCode: "BATCH_MONITOR" },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, status: true, inputSummary: true, outputSummary: true, error: true, createdAt: true, startedAt: true, finishedAt: true }
+    })
+  ]);
+  const foundationStatus = summarizeFoundationRuns(foundationRunRecords);
+  const batchMonitorInput = parseJsonRecord(batchMonitorRun?.inputSummary);
+  const batchMonitorSummary = parseJsonRecord(batchMonitorRun?.outputSummary);
+  const batchMonitorMessage = typeof batchMonitorSummary.message === "string" ? batchMonitorSummary.message : "";
+  const batchMonitorProcessed = Number.isInteger(batchMonitorSummary.processed) ? Number(batchMonitorSummary.processed) : null;
+  const batchMonitorTotal = Number.isInteger(batchMonitorSummary.total) ? Number(batchMonitorSummary.total) : null;
+  const skippedEpisodes = Array.isArray(batchMonitorSummary.skippedEpisodes)
+    ? [...new Set(batchMonitorSummary.skippedEpisodes
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value >= 1))].sort((a, b) => a - b)
+    : [];
+  const legacyAutoRepair = Number(batchMonitorInput.maxAutoRepairs ?? 0) > 0
+    || /自动返修|返修后问题数量未减少/.test(batchMonitorMessage);
 
   return {
     project: {
@@ -160,7 +324,9 @@ export async function getProjectStudio(projectId: string, userId: string, db: Db
     firstPhase: {
       planningReady: Boolean(memory),
       assetsReady: project.assets.length > 0,
-      sceneCount: project.episodes.reduce((total, episode) => total + episode.scriptScenes.length, 0),
+      sceneCount: project.episodes
+        .filter((episode) => episode.number >= 1)
+        .reduce((total, episode) => total + episode.scriptScenes.length, 0),
       memory: memory?.content ?? "尚未生成项目策划与全剧索引。"
     },
     assets: project.assets.map((asset) => ({
@@ -171,7 +337,9 @@ export async function getProjectStudio(projectId: string, userId: string, db: Db
       status: asset.status,
       episodeId: asset.episodeId,
       parentId: asset.parentId,
-      role: (parseJsonRecord(asset.metadata).role as string | null) ?? null
+      role: (parseJsonRecord(asset.metadata).role as string | null) ?? null,
+      sourceText: asset.sourceText,
+      notes: asset.notes
     })),
     episodes: project.episodes.map((episode) => ({
       id: episode.id,
@@ -194,8 +362,42 @@ export async function getProjectStudio(projectId: string, userId: string, db: Db
       duration: displayDuration(run.durationMs),
       createdAt: run.createdAt,
       error: run.error
-    }))
+    })),
+    // 这里使用“同一成功批次的 P1 + P2”，失败的后续重试不会把已生成的基础资料误判为未完成。
+    foundationRuns: foundationStatus.runs.map((run) => ({
+      stageCode: run.stageCode,
+      status: displayRunStatus(run.status),
+      model: run.model ?? "默认模型",
+      duration: displayDuration(run.durationMs ?? null),
+      error: run.error ? formatExecutionErrorForUser(run.error, { source: executionErrorSource(run.provider) }) : run.error,
+      diagnostics: foundationRunDiagnostics(run)
+    })),
+    foundationReady: foundationStatus.ready,
+    foundationActive: foundationStatus.active,
+    batchMonitor: batchMonitorRun
+      ? {
+          id: batchMonitorRun.id,
+          status: batchMonitorRun.status,
+          message: batchMonitorMessage || null,
+          error: batchMonitorRun.error
+            ? formatBatchMonitorError(batchMonitorRun.error, project.executionMode)
+            : batchMonitorRun.error,
+          processed: batchMonitorProcessed,
+          total: batchMonitorTotal,
+          legacyAutoRepair,
+          skippedEpisodes,
+          createdAt: batchMonitorRun.createdAt,
+          startedAt: batchMonitorRun.startedAt,
+          finishedAt: batchMonitorRun.finishedAt
+        }
+      : null
   };
+}
+
+/** 批量监控器已经拼好的“第几集 + 暂停原因”不能再次压缩，否则页面会丢掉定位信息。 */
+function formatBatchMonitorError(value: string, provider: string | null | undefined) {
+  if (/(?:批量(?:推进)?已暂停|额度不足|配额不足|余额不足|频率限制)/i.test(value)) return value;
+  return formatExecutionErrorForUser(value, { source: executionErrorSource(provider) });
 }
 
 export async function getEpisodeStudio(projectId: string, episodeId: string, userId: string, db: Db = prisma) {
@@ -208,7 +410,8 @@ export async function getEpisodeStudio(projectId: string, episodeId: string, use
           episodes: {
             orderBy: { number: "asc" },
             include: {
-              pipelineRuns: { orderBy: { createdAt: "desc" }, take: 10 },
+              // 侧栏需要按每个阶段的最新记录判断完成状态，不能只取最近 10 条。
+              pipelineRuns: { orderBy: { createdAt: "desc" } },
               _count: { select: { storyboardShots: true, seedanceUnits: true } }
             }
           }
@@ -232,6 +435,8 @@ export async function getEpisodeStudio(projectId: string, episodeId: string, use
   });
 
   if (!episode) return null;
+  // 第0集/前置资料只服务全剧分析，不允许进入 E0–E5 单集生产页。
+  if (episode.number < 1) return null;
 
   return {
     project: {
@@ -248,21 +453,20 @@ export async function getEpisodeStudio(projectId: string, episodeId: string, use
       content: episode.content,
       infoPackage: episode.taskPackages[0]?.payload ?? "尚未生成本集信息包。"
     },
-    episodeNav: episode.project.episodes.map((item) => ({
+    episodeNav: episode.project.episodes.filter((item) => item.number >= 1).map((item) => ({
       id: item.id,
       number: item.number,
       title: cleanEpisodeTitle(item.title, item.number),
       shotCount: item._count.storyboardShots,
       unitCount: item._count.seedanceUnits,
-      status: buildRoleProgress(item.pipelineRuns).some((role) => role.status === "进行中")
-        ? "进行中"
-        : item._count.seedanceUnits > 0
-          ? "已生成"
-          : "未开始"
+      status: deriveEpisodeProductionStatusFromRuns(
+        item.pipelineRuns,
+        item._count.storyboardShots > 0 || item._count.seedanceUnits > 0
+      )
     })),
     // 项目级并行运行提示：其他集正在执行时，本页按钮不动，但页面顶部给出说明（不同集可并行是设计行为）
     otherEpisodesRunning: episode.project.episodes
-      .filter((item) => item.id !== episode.id)
+      .filter((item) => item.id !== episode.id && item.number >= 1)
       .filter((item) => item.pipelineRuns.some((run) => run.status === "QUEUED" || run.status === "RUNNING"))
       .map((item) => item.number)
       .sort((a, b) => a - b),
@@ -374,4 +578,3 @@ export function compactText(value: string, maxLength = 240): string {
   const text = value.replace(/\s+/g, " ").trim();
   return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
 }
-

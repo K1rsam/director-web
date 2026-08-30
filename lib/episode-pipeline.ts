@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import type { GenerationRunStatus, Prisma, PromptSyncStatus } from "@prisma/client";
 import { assertCodexCliReady } from "@/lib/codex-cli";
 import {
@@ -30,8 +31,8 @@ import { prisma } from "@/lib/prisma";
 import { DEFAULT_NEGATIVE_PROMPT, resolveStylePrompt } from "@/lib/style-prompts";
 import { assetAliasesOf, assetSceneRefsOf } from "@/lib/assets";
 import { composeShotCells, composeSound, composeTransition, formatDialogueEntry } from "@/lib/shot-cells";
+import { contractAppliesToEpisode } from "@/lib/presentation-contracts";
 import {
-  buildDialogueSchedule,
   buildTickRanges,
   dialogueMinimumTicks,
   countSequentialActionPhases,
@@ -44,27 +45,95 @@ import {
   type VisibleTextDeclaration
 } from "@/lib/episode-pipeline-quality";
 import { loadStageRules } from "@/lib/rule-engine";
-import { prepareEpisodeProduction } from "@/lib/workflow";
+import { prepareEpisodeProduction, syncEpisodeScenes } from "@/lib/workflow";
 
 export type { PipelineProvider };
 export { resolveProvider, resolveApiModel, resolveCliModel, resolveCliReasoning };
 
 const STRUCTURAL_E1_ISSUE_CODES = new Set([
-  "SOURCE_NODE_UNCOVERED", "MULTI_SPEAKER_SHOT", "ACTION_PHASE_OVERLOAD",
+  // ACTION_PHASE_OVERLOAD 是可在现有镜头 picture 单元格内收敛的建议，
+  // 不得因为「连建议一起修」把整集升级成全量重拆。
+  "SOURCE_NODE_UNCOVERED", "MULTI_SPEAKER_SHOT",
   "CONTINUITY_GROUP_OVER_LIMIT", "SEQUENCE_BOUNDARY", "BEAT_BOUNDARY",
-  "INTRA_SHOT_SOURCE_ORDER", "NODE_MIXED_IN_SHOT", "SOURCE_ORDER_MONOTONIC",
+  // 镜内/镜间顺序问题都可以按命中镜做 E1 patch；把它们升级为全量重拆
+  // 会清空下游 E2/E3/E4，随后制造大量与原问题无关的级联误报。
+  "NODE_MIXED_IN_SHOT",
   "DIALOGUE_TIMING_CAPACITY", "SPEECH_RATE_OVER_LIMIT", "DURATION_OVER_LIMIT"
 ]);
 
+/** 只能整链恢复的回归类型；普通字段/单镜结构问题改为局部回退，保留同批次其它成果。 */
+const FULL_REPAIR_ROLLBACK_CODES = new Set([
+  "SOURCE_NODE_UNCOVERED", "SOURCE_ORDER_MONOTONIC", "DIALOGUE_SLICE_INCOMPLETE"
+]);
+
+const SHOT_REPAIR_ROLLBACK_CODES = new Set([
+  "MULTI_SPEAKER_SHOT", "CONTINUITY_GROUP_OVER_LIMIT", "SEQUENCE_BOUNDARY", "BEAT_BOUNDARY",
+  "INTRA_SHOT_SOURCE_ORDER", "NODE_MIXED_IN_SHOT", "DIALOGUE_TIMING_CAPACITY", "SPEECH_RATE_OVER_LIMIT",
+  "SHOT_UNIT_LINK_INVALID"
+]);
+
 type RepairPlanIssue = { ownerRole: string; severity: string; code: string };
+
+// 资产准备不是当前分镜字段可以自动推断/创建的内容：例如本集出现鸽子，
+// 但项目资产库没有本场 BEAST。保留给人工确认，避免“连建议一起修”擅自
+// 绑定跨场次资产或伪造一个不存在的资产。
+const MANUAL_REVIEW_ISSUE_CODES = new Set(["ASSET_PREPARATION", "E2_CANNOT_RESOLVE_E1_CONTINUITY"]);
+
+const E1_REPAIR_CODES = new Set([
+  "SOURCE_NODE_UNCOVERED", "MULTI_SPEAKER_SHOT", "CONTINUITY_GROUP_OVER_LIMIT",
+  "SEQUENCE_BOUNDARY", "BEAT_BOUNDARY", "INTRA_SHOT_SOURCE_ORDER", "NODE_MIXED_IN_SHOT",
+  "SOURCE_ORDER_MONOTONIC", "DIALOGUE_TIMING_CAPACITY", "SPEECH_RATE_OVER_LIMIT",
+  "DURATION_OVER_LIMIT", "VISIBLE_TEXT_OMITTED", "ACTION_PHASE_OVERLOAD", "SOURCE_NODE_DUPLICATED"
+]);
+
+/**
+ * E5 的 owner_role 是模型输出，不能直接当作路由真相：模型偶尔会把 picture
+ * 卡分给 E4，或把 unit bindings 卡分给 E2。这里按坐标/问题类型做确定性归属，
+ * 让返修真正进入能修改该字段的岗位；原始 coordinate 保留，便于用户追踪问题。
+ */
+export function repairOwnerForIssue(issue: { coordinate?: unknown; code?: unknown; ownerRole?: unknown }): string {
+  const coordinate = String(issue.coordinate ?? "");
+  const code = String(issue.code ?? "");
+  const rawOwner = String(issue.ownerRole ?? "").toUpperCase();
+  const parts = coordinate.split(".");
+  const firstField = parts[1] ?? "";
+  const field = /^e[1-4]$/i.test(firstField) ? (parts[2] ?? "") : firstField;
+  const explicitOwner = /^e([1-4])$/i.exec(firstField)?.[1];
+
+  // 没有镜号/单元号的岗位报告不能安全地自动写回；例如 E2 返回的
+  // `e1.picture` 只是一条“请 E1 进一步确认”的转交信息，不是可执行坐标。
+  if (MANUAL_REVIEW_ISSUE_CODES.has(code) || (/^e[1-4]\./i.test(coordinate) && !/-S\d+/.test(coordinate) && !/-U\d+/.test(coordinate))) return "SYSTEM";
+  // 坐标带有 e1/e2/e3/e4 时，以实际数据列为唯一归属。
+  // 例如 `S001.e1.sound` 是 E1 的基础声场残留，不能按字段名 sound 误派给 E3；
+  // 否则该卡永远不会被能修改该列的岗位命中，返修会反复出现。
+  if (explicitOwner) return `E${explicitOwner}`;
+  if (coordinate.startsWith("source_node.") || E1_REPAIR_CODES.has(code)) return "E1";
+  // CAMERA_PICTURE_MISMATCH 的实际可写目标取决于坐标：picture 是 E2 画面层，
+  // camera_motion 才是 E4 机位层。不能因为 issue code 以 CAMERA_ 开头就把 picture 卡送给 E4。
+  if (code === "CAMERA_PICTURE_MISMATCH" && field === "picture") return "E2";
+  if (code.startsWith("CAMERA_") || code.startsWith("LIGHTING_") || code.startsWith("UNIT_LIGHTING_")
+    || field === "camera" || field === "camera_motion" || field === "lighting" || field === "unit_lighting") return "E4";
+  if (field === "sound" || field === "transition" || code.startsWith("SOUND_") || code.startsWith("TRANSITION_") || code === "REACTION_CAUSALITY" || code === "SPEAKER_ALIGNMENT") return "E3";
+  if (/-U\d+(?:\.|$)/.test(coordinate)) return "E3";
+  if (field === "visible_text" || field === "duration" || field === "dialogue" || field === "rough_camera") return "E1";
+  if (field === "picture" || field === "action_chain" || field === "emotion" || field === "blocking" || field === "speaker") {
+    return rawOwner === "E1" || rawOwner === "E2" ? rawOwner : "E2";
+  }
+  return /^E[1-5]$/.test(rawOwner) ? rawOwner : "E5";
+}
 
 /** 结构性 E1 卡改变镜头拓扑，必须从 E1 全表重建到 E5；E0 骨架沿用。 */
 export function planRepairPipeline(
   issues: RepairPlanIssue[],
   options: { includeSuggestions?: boolean } = {}
 ): { stages: PipelineStageCode[]; structuralRebuild: boolean } {
-  const actionable = issues.filter((issue) => issue.severity === "BLOCKER" || (options.includeSuggestions && issue.severity === "MAJOR"));
-  const structuralRebuild = actionable.some((issue) => issue.ownerRole === "E1" && STRUCTURAL_E1_ISSUE_CODES.has(issue.code));
+  const actionable = issues
+    .map((issue) => ({ ...issue, ownerRole: repairOwnerForIssue(issue) }))
+    .filter((issue) => !MANUAL_REVIEW_ISSUE_CODES.has(issue.code))
+    .filter((issue) => issue.severity === "BLOCKER" || (options.includeSuggestions && issue.severity === "MAJOR"));
+  // 只有真正需要改变镜头拓扑/源节点承载的 E1 BLOCKER 才全链重建。
+  // MAJOR 建议（尤其 ACTION_PHASE_OVERLOAD）走 E1 单元格 patch，避免建议返修放大全集副作用。
+  const structuralRebuild = actionable.some((issue) => issue.ownerRole === "E1" && issue.severity === "BLOCKER" && STRUCTURAL_E1_ISSUE_CODES.has(issue.code));
   if (structuralRebuild) return { stages: ["E1", "E2", "E3", "E4", "E5"], structuralRebuild: true };
   const owners = new Set(actionable.map((issue) => issue.ownerRole));
   const stages = (["E1", "E2", "E3", "E4"] as PipelineStageCode[]).filter((code) => owners.has(code));
@@ -81,14 +150,34 @@ export function repairRunPolicy(structuralRebuild: boolean) {
 
 type IssueKeyFields = { coordinate: string; code: string };
 
+export type RepairRollbackScope = "field" | "shot" | "unit" | "full";
+
+/**
+ * 回归卡的最小安全恢复范围：字段卡只恢复对应字段，单元卡只恢复对应单元，
+ * 只有源节点承载/镜头拓扑类错误才允许触发整批快照恢复。
+ */
+export function repairRollbackScope(issue: { coordinate: string; code: string; ownerRole?: string }): RepairRollbackScope {
+  const coordinate = String(issue.coordinate ?? "");
+  const code = String(issue.code ?? "");
+  if (coordinate.startsWith("source_node.") || FULL_REPAIR_ROLLBACK_CODES.has(code)) return "full";
+  if (/-U\d+(?:\.|$)/.test(coordinate)) return "unit";
+  if (SHOT_REPAIR_ROLLBACK_CODES.has(code)) return "shot";
+  if (/-S\d+(?:[-.]|$)/.test(coordinate)) {
+    const suffix = coordinate.split(".").slice(1).join(".");
+    if (/^(?:(?:e1|e2|e3|e4)\.)?(?:picture|visible_text|camera_motion|camera|lighting|sound|transition|rough_camera|duration|dialogue|source_node_refs|visual_step|visual_step_part_goal|fulfills_visual_step)/.test(suffix)) return "field";
+    return "shot";
+  }
+  return "full";
+}
+
 /** E5 只排除 Python 已开出的同一张卡；同坐标的不同语义卡仍须独立裁定。 */
 export function filterPythonDuplicateReviewIssues<T extends IssueKeyFields, U extends IssueKeyFields>(pythonIssues: readonly U[], reviewIssues: readonly T[]): T[] {
   const pythonKeys = new Set(pythonIssues.map(workflowIssueKey));
   return reviewIssues.filter((issue) => !pythonKeys.has(workflowIssueKey(issue)));
 }
 
-/** 新 BLOCKER 以 coordinate+code 比较；旧批次元数据没有 keys 时兼容原 coordinate 口径。 */
-export function newRegressionBlockerKeys({
+/** 以 coordinate+code 比较返修后新增的问题；旧批次元数据没有 keys 时兼容原 coordinate 口径。 */
+export function newRegressionIssueKeys({
   beforeKeys,
   beforeCoordinates,
   current
@@ -104,16 +193,29 @@ export function newRegressionBlockerKeys({
     .map(workflowIssueKey);
 }
 
+/** 兼容旧调用方：名称保留，但回归基线本身不只比较 BLOCKER。 */
+export function newRegressionBlockerKeys(input: {
+  beforeKeys?: readonly string[];
+  beforeCoordinates?: readonly string[];
+  current: readonly IssueKeyFields[];
+}) {
+  return newRegressionIssueKeys(input);
+}
+
 export function shouldRollbackRepairRegression({
   structuralRebuild,
-  genuineNewBlockerKeys,
+  genuineNewBlockerKeys = [],
+  genuineNewIssueKeys = [],
   scopeViolations
 }: {
   structuralRebuild: boolean;
-  genuineNewBlockerKeys: readonly string[];
+  /** 兼容旧调用方；新代码应传 genuineNewIssueKeys。 */
+  genuineNewBlockerKeys?: readonly string[];
+  genuineNewIssueKeys?: readonly string[];
   scopeViolations: readonly string[];
 }) {
-  return genuineNewBlockerKeys.length > 0 || (!structuralRebuild && scopeViolations.length > 0);
+  return (genuineNewIssueKeys.length > 0 || genuineNewBlockerKeys.length > 0)
+    || (!structuralRebuild && scopeViolations.length > 0);
 }
 
 type SourceCarrierRow = { shotKey?: unknown; sourceNodeRefs?: unknown; dialogue?: unknown };
@@ -177,6 +279,76 @@ type PatchOutput = {
   issues?: Record<string, unknown>[];
 };
 
+/**
+ * 岗位返修的最后一道字段隔离：提示词是软约束，落库前还要机械丢弃明确属于
+ * 其它岗位的字段。未知扩展字段暂时保留，兼容旧项目自定义列；只有会直接覆盖
+ * 下游/上游事实的已知字段才拦截，避免“修画面顺手改时长/声音/机位”形成回归。
+ */
+const FOREIGN_PATCH_FIELDS: Record<"E1" | "E2" | "E3" | "E4", ReadonlySet<string>> = {
+  E1: new Set([
+    "action_chain", "emotion", "blocking", "camera_motion", "camera_intent", "lighting", "unit_lighting", "transition",
+    "unit_dominant_goal", "unit_start_premise", "unit_end_state", "subject_bindings", "shot_ids", "unit_duration"
+  ]),
+  E2: new Set([
+    "visual_goal", "rough_camera", "camera_motion", "camera_intent", "lighting", "unit_lighting",
+    "sound", "transition", "duration", "dialogue", "dialogue_spans", "source_node_refs", "shot_ids", "unit_duration"
+  ]),
+  E3: new Set([
+    "picture", "visual_goal", "action_chain", "emotion", "blocking", "rough_camera", "camera_motion", "camera_intent",
+    "lighting", "unit_lighting", "duration", "dialogue", "dialogue_spans", "source_node_refs", "shot_ids", "unit_duration"
+  ]),
+  E4: new Set([
+    "picture", "visual_goal", "action_chain", "emotion", "blocking", "rough_camera", "sound", "transition",
+    "duration", "dialogue", "dialogue_spans", "source_node_refs", "shot_ids", "unit_duration"
+  ])
+};
+
+function sanitizePatchFields(
+  patches: PatchOutput["patches"],
+  owner: "E1" | "E2" | "E3" | "E4"
+): { patches: PatchOutput["patches"]; dropped: string[] } {
+  const forbidden = FOREIGN_PATCH_FIELDS[owner];
+  const dropped: string[] = [];
+  const sanitized = patches.flatMap((patch) => {
+    if (!isRecord(patch.fields)) return [patch];
+    const fields = { ...patch.fields };
+    for (const key of Object.keys(fields)) {
+      if (!forbidden.has(key)) continue;
+      dropped.push(`${String(patch.shot_id ?? "未知镜号")}.${key}`);
+      delete fields[key];
+    }
+    if (!Object.keys(fields).length) return [];
+    return [{ ...patch, fields }];
+  });
+  return { patches: sanitized, dropped };
+}
+
+/**
+ * 修复轮问题坐标有时落到子镜（如 S007-p0），模型却会返回父镜（S007）。
+ * 返修白名单已经知道唯一命中的真实镜号时，可把这个父镜别名机械归一到
+ * 子镜；若白名单同时包含多个同族镜号，则保留原值并让白名单拒绝歧义写入。
+ */
+function resolveRepairPatchShotKey(shotKey: string, allowedShotKeys?: ReadonlySet<string>) {
+  const clean = String(shotKey ?? "").trim();
+  if (!allowedShotKeys || allowedShotKeys.has(clean)) return clean;
+  const family = clean.replace(/-p\d+$/i, "");
+  const candidates = [...allowedShotKeys].filter((key) => key.replace(/-p\d+$/i, "") === family);
+  if (candidates.length === 1) return candidates[0];
+  return clean;
+}
+
+function normalizeRepairPatchShotKeys(
+  patches: PatchOutput["patches"],
+  allowedShotKeys?: ReadonlySet<string>
+): PatchOutput["patches"] {
+  if (!allowedShotKeys) return patches;
+  return patches.map((patch) => {
+    const raw = String(patch.shot_id ?? "");
+    const resolved = resolveRepairPatchShotKey(raw, allowedShotKeys);
+    return resolved === raw ? patch : { ...patch, shot_id: resolved };
+  });
+}
+
 /** E3 输出：每镜 sound/transition 补丁 + 单元组装。 */
 type E3UnitOutput = {
   role: string;
@@ -184,6 +356,16 @@ type E3UnitOutput = {
   patches: Array<{ shot_id?: unknown; action?: unknown; fields?: unknown }>;
   units: Record<string, unknown>[];
   issues?: Record<string, unknown>[];
+};
+
+type E3UnitStateSnapshot = {
+  id: string;
+  unitKey: string;
+  startPremise: string;
+  endState: string;
+  dominantGoal: string | null;
+  shortUnitReason: string | null;
+  data: string;
 };
 
 /** E5 审查总控输出：坐标化问题卡 + 裁定。 */
@@ -218,12 +400,17 @@ export type PipelineStageRunner = (
   stderr: string;
 }>;
 
-export async function queueEpisodePipeline(projectId: string, episodeId: string) {
+export async function queueEpisodePipeline(
+  projectId: string,
+  episodeId: string,
+  options: { batchMonitorToken?: string | null; batchAttempt?: number } = {}
+) {
   const episode = await prisma.episode.findFirst({
     where: { id: episodeId, projectId },
     include: { project: true }
   });
   if (!episode) throw new Error("没有找到这个剧集。");
+  if (episode.number < 1) throw new Error("这是第0集/前置资料，只用于全剧分析，不能执行单集 E0–E5。");
   // 单并发闸门：同一集同一时间只允许一条流水线；不同集（三线路）可并行，各自持有独立会话与批次
   const active = await prisma.pipelineRun.findFirst({
     where: { projectId, episodeId, status: { in: ["QUEUED", "RUNNING"] } }
@@ -245,7 +432,14 @@ export async function queueEpisodePipeline(projectId: string, episodeId: string)
           provider: provider === "API" ? "DeepSeek API" : "Codex CLI",
           model: provider === "API" ? resolveApiModel(stage.code, ["E1", "E5"].includes(stage.code)) : resolveCliModel(stage.code, stage.model),
           status: "QUEUED",
-          inputSummary: JSON.stringify({ batchToken, provider })
+          inputSummary: JSON.stringify({
+            batchToken,
+            provider,
+            ...(options.batchMonitorToken ? { batchMonitorToken: options.batchMonitorToken } : {}),
+            ...(Number.isInteger(options.batchAttempt) && (options.batchAttempt ?? 0) > 0
+              ? { batchAttempt: options.batchAttempt }
+              : {})
+          })
         }
       })
     )
@@ -266,45 +460,75 @@ export async function queueEpisodePipeline(projectId: string, episodeId: string)
 export async function queueRepairPipeline(
   projectId: string,
   episodeId: string,
-  options: { includeSuggestions?: boolean; force?: boolean } = {}
+  options: {
+    includeSuggestions?: boolean;
+    /** 兼容旧调用方；自动返修已关闭，任何自动调用都会被拒绝。 */
+    automatic?: boolean;
+  } = {}
 ) {
   const episode = await prisma.episode.findFirst({
     where: { id: episodeId, projectId },
     include: { project: true }
   });
   if (!episode) throw new Error("没有找到这个剧集。");
+  if (episode.number < 1) throw new Error("这是第0集/前置资料，只用于全剧分析，不能执行单集修复流水线。");
   const active = await prisma.pipelineRun.findFirst({
     where: { projectId, episodeId, status: { in: ["QUEUED", "RUNNING"] } }
   });
   if (active) throw new Error("本集已有岗位正在执行，请等待当前流程完成后重试。");
+  const activeBatchMonitor = await prisma.pipelineRun.findFirst({
+    where: { projectId, episodeId: null, stageCode: "BATCH_MONITOR", status: { in: ["QUEUED", "RUNNING"] } },
+    select: { id: true }
+  });
+  if (activeBatchMonitor) throw new Error("全剧初稿批量推进仍在进行；批量阶段不自动返修，请等全剧 E0–E5 初稿完成后再处理问题。 ");
   const openIssues = await prisma.workflowIssue.findMany({
     where: { episodeId, status: "OPEN" },
     select: { ownerRole: true, severity: true, coordinate: true, code: true }
   });
   if (!openIssues.length) throw new Error("本集没有开放问题卡，无需修复。");
-  // 修复前 BLOCKER 快照：回归门用 coordinate+code 识别返修引入的新硬错误；保留坐标兼容旧批次。
+  if (openIssues.some((issue) => issue.code === "REPAIR_REGRESSION"
+    || (!MANUAL_REVIEW_ISSUE_CODES.has(issue.code) && (issue.ownerRole === "SYSTEM" || repairOwnerForIssue(issue) === "SYSTEM")))) {
+    throw new Error("上一轮返修触发了系统回归保护，当前状态需要人工确认；请先处理回归提示卡，再继续返修。");
+  }
+  if (options.automatic === true) {
+    throw new Error("自动返修已关闭；请等全剧初稿完成后，在单集页面人工发起一轮定向返修。 ");
+  }
+  // 修复前全部 OPEN 卡快照：回归门必须知道 MAJOR/MINOR 也曾存在，
+  // 否则「连建议一起修」把旧 MAJOR 升成 BLOCKER 时会被错误当成新增硬错误。
   const openBlockerCoords = openIssues.filter((issue) => issue.severity === "BLOCKER").map((issue) => issue.coordinate);
   const openBlockerKeys = openIssues.filter((issue) => issue.severity === "BLOCKER").map(workflowIssueKey);
+  const openIssueKeys = openIssues.map(workflowIssueKey);
   // 全部 OPEN 卡坐标（含 MAJOR）：修复轮各岗位的 revisionIssues 会带上同 owner 的 MAJOR 卡
   //（E1/E2/E3/E4 分支查询 ownerRole+OPEN 不限 severity），回归门的"命中镜"判定必须覆盖它们——
   // 否则合法的 MAJOR 修复会被当作"未命中越界"整批回滚（实测 10:17 轮：修 2-2-S017 BLOCKER +
   // 2-1-S011 等 MAJOR 卡，S017 修好却被回滚撤销）
   const openCoords = openIssues.map((issue) => issue.coordinate);
-  // 收敛门禁已移除（用户决策）：它只限制人工重试，不帮助 AI 修好——
-  // 修 A 破 B 由回归检测（新增 BLOCKER 自动回滚）+ 修复轮坐标过滤兜底，无需前置拦截
+  // 自动返修由页面监控器控制轮数，并在上一轮问题集合未减少时暂停；
+  // 这里仍保留人工 force 参数用于用户确认后的再次尝试，但不会绕过回归保护或系统阻断卡。
   const openBlockers = openIssues.filter((issue) => issue.severity === "BLOCKER").length;
   const openMajors = openIssues.filter((issue) => issue.severity === "MAJOR").length;
   // 选岗：BLOCKER 卡的归属岗位必跑；「连建议一起修」时 MAJOR 卡的归属岗位也纳入（MINOR 与 SYSTEM 卡不触发）
   const plan = planRepairPipeline(openIssues, options);
   if (!plan.stages.length) {
+    const manualOnly = openIssues.length > 0 && openIssues.every((issue) => MANUAL_REVIEW_ISSUE_CODES.has(issue.code));
     throw new Error(
-      options.includeSuggestions
+      manualOnly
+        ? "当前只剩需要人工确认的资产准备建议，自动流程不会擅自绑定或创建资产。"
+        : options.includeSuggestions
         ? "本集没有可修复的问题卡（BLOCKER 与 MAJOR 均已清零）。"
         : "本集只有建议卡（MAJOR/MINOR），不阻塞放行；可用「连建议一起修」让建议卡随修复轮一并处理，或用「确认保留」豁免不需要修的卡。"
     );
   }
   // E5 自己也开卡（如 FALSE_RELEASE_BLOCKED）：复审即可销，无需前置岗位
-  const needed = plan.stages;
+  // E1 修复后可能触发确定性的单元重排（例如同一场次内嵌“公园/饭馆”标题）。
+  // 这种重排必须在同一批次补跑 E3/E4，不能等 E5 把新单元误报成“修复引入的回归”。
+  let plannedStages = [...plan.stages];
+  if (plannedStages.includes("E1") && await unitPartitionNeedsRefresh(projectId, episodeId)) {
+    plannedStages = [...new Set([...plannedStages, "E3", "E4", "E5"])] as PipelineStageCode[];
+  }
+  const needed = PIPELINE_STAGE_CONFIGS
+    .filter((stage) => plannedStages.includes(stage.code))
+    .map((stage) => stage.code);
   if (!needed.length) throw new Error("没有可修复的岗位。");
 
   const provider = resolveProvider(episode.project.executionMode);
@@ -322,7 +546,20 @@ export async function queueRepairPipeline(
         provider: provider === "API" ? "DeepSeek API" : "Codex CLI",
         model: provider === "API" ? resolveApiModel(stageCode, ["E1", "E5"].includes(stageCode)) : resolveCliModel(stageCode, stage.model),
         status: "QUEUED",
-        inputSummary: JSON.stringify({ batchToken, provider, repairPipeline: true, structuralRebuild: plan.structuralRebuild, openBlockers, openMajors, includeSuggestions: options.includeSuggestions === true, openBlockerCoords, openBlockerKeys, openCoords })
+        inputSummary: JSON.stringify({
+          batchToken,
+          provider,
+          repairPipeline: true,
+          automaticRepair: options.automatic === true,
+          structuralRebuild: plan.structuralRebuild,
+          openBlockers,
+          openMajors,
+          includeSuggestions: options.includeSuggestions === true,
+          openBlockerCoords,
+          openBlockerKeys,
+          openIssueKeys,
+          openCoords
+        })
       };
     })
   });
@@ -341,6 +578,7 @@ export async function queueSingleStagePipeline(projectId: string, episodeId: str
     include: { project: true }
   });
   if (!episode) throw new Error("没有找到这个剧集。");
+  if (episode.number < 1) throw new Error("这是第0集/前置资料，只用于全剧分析，不能执行单集岗位。");
   const active = await prisma.pipelineRun.findFirst({
     where: { projectId, episodeId, status: { in: ["QUEUED", "RUNNING"] } }
   });
@@ -401,6 +639,9 @@ export async function executeEpisodePipeline(
   batchToken: string,
   options: { stageRunner?: PipelineStageRunner; singleStage?: PipelineStageCode; stages?: PipelineStageCode[] } = {}
 ) {
+  // 先做零 Token 的场次同步，再读取上下文；否则旧版 Word 扁平化导入的场头
+  // 会让 E0/E1/E3 继续围绕错误的单一 1-1 场次工作。
+  await syncEpisodeScenes(projectId, episodeId);
   const context = await loadPipelineContext(projectId, episodeId);
   const provider = await resolveEpisodeBatchProvider(projectId, episodeId, batchToken, context.project.executionMode);
 
@@ -428,8 +669,8 @@ export async function executeEpisodePipeline(
       ? PIPELINE_STAGE_CONFIGS.filter((stage) => options.stages!.includes(stage.code))
       : PIPELINE_STAGE_CONFIGS;
 
-  // REPAIR TRANSACTION：返修批次在事务快照上执行——批次结束回归检测发现新增 BLOCKER 时自动回滚，
-  // 坏修复不落库（不是"报警"而是"安全门"）
+  // REPAIR TRANSACTION：返修批次在事务快照上执行——批次结束回归检测发现新增 BLOCKER 时，
+  // 优先只恢复受影响字段/镜头/单元；只有源节点承载或镜头拓扑无法拆分时才恢复整集。
   const repairSnapshot = (options.stages?.length ?? 0) > 0
     ? await snapshotEpisode(episodeId)
     : null;
@@ -455,6 +696,9 @@ export async function executeEpisodePipeline(
       let e3RevisionMode = false;
       let e3HitShotKeys = new Set<string>();   // E3（单元）返修命中镜
       let e3HitUnitKeys = new Set<string>();   // E3（单元）返修命中单元
+      let e3AllowedUnitFields = new Map<string, Set<"premise" | "end_state" | "goal" | "bindings">>();
+      let e3BeforeUnitStates: E3UnitStateSnapshot[] = [];
+      let e3BeforeIssueKeys = new Set<string>();
       let lightingUnitKeys = new Set<string>(); // E4 返修：被开「单元.lighting」卡的单元（唯一允许重写 unit_lighting 的范围）
       let e5Skip = false;
       let fingerprint: string | null = null;
@@ -474,10 +718,10 @@ export async function executeEpisodePipeline(
         const scriptChanged = typeof lastScriptFingerprint === "string" && lastScriptFingerprint !== currentScriptFingerprint;
         const openIssues = scriptChanged
           ? []
-          : await prisma.workflowIssue.findMany({
-              where: { projectId, episodeId, ownerRole: "E1", status: "OPEN" },
+          : (await prisma.workflowIssue.findMany({
+              where: { projectId, episodeId, status: "OPEN" },
               orderBy: { createdAt: "asc" }
-            });
+            })).filter((item) => repairOwnerForIssue(item) === "E1");
         revisionMode = repairPolicy.e1Revision && openIssues.length > 0;
         if (scriptChanged) {
           await createMechanicalIssueOnce(
@@ -509,10 +753,10 @@ export async function executeEpisodePipeline(
       }
       // E2/E4 返修轮：命中镜号 ± 相邻镜的定向修补，不再全表重写
       if (stage.code === "E2" || stage.code === "E4") {
-        const openIssues = await prisma.workflowIssue.findMany({
-          where: { projectId, episodeId, ownerRole: stage.code, status: "OPEN" },
+        const openIssues = (await prisma.workflowIssue.findMany({
+          where: { projectId, episodeId, status: "OPEN" },
           orderBy: { createdAt: "asc" }
-        });
+        })).filter((item) => repairOwnerForIssue(item) === stage.code);
         e24RevisionMode = repairPolicy.e24Revision && openIssues.length > 0;
         if (e24RevisionMode) {
           const revisionIssues = openIssues.map((item) => ({
@@ -544,7 +788,7 @@ export async function executeEpisodePipeline(
           // 无光影卡的返修轮（$1/摄影卡）机械层直接禁止 unit_lighting 落库。
           if (stage.code === "E4") {
             for (const item of revisionIssues) {
-              const match = /^(.*?-U\d+)\.lighting$/.exec(item.coordinate);
+              const match = /^(.*?-U\d+)\.(?:lighting|unit_lighting)$/.exec(item.coordinate);
               if (match) lightingUnitKeys.add(match[1]);
             }
             // 光影卡单元纳入输入窗口：模型需看到单元内镜头才能正确写布光（其镜头不在命中范围，
@@ -568,13 +812,21 @@ export async function executeEpisodePipeline(
       }
       // E3 返修轮：只重写命中单元的创作字段（镜号归属由 Python 决定）
       if (stage.code === "E3") {
-        const openUnitIssues = await prisma.workflowIssue.findMany({
-          where: { projectId, episodeId, status: "OPEN", ownerRole: "E3" },
+        await assertE3SourceReady(context, workingShots);
+        const openUnitIssues = (await prisma.workflowIssue.findMany({
+          where: { projectId, episodeId, status: "OPEN" },
           orderBy: { createdAt: "asc" }
-        });
+        })).filter((item) => repairOwnerForIssue(item) === "E3");
         e3RevisionMode = repairPolicy.e3Revision && openUnitIssues.length > 0;
         if (e3RevisionMode) {
           const currentUnits = await hydrateUnitOutput(context);
+          // 返修前保留 E3 单元字段快照。若模型为修一个字段顺手写坏另一个字段，
+          // 在进入 E5 前只恢复新增回归字段，保留本轮真正命中的有效修复。
+          e3BeforeUnitStates = await prisma.seedanceUnit.findMany({
+            where: { episodeId },
+            select: { id: true, unitKey: true, startPremise: true, endState: true, dominantGoal: true, shortUnitReason: true, data: true }
+          });
+          e3BeforeIssueKeys = new Set(validatePipeline(context, workingShots, currentUnits.units).map(workflowIssueKey));
           const revisionIssues = openUnitIssues.map((item) => ({
             coordinate: item.coordinate,
             code: item.code,
@@ -587,36 +839,68 @@ export async function executeEpisodePipeline(
           // 缺失字段的单元不自动纳入：它们没被开卡时是 MAJOR 容忍项，纳入只会让模型重写未命中单元、
           // 引入新 BLOCKER（修 A 破 B，回归回滚整批白跑）；被开 UNIT_FIELDS_INCOMPLETE 卡时自然进入命中
           const hitUnitKeys = new Set<string>();
+          // E3 不只有 unit 卡：sound/transition 卡直接挂在 shot 坐标上时，也必须把该镜送入
+          // E3 输入窗口。此前只看 -U 坐标，导致 S029.sound/S029-p0.sound 虽然已开卡，
+          // E3 却看不到它们，最终只能把同一张卡带回 E5，白白多跑一轮。
+          const directHitShotKeys = new Set<string>();
           for (const coord of revisionIssues.map((item) => item.coordinate.split(".")[0])) {
-            if (!coord.includes("-U")) continue;
-            for (const part of coord.split("→")) hitUnitKeys.add(part);
+            if (coord.includes("-U")) {
+              for (const part of coord.split("→")) hitUnitKeys.add(part);
+            }
+            if (/-S\d+/.test(coord)) directHitShotKeys.add(coord);
           }
           e3HitUnitKeys = hitUnitKeys;
           await recordRepairCoords(run, revisionIssues.map((item) => item.coordinate));
           const partition = computeUnitPartition(context, workingShots);
           const unitList = currentUnits.units as Record<string, unknown>[];
           const targetParts = partition.filter((part) => hitUnitKeys.has(part.unitKey));
-          if (targetParts.length) {
-            const targetShotIds = new Set(targetParts.flatMap((part) => part.shotIds));
-            e3HitShotKeys = targetShotIds;
-            input.unit_windows = targetParts.map((part, index) => {
-              let previousEndState: string | null = null;
-              for (let prev = index - 1; prev >= 0; prev--) {
-                const prevPart = targetParts[prev];
-                if (prevPart.sceneId !== part.sceneId) break;
-                previousEndState = String((unitList.find((unit) => String(unit.unit_id ?? "") === prevPart.unitKey) as Record<string, unknown> | undefined)?.unit_end_state ?? "");
-                break;
+          const targetShotIds = new Set(targetParts.flatMap((part) => part.shotIds));
+          for (const shotKey of directHitShotKeys) targetShotIds.add(shotKey);
+          // E3 的 patches 只能修直接挂在镜号上的 sound/transition；单元卡只允许
+          // 通过 units 写单元字段，不能因为“命中单元”就放开该单元内所有镜头。
+          e3HitShotKeys = directHitShotKeys;
+          e3AllowedUnitFields = new Map();
+          for (const issue of revisionIssues) {
+            const unitKey = unitKeyFromCoordinate(issue.coordinate);
+            if (!unitKey) continue;
+            const allowed = e3AllowedUnitFields.get(unitKey) ?? new Set<"premise" | "end_state" | "goal" | "bindings">();
+            for (const field of unitRegressionFields(issue)) allowed.add(field);
+            // 无字段坐标（例如跨地点窗口）不授权模型改写任何单元字段，
+            // 由 Python 分组或人工确认处理。
+            e3AllowedUnitFields.set(unitKey, allowed);
+          }
+          if (targetParts.length || directHitShotKeys.size) {
+            const inputShotIds = new Set(targetShotIds);
+            const indexByKey = new Map(workingShots.map((shot, index) => [shot.shot_id, index]));
+            // 给直接镜头保留前后镜上下文，但写入白名单仍只允许 directHitShotKeys/命中单元。
+            for (const shotKey of directHitShotKeys) {
+              const index = indexByKey.get(shotKey);
+              if (index === undefined) continue;
+              for (let delta = -1; delta <= 1; delta++) {
+                const neighbor = workingShots[index + delta];
+                if (neighbor) inputShotIds.add(neighbor.shot_id);
               }
-              return {
-                unit_id: part.unitKey,
-                shot_ids: part.shotIds,
-                duration: part.duration,
-                needs_short_reason: part.needsReason,
-                previous_end_state: previousEndState,
-                current: unitList.find((unit) => String(unit.unit_id ?? "") === part.unitKey) ?? null
-              };
-            });
-            input.shots = stageShotRows(workingShots.filter((shot) => targetShotIds.has(shot.shot_id)), ["e1", "e2", "e3"]);
+            }
+            if (targetParts.length) {
+              input.unit_windows = targetParts.map((part, index) => {
+                let previousEndState: string | null = null;
+                for (let prev = index - 1; prev >= 0; prev--) {
+                  const prevPart = targetParts[prev];
+                  if (prevPart.sceneId !== part.sceneId) break;
+                  previousEndState = String((unitList.find((unit) => String(unit.unit_id ?? "") === prevPart.unitKey) as Record<string, unknown> | undefined)?.unit_end_state ?? "");
+                  break;
+                }
+                return {
+                  unit_id: part.unitKey,
+                  shot_ids: part.shotIds,
+                  duration: part.duration,
+                  needs_short_reason: part.needsReason,
+                  previous_end_state: previousEndState,
+                  current: unitList.find((unit) => String(unit.unit_id ?? "") === part.unitKey) ?? null
+                };
+              });
+            }
+            input.shots = stageShotRows(workingShots.filter((shot) => inputShotIds.has(shot.shot_id)), ["e1", "e2", "e3"]);
           }
           revisionPrompt = buildE3RevisionPrompt(input);
         }
@@ -683,8 +967,9 @@ export async function executeEpisodePipeline(
           unitOutput = await hydrateUnitOutput(context);
           hardIssues = validatePipeline(context, workingShots, unitOutput.units);
         }
-        // E5 复审只接收：所有旧 BLOCKER + 明确标记为 E5 产出的旧卡。
-        // E1-E4 普通 MAJOR 不混入；无 issuer 的历史 E5 卡用上一轮 E5 输出 key 兼容识别。
+        // E5 复审只接收：所有旧 BLOCKER + E5 自己产出的卡 + 本轮阶段刚报告的 MAJOR。
+        // 阶段岗位报告的 MAJOR 经过总控复核并在已修复时销卡，避免旧卡驱动重复返修；
+        // 历史无 issuer 的 E5 卡仍用上一轮输出 key 兼容识别。
         const lastSuccessfulE5 = stage.code === "E5"
           ? await prisma.pipelineRun.findFirst({
               where: { projectId, episodeId, stageCode: "E5", status: "SUCCEEDED" },
@@ -703,13 +988,23 @@ export async function executeEpisodePipeline(
         const allOpenIssueRows = stage.code === "E5"
           ? await prisma.workflowIssue.findMany({
               where: { projectId, episodeId, status: "OPEN" },
-              orderBy: { createdAt: "asc" }
+              // 超过上限时按“最久未复核”轮转，而不是永远卡在最早创建的 20 张；
+              // 每次 E5 写回后 updatedAt 会前移，下一轮自然会覆盖上一轮未送审的卡。
+              orderBy: [{ updatedAt: "asc" }, { createdAt: "asc" }]
+            })
+          : [];
+        const approvedExceptionRows = stage.code === "E5"
+          ? await prisma.workflowIssue.findMany({
+              where: { projectId, episodeId, status: "EXCEPTED", severity: { in: ["MAJOR", "MINOR"] } },
+              orderBy: { updatedAt: "desc" },
+              select: { coordinate: true, code: true, severity: true, ownerRole: true, evidence: true }
             })
           : [];
         const severityRank = (severity: string) => severity === "BLOCKER" ? 0 : severity === "MAJOR" ? 1 : 2;
         const openIssueRows = allOpenIssueRows
           .filter((item) => item.severity === "BLOCKER"
             || isE5OwnedIssueRevision(item.revision)
+            || isStageReportIssueRevision(item.revision)
             || previousE5IssueKeys.has(workflowIssueKey(item)))
           .sort((a, b) => severityRank(a.severity) - severityRank(b.severity) || a.createdAt.getTime() - b.createdAt.getTime())
           .slice(0, E5_REVIEW_ISSUE_LIMIT);
@@ -723,7 +1018,21 @@ export async function executeEpisodePipeline(
         if (stage.code === "E5") {
           e5ReviewedIssueKeys = new Set(openIssueRows.map(workflowIssueKey));
         }
-        const input = buildStageInput(stage.code, context, workingShots, unitOutput, hardIssues, openForStage);
+        const input = buildStageInput(
+          stage.code,
+          context,
+          workingShots,
+          unitOutput,
+          hardIssues,
+          openForStage,
+          approvedExceptionRows.map((item) => ({
+            coordinate: item.coordinate,
+            code: item.code,
+            severity: item.severity,
+            owner_role: item.ownerRole,
+            evidence: item.evidence
+          }))
+        );
         if (stage.code === "E5") {
           fingerprint = crypto.createHash("sha1").update(JSON.stringify(input)).digest("hex");
           // 表格与校验结果都没变时跳过模型复审（零 Token），避免反复点 E5 重复烧钱
@@ -744,21 +1053,59 @@ export async function executeEpisodePipeline(
       }
 
       if (stage.code === "E0") {
+        assertE0OutputReady(result!.data, result!);
         const output = await persistE0(context, result!.data);
         // 骨架回灌 context：sequences + 扁平 beats，本批次的 E1 立即可用
         context.sequences = Array.isArray(output.sequences) ? output.sequences : [];
         context.beats = context.sequences.flatMap((seq) => seq.beats);
       } else if (stage.code === "E1") {
         const output = requireE1(result!.data);
-        workingShots = await persistE1(context, output, { revision: revisionMode, revisionIssues: e1RevisionIssues });
+        const rawPatches = (output as unknown as { patches?: unknown }).patches;
+        const sanitized = Array.isArray(rawPatches)
+          ? sanitizePatchFields(rawPatches as PatchOutput["patches"], "E1")
+          : null;
+        const safeOutput = sanitized ? { ...output, patches: sanitized.patches } as E1Output : output;
+        workingShots = await persistE1(context, safeOutput, { revision: revisionMode, revisionIssues: e1RevisionIssues });
+        if (sanitized?.dropped.length) {
+          await createMechanicalIssueOnce(
+            context,
+            "E1.foreign_patch_fields",
+            "PATCH_FOREIGN_FIELD_DROPPED",
+            "E1只能写入镜头结构与基础分镜字段",
+            `已机械丢弃越权字段：${sanitized.dropped.slice(0, 8).join("、")}${sanitized.dropped.length > 8 ? "等" : ""}`,
+            "保留 E1 合法字段；越权字段不会覆盖其它岗位结果"
+          );
+        }
         await persistGenericIssues(context, output.tickets ?? [], "E1");
         // 返修轮只回写命中镜号：回填全表，保证下游岗位与编译看到完整分镜表
-        if (revisionMode) workingShots = await hydrateWorkingShots(context);
+        if (isTargeted) {
+          // E1 之后可能发生机械拆镜、时长归正或单元重排；下游 E3 不能继续使用
+          // 批次开始时的旧 unitOutput。结构重建时尤其要清空旧单元字段，让 E3
+          // 按新的 unit_windows 重新生成，而不是把旧 U01/U02 的状态错贴到新窗口。
+          workingShots = await hydrateWorkingShots(context);
+          unitOutput = structuralRebuild
+            ? { role: "E3", base_revision: context.revision, patches: [], units: [], issues: [] }
+            : await hydrateUnitOutput(context);
+        }
       } else if (stage.code === "E2" || stage.code === "E4") {
         const output = requirePatchOutput(result!.data, stage.code);
+        const sanitized = sanitizePatchFields(output.patches, stage.code);
         const field = stage.code.toLowerCase() as "e2" | "e3";
-        workingShots = mergeShotPatches(workingShots, output.patches, field);
-        await persistShotPatches(context, output, field, { tolerateMissing: e24RevisionMode, allowedShotKeys: e24RevisionMode ? e24HitShotKeys : undefined });
+        const repairPatches = e24RevisionMode
+          ? normalizeRepairPatchShotKeys(sanitized.patches, e24HitShotKeys)
+          : sanitized.patches;
+        workingShots = mergeShotPatches(workingShots, repairPatches, field);
+        await persistShotPatches(context, { ...output, patches: repairPatches }, field, { tolerateMissing: e24RevisionMode, allowedShotKeys: e24RevisionMode ? e24HitShotKeys : undefined });
+        if (sanitized.dropped.length) {
+          await createMechanicalIssueOnce(
+            context,
+            `${stage.code}.foreign_patch_fields`,
+            "PATCH_FOREIGN_FIELD_DROPPED",
+            `${stage.code}只能写入本岗位字段`,
+            `已机械丢弃越权字段：${sanitized.dropped.slice(0, 8).join("、")}${sanitized.dropped.length > 8 ? "等" : ""}`,
+            "保留本岗位字段；越权字段不会覆盖其它岗位结果"
+          );
+        }
         // E4（单元级光影）：unit_lighting 写入 seedanceUnit.data，编译层合并进单元提示词
         if (stage.code === "E4") {
           // 返修轮只放行被开「.lighting」卡的单元（lightingUnitKeys）；无光影卡的返修轮传空集 → 全部丢弃，完全禁止 unit_lighting 落库
@@ -768,12 +1115,33 @@ export async function executeEpisodePipeline(
         if (e24RevisionMode) workingShots = await hydrateWorkingShots(context);
       } else if (stage.code === "E3") {
         const output = requireE3(result!.data);
-        workingShots = mergeShotPatches(workingShots, output.patches, "e3");
-        await persistShotPatches(context, output, "e3", { tolerateMissing: e3RevisionMode, allowedShotKeys: e3RevisionMode ? e3HitShotKeys : undefined });
+        const sanitized = sanitizePatchFields(output.patches, "E3");
+        const repairPatches = e3RevisionMode
+          ? normalizeRepairPatchShotKeys(sanitized.patches, e3HitShotKeys)
+          : sanitized.patches;
+        workingShots = mergeShotPatches(workingShots, repairPatches, "e3");
+        await persistShotPatches(context, { ...output, patches: repairPatches }, "e3", { tolerateMissing: e3RevisionMode, allowedShotKeys: e3RevisionMode ? e3HitShotKeys : undefined });
+        if (sanitized.dropped.length) {
+          await createMechanicalIssueOnce(
+            context,
+            "E3.foreign_patch_fields",
+            "PATCH_FOREIGN_FIELD_DROPPED",
+            "E3只能写入 sound/transition",
+            `已机械丢弃越权字段：${sanitized.dropped.slice(0, 8).join("、")}${sanitized.dropped.length > 8 ? "等" : ""}`,
+            "保留 sound/transition；越权字段不会覆盖其它岗位结果"
+          );
+        }
         // E1 机械层可能已新增/修改镜号（42字切批 -c0/-x0、时长归正、台词对账）：
         // 内存里的 E1 原始输出不含这些镜，必须按库重灌，单元分组才不漏镜（否则 -c0 镜成孤儿）
         workingShots = await hydrateWorkingShots(context);
-        await persistUnits(context, workingShots, { role: output.role, base_revision: output.base_revision, patches: output.patches, units: output.units, issues: output.issues }, { partial: e3RevisionMode, allowedUnits: e3RevisionMode ? e3HitUnitKeys : undefined });
+        try {
+          await persistUnits(context, workingShots, { role: output.role, base_revision: output.base_revision, patches: output.patches, units: output.units, issues: output.issues }, { partial: e3RevisionMode, allowedUnits: e3RevisionMode ? e3HitUnitKeys : undefined });
+        } catch (error) {
+          throw attachRawResultDetail(error, "E3", result!);
+        }
+        if (e3RevisionMode && e3BeforeUnitStates.length) {
+          await guardE3UnitFieldRegressions(context, workingShots, e3BeforeUnitStates, e3BeforeIssueKeys, e3HitUnitKeys, e3AllowedUnitFields);
+        }
         // 落库后的权威单元（Python 分组 + 创作字段）回灌内存，编译与后续校验以库为准
         unitOutput = await hydrateUnitOutput(context);
         await persistGenericIssues(context, output.issues ?? [], "E3");
@@ -803,13 +1171,16 @@ export async function executeEpisodePipeline(
             e4: shot.e4 as Record<string, unknown>
           }).picture])
         );
-        const cameraOfShot = new Map(
+         const cameraOfShot = new Map(
           workingShots.map((shot) => [shot.shot_id, composeShotCells({
             e1: shot.e1 as Record<string, unknown>,
             e2: shot.e2 as Record<string, unknown>,
             e3: shot.e3 as Record<string, unknown>,
             e4: shot.e4 as Record<string, unknown>
-          }).camera_motion])
+           }).camera_motion])
+         );
+        const unitSceneByKey = new Map(
+          computeUnitPartition(context, workingShots).map((part) => [part.unitKey, part.sceneId])
         );
         const reviewIssues = filterPythonDuplicateReviewIssues(currentHard, normalizeReviewIssues(review.issues))
           .map((item) => {
@@ -855,8 +1226,116 @@ export async function executeEpisodePipeline(
                 return { ...item, severity: "MINOR" as const };
               }
             }
+            // 时间状态误报佐证：E5 有时只看到“站立”字样就把仍明确跪地的画面判成越时。
+            // 最终画面已明确给出跪地状态时，这条只能作为建议复核，不能阻断整集。
+            if (item.code === "TEMPORAL_GROUNDING" && item.coordinate.endsWith(".picture") && /站立|站起|已站起/.test(item.evidence)) {
+              const shotKey = item.coordinate.split(".")[0];
+              const picture = pictureOfShot.get(shotKey) ?? "";
+              const kneelingClause = picture.match(/[^。；，,]*跪[^。；，,]*/)?.[0] ?? "最终画面明确为跪地状态";
+              if (/跪/.test(picture) && !/站立|站起|已站起/.test(picture)) {
+                return {
+                  ...item,
+                  severity: "MAJOR" as const,
+                  evidence: `复核降级：最终画面明确为“${kneelingClause}”，与该条“站立”证据矛盾，保留为建议复核`
+                };
+              }
+            }
+            // 复核降级：E5 可能只看到了旧 E1 画面，误把已经由 E2 改成“蹲在坑边检查碎砖”
+            // 的 S028 判成重复 S025。以最终 composed picture 为准；若已出现检查动作，只保留为建议。
+            if (item.code === "TEMPORAL_DUPLICATION" && item.coordinate.endsWith(".picture") && /检查|碎砖|坑边|拨开|断面/.test(item.requestedEffect)) {
+              const shotKey = item.coordinate.split(".")[0];
+              const picture = pictureOfShot.get(shotKey) ?? "";
+              if (/(检查|碎砖|坑边|拨开|断面)/.test(picture) && !/(绊倒|栽倒|撑地)/.test(picture)) {
+                return {
+                  ...item,
+                  severity: "MAJOR" as const,
+                  evidence: "复核降级：最终画面已呈现检查/拨看碎砖动作，与前镜重复证据不一致，保留为建议复核"
+                };
+              }
+            }
+            // 资产绑定误报保护：E5 只能要求绑定当前场次可用资产。全项目资产索引里存在
+            // 其它场次的飞鸟、路人或 GROUP-004 时，模型容易把它们误判成当前单元的 BLOCKER。
+            if (item.code === "BINDING_MISSING" && /-U\d+/.test(item.coordinate)) {
+              const unitKey = item.coordinate.split(".")[0];
+              const sceneId = unitSceneByKey.get(unitKey) ?? "";
+              const evidence = item.evidence;
+              const unavailableExplicitAsset = context.project.assets.some((asset) =>
+                !assetAvailableInScene(asset, sceneId) && explicitlyReferencesAsset(asset, evidence)
+              );
+              const noSceneBirdAsset = /鸽|鸟|飞鸟/.test(evidence) && !context.project.assets.some((asset) =>
+                asset.type === "BEAST" && assetAvailableInScene(asset, sceneId)
+              );
+              const noSceneNamedPedestrianAsset = /路人甲|路人乙/.test(evidence) && !context.project.assets.some((asset) =>
+                asset.type === "CH" && assetAvailableInScene(asset, sceneId) && /路人甲|路人乙/.test(asset.name)
+              );
+              if (unavailableExplicitAsset || noSceneBirdAsset || noSceneNamedPedestrianAsset) {
+                const reason = noSceneBirdAsset
+                  ? "当前场次没有可用飞鸟资产"
+                  : noSceneNamedPedestrianAsset
+                    ? "当前场次没有可用的路人专属资产"
+                    : "证据引用的资产只属于其它场次";
+                return {
+                  ...item,
+                  severity: "MAJOR" as const,
+                  evidence: `复核降级：${reason}，不能要求绑定跨场次资产，保留为资产准备建议`
+                };
+              }
+            }
+            // 同一类跨场次资产误报也可能被 E5 写成 HARD_CHECK_EVIDENCE_MISMATCH。
+            // 若证据明确指向当前场次不可用的资产，且当前画面并未实际提及该资产，
+            // 直接丢弃这张模型卡；它是审查索引串场，不是用户需要修的生产问题。
+            if (item.code === "HARD_CHECK_EVIDENCE_MISMATCH" && /-U\d+/.test(item.coordinate)) {
+              const unitKey = item.coordinate.split(".")[0];
+              const sceneId = unitSceneByKey.get(unitKey) ?? "";
+              const shotKeys = new Set(
+                computeUnitPartition(context, workingShots)
+                  .find((part) => part.unitKey === unitKey)?.shotIds ?? []
+              );
+              const visualText = workingShots
+                .filter((shot) => shotKeys.has(shot.shot_id))
+                .map((shot) => {
+                  const cells = composeShotCells({
+                    e1: shot.e1 as Record<string, unknown>,
+                    e2: shot.e2 as Record<string, unknown>,
+                    e3: shot.e3 as Record<string, unknown>,
+                    e4: shot.e4 as Record<string, unknown>
+                  });
+                  return `${cells.picture}；${cells.camera_motion}`;
+                })
+                .join("；");
+              const crossSceneAssetOnly = context.project.assets.some((asset) =>
+                !assetAvailableInScene(asset, sceneId)
+                && explicitlyReferencesAsset(asset, item.evidence)
+                && !assetMentionedIn(visualText, {
+                  name: asset.name.split("｜")[0].trim(),
+                  type: asset.type,
+                  aliases: assetAliasesOf(asset.metadata)
+                })
+              );
+              if (crossSceneAssetOnly) return null;
+            }
+            // 源节点顺序以当前落库的 source_node_refs/dialogue 为准；E5 偶尔把同一镜的
+            // refs 与相邻 p0 镜混读，凭旧文本报出“逆序”。若当前实际承载顺序单调，
+            // 这张模型卡属于误报，不应进入下一轮 E1，更不能触发回滚。
+            if (item.code === "INTRA_SHOT_SOURCE_ORDER" && item.coordinate.endsWith(".source_node_refs")) {
+              const shotKey = item.coordinate.split(".")[0];
+              const shot = workingShots.find((candidate) => candidate.shot_id === shotKey);
+              const isMonotonic = (ids: string[]) => {
+                const seqs = ids.map((id) => nodeSeqOf(context, id)).filter((value) => value > 0);
+                return seqs.every((value, index) => index === 0 || value >= seqs[index - 1]);
+              };
+              const dialogueIds = shot && Array.isArray(shot.dialogue)
+                ? (shot.dialogue as Array<Record<string, unknown>>)
+                    .map((entry) => String(entry.source_node_id ?? "").trim())
+                    .filter(Boolean)
+                : [];
+              if (shot && isMonotonic(stringArray(shot.source_node_refs)) && (!dialogueIds.length || isMonotonic(dialogueIds))) {
+                return null;
+              }
+            }
             return item;
-          });
+          })
+          .filter((item): item is PipelineIssue => Boolean(item));
         const allIssues = [...currentHard, ...reviewIssues];
         const blockers = allIssues.filter((item) => item.severity === "BLOCKER");
         // 放行裁定：0 条 BLOCKER 即放行（MAJOR/MINOR 是容忍项，只记录不阻塞）；E5 升级 admin_attention 时尊重升级
@@ -885,21 +1364,27 @@ export async function executeEpisodePipeline(
       await compileAndPersistPrompts(context, workingShots, unitOutput.units, { release: released });
 
       const finishedAt = new Date();
-      // 发起时元数据（整批修复/单岗位等标记）在 run 更新时保留，供收敛门禁与日志区分轮次
+      // 发起时元数据（整批修复/单岗位等标记）在 run 更新时保留，供批次收敛与回归日志区分轮次
       const initiatedMeta = (() => {
         const raw = safeParseJson(run.inputSummary);
         if (!raw) return null;
-        if (raw.repairPipeline === true || raw.singleStage === true || raw.foundation === true) {
+        const hasBatchMonitorTracking = typeof raw.batchMonitorToken === "string" || raw.batchAttempt !== undefined;
+        if (raw.repairPipeline === true || raw.singleStage === true || raw.foundation === true || hasBatchMonitorTracking) {
           return {
             repairPipeline: raw.repairPipeline === true,
+            automaticRepair: raw.automaticRepair === true,
             openBlockers: raw.openBlockers,
             openMajors: raw.openMajors,
             includeSuggestions: raw.includeSuggestions === true,
             structuralRebuild: raw.structuralRebuild === true,
             openBlockerCoords: raw.openBlockerCoords,
             openBlockerKeys: raw.openBlockerKeys,
+            openIssueKeys: raw.openIssueKeys,
+            openCoords: raw.openCoords,
             singleStage: raw.singleStage === true,
-            foundation: raw.foundation === true
+            foundation: raw.foundation === true,
+            batchMonitorToken: raw.batchMonitorToken,
+            batchAttempt: raw.batchAttempt
           };
         }
         return null;
@@ -910,7 +1395,7 @@ export async function executeEpisodePipeline(
           status: "SUCCEEDED",
           finishedAt,
           durationMs: finishedAt.getTime() - startedAt.getTime(),
-          // 保留发起时元数据（repairPipeline/openBlockers/openMajors/includeSuggestions），供收敛门禁读取
+          // 保留发起时元数据（repairPipeline/openBlockers/openMajors/includeSuggestions），供批次收敛与回归日志读取
           inputSummary: JSON.stringify({
             batchToken,
             inputChars: inputCharsTotal,
@@ -928,13 +1413,17 @@ export async function executeEpisodePipeline(
       const finishedAt = new Date();
       // 存完整堆栈（不只 message），异常定位不靠猜
       const message = error instanceof Error ? `${error.stack ?? error.message}` : String(error);
+      const rawDetail = error && typeof error === "object" && "rawDetail" in error
+        ? String((error as { rawDetail?: unknown }).rawDetail ?? "").trim()
+        : "";
       await prisma.pipelineRun.update({
         where: { id: run.id },
         data: {
           status: "FAILED",
           finishedAt,
           durationMs: finishedAt.getTime() - startedAt.getTime(),
-          error: message
+          error: message,
+          ...(rawDetail ? { log: JSON.stringify({ rawError: rawDetail }) } : {})
         }
       });
       await cancelQueuedBatch(projectId, episodeId, batchToken, `因${stage.code}失败停止：${message}`);
@@ -967,8 +1456,8 @@ async function recordRepairCoords(run: { id: string; inputSummary: string | null
 }
 
 /**
- * 返修回归检测（零 Token）+ 事务回滚：修复轮（repairPipeline=true）结束时，若当前 open BLOCKER 中存在
- * 修复前没有的坐标，说明返修引入了新硬错误——自动回滚到批次开始前快照，坏修复不落库。
+ * 返修回归检测（零 Token）+ 分级恢复：修复轮（repairPipeline=true）结束时，若当前 OPEN 问题中存在
+ * 修复前没有、且确实由本轮改动引入的卡，说明返修让结果变差——优先恢复对应字段/镜头/单元，保留同批次其它有效成果。
  */
 async function checkRepairRegression(projectId: string, episodeId: string, batchToken: string, snapshot: EpisodeSnapshot | null) {
   const runs = await findBatchRuns(projectId, episodeId, batchToken);
@@ -977,16 +1466,19 @@ async function checkRepairRegression(projectId: string, episodeId: string, batch
   if (first?.repairPipeline !== true) return; // 只查返修批次
   const structuralRebuild = first.structuralRebuild === true;
   const nowOpen = await prisma.workflowIssue.findMany({
-    where: { episodeId, status: "OPEN", severity: "BLOCKER" },
-    select: { coordinate: true, code: true }
+    where: { episodeId, status: "OPEN" },
+    select: { coordinate: true, code: true, severity: true, ownerRole: true }
   });
-  const newBlockerKeys = newRegressionBlockerKeys({
-    beforeKeys: Array.isArray(first.openBlockerKeys) ? first.openBlockerKeys.map(String) : undefined,
-    beforeCoordinates: Array.isArray(first.openBlockerCoords) ? first.openBlockerCoords.map(String) : undefined,
-    current: nowOpen
-  });
-  const newBlockerKeySet = new Set(newBlockerKeys);
-  const newBlockers = nowOpen.filter((issue) => newBlockerKeySet.has(workflowIssueKey(issue)));
+  // 新批次优先使用全部 OPEN 的 coordinate+code 基线；旧批次没有该字段时退回坐标基线，
+  // 不能再把“原 MAJOR → 当前 BLOCKER”机械当成新增硬错误。
+  const beforeKeys = Array.isArray(first.openIssueKeys)
+    ? first.openIssueKeys.map(String)
+    : undefined;
+  const beforeCoordinates = Array.isArray(first.openCoords)
+    ? first.openCoords.map(String)
+    : Array.isArray(first.openBlockerCoords)
+      ? first.openBlockerCoords.map(String)
+      : undefined;
   // 只回滚"修复真正引入的新 BLOCKER"（真·修 A 破 B）——用快照对比判定：
   // newBlocker 坐标的镜，若修复后的相关字段与修复前快照**完全一致**，则该问题修复前就存在
   //（存量问题被 E5 全表重算暴露，如 S008/S013/S034 的台词/时长错位——之前 E5 用内存表漏检
@@ -995,15 +1487,70 @@ async function checkRepairRegression(projectId: string, episodeId: string, batch
   const currentShots = await prisma.storyboardShot.findMany({ where: { episodeId } });
   const currentByKey = new Map(currentShots.map((shot) => [shot.shotKey, shot]));
   const snapshotByKey = new Map((snapshot?.shots ?? []).map((shot) => [String((shot as Record<string, unknown>).shotKey ?? ""), shot as Record<string, unknown>]));
-  const same = (a: unknown, b: unknown) => String(a ?? "") === String(b ?? "");
+  const same = comparableEqual;
   const snapshotUnits = new Map(
     (snapshot?.units ?? []).map((unit) => {
       const row = unit as Record<string, unknown>;
       return [String(row.unitKey ?? row.unit_id ?? ""), row];
     })
   );
-  const currentUnits = await prisma.seedanceUnit.findMany({ where: { episodeId }, select: { unitKey: true, data: true } });
+  const currentUnits = await prisma.seedanceUnit.findMany({
+    where: { episodeId },
+    select: {
+      unitKey: true,
+      data: true,
+      shotLinks: { orderBy: { sortOrder: "asc" }, select: { shot: { select: { shotKey: true } } } }
+    }
+  });
   const currentUnitsByKey = new Map(currentUnits.map((unit) => [unit.unitKey, unit]));
+  // 单元编号会因确定性分组拆分而整体后移。把快照中的旧 U 编号映射到
+  // 当前仍承载同一首镜的 U 编号，再做问题基线比较，避免把“旧 U06 的卡
+  // 已随重排变成 U07”误认为本轮新增回归。
+  const snapshotShotKeyById = new Map(snapshot?.shots.map((shot) => [String(shot.id ?? ""), String(shot.shotKey ?? "")]) ?? []);
+  const snapshotUnitShotKeys = new Map<string, string[]>();
+  for (const link of snapshot?.unitShots ?? []) {
+    const unitKey = String((snapshot?.units ?? []).find((unit) => String(unit.id ?? "") === String(link.unitId ?? ""))?.unitKey ?? "");
+    const shotKey = snapshotShotKeyById.get(String(link.shotId ?? ""));
+    if (!unitKey || !shotKey) continue;
+    snapshotUnitShotKeys.set(unitKey, [...(snapshotUnitShotKeys.get(unitKey) ?? []), shotKey]);
+  }
+  const currentUnitShotKeys = new Map(currentUnits.map((unit) => [unit.unitKey, unit.shotLinks.map((link) => link.shot.shotKey)]));
+  const oldToCurrentUnit = new Map<string, string>();
+  for (const [oldKey, oldShotKeys] of snapshotUnitShotKeys) {
+    const anchor = oldShotKeys[0];
+    const currentKey = [...currentUnitShotKeys.entries()].find(([, shotKeys]) => shotKeys.includes(anchor))?.[0];
+    if (currentKey && currentKey !== oldKey) oldToCurrentUnit.set(oldKey, currentKey);
+  }
+  const expandedBeforeKeys = new Set(beforeKeys ?? []);
+  const expandedBeforeCoordinates = new Set(beforeCoordinates ?? []);
+  for (const [oldKey, currentKey] of oldToCurrentUnit) {
+    for (const key of beforeKeys ?? []) {
+      const [coordinate, code] = String(key).split("\u001f");
+      const remapped = remapUnitKeysInCoordinate(coordinate, new Map([[oldKey, currentKey]]));
+      if (remapped !== coordinate) expandedBeforeKeys.add(`${remapped}\u001f${code}`);
+    }
+    for (const coordinate of beforeCoordinates ?? []) {
+      const remapped = remapUnitKeysInCoordinate(coordinate, new Map([[oldKey, currentKey]]));
+      if (remapped !== coordinate) expandedBeforeCoordinates.add(remapped);
+    }
+  }
+  const currentToOldUnit = new Map([...oldToCurrentUnit].map(([oldKey, currentKey]) => [currentKey, oldKey]));
+  const partitionMigratedCurrentKeys = new Set<string>();
+  for (const [currentKey, currentShotKeys] of currentUnitShotKeys) {
+    const oldKey = currentToOldUnit.get(currentKey) ?? currentKey;
+    const oldShotKeys = snapshotUnitShotKeys.get(oldKey);
+    if (oldShotKeys && JSON.stringify(oldShotKeys) !== JSON.stringify(currentShotKeys)) partitionMigratedCurrentKeys.add(currentKey);
+  }
+  const newIssueKeys = newRegressionIssueKeys({
+    beforeKeys: expandedBeforeKeys.size ? [...expandedBeforeKeys] : undefined,
+    beforeCoordinates: expandedBeforeCoordinates.size ? [...expandedBeforeCoordinates] : undefined,
+    current: nowOpen
+  });
+  const newIssueKeySet = new Set(newIssueKeys);
+  const newIssues = nowOpen.filter((issue) => newIssueKeySet.has(workflowIssueKey(issue)));
+  const newBlockerKeys = newIssues
+    .filter((issue) => issue.severity === "BLOCKER")
+    .map(workflowIssueKey);
   // REPAIR_SCOPE_HASH（顾问要求）：修复轮不得改动未命中坐标的字段——
   // 对比快照与当前：非命中镜的任何 e1-e4/duration/dialogue 变化 = 越界修改 = 回滚
   // 命中集合 = 批次内各修复岗位实际收到的卡坐标（repairCoords，执行时记录，最准确）
@@ -1037,13 +1584,19 @@ async function checkRepairRegression(projectId: string, episodeId: string, batch
       if (snapStr !== curStr) scopeViolations.push(key);
     }
   }
-  const genuineNew = newBlockers.filter((blocker) => {
-    const coordinate = blocker.coordinate;
+  const genuineNew = newIssues.filter((issue) => {
+    const coordinate = issue.coordinate;
     const key = coordinate.split(".")[0];
     // 单元卡（坐标含 -U）：修复轮若没跑 E3，单元字段不会变 → 存量 → 不回滚
     if (key.includes("-U")) {
       const snapUnit = snapshotUnits.get(key);
       const currentUnit = currentUnitsByKey.get(key);
+      const migratedFrom = [...oldToCurrentUnit.entries()].find(([, currentKey]) => currentKey === key)?.[0];
+      // 当前单元只是由旧单元按镜头边界拆分/后移得到时，单元语义卡属于
+      // 重排后的待复核结果，不把它当作模型凭空制造的回归；真正的新单元
+      // 没有任何旧镜头锚点，仍按原规则回滚。
+      if (partitionMigratedCurrentKeys.has(key) && currentUnit) return false;
+      if ((!snapUnit || !currentUnit) && migratedFrom && currentUnit && snapshotUnits.has(migratedFrom)) return false;
       if (!snapUnit || !currentUnit) return true;
       return !same(currentUnit.data, String(snapUnit.data ?? ""));
     }
@@ -1055,6 +1608,14 @@ async function checkRepairRegression(projectId: string, episodeId: string, batch
     const snap = snapshotByKey.get(key);
     if (!snap) return true; // 快照无此镜（修复新增镜）→ 回滚
     if (!current) return true; // 当前无此镜 → 回滚
+    const field = repairTargetField(issue);
+    const column = field ? repairColumnForIssue(issue, field) : null;
+    if (column === "duration") return !same(current.duration, snap.duration);
+    if (column === "dialogue") return !same(current.dialogue, snap.dialogue);
+    if (column === "sortOrder") return !same(current.sortOrder, snap.sortOrder);
+    if (column === "e1Data" || column === "e2Data" || column === "e3Data" || column === "e4Data") {
+      return !same(current[column], snap[column]);
+    }
     // 按卡类型对比相关字段：一致 = 修复没动它 = 存量
     if (coordinate.includes(".duration")) return !same(current.duration, snap.duration);
     if (coordinate.includes(".dialogue")) return !same(current.dialogue, snap.dialogue);
@@ -1064,64 +1625,98 @@ async function checkRepairRegression(projectId: string, episodeId: string, batch
     return !same(current.e1Data, snap.e1Data) || !same(current.e2Data, snap.e2Data);
   });
   const genuineNewKeys = genuineNew.map(workflowIssueKey);
-  if (!shouldRollbackRepairRegression({ structuralRebuild, genuineNewBlockerKeys: genuineNewKeys, scopeViolations })) {
-    if (!newBlockers.length) return;
-    // 新增卡全是存量暴露且无越界修改：不回滚，只记录（供日志排查）
+  const needsRecovery = shouldRollbackRepairRegression({
+    structuralRebuild,
+    genuineNewBlockerKeys: genuineNewKeys.filter((key) => newBlockerKeys.includes(key)),
+    genuineNewIssueKeys: genuineNewKeys,
+    scopeViolations
+  });
+  if (!needsRecovery) {
+    if (!newIssues.length) return;
+    // 新卡对应的数据在返修前后没有变化：这是 E5 新发现的存量问题，不是返修造成的，保留并记录。
     const lastRunInfo = runs.find((run) => run.stageCode === "E5") ?? [...runs].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
     await prisma.pipelineRun.update({
       where: { id: lastRunInfo.id },
-      data: { outputSummary: JSON.stringify({ ...safeParseJson(lastRunInfo.outputSummary), regression: { newBlockers: newBlockerKeys, count: newBlockerKeys.length, rolledBack: false, note: "存量问题暴露，非修复引入，不回滚" } }) }
+      data: { outputSummary: JSON.stringify({ ...safeParseJson(lastRunInfo.outputSummary), regression: { newIssues: newIssueKeys, newBlockers: newBlockerKeys, count: newIssueKeys.length, rolledBack: false, note: "存量问题新暴露，返修前后对应数据未变化，不回滚" } }) }
     });
     return;
   }
-  if (scopeViolations.length && !genuineNew.length && !structuralRebuild) {
-    // 无新增命中镜 BLOCKER，但存在未命中镜的越界修改（REPAIR_SCOPE_HASH 违规）→ 回滚
-    const lastRunInfo = runs.find((run) => run.stageCode === "E5") ?? [...runs].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
-    await prisma.pipelineRun.update({
-      where: { id: lastRunInfo.id },
-      data: { outputSummary: JSON.stringify({ ...safeParseJson(lastRunInfo.outputSummary), regression: { newBlockers: scopeViolations, count: scopeViolations.length, rolledBack: true, note: "REPAIR_SCOPE_VIOLATION：未命中坐标字段被修改" } }) }
-    });
-    await restoreEpisodeSnapshot(episodeId, snapshot!);
-    await prisma.apiRoleSession.deleteMany({ where: { episodeId } });
-    return;
-  }
-  // 回归标记优先写 E5 复审 run（同批次 createdAt 相同，按时间戳排序不稳定，会随机落到 E1）
+  // 回归标记优先写 E5 复审 run（同批次 createdAt 相同，按时间戳排序不稳定，会随机落到 E1）。
   const lastRun = runs.find((run) => run.stageCode === "E5") ?? [...runs].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
   const output = safeParseJson(lastRun.outputSummary) ?? {};
   if (snapshot) {
+    // 优先做局部恢复：新增问题只恢复它对应的镜头字段/单元，未受影响的返修成果继续保留。
+    // 只有源节点承载、镜头拓扑等无法安全拆分的回归，才退回整集快照。
+    const selective = await restoreRepairSlices(
+      episodeId,
+      snapshot,
+      genuineNew,
+      scopeViolations
+      );
+      if (!selective.fullRollback) {
+        // 局部恢复会把镜头/单元字段退回批次开始状态，但此前 E5 已经把
+        // 临时坏状态对应的问题卡写成 OPEN。若不同时销掉这些卡，用户会看到
+        // “修复后问题变多”，下一轮还会继续修一份已经被回滚的内容。
+        // 同时恢复受影响切片在返修前的问题卡状态：E5 可能已经把原卡误销，
+        // 只恢复数据不恢复问题卡会造成“内容已回滚、卡却消失”的假通过。
+        const restoredIssueCount = await restoreIssueSlicesFromSnapshot(
+          episodeId,
+          snapshot,
+          genuineNew,
+          scopeViolations
+        );
+        const resolvedRegressionCards = await resolveRecoveredRegressionCards(episodeId, genuineNew);
+      // 局部恢复已经把真正新增的坏字段退回批次快照；系统卡只是审计记录，
+      // 不应继续阻塞下一轮定向返修。只有整集回滚/无法确认安全边界时才保留 OPEN。
+      await upsertRepairRegressionCard(projectId, episodeId, genuineNewKeys, selective.restoredSlices, false);
+      await refreshDraftPromptsAfterSelectiveRestore(projectId, episodeId);
+      await prisma.pipelineRun.update({
+        where: { id: lastRun.id },
+        data: {
+          outputSummary: JSON.stringify({
+            ...output,
+            regression: {
+              newIssues: newIssueKeys,
+              newBlockers: newBlockerKeys,
+              genuineNewIssues: genuineNewKeys,
+              genuineNewBlockers: genuineNewKeys.filter((key) => newBlockerKeys.includes(key)),
+              scopeViolations,
+              restoredIssueCount,
+              resolvedReviewCards: resolvedRegressionCards,
+              count: genuineNewKeys.length + scopeViolations.length,
+              rolledBack: false,
+              partiallyRestored: true,
+              restoredSlices: selective.restoredSlices,
+              note: "已恢复受影响的镜头字段/单元，并清理临时回归卡；系统回归仅作审计记录，不阻塞下一轮定向返修"
+            }
+          })
+        }
+      });
+      return;
+    }
     // 事务回滚：恢复批次开始前的全表状态
     await restoreEpisodeSnapshot(episodeId, snapshot);
+    // 整集回滚只撤销本轮真正引入的坏状态。E5 同时发现的旧问题（例如运行前
+    // 已存在但尚未开卡的重复源节点引用）不能跟着回滚一起丢失，否则下一次
+    // “连建议一起修”既没有问题卡可路由，又会再次被 E5 原地报出来。
+    await restoreStableReviewIssuesAfterRollback(
+      projectId,
+      episodeId,
+      Array.isArray(output.issues) ? output.issues : [],
+      new Set(genuineNewKeys)
+    );
     // 清岗位会话历史：被回滚的坏输出会留在会话里诱导下一轮重复同样的坏修复
     //（实测 19:15 与 19:30 轮 E1 输出完全相同的 dialogue patches，死循环根源）
     await prisma.apiRoleSession.deleteMany({ where: { episodeId } });
     await prisma.pipelineRun.update({
       where: { id: lastRun.id },
-      data: { outputSummary: JSON.stringify({ ...output, regression: { newBlockers: genuineNewKeys, count: genuineNewKeys.length, rolledBack: true } }) }
+      data: { outputSummary: JSON.stringify({ ...output, decision: "admin_attention", regression: { newIssues: newIssueKeys, newBlockers: newBlockerKeys, genuineNewIssues: genuineNewKeys, genuineNewBlockers: genuineNewKeys.filter((key) => newBlockerKeys.includes(key)), count: genuineNewKeys.length, rolledBack: true, note: "检测到返修引入的问题或无法局部恢复的源节点/镜头拓扑回归，已恢复整集快照；请人工确认后再继续" } }) }
     });
-    const existingCard = await prisma.workflowIssue.findFirst({
-      where: { episodeId, coordinate: "E5.repair_regression", code: "REPAIR_REGRESSION", status: "OPEN" }
-    });
-    if (!existingCard) {
-      await prisma.workflowIssue.create({
-        data: {
-          projectId,
-          episodeId,
-          coordinate: "E5.repair_regression",
-          code: "REPAIR_REGRESSION",
-          severity: "MINOR",
-          status: "OPEN",
-          ownerRole: "SYSTEM",
-          expected: "返修轮不得引入新的硬错误",
-          evidence: `本轮修复新增 ${newBlockerKeys.length} 个 BLOCKER（${newBlockerKeys.slice(0, 5).join("、")}${newBlockerKeys.length > 5 ? "…" : ""}），已自动回滚到修复前状态`,
-          requestedEffect: "人工评估：确认是误报可「确认保留」后重试；否则调整策略（如重置重跑）",
-          revision: `ROLLBACK_${new Date().toISOString().slice(0, 10)}`
-        }
-      });
-    }
+    await upsertRepairRegressionCard(projectId, episodeId, genuineNewKeys, []);
   } else {
     await prisma.pipelineRun.update({
       where: { id: lastRun.id },
-      data: { outputSummary: JSON.stringify({ ...output, regression: { newBlockers, count: newBlockers.length } }) }
+      data: { outputSummary: JSON.stringify({ ...output, regression: { newIssues: newIssueKeys, newBlockers: newBlockerKeys, count: newIssueKeys.length } }) }
     });
   }
 }
@@ -1169,6 +1764,482 @@ async function restoreEpisodeSnapshot(episodeId: string, snapshot: EpisodeSnapsh
   }
 }
 
+/**
+ * 整集回滚后保留 E5 发现的“状态未被本轮改变”的稳定问题卡。
+ * 只追加/更新卡，不销任何快照中的 OPEN 卡，也不把模型临时状态继续写回数据库。
+ */
+async function restoreStableReviewIssuesAfterRollback(
+  projectId: string,
+  episodeId: string,
+  rawIssues: Record<string, unknown>[],
+  genuineNewKeys: ReadonlySet<string>
+) {
+  const stable = normalizeReviewIssues(rawIssues)
+    .filter((item) => !genuineNewKeys.has(workflowIssueKey(item)) && item.code !== "REPAIR_REGRESSION");
+  if (!stable.length) return;
+  const [openExceptions, openIssues, shots, units] = await Promise.all([
+    prisma.workflowIssue.findMany({ where: { episodeId, status: "EXCEPTED" }, select: { coordinate: true, code: true } }),
+    prisma.workflowIssue.findMany({ where: { episodeId, status: "OPEN" }, select: { id: true, coordinate: true, code: true } }),
+    prisma.storyboardShot.findMany({ where: { episodeId }, select: { id: true, shotKey: true } }),
+    prisma.seedanceUnit.findMany({ where: { episodeId }, select: { id: true, unitKey: true } })
+  ]);
+  const exceptionKeys = new Set(openExceptions.map(workflowIssueKey));
+  const openByKey = new Map(openIssues.map((item) => [workflowIssueKey(item), item]));
+  const shotIdByKey = new Map(shots.map((shot) => [shot.shotKey, shot.id]));
+  const unitIdByKey = new Map(units.map((unit) => [unit.unitKey, unit.id]));
+  for (const item of stable) {
+    const key = workflowIssueKey(item);
+    if (exceptionKeys.has(key)) continue;
+    const target = item.coordinate.split(".")[0];
+    const data = {
+      projectId,
+      episodeId,
+      shotId: shotIdByKey.get(target),
+      unitId: unitIdByKey.get(target),
+      coordinate: item.coordinate,
+      code: item.code,
+      severity: item.severity,
+      ownerRole: repairOwnerForIssue(item),
+      expected: item.expected,
+      evidence: `${item.evidence}；回滚后复核：问题来自运行前状态，已保留为可执行问题卡`,
+      requestedEffect: item.requestedEffect,
+      revision: `ROLLBACK_REVIEW_${new Date().toISOString().slice(0, 10)}`
+    };
+    const existing = openByKey.get(key);
+    if (existing) {
+      await prisma.workflowIssue.update({ where: { id: existing.id }, data: { ...data, status: "OPEN" } });
+    } else {
+      const created = await prisma.workflowIssue.create({ data });
+      openByKey.set(key, created);
+    }
+  }
+}
+
+type RepairRestoreIssue = IssueKeyFields & { ownerRole?: string };
+
+type RepairRestoreIssueScope =
+  | { kind: "field"; shotKey: string; field: string }
+  | { kind: "shot"; shotKey: string }
+  | { kind: "unit"; unitKey: string };
+
+/** 局部回退时同步恢复同一切片的问题卡，保持“数据状态”和“问题状态”一致。 */
+async function restoreIssueSlicesFromSnapshot(
+  episodeId: string,
+  snapshot: EpisodeSnapshot,
+  issues: readonly RepairRestoreIssue[],
+  scopeViolations: readonly string[]
+) {
+  const scopes: RepairRestoreIssueScope[] = [];
+  for (const issue of issues) {
+    const scope = repairRollbackScope(issue);
+    if (scope === "unit") {
+      const unitKey = unitKeyFromCoordinate(issue.coordinate);
+      if (unitKey) scopes.push({ kind: "unit", unitKey });
+      continue;
+    }
+    const shotKey = shotKeyFromCoordinate(issue.coordinate);
+    if (!shotKey) continue;
+    if (scope === "field") {
+      const field = repairTargetField(issue);
+      if (field) scopes.push({ kind: "field", shotKey, field });
+      else scopes.push({ kind: "shot", shotKey });
+    } else if (scope === "shot") {
+      scopes.push({ kind: "shot", shotKey });
+    }
+  }
+  for (const raw of scopeViolations) {
+    const shotKey = String(raw).split("（")[0];
+    if (shotKey) scopes.push({ kind: "shot", shotKey });
+  }
+  const uniqueScopes = scopes.filter((scope, index, all) => all.findIndex((candidate) => JSON.stringify(candidate) === JSON.stringify(scope)) === index);
+  if (!uniqueScopes.length) return 0;
+
+  const touches = (row: Record<string, unknown>) => uniqueScopes.some((scope) => {
+    const coordinate = String(row.coordinate ?? "");
+    if (scope.kind === "unit") return unitKeyFromCoordinate(coordinate) === scope.unitKey;
+    if (shotKeyFromCoordinate(coordinate) !== scope.shotKey) return false;
+    return scope.kind === "shot"
+      || repairTargetField({ coordinate, code: String(row.code ?? "") }) === scope.field;
+  });
+  const current = await prisma.workflowIssue.findMany({ where: { episodeId } });
+  const currentIds = current.filter((row) => touches(row as Record<string, unknown>)).map((row) => row.id);
+  if (currentIds.length) await prisma.workflowIssue.deleteMany({ where: { id: { in: currentIds } } });
+
+  const previous = snapshot.issues.filter((row) => touches(row));
+  for (const row of previous) await prisma.workflowIssue.create({ data: row as never });
+  return previous.length;
+}
+
+/** 局部恢复后，清理只由本轮临时坏状态产生、且已经随快照恢复的 E5 问题卡。 */
+async function resolveRecoveredRegressionCards(episodeId: string, issues: readonly RepairRestoreIssue[]) {
+  const keys = new Set(issues.map(workflowIssueKey));
+  if (!keys.size) return 0;
+  const open = await prisma.workflowIssue.findMany({
+    where: { episodeId, status: "OPEN" },
+    select: { id: true, coordinate: true, code: true }
+  });
+  const ids = open.filter((item) => keys.has(workflowIssueKey(item))).map((item) => item.id);
+  if (ids.length) {
+    await prisma.workflowIssue.updateMany({ where: { id: { in: ids } }, data: { status: "RESOLVED" } });
+  }
+  return ids.length;
+}
+
+/** 回归恢复只保留一张明确的系统审计卡；无法安全拆分时为 OPEN，局部恢复成功时为 RESOLVED。 */
+async function upsertRepairRegressionCard(
+  projectId: string,
+  episodeId: string,
+  genuineNewKeys: readonly string[],
+  restoredSlices: readonly string[],
+  blocked = true
+) {
+  const evidence = `本轮返修检测到 ${genuineNewKeys.length} 个由返修引入的问题，已恢复${restoredSlices.length ? ` ${restoredSlices.length} 个受影响切片` : "整集快照"}。${genuineNewKeys.slice(0, 5).join("、")}${genuineNewKeys.length > 5 ? "…" : ""}`;
+  const existing = await prisma.workflowIssue.findFirst({
+    where: { episodeId, coordinate: "E5.repair_regression", code: "REPAIR_REGRESSION" },
+    orderBy: { updatedAt: "desc" }
+  });
+  if (existing) {
+    await prisma.workflowIssue.update({
+      where: { id: existing.id },
+      data: {
+        severity: "BLOCKER",
+        ownerRole: "SYSTEM",
+        status: blocked ? "OPEN" : "RESOLVED",
+        evidence,
+        expected: "返修轮不得引入新的硬错误",
+        requestedEffect: blocked
+          ? "请人工确认恢复后的当前状态，再按当前 OPEN 卡进行定向返修"
+          : "受影响切片已自动恢复到安全快照；本卡仅作审计记录，不再阻塞后续定向返修",
+        revision: `ROLLBACK_${new Date().toISOString().slice(0, 10)}`
+      }
+    });
+    return;
+  }
+  await prisma.workflowIssue.create({
+    data: {
+      projectId,
+      episodeId,
+      coordinate: "E5.repair_regression",
+      code: "REPAIR_REGRESSION",
+      severity: "BLOCKER",
+      status: blocked ? "OPEN" : "RESOLVED",
+      ownerRole: "SYSTEM",
+      expected: "返修轮不得引入新的硬错误",
+      evidence,
+      requestedEffect: blocked
+        ? "请人工确认恢复后的当前状态，再按当前 OPEN 卡进行定向返修"
+        : "受影响切片已自动恢复到安全快照；本卡仅作审计记录，不再阻塞后续定向返修",
+      revision: `ROLLBACK_${new Date().toISOString().slice(0, 10)}`
+    }
+  });
+}
+
+function shotKeyFromCoordinate(coordinate: string) {
+  const key = String(coordinate ?? "").split(".")[0];
+  return /-S\d+/.test(key) ? key : null;
+}
+
+/** 比较快照字段时忽略 JSON 键顺序/格式化差异，避免“内容没变”被误判为回归。 */
+function comparableValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        return comparableValue(JSON.parse(trimmed));
+      } catch {
+        return trimmed;
+      }
+    }
+    return trimmed;
+  }
+  if (Array.isArray(value)) return value.map(comparableValue);
+  if (isRecord(value)) {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, comparableValue(value[key])]));
+  }
+  return value;
+}
+
+function comparableEqual(left: unknown, right: unknown) {
+  return JSON.stringify(comparableValue(left)) === JSON.stringify(comparableValue(right));
+}
+
+function unitKeyFromCoordinate(coordinate: string) {
+  const key = String(coordinate ?? "").split(".")[0];
+  return /-U\d+/.test(key) ? key : null;
+}
+
+function repairFieldFromCoordinate(coordinate: string): string | null {
+  const parts = String(coordinate ?? "").split(".").slice(1);
+  const suffix = parts.join(".");
+  const explicitColumn = /^(e1|e2|e3|e4)$/.test(parts[0] ?? "");
+  const fieldName = explicitColumn ? parts[1] ?? "" : parts[0] ?? "";
+  if (["duration", "dialogue", "source_node_refs"].includes(fieldName)) return fieldName;
+  if (fieldName === "camera") return "camera_motion";
+  if (["picture", "visible_text", "camera_motion", "lighting", "sound", "transition", "rough_camera"].includes(fieldName)) return fieldName;
+  if (fieldName === "visual_step" || fieldName === "visual_step_part_goal" || fieldName === "fulfills_visual_step") return "__visual_step__";
+  // 未带字段的坐标（例如 .speaker/.fields）仍由上层按整镜/整单元恢复，不能猜测字段。
+  if (!suffix) return null;
+  return null;
+}
+
+/** 问题坐标偶尔把“光影/机位冲突”写在 picture 上；按问题码恢复真实可写字段。 */
+function repairTargetField(issue: { coordinate: string; code: string }): string | null {
+  const code = String(issue.code ?? "");
+  if (code.startsWith("LIGHTING_")) return "lighting";
+  if (code === "CAMERA_PICTURE_MISMATCH" && repairFieldFromCoordinate(issue.coordinate) === "picture") return "picture";
+  if (code.startsWith("CAMERA_")) return "camera_motion";
+  return repairFieldFromCoordinate(issue.coordinate);
+}
+
+type RepairShotColumn = "duration" | "dialogue" | "sourceNodeRefs" | "sortOrder" | "e1Data" | "e2Data" | "e3Data" | "e4Data";
+
+function repairColumnForIssue(issue: RepairRestoreIssue, field: string): RepairShotColumn | null {
+  const parts = String(issue.coordinate ?? "").split(".");
+  const explicit = parts[1];
+  if (["e1", "e2", "e3", "e4"].includes(explicit)) return `${explicit}Data` as RepairShotColumn;
+  if (field === "duration") return "duration";
+  if (field === "dialogue") return "dialogue";
+  if (field === "source_node_refs") return "sourceNodeRefs";
+  if (field === "sortOrder") return "sortOrder";
+  const owner = repairOwnerForIssue(issue);
+  if (owner === "E1" || owner === "E2" || owner === "E3" || owner === "E4") return `${owner.toLowerCase()}Data` as "e1Data" | "e2Data" | "e3Data" | "e4Data";
+  if (field === "sound" || field === "transition") return "e3Data" as const;
+  if (field === "camera_motion" || field === "lighting") return "e4Data" as const;
+  return null;
+}
+
+function repairUnitFieldFromCoordinate(coordinate: string): string | null {
+  const suffix = String(coordinate ?? "").split(".").slice(1).join(".");
+  if (/^(?:premise|unit_start_premise)/.test(suffix)) return "unit_start_premise";
+  if (/^(?:end_state|unit_end_state)/.test(suffix)) return "unit_end_state";
+  if (/^(?:bindings|subject_bindings)/.test(suffix)) return "subject_bindings";
+  if (/^(?:lighting|unit_lighting)/.test(suffix)) return "unit_lighting";
+  if (/^(?:dominant_goal|unit_dominant_goal)/.test(suffix)) return "unit_dominant_goal";
+  return null;
+}
+
+function restoreJsonField(currentRaw: string, snapshotRaw: string, field: string) {
+  const current = safeParseJson(currentRaw);
+  const snapshot = safeParseJson(snapshotRaw);
+  const fields = field === "__visual_step__"
+    ? ["fulfills_visual_step", "visual_step_beat_id", "visual_step_part_goal", "beat_id"]
+    : [field];
+  for (const name of fields) {
+    if (Object.prototype.hasOwnProperty.call(snapshot, name)) current[name] = snapshot[name];
+    else delete current[name];
+  }
+  return JSON.stringify(current);
+}
+
+function restoreShotColumn(currentRow: Record<string, unknown>, snapshotRow: Record<string, unknown>, column: RepairShotColumn, field: string) {
+  if (column === "duration") return Number(snapshotRow.duration ?? currentRow.duration ?? 0);
+  if (column === "dialogue") return String(snapshotRow.dialogue ?? currentRow.dialogue ?? "[]");
+  if (column === "sourceNodeRefs") return String(snapshotRow.sourceNodeRefs ?? currentRow.sourceNodeRefs ?? "[]");
+  if (column === "sortOrder") return Number(snapshotRow.sortOrder ?? currentRow.sortOrder ?? 0);
+  return restoreJsonField(
+    String(currentRow[column] ?? "{}"),
+    String(snapshotRow[column] ?? "{}"),
+    field
+  );
+}
+
+function snapshotShotData(row: Record<string, unknown>) {
+  return {
+    sceneId: String(row.sceneId ?? ""),
+    sortOrder: Number(row.sortOrder ?? 0),
+    duration: Number(row.duration ?? 0),
+    timeLayer: String(row.timeLayer ?? "现实"),
+    sourceNodeRefs: String(row.sourceNodeRefs ?? "[]"),
+    dialogue: String(row.dialogue ?? "[]"),
+    e1Data: String(row.e1Data ?? "{}"),
+    e2Data: String(row.e2Data ?? "{}"),
+    e3Data: String(row.e3Data ?? "{}"),
+    e4Data: String(row.e4Data ?? "{}"),
+    revision: String(row.revision ?? "V1")
+  };
+}
+
+function snapshotUnitData(row: Record<string, unknown>) {
+  return {
+    sceneId: String(row.sceneId ?? ""),
+    sortOrder: Number(row.sortOrder ?? 0),
+    duration: Number(row.duration ?? 0),
+    shortUnitReason: row.shortUnitReason == null ? null : String(row.shortUnitReason),
+    dominantGoal: row.dominantGoal == null ? null : String(row.dominantGoal),
+    startPremise: String(row.startPremise ?? ""),
+    endState: String(row.endState ?? ""),
+    data: String(row.data ?? "{}"),
+    revision: String(row.revision ?? "V1")
+  };
+}
+
+async function restoreRepairSlices(
+  episodeId: string,
+  snapshot: EpisodeSnapshot,
+  issues: RepairRestoreIssue[],
+  scopeViolations: string[]
+): Promise<{ fullRollback: boolean; restoredSlices: string[] }> {
+  const wholeShotKeys = new Set<string>();
+  const fieldIssues = new Map<string, RepairRestoreIssue[]>();
+  const unitIssues = new Map<string, RepairRestoreIssue[]>();
+  const wholeUnitKeys = new Set<string>();
+  const restoredSlices: string[] = [];
+
+  for (const raw of scopeViolations) {
+    const key = String(raw).split("（")[0];
+    if (key) wholeShotKeys.add(key);
+  }
+  for (const issue of issues) {
+    const scope = repairRollbackScope(issue);
+    if (scope === "full") return { fullRollback: true, restoredSlices };
+    if (scope === "unit") {
+      const unitKey = unitKeyFromCoordinate(issue.coordinate);
+      if (!unitKey) return { fullRollback: true, restoredSlices };
+      if (!repairUnitFieldFromCoordinate(issue.coordinate)) {
+        wholeUnitKeys.add(unitKey);
+      } else if (!wholeUnitKeys.has(unitKey)) {
+        unitIssues.set(unitKey, [...(unitIssues.get(unitKey) ?? []), issue]);
+      }
+      continue;
+    }
+    const shotKey = shotKeyFromCoordinate(issue.coordinate);
+    if (!shotKey) return { fullRollback: true, restoredSlices };
+    if (scope === "shot") {
+      wholeShotKeys.add(shotKey);
+      continue;
+    }
+    const field = repairTargetField(issue);
+    const column = field ? repairColumnForIssue(issue, field) : null;
+    if (!field || !column) {
+      wholeShotKeys.add(shotKey);
+      continue;
+    }
+    fieldIssues.set(shotKey, [...(fieldIssues.get(shotKey) ?? []), issue]);
+  }
+
+  const snapshotShotsByKey = new Map(snapshot.shots.map((row) => [String(row.shotKey ?? ""), row]));
+  const currentShots = await prisma.storyboardShot.findMany({ where: { episodeId } });
+  const currentShotsByKey = new Map(currentShots.map((row) => [row.shotKey, row]));
+  const currentShotsById = new Map(currentShots.map((row) => [row.id, row]));
+  // 局部恢复前先验证映射完整，避免恢复到一半才发现镜号/单元拓扑已被重建。
+  for (const key of wholeShotKeys) {
+    if (snapshotShotsByKey.has(key) && !currentShotsByKey.has(key)) return { fullRollback: true, restoredSlices };
+  }
+  for (const key of fieldIssues.keys()) {
+    if (!snapshotShotsByKey.has(key) || !currentShotsByKey.has(key)) return { fullRollback: true, restoredSlices };
+  }
+  const snapshotUnitsByKey = new Map(snapshot.units.map((row) => [String(row.unitKey ?? row.unit_id ?? ""), row]));
+  const currentUnits = await prisma.seedanceUnit.findMany({ where: { episodeId } });
+  const currentUnitsByKey = new Map(currentUnits.map((row) => [row.unitKey, row]));
+  for (const key of wholeUnitKeys) {
+    const snapshotUnit = snapshotUnitsByKey.get(key);
+    const currentUnit = currentUnitsByKey.get(key);
+    if (!snapshotUnit || !currentUnit || String(snapshotUnit.id ?? "") !== String(currentUnit.id ?? "")) return { fullRollback: true, restoredSlices };
+    const snapshotLinks = snapshot.unitShots.filter((link) => String(link.unitId ?? "") === String(snapshotUnit.id ?? ""));
+    if (snapshotLinks.some((link) => !currentShotsById.has(String(link.shotId ?? "")))) return { fullRollback: true, restoredSlices };
+  }
+  for (const key of unitIssues.keys()) {
+    if (!snapshotUnitsByKey.has(key) || !currentUnitsByKey.has(key)) return { fullRollback: true, restoredSlices };
+  }
+
+  for (const key of wholeShotKeys) {
+    const snapshotRow = snapshotShotsByKey.get(key);
+    const currentRow = currentShotsByKey.get(key);
+    if (!snapshotRow) {
+      if (currentRow) {
+        await prisma.seedanceUnitShot.deleteMany({ where: { shotId: currentRow.id } });
+        await prisma.storyboardShot.delete({ where: { id: currentRow.id } });
+        restoredSlices.push(`${key}（删除越界新增镜头）`);
+      }
+      continue;
+    }
+    if (!currentRow) continue;
+    await prisma.storyboardShot.update({ where: { id: currentRow.id }, data: snapshotShotData(snapshotRow) });
+    restoredSlices.push(`${key}（恢复整镜）`);
+  }
+
+  for (const [key, issueList] of fieldIssues) {
+    const currentRow = currentShotsByKey.get(key);
+    const snapshotRow = snapshotShotsByKey.get(key);
+    if (!currentRow || !snapshotRow) continue;
+    const updateData: Record<string, unknown> = {};
+    for (const issue of issueList) {
+      const field = repairTargetField(issue);
+      const column = field ? repairColumnForIssue(issue, field) : null;
+      if (!field || !column) continue;
+      const baseRow = updateData[column] === undefined ? currentRow : { ...currentRow, [column]: updateData[column] };
+      updateData[column] = restoreShotColumn(baseRow, snapshotRow, column, field);
+      restoredSlices.push(`${issue.coordinate}（恢复对应字段）`);
+    }
+    if (Object.keys(updateData).length) {
+      await prisma.storyboardShot.update({ where: { id: currentRow.id }, data: updateData as never });
+    }
+  }
+
+  for (const key of wholeUnitKeys) {
+    const current = currentUnitsByKey.get(key);
+    const previous = snapshotUnitsByKey.get(key);
+    if (!current || !previous) continue;
+    await prisma.seedanceUnitShot.deleteMany({ where: { unitId: current.id } });
+    await prisma.seedanceUnit.update({ where: { id: current.id }, data: snapshotUnitData(previous) as never });
+    const snapshotLinks = snapshot.unitShots
+      .filter((link) => String(link.unitId ?? "") === String(previous.id ?? ""))
+      .sort((a, b) => Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0));
+    for (const link of snapshotLinks) {
+      await prisma.seedanceUnitShot.create({ data: { unitId: current.id, shotId: String(link.shotId), sortOrder: Number(link.sortOrder ?? 0) } });
+    }
+    restoredSlices.push(`${key}（恢复整单元及镜号关联）`);
+  }
+
+  for (const [key, issueList] of unitIssues) {
+    if (wholeUnitKeys.has(key)) continue;
+    const current = currentUnitsByKey.get(key);
+    const previous = snapshotUnitsByKey.get(key);
+    if (!current || !previous) continue;
+    const currentData = safeParseJson(current.data);
+    const previousData = safeParseJson(String(previous.data ?? "{}"));
+    const updateData: Record<string, unknown> = {};
+    for (const issue of issueList) {
+      const field = repairUnitFieldFromCoordinate(issue.coordinate);
+      if (!field) continue;
+      if (field === "unit_start_premise") {
+        updateData.startPremise = String(previous.startPremise ?? previousData.unit_start_premise ?? "");
+        currentData.unit_start_premise = previousData.unit_start_premise ?? previous.startPremise ?? "";
+      } else if (field === "unit_end_state") {
+        updateData.endState = String(previous.endState ?? previousData.unit_end_state ?? "");
+        currentData.unit_end_state = previousData.unit_end_state ?? previous.endState ?? "";
+      } else if (field === "subject_bindings") {
+        if (Object.prototype.hasOwnProperty.call(previousData, "subject_bindings")) currentData.subject_bindings = previousData.subject_bindings;
+        else delete currentData.subject_bindings;
+      } else if (field === "unit_lighting") {
+        if (Object.prototype.hasOwnProperty.call(previousData, "unit_lighting")) currentData.unit_lighting = previousData.unit_lighting;
+        else delete currentData.unit_lighting;
+      } else if (field === "unit_dominant_goal") {
+        updateData.dominantGoal = previous.dominantGoal ?? previousData.unit_dominant_goal ?? null;
+        currentData.unit_dominant_goal = previousData.unit_dominant_goal ?? previous.dominantGoal ?? null;
+      }
+      restoredSlices.push(`${issue.coordinate}（恢复对应单元字段）`);
+    }
+    updateData.data = JSON.stringify(currentData);
+    await prisma.seedanceUnit.update({ where: { id: current.id }, data: updateData as never });
+  }
+
+  return { fullRollback: false, restoredSlices };
+}
+
+/** 局部恢复后重新编译草稿提示词；只消耗确定性 TS 计算，不调用模型。 */
+async function refreshDraftPromptsAfterSelectiveRestore(projectId: string, episodeId: string) {
+  await refreshEpisodePrompts(projectId, episodeId);
+}
+
+/** 对已做零 Token 机械修正的剧集刷新草稿提示词；不调用模型、不创建岗位运行记录。 */
+export async function refreshEpisodePrompts(projectId: string, episodeId: string) {
+  const context = await loadPipelineContext(projectId, episodeId);
+  const shots = await hydrateWorkingShots(context);
+  const units = await hydrateUnitOutput(context);
+  await compileAndPersistPrompts(context, shots, units.units, { release: false });
+}
+
 export async function failActiveBatch(projectId: string, episodeId: string, batchToken: string, reason: string) {
   const runs = await findBatchRuns(projectId, episodeId, batchToken);
   await prisma.pipelineRun.updateMany({
@@ -1178,17 +2249,23 @@ export async function failActiveBatch(projectId: string, episodeId: string, batc
 }
 
 async function launchWorker(projectId: string, episodeId: string, batchToken: string, singleStage?: string, stageList?: string) {
-  // Windows 下 node_modules/.bin/tsx 是 Unix shell 包装脚本，直接 spawn 会以 ENOENT 静默失败。
-  // 直接用当前 Node 启动 tsx CLI，保持后台 worker 的跨平台行为一致。
+  // 不启动 tsx CLI，因为它会再派生一个未隐藏的 node.exe。直接让当前 Node
+  // 加载 tsx loader，避免 E0–E5 执行时弹出独立 Windows Terminal。
   const executable = process.execPath;
-  const tsxCli = path.join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+  const tsxDist = path.join(process.cwd(), "node_modules", "tsx", "dist");
+  const tsxLoader = pathToFileURL(path.join(tsxDist, "loader.mjs")).href;
   const script = path.join(process.cwd(), "scripts", "run-episode-pipeline.ts");
-  const args = [tsxCli, script, projectId, episodeId, batchToken];
+  const args = [
+    "--require", path.join(tsxDist, "preflight.cjs"),
+    "--import", tsxLoader,
+    script, projectId, episodeId, batchToken
+  ];
   if (singleStage) args.push(singleStage);
   if (stageList) args.push(stageList);
   const child = spawn(executable, args, {
     cwd: process.cwd(),
     env: process.env,
+    windowsHide: true,
     detached: true,
     stdio: "ignore"
   });
@@ -1211,7 +2288,37 @@ async function launchWorker(projectId: string, episodeId: string, batchToken: st
   };
   child.once("error", markLaunchFailure);
   child.once("exit", (code, signal) => {
-    if (code !== 0) markLaunchFailure(`exit=${code ?? "null"}, signal=${signal ?? "null"}`);
+    if (code === 0 || signal) return;
+    // worker 自己会把模型/数据库错误写入 FAILED。延迟检查，只有进程异常退出且
+    // 数据库仍停在 QUEUED/RUNNING 时才报“意外结束”，避免把正常失败/用户停止误报成启动失败。
+    setTimeout(() => {
+      void (async () => {
+        const active = await prisma.pipelineRun.count({
+          where: {
+            projectId,
+            episodeId,
+            inputSummary: { contains: batchToken },
+            status: { in: ["QUEUED", "RUNNING"] }
+          }
+        });
+        if (active > 0) {
+          await prisma.pipelineRun.updateMany({
+            where: {
+              projectId,
+              episodeId,
+              inputSummary: { contains: batchToken },
+              status: { in: ["QUEUED", "RUNNING"] }
+            },
+            data: {
+              status: "FAILED",
+              finishedAt: new Date(),
+              error: `后台执行进程意外结束（exit=${code ?? "null"}）。当前批次已停止，请查看执行日志后重试。`
+            }
+          });
+          console.error(`[episode-pipeline] worker exited unexpectedly: exit=${code ?? "null"}`);
+        }
+      })().catch((error) => console.error("[episode-pipeline] failed to inspect worker exit", error));
+    }, 1_500);
   });
   // 记录 worker 进程 PID（进程组组长）：页面「停止」按钮用它 kill 整个 detached 进程组
   //（tsx wrapper + 实际 node 进程同组），没有它只能等批次跑完或从命令行杀进程
@@ -1259,7 +2366,12 @@ export async function loadPipelineContext(projectId: string, episodeId: string) 
   const episode = await prisma.episode.findFirst({
     where: { id: episodeId, projectId },
     include: {
-      project: { include: { assets: { orderBy: [{ type: "asc" }, { code: "asc" }] } } },
+      project: {
+        include: {
+          assets: { orderBy: [{ type: "asc" }, { code: "asc" }] },
+          episodes: { select: { id: true, number: true } }
+        }
+      },
       scriptScenes: { orderBy: { sortOrder: "asc" } },
       taskPackages: { orderBy: { createdAt: "desc" }, take: 1 },
       storyboardShots: { select: { revision: true } },
@@ -1267,13 +2379,20 @@ export async function loadPipelineContext(projectId: string, episodeId: string) 
     }
   });
   if (!episode) throw new Error("没有找到本集数据。");
+  if (episode.number < 1) throw new Error("这是第0集/前置资料，只用于全剧分析，不能进入 E0–E5 生产。");
   if (!episode.scriptScenes.length) throw new Error("本集场次结构为空，请先更新本集信息包。");
 
-  // 表现规范（用户已确认）：项目级 + 本集级，注入各岗 input
+  // 表现规范（用户已确认）：只把命中本集范围的规则注入各岗 input。
   const contracts = await prisma.presentationContract.findMany({
     where: { projectId, status: "CONFIRMED" },
     orderBy: { createdAt: "asc" }
   });
+  const episodeNumberById = new Map(episode.project.episodes.map((item) => [item.id, item.number]));
+  const scopedContracts = contracts.filter((contract) => contractAppliesToEpisode({
+    scope_mode: contract.scopeMode,
+    target_episode_numbers: contract.targetEpisodeNumbers,
+    source_episode_number: contract.episodeId ? episodeNumberById.get(contract.episodeId) ?? null : null
+  }, episode.number, episode.project.episodes.map((item) => item.number)));
   const existingVersions = episode.seedanceUnits.flatMap((unit) => unit.promptVersions.map((version) => version.version));
   const version = Math.max(0, ...existingVersions) + 1;
   const now = new Date();
@@ -1327,10 +2446,12 @@ export async function loadPipelineContext(projectId: string, episodeId: string) 
     episodeId,
     revision: `V${version}_${stamp}`,
     project: episode.project,
-    contracts: contracts.map((contract) => ({
+    contracts: scopedContracts.map((contract) => ({
       category: contract.category,
       question: contract.question,
-      user_answer: contract.userAnswer ?? ""
+      user_answer: contract.userAnswer ?? "",
+      scope_mode: contract.scopeMode,
+      target_episode_numbers: contract.targetEpisodeNumbers
     })),
     episode,
     scenes: episode.scriptScenes,
@@ -1429,7 +2550,8 @@ function buildStageInput(
   shots: WorkingShot[],
   e5: E3UnitOutput,
   hardIssues: PipelineIssue[],
-  revisionIssues: Array<{ coordinate: string; code: string; evidence: string; requested_effect: string }> = []
+  revisionIssues: Array<{ coordinate: string; code: string; evidence: string; requested_effect: string }> = [],
+  approvedExceptions: Array<Record<string, unknown>> = []
 ) {
   const base = { base_revision: context.revision };
   const presentationContracts = context.contracts.length
@@ -1456,7 +2578,7 @@ function buildStageInput(
     return {
       ...base,
       episode_number: context.episode.number,
-      project_memory: compactFirstPhaseContext(context.taskPayload),
+      project_memory: compactFirstPhaseContext(context.taskPayload, context.episode.number),
       nodes: nodeList,
       capacity_preflight: {
         total: totalCapacity,
@@ -1477,7 +2599,7 @@ function buildStageInput(
       project: { style: context.project.style, aspect_ratio: context.project.aspectRatio },
       asset_index: context.project.assets.map((asset) => ({ id: asset.code, type: asset.type, name: asset.name, status: asset.status })),
       ...(presentationContracts.length ? { presentation_contracts: presentationContracts } : {}),
-      episode_context: compactFirstPhaseContext(context.taskPayload),
+      episode_context: compactFirstPhaseContext(context.taskPayload, context.episode.number),
       ...(revisionIssues.length ? { revision_issues: revisionIssues } : {})
     };
   }
@@ -1603,6 +2725,7 @@ function buildStageInput(
       ...base,
       scene_cards: sceneCards(context),
       assets: assetRows(context, ["CH", "LOOK", "GROUP", "BEAST", "PROP", "LOC"]),
+      asset_scope_rule: "scene_refs 非空的资产只能绑定到列出的场次；scene_refs 为空才是全场可用。",
       // Python 已确定性划分单元：E4 只写每个 unit_id 的创作字段，不改镜号归属
       unit_windows: partition.map((part, index) => {
         const current = existing.get(part.unitKey) as Record<string, unknown> | undefined;
@@ -1667,7 +2790,14 @@ function buildStageInput(
         }))
       }))
     },
-    asset_index: context.project.assets.map((asset) => ({ id: asset.code, type: asset.type, name: asset.name, status: asset.status })),
+    asset_index: context.project.assets.map((asset) => ({
+      id: asset.code,
+      type: asset.type,
+      name: asset.name,
+      status: asset.status,
+      scene_refs: assetSceneRefsOf(asset.metadata)
+    })),
+    asset_scope_rule: "scene_refs 非空的资产只能绑定到列出的场次；scene_refs 为空才是全场可用。不能为当前场次要求绑定其它场次资产。",
     shots: shots.map((shot) => {
       const cells = composeShotCells({
         e1: shot.e1 as Record<string, unknown>,
@@ -1698,11 +2828,43 @@ function buildStageInput(
     }),
     units: e5.units,
     python_hard_checks: hardIssues.map((item) => ({ coordinate: item.coordinate, code: item.code, evidence: item.evidence.slice(0, 120) })),
-    approved_exceptions: [],
+    approved_exceptions: approvedExceptions,
     rules: loadStageRules("E5", { crowd: shots.some(isCrowdShot) }),
     ...(presentationContracts.length ? { presentation_contracts: presentationContracts } : {}),
     ...(revisionIssues.length ? { open_issues: revisionIssues } : {})
   };
+}
+
+async function assertE3SourceReady(context: PipelineContext, shots: WorkingShot[]) {
+  const currentFingerprint = scriptFingerprint(context);
+  const lastE1 = await prisma.pipelineRun.findFirst({
+    where: { projectId: context.projectId, episodeId: context.episodeId, stageCode: "E1", status: "SUCCEEDED" },
+    orderBy: { createdAt: "desc" },
+    select: { inputSummary: true }
+  });
+  const recordedFingerprint = safeParseJson(lastE1?.inputSummary).scriptFingerprint;
+  if (typeof recordedFingerprint === "string" && recordedFingerprint !== currentFingerprint) {
+    throw new Error("E3前置校验未通过：剧本的场次/源节点结构已变化，但现有分镜仍由旧结构生成。请先完整重跑 E0–E2，再运行 E3；本次未调用模型，未消耗额度。");
+  }
+
+  const mismatches: string[] = [];
+  for (const shot of shots) {
+    const refs = [
+      ...(Array.isArray(shot.source_node_refs) ? shot.source_node_refs.map(String) : []),
+      ...(Array.isArray(shot.dialogue)
+        ? shot.dialogue.filter(isRecord).map((entry) => String(entry.source_node_id ?? ""))
+        : [])
+    ].filter(Boolean);
+    for (const ref of new Set(refs)) {
+      const node = context.sourceNodes.get(ref);
+      if (node && node.scene_id !== shot.scene_id) {
+        mismatches.push(`${shot.shot_id}→${ref}(${shot.scene_id}/${node.scene_id})`);
+      }
+    }
+  }
+  if (mismatches.length) {
+    throw new Error(`E3前置校验未通过：现有分镜与源场次不一致（${mismatches.slice(0, 4).join("、")}${mismatches.length > 4 ? "等" : ""}）。请先完整重跑 E0–E2，不能单独重跑 E3；本次未调用模型，未消耗额度。`);
+  }
 }
 
 function buildStagePrompt(stageCode: PipelineStageCode, input: unknown) {
@@ -1712,6 +2874,9 @@ function buildStagePrompt(stageCode: PipelineStageCode, input: unknown) {
     "只处理INPUT_JSON，不修改任何本地文件，不输出分析过程、Markdown或自评分。",
     "严格遵守该Skill的字段所有权和Output Contract，只返回一个合法JSON对象。",
     "遇到真实问题按契约开票或输出issue；不得为了过审谎报完成。",
+    ...(stageCode === "E3"
+      ? ["这是全量首轮 E3：必须为 INPUT_JSON.unit_windows 中的每个 unit_id 返回一个对应的 units 项；即使发现 E1/E2 问题，也要保留 issues 并完成每个单元的字段，禁止返回 units=[]。"]
+      : []),
     "INPUT_JSON:",
     JSON.stringify(input)
   ].join("\n\n");
@@ -1724,9 +2889,11 @@ function buildE1RevisionPrompt(input: unknown) {
     "**单元格级修复（最重要）**：INPUT_JSON.revision_issues 的每条卡都定位到了具体坐标。**只输出命中坐标对应格子的修正值**，格式为 patches（见下），**禁止输出整镜行、禁止重新拆镜、禁止改未命中格子的内容**。",
     "按坐标类型输出对应字段：",
     "- `.picture` → fields.picture（按 fix_hint 改画面，禁止借未来视觉/抽象情绪）",
+    "- `ACTION_PHASE_OVERLOAD`（建议级）→ 仍只改 fields.picture：压缩为本镜一个清晰、可拍的动作结果；不要新增镜号、不要重拆全片。",
     "- `.sound` → fields.sound（清理声音格子的占位符/模板残留，写真实音效；禁止改其它格子）",
     "- `.duration` → fields.duration（直接采用 fix_hint 的数值）",
     "- `.dialogue` / `.speaker` → fields.dialogue_spans（该镜完整台词归属，跨镜切片必须逐字拼接回原文）",
+    "- `.source_node_refs`（如 1-1-S029.source_node_refs）→ fields.source_node_refs（只移除/保留问题卡指出的重复源节点引用，禁止改 dialogue_spans）",
     "- `.visual_step.Vx`（如 B05.visual_step.V4）→ 在该 Beat 内选择一个合适镜号，同时输出 fields.fulfills_visual_step=\"B05.V4\" 与非空 fields.visual_step_part_goal（只写本镜动作结果/视觉贡献）",
     "- `.anchor`（如 1-1-S035.anchor，动作锚点提前）→ 只输出 fields.picture：把该镜画面改回锚点执行前的状态（去掉提前出现的动作），让不可逆动作在锚点节点所属的镜才出现；**禁止改 dialogue_spans / source_node_refs**（改台词归属会破坏节点覆盖）",
     "- 镜号级卡（如 1-1-S005.padding）→ fields.picture 重构该镜画面使其具备独立信息",
@@ -1756,9 +2923,9 @@ function buildE3RevisionPrompt(input: unknown) {
   return [
     "使用 $e3-unit-audiovisual-director 完成当前E3岗位任务（返修轮）。",
     "镜号归属与单元时长已由 Python 确定性确定（见 INPUT_JSON.unit_windows），**禁止输出或修改 shot_ids/unit_duration**。",
-    "**只重写 revision_issues 命中单元的创作字段**（unit_dominant_goal / unit_start_premise / unit_end_state / short_unit_reason / subject_bindings），按 fix_hint 修复；其余单元原样保留，不要输出。",
-    "**命中字段必填**：卡坐标带 `.premise` 或 `.unit_start_premise` 的单元必须输出修正后的 `unit_start_premise`；带 `.end_state` 或 `.unit_end_state` 的必须输出修正后的 `unit_end_state`；带 `.bindings` 的必须输出修正后的 `subject_bindings`；带 `.fields` 的必须输出 goal/premise/end_state 三者。只输出其它字段 = 没修，卡不会被销。",
-    "patches 只允许 sound/transition，且只修与命中单元相关镜号；与修复无关的格子禁止改动。",
+    "**只重写 revision_issues 命中单元的创作字段**（unit_dominant_goal / unit_start_premise / unit_end_state / short_unit_reason / subject_bindings），按 fix_hint 修复；其余单元原样保留，不要输出。未命中的 needs_fields 不能顺手补写，也不能为了让文字更顺而重写整集单元。",
+    "**字段归属必须严格执行**：`.premise` / `.unit_start_premise` 只改 `unit_start_premise`；`.end_state` / `.unit_end_state` 只改 `unit_end_state`；`.bindings` / `.subject_bindings` 只改 `subject_bindings`；`.goal` / `.dominant_goal` 只改 `unit_dominant_goal`；`.fields` 才同时输出 goal/premise/end_state 三者。除 `.fields` 外，不能用补写其它字段的方式“顺便修复”。只输出未命中的字段 = 没修，卡不会被销。",
+    "`units` 是本轮单元字段修复的主要输出；`patches` 只允许 sound/transition。若 revision_issues 直接出现 `1-1-S029.sound` 或 `1-1-S029-p0.sound` 这类镜号坐标，必须在 patches 中修对应 shot_id 的 sound，不能因为它不是 unit 坐标而忽略；只修命中镜号，不要改动无关格子。",
     "只处理INPUT_JSON，不修改任何本地文件，不输出分析过程、Markdown或自评分。",
     "严格遵守该Skill的字段所有权和Output Contract，只返回一个合法JSON对象。",
     "遇到真实问题按契约输出issue；不得为了过审谎报完成。",
@@ -1770,12 +2937,12 @@ function buildE3RevisionPrompt(input: unknown) {
 /** E2/E4 返修轮提示词：只修命中镜号，输入只含命中镜与相邻镜。 */
 function buildE24RevisionPrompt(stageCode: PipelineStageCode, input: unknown) {
   const stage = readStageModel(stageCode);
-  const fields = stageCode === "E2" ? "picture / action_chain / emotion / blocking" : "camera_motion / lighting";
+  const fields = stageCode === "E2" ? "picture（动作、情绪、站位都合并写入 picture；不要输出 action_chain/emotion/blocking 独立字段）" : "camera_motion / lighting";
   // 本轮被开「单元.lighting」卡的单元：只有它们允许重写 unit_lighting（与机械层 lightingUnitKeys 门控一致）
   const lightingUnits = stageCode === "E4"
     ? [...new Set(
         (((input as Record<string, unknown>)?.revision_issues ?? []) as Array<{ coordinate?: string }>)
-          .map((item) => /^(.*?-U\d+)\.lighting$/.exec(String(item.coordinate ?? ""))?.[1])
+          .map((item) => /^(.*?-U\d+)\.(?:lighting|unit_lighting)$/.exec(String(item.coordinate ?? ""))?.[1])
           .filter((key): key is string => Boolean(key))
       )]
     : [];
@@ -1786,8 +2953,11 @@ function buildE24RevisionPrompt(stageCode: PipelineStageCode, input: unknown) {
     : "";
   return [
     `使用 $${stage.skill} 完成当前${stage.code}岗位任务（返修轮）。`,
-    `INPUT_JSON.revision_issues 列出了命中镜号的问题。**只修复这些镜号**：按 evidence / requested_effect 定向修正你负责的格子（${fields}），不越权改其它岗位的列。`,
+    `INPUT_JSON.revision_issues 列出了命中镜号的问题。**只修复这些镜号**：按 evidence / requested_effect 定向修正你负责的格子（${fields}），不越权改其它岗位的列。落库层会机械丢弃越权字段，不能依赖“顺便输出”通过校验。`,
     "INPUT_JSON.shots 只包含命中镜号及其相邻镜（相邻镜仅供衔接参考）：**只对命中镜号输出 patches**，禁止输出相邻镜的 patch。",
+    stageCode === "E2"
+      ? "E2 返修必须执行 requested_effect 的删除/恢复要求：若卡要求删除提前出现的动作、台词或反应，修正后的 picture 中不得继续保留该内容；同时保留 INPUT_JSON.e1 中已修正的事实，不得用旧动作链覆盖它；动作链、情绪、站位只写进 picture，不得拆成其它字段。"
+      : "E4 返修只改 camera_motion / lighting；如果问题坐标落在 picture 但证据描述的是光影或机位，仍只把修正写进对应的 camera_motion / lighting 字段，绝不输出 picture。",
     extra,
     "只处理INPUT_JSON，不修改任何本地文件，不输出分析过程、Markdown或自评分。",
     "严格遵守该Skill的字段所有权和Output Contract，只返回一个合法JSON对象。",
@@ -2332,8 +3502,10 @@ async function persistE1Patches(
   const logs: string[] = [];
   let changed = 0;
   let dropped = 0;
+  let staleE2PicturesCleared = 0;
   for (const patch of patches) {
-    const shotId = String(patch.shot_id ?? "");
+    const rawShotId = String(patch.shot_id ?? "");
+    const shotId = resolveRepairPatchShotKey(rawShotId, options.allowedShotKeys);
     const fields = isRecord(patch.fields) ? patch.fields : {};
     if (!shotId || !Object.keys(fields).length) continue;
     // 修复轮坐标过滤：只接受命中卡的镜号（含其合法后缀镜）——模型"顺手修"其它镜是
@@ -2352,6 +3524,16 @@ async function persistE1Patches(
     }
     const e1 = safeParseJson(row.e1Data);
     const merged: Record<string, unknown> = { ...e1, ...fields };
+    // E2 的 picture 是 E1 picture 的增强层。E1 返修改了基础画面后，旧 E2 picture
+    // 已经不再是这个基础画面的增强，而是过期缓存；继续保留会让 composePicture
+    // 选中旧动作链，造成“E1 明明修了、E5 仍看到旧问题”。清掉这一格，后续若有
+    // E2 返修会重新生成增强版；没有 E2 卡时则安全回退到最新 E1 picture。
+    const nextE2 = safeParseJson(row.e2Data);
+    const picturePatched = typeof fields.picture === "string" && fields.picture.trim().length > 0;
+    if (picturePatched && Object.prototype.hasOwnProperty.call(nextE2, "picture")) {
+      delete nextE2.picture;
+      staleE2PicturesCleared++;
+    }
     // 媒体指令剥离 + sound 角色名剥离（机械兜底，同全量路径）
     for (const field of ["picture", "visual_goal", "rough_camera"]) {
       if (typeof merged[field] === "string") {
@@ -2365,9 +3547,20 @@ async function persistE1Patches(
     // 时长归正（patch 改 duration 时）：正数、≤7 秒、无台词镜 ≤5 秒
     let duration = Number(merged.duration ?? row.duration);
     if (!Number.isFinite(duration) || duration <= 0) duration = Number(row.duration) || 3;
-    const refs = parseJsonList(row.sourceNodeRefs).map(String);
-    // dialogue_spans 变更时重建台词格（否则保留原台词格）
     let dialogue = parseJsonList(row.dialogue) as Array<Record<string, unknown>>;
+    const requestedRefs = Array.isArray(fields.source_node_refs)
+      ? [...new Set(fields.source_node_refs.map(String).filter(Boolean))]
+      : typeof fields.source_node_refs === "string"
+        ? [...new Set(parseJsonList(fields.source_node_refs).map(String).filter(Boolean))]
+        : null;
+    // source_node_refs 是 E1 的局部可写列；即使模型只返回了要保留的引用，也要保留实际台词
+    // 所属节点，避免“修重复引用”误删真正的对白承载。
+    const dialogueRefs = dialogue.map((entry) => String(entry.source_node_id ?? "")).filter(Boolean);
+    const refs = requestedRefs
+      ? [...new Set([...requestedRefs, ...dialogueRefs])]
+      : parseJsonList(row.sourceNodeRefs).map(String);
+    if (requestedRefs) merged.source_node_refs = refs;
+    // dialogue_spans 变更时重建台词格（否则保留原台词格）
     if (fields.dialogue_spans !== undefined || fields.duration !== undefined) {
       dialogue = buildShotDialogue(merged, refs, duration, context.sourceNodes);
     }
@@ -2392,6 +3585,8 @@ async function persistE1Patches(
       where: { id: row.id },
       data: {
         e1Data: JSON.stringify(merged),
+        ...(picturePatched ? { e2Data: JSON.stringify(nextE2) } : {}),
+        ...(requestedRefs ? { sourceNodeRefs: JSON.stringify(refs) } : {}),
         duration,
         dialogue: JSON.stringify(dialogue),
         revision: context.revision
@@ -2409,6 +3604,16 @@ async function persistE1Patches(
   }
   if (changed) {
     await createMechanicalIssueOnce(context, "E1.patch_applied", "PATCH_APPLIED", "单元格修复已落库", `已按字段合并 ${changed} 个镜的修正（未命中格子保留原值）`, "无需处理");
+  }
+  if (staleE2PicturesCleared) {
+    await createMechanicalIssueOnce(
+      context,
+      "E1.picture_dependency",
+      "DOWNSTREAM_PICTURE_INVALIDATED",
+      "E1画面修复已刷新最终画面层",
+      `E1 修改了 ${staleE2PicturesCleared} 个镜的 picture，已清除对应过期 E2 picture 增强层，避免旧动作链覆盖本轮修正；后续有 E2 卡时会重新增强。`,
+      "已自动完成，无需处理"
+    );
   }
   return [];
 }
@@ -3288,7 +4493,8 @@ async function persistUnitLighting(context: PipelineContext, output: { unit_ligh
 async function persistShotPatches(context: PipelineContext, output: PatchOutput, field: "e2" | "e3" | "e4", options: { tolerateMissing?: boolean; allowedShotKeys?: Set<string> } = {}) {
   const column = `${field}Data` as "e2Data" | "e3Data" | "e4Data";
   for (const patch of output.patches) {
-    const shotKey = requiredString(patch.shot_id, `${field}.shot_id`);
+    const rawShotKey = requiredString(patch.shot_id, `${field}.shot_id`);
+    const shotKey = resolveRepairPatchShotKey(rawShotKey, options.allowedShotKeys);
     // 修复轮坐标过滤：只接受命中卡的镜号（±相邻镜仅供参考，禁止改）——模型"顺手修"其它镜
     // 是修 A 破 B 的根源（实测 E2 只该修 S038 却输出 10 个 patch 改了 9 个无关镜）
     if (options.allowedShotKeys && !options.allowedShotKeys.has(shotKey)) continue;
@@ -3312,6 +4518,203 @@ async function persistShotPatches(context: PipelineContext, output: PatchOutput,
   }
 }
 
+/**
+ * 同一 ScriptScene 内可能包含“公园……/饭馆……”这样的内嵌场景标题。
+ * 这些标题会被保留为源节点，按镜头引用的最后一个标题确定当前地点，
+ * 供 Python 单元分组在地点切换处强制断开，避免一个 Seedance 单元跨室内外。
+ */
+function inlineSettingKey(context: PipelineContext, shot: WorkingShot) {
+  const sceneId = String(shot.scene_id ?? "");
+  const scene = context.scenes.find((item) => item.sceneKey === sceneId);
+  const base = `scene:${sceneId}|${scene?.location ?? scene?.heading ?? ""}|${scene?.timeOfDay ?? ""}|${scene?.interiorExterior ?? ""}`;
+  const refs = new Set(shotSourceNodeIds(shot));
+  if (!refs.size || !context.sourceNodes || typeof (context.sourceNodes as Map<string, SourceNode>).values !== "function") return base;
+  const nodeSeq = new Map<string, number>();
+  let sequence = 0;
+  for (const node of context.sourceNodes.values()) nodeSeq.set(node.source_node_id, ++sequence);
+  const maxSeq = Math.max(...[...refs].map((id) => nodeSeq.get(id) ?? 0));
+  if (!maxSeq) return base;
+  let key = base;
+  for (const node of context.sourceNodes.values()) {
+    const currentSeq = nodeSeq.get(node.source_node_id) ?? 0;
+    if (currentSeq > maxSeq) break;
+    if (node.scene_id !== sceneId) continue;
+    const match = String(node.raw ?? node.text ?? "").trim().match(
+      /^(\d+-\d+)\s+(.+?)\s+(日|夜|白天|黑夜|早晨|上午|中午|下午|傍晚|晚上|凌晨)\s+(内|外|内外)$/
+    );
+    if (match?.[1] === sceneId) key = `inline:${match[2]}|${match[3]}|${match[4]}`;
+  }
+  return key;
+}
+
+function splitByInlineSetting(context: PipelineContext, shots: WorkingShot[]) {
+  const groups: WorkingShot[][] = [];
+  let current: WorkingShot[] = [];
+  let currentKey = "";
+  for (const shot of shots) {
+    const key = inlineSettingKey(context, shot);
+    if (current.length && key !== currentKey) {
+      groups.push(current);
+      current = [];
+    }
+    currentKey = key;
+    current.push(shot);
+  }
+  if (current.length) groups.push(current);
+  return groups;
+}
+
+type ExistingSeedanceUnit = {
+  id: string;
+  unitKey: string;
+  sceneId: string;
+  data: string;
+  shortUnitReason: string | null;
+  dominantGoal: string | null;
+  startPremise: string;
+  endState: string;
+  shotLinks: Array<{ shot: { shotKey: string } }>;
+};
+
+function existingUnitShotKeys(unit: Pick<ExistingSeedanceUnit, "shotLinks">) {
+  return unit.shotLinks.map((link) => String(link.shot.shotKey));
+}
+
+/**
+ * 单元编号是展示顺序，不是稳定主键。E1 改变镜头时长或内嵌场景标题后，
+ * 一个旧单元可能被拆成多个新窗口，后面的 U 编号会整体后移。字段继承与
+ * 问题卡路由必须按镜头重叠关系找旧单元，不能把同编号当成同一窗口。
+ */
+function previousUnitForPartition(
+  part: { shotIds: string[] },
+  existingUnits: readonly ExistingSeedanceUnit[],
+  exactBySignature?: ReadonlyMap<string, ExistingSeedanceUnit>
+) {
+  const signature = JSON.stringify(part.shotIds);
+  const exact = exactBySignature?.get(signature);
+  if (exact) return exact;
+  const partIds = new Set(part.shotIds);
+  return existingUnits
+    .map((unit) => {
+      const ids = existingUnitShotKeys(unit);
+      const overlap = ids.reduce((count, id) => count + (partIds.has(id) ? 1 : 0), 0);
+      const anchorIndex = ids.findIndex((id) => partIds.has(id));
+      return { unit, overlap, anchorIndex };
+    })
+    .filter((item) => item.overlap > 0)
+    .sort((a, b) => b.overlap - a.overlap || a.anchorIndex - b.anchorIndex || a.unit.unitKey.localeCompare(b.unit.unitKey))[0]?.unit ?? null;
+}
+
+function unitKeyRemapForPartition(
+  existingUnits: readonly ExistingSeedanceUnit[],
+  partition: readonly { unitKey: string; shotIds: string[] }[]
+) {
+  const remap = new Map<string, string>();
+  for (const unit of existingUnits) {
+    const anchorShot = existingUnitShotKeys(unit)[0];
+    if (!anchorShot) continue;
+    const next = partition.find((part) => part.shotIds.includes(anchorShot));
+    if (next && next.unitKey !== unit.unitKey) remap.set(unit.unitKey, next.unitKey);
+  }
+  return remap;
+}
+
+function remapUnitKeysInCoordinate(coordinate: string, remap: ReadonlyMap<string, string>) {
+  return String(coordinate ?? "").split("→").map((part) => {
+    const trimmed = part.trim();
+    const match = /^(.*?-U\d+)(.*)$/.exec(trimmed);
+    if (!match) return trimmed;
+    const mapped = remap.get(match[1]);
+    return mapped ? `${mapped}${match[2]}` : trimmed;
+  }).join("→");
+}
+
+/** E1 机械重排后同步仍在 OPEN 的单元问题卡，避免卡片继续指向旧 U 编号。 */
+async function remapOpenUnitIssues(context: PipelineContext, remap: ReadonlyMap<string, string>) {
+  if (!remap.size) return;
+  const [issues, units] = await Promise.all([
+    prisma.workflowIssue.findMany({ where: { episodeId: context.episodeId, status: "OPEN" } }),
+    prisma.seedanceUnit.findMany({ where: { episodeId: context.episodeId }, select: { id: true, unitKey: true } })
+  ]);
+  const unitIdByKey = new Map(units.map((unit) => [unit.unitKey, unit.id]));
+  for (const item of issues) {
+    const coordinate = remapUnitKeysInCoordinate(item.coordinate, remap);
+    if (coordinate === item.coordinate) continue;
+    const targetKey = coordinate.split("→")[0].split(".")[0];
+    const duplicate = issues.find((candidate) =>
+      candidate.id !== item.id
+      && candidate.status === "OPEN"
+      && candidate.coordinate === coordinate
+      && candidate.code === item.code
+    );
+    if (duplicate) {
+      await prisma.workflowIssue.update({
+        where: { id: item.id },
+        data: { status: "RESOLVED", evidence: `${item.evidence}；单元重排后与现有问题卡重复，已合并到 ${coordinate}` }
+      });
+      continue;
+    }
+    await prisma.workflowIssue.update({
+      where: { id: item.id },
+      data: {
+        coordinate,
+        unitId: unitIdByKey.get(targetKey) ?? null,
+        evidence: `${item.evidence}；单元重排后坐标已同步为 ${coordinate}`
+      }
+    });
+  }
+}
+
+/**
+ * 确定性分组已经解决的旧 E4 跨地点卡不能继续阻塞返修。
+ * 只处理坐标为完整 unit、且证据明确要求“拆分/跨地点/光型不连续”的泛化卡；
+ * 并要求数据库中的镜头集合与当前 partition 完全一致，避免误销真实摄影问题。
+ */
+async function resolveObsoleteE4UnitIssues(
+  context: PipelineContext,
+  partition: readonly { unitKey: string; shotIds: string[] }[]
+) {
+  const candidates = await prisma.workflowIssue.findMany({
+    where: { episodeId: context.episodeId, status: "OPEN", code: "E4_ISSUE" },
+    select: { id: true, coordinate: true, evidence: true, requestedEffect: true }
+  });
+  if (!candidates.length) return;
+  const partitionByKey = new Map(partition.map((part) => [part.unitKey, part.shotIds]));
+  const units = await prisma.seedanceUnit.findMany({
+    where: { episodeId: context.episodeId },
+    select: { unitKey: true, shotLinks: { orderBy: { sortOrder: "asc" }, select: { shot: { select: { shotKey: true } } } } }
+  });
+  const actualByKey = new Map(units.map((unit) => [unit.unitKey, unit.shotLinks.map((link) => link.shot.shotKey)]));
+  for (const item of candidates) {
+    const unitKey = item.coordinate.trim();
+    const expectedShotIds = partitionByKey.get(unitKey);
+    const actualShotIds = actualByKey.get(unitKey);
+    if (!expectedShotIds || !actualShotIds || JSON.stringify(expectedShotIds) !== JSON.stringify(actualShotIds)) continue;
+    if (!/(拆分|跨地点|跨场次|光型|色温|室内外|不连续)/.test(`${item.evidence} ${item.requestedEffect}`)) continue;
+    await prisma.workflowIssue.update({
+      where: { id: item.id },
+      data: {
+        status: "RESOLVED",
+        evidence: `${item.evidence}；确定性分组已按当前镜头边界完成拆分，旧 E4 卡自动关闭`
+      }
+    });
+  }
+}
+
+/** 只比较镜头集合，不比较 U 编号；供排队前判断是否需要顺带跑 E3/E4。 */
+async function unitPartitionNeedsRefresh(projectId: string, episodeId: string) {
+  const context = await loadPipelineContext(projectId, episodeId);
+  const shots = await hydrateWorkingShots(context);
+  const expected = computeUnitPartition(context, shots).map((part) => part.shotIds);
+  const actualRows = await prisma.seedanceUnit.findMany({
+    where: { episodeId },
+    orderBy: { sortOrder: "asc" },
+    include: { shotLinks: { orderBy: { sortOrder: "asc" }, include: { shot: { select: { shotKey: true } } } } }
+  });
+  const actual = actualRows.map((unit) => unit.shotLinks.map((link) => link.shot.shotKey));
+  return JSON.stringify(actual) !== JSON.stringify(expected);
+}
+
 /** 确定性单元分组（零 Token）：按场次+时空层连续打包，目标 12–15 秒、硬上限 15 秒。 */
 export function computeUnitPartition(
   context: PipelineContext,
@@ -3323,7 +4726,8 @@ export function computeUnitPartition(
   for (const sceneKey of sceneKeys) {
     const layers = [...new Set(shots.filter((shot) => String(shot.scene_id) === sceneKey).map((shot) => String(shot.time_layer)))];
     for (const layer of layers) {
-      const group = shots.filter((shot) => String(shot.scene_id) === sceneKey && String(shot.time_layer) === layer);
+      const layerGroup = shots.filter((shot) => String(shot.scene_id) === sceneKey && String(shot.time_layer) === layer);
+      for (const group of splitByInlineSetting(context, layerGroup)) {
       const units: Array<{ shotIds: string[]; duration: number }> = [];
       let current: string[] = [];
       let currentDuration = 0;
@@ -3390,13 +4794,135 @@ export function computeUnitPartition(
           needsReason: unit.duration < 12
         });
       }
+      }
     }
   }
   return partition;
 }
 
+/**
+ * E3 返修的字段级回归闸门（零 Token）。
+ *
+ * E3 返修只应改变命中单元的命中字段；模型有时会为修 premise 顺手把 end_state、
+ * bindings 或 goal 改成下一单元状态。若等到 E5 才发现，E5 已经会把临时坏状态写成
+ * 一批新问题卡，用户看到的就是“越修越多”。这里在 E3 落库后立即重跑确定性校验，
+ * 对本轮新出现的单元字段问题逐字段恢复到返修前，随后才交给 E5 复审。
+ */
+async function guardE3UnitFieldRegressions(
+  context: PipelineContext,
+  shots: WorkingShot[],
+  before: readonly E3UnitStateSnapshot[],
+  beforeIssueKeys: ReadonlySet<string>,
+  hitUnitKeys: ReadonlySet<string>,
+  allowedUnitFields: ReadonlyMap<string, ReadonlySet<"premise" | "end_state" | "goal" | "bindings">>
+) {
+  if (!hitUnitKeys.size) return;
+  const current = await hydrateUnitOutput(context);
+  const afterIssues = validatePipeline(context, shots, current.units);
+  const beforeByKey = new Map(before.map((row) => [row.unitKey, row]));
+  const restoreByUnit = new Map<string, Set<"premise" | "end_state" | "goal" | "bindings">>();
+  const addRestore = (unitKey: string, field: "premise" | "end_state" | "goal" | "bindings") => {
+    const fields = restoreByUnit.get(unitKey) ?? new Set<"premise" | "end_state" | "goal" | "bindings">();
+    fields.add(field);
+    restoreByUnit.set(unitKey, fields);
+  };
+
+  // 先按返修契约做字段白名单比较：即便变更暂时没有被 Python 校验命中，
+  // E3 也不能因为修 premise 顺手覆盖 goal/end_state/bindings。
+  for (const unitKey of hitUnitKeys) {
+    const previous = beforeByKey.get(unitKey);
+    const row = await prisma.seedanceUnit.findUnique({
+      where: { episodeId_unitKey: { episodeId: context.episodeId, unitKey } },
+      select: { startPremise: true, endState: true, dominantGoal: true, data: true }
+    });
+    if (!previous || !row) continue;
+    const allowed = allowedUnitFields.get(unitKey) ?? new Set<"premise" | "end_state" | "goal" | "bindings">();
+    const currentData = safeParseJson(row.data);
+    const previousData = safeParseJson(previous.data);
+    if (!allowed.has("premise") && row.startPremise !== previous.startPremise) addRestore(unitKey, "premise");
+    if (!allowed.has("end_state") && row.endState !== previous.endState) addRestore(unitKey, "end_state");
+    if (!allowed.has("goal") && row.dominantGoal !== previous.dominantGoal) addRestore(unitKey, "goal");
+    if (!allowed.has("bindings") && !comparableEqual(currentData.subject_bindings, previousData.subject_bindings)) addRestore(unitKey, "bindings");
+  }
+
+  // 再叠加确定性校验中新出现的字段问题：命中字段本身修坏时也要在 E5 前恢复，
+  // 避免先把临时坏状态写成一批“新增 BLOCKER”再触发回归恢复。
+  for (const item of afterIssues) {
+    const key = workflowIssueKey(item);
+    if (beforeIssueKeys.has(key)) continue;
+    const unitKey = unitKeyFromCoordinate(item.coordinate);
+    if (!unitKey || !hitUnitKeys.has(unitKey) || !beforeByKey.has(unitKey)) continue;
+    for (const field of unitRegressionFields(item)) addRestore(unitKey, field);
+  }
+  if (!restoreByUnit.size) return;
+
+  const restored: string[] = [];
+  for (const [unitKey, fields] of restoreByUnit) {
+    const previous = beforeByKey.get(unitKey);
+    const row = await prisma.seedanceUnit.findUnique({
+      where: { episodeId_unitKey: { episodeId: context.episodeId, unitKey } },
+      select: { id: true, data: true, startPremise: true, endState: true, dominantGoal: true, shortUnitReason: true }
+    });
+    if (!previous || !row) continue;
+    const previousData = safeParseJson(previous.data);
+    const currentData = safeParseJson(row.data);
+    const nextData = { ...currentData };
+    const update: {
+      startPremise?: string;
+      endState?: string;
+      dominantGoal?: string | null;
+      data?: string;
+    } = {};
+    if (fields.has("premise")) {
+      update.startPremise = previous.startPremise;
+      nextData.unit_start_premise = previousData.unit_start_premise ?? previous.startPremise;
+    }
+    if (fields.has("end_state")) {
+      update.endState = previous.endState;
+      nextData.unit_end_state = previousData.unit_end_state ?? previous.endState;
+    }
+    if (fields.has("goal")) {
+      update.dominantGoal = previous.dominantGoal;
+      nextData.unit_dominant_goal = previousData.unit_dominant_goal ?? previous.dominantGoal;
+    }
+    if (fields.has("bindings")) {
+      if (Object.prototype.hasOwnProperty.call(previousData, "subject_bindings")) nextData.subject_bindings = previousData.subject_bindings;
+      else delete nextData.subject_bindings;
+    }
+    update.data = JSON.stringify(nextData);
+    await prisma.seedanceUnit.update({ where: { id: row.id }, data: update });
+    restored.push(`${unitKey}.${[...fields].join("/")}`);
+  }
+  if (restored.length) {
+    await createMechanicalIssueOnce(
+      context,
+      "E3.regression_guard",
+      "E3_UNIT_FIELD_REGRESSION_GUARD",
+      "E3 返修不得让未命中单元字段进入新的硬错误",
+      `已在进入 E5 前恢复本轮新增的单元字段回归：${restored.join("、")}`,
+      "已自动隔离回归；保留原问题卡，按当前状态继续定向处理"
+    );
+  }
+}
+
+function unitRegressionFields(item: { coordinate: string; code: string }): Array<"premise" | "end_state" | "goal" | "bindings"> {
+  const coordinate = item.coordinate;
+  const code = item.code;
+  if (coordinate.endsWith(".fields") || code === "UNIT_FIELDS_INCOMPLETE") return ["premise", "end_state", "goal", "bindings"];
+  if (coordinate.endsWith(".premise") || coordinate.endsWith(".unit_start_premise") || code.startsWith("PREMISE_") || code === "UNIT_START_PREACTION") return ["premise"];
+  if (coordinate.endsWith(".end_state") || coordinate.endsWith(".unit_end_state") || code.startsWith("UNIT_END_")) return ["end_state"];
+  if (coordinate.endsWith(".bindings") || code.startsWith("BINDING_")) return ["bindings"];
+  if (coordinate.endsWith(".goal") || coordinate.endsWith(".dominant_goal") || code.startsWith("UNIT_GOAL_")) return ["goal"];
+  return [];
+}
+
 async function persistUnits(context: PipelineContext, shots: WorkingShot[], output: E3UnitOutput, options: { partial?: boolean; allowedUnits?: Set<string> } = {}) {
-  if (!(output.units ?? []).length) throw new Error("E3没有返回任何Seedance单元字段。");
+  // E3 也负责直接挂在镜号上的 sound/transition 卡。此类返修没有命中 unit，
+  // 合法结果可以只返回 patches；不要因为 units=[] 把已经可落库的声音修复判成失败。
+  if (!(output.units ?? []).length) {
+    if (options.partial && options.allowedUnits?.size === 0) return;
+    throw new Error("E3返回了合法JSON，但没有返回任何Seedance单元字段；全量运行必须为每个 unit_windows 单元返回对应字段。通常表示 E0/E1 场次结构未就绪，请先完整重跑 E0–E2，不要重复重跑 E3。");
+  }
   const fieldsByUnit = new Map((output.units ?? []).map((unit) => [String(unit.unit_id ?? ""), unit as Record<string, unknown>]));
   // 修复轮只接受命中单元的创作字段：模型不守"只写命中单元"时，未命中单元的输出一律丢弃
   //（否则模型重写未命中单元会引入新 BLOCKER，修 A 破 B）
@@ -3422,6 +4948,37 @@ async function applyUnitPartition(
   if (!partition.length) throw new Error("没有可分组的镜号。");
   const dbShots = await prisma.storyboardShot.findMany({ where: { episodeId: context.episodeId } });
   const shotByKey = new Map(dbShots.map((shot) => [shot.shotKey, shot]));
+  const existingUnits = await prisma.seedanceUnit.findMany({
+    where: { episodeId: context.episodeId },
+    include: { shotLinks: { orderBy: { sortOrder: "asc" }, include: { shot: true } } }
+  });
+  const shotSignature = (ids: readonly string[]) => JSON.stringify(ids);
+  const previousUnitByShots = new Map(
+    existingUnits.map((unit) => [shotSignature(unit.shotLinks.map((link) => link.shot.shotKey)), unit])
+  );
+  const shotsByKey = new Map(shots.map((shot) => [shot.shot_id, shot]));
+  const unitSettingKeys = (unit: ExistingSeedanceUnit) => new Set(
+    existingUnitShotKeys(unit)
+      .map((shotKey) => shotsByKey.get(shotKey))
+      .filter((shot): shot is WorkingShot => Boolean(shot))
+      .map((shot) => inlineSettingKey(context, shot))
+  );
+  const partSettingKeys = (part: { shotIds: string[] }) => new Set(
+    part.shotIds
+      .map((shotKey) => shotsByKey.get(shotKey))
+      .filter((shot): shot is WorkingShot => Boolean(shot))
+      .map((shot) => inlineSettingKey(context, shot))
+  );
+  const findLightingDonor = (part: { shotIds: string[] }) => {
+    const targetKeys = partSettingKeys(part);
+    if (targetKeys.size !== 1) return null;
+    const targetKey = [...targetKeys][0];
+    return existingUnits
+      .map((unit) => ({ unit, settings: unitSettingKeys(unit), lighting: safeParseJson(unit.data).unit_lighting }))
+      .filter((item) => item.settings.size === 1 && item.settings.has(targetKey) && typeof item.lighting === "string" && item.lighting.trim())
+      .sort((a, b) => a.unit.unitKey.localeCompare(b.unit.unitKey))[0]?.lighting as string | undefined;
+  };
+  const unitKeyRemap = unitKeyRemapForPartition(existingUnits, partition);
   const currentUnitKeys: string[] = [];
 
   for (const [index, part] of partition.entries()) {
@@ -3430,9 +4987,12 @@ async function applyUnitPartition(
     const fields = fieldsByUnit.get(part.unitKey) ?? {};
     // 增量更新：E3 返修/机械重排只输出部分单元时，未覆盖单元的既有创作字段必须保留
     //（否则会把已填好的目标/前提洗成待补充，修复轮来回振荡）
-    const previousUnit = await prisma.seedanceUnit.findUnique({
-      where: { episodeId_unitKey: { episodeId: context.episodeId, unitKey: part.unitKey } }
-    });
+    // 单元编号是按当前分组顺序生成的；内嵌场景标题导致插入新单元后，
+    // U05 可能变成原来的 U06。按完整 shot_ids 继承字段，不能按 unitKey
+    // 盲继承，否则会把饭馆旧单元的状态错贴到公园/新单元。
+    const previousUnit = previousUnitByShots.get(shotSignature(part.shotIds))
+      ?? previousUnitForPartition(part, existingUnits, previousUnitByShots)
+      ?? null;
     const previousData = previousUnit ? safeParseJson(previousUnit.data) : {};
     const previousBindings = Array.isArray(previousData.subject_bindings) ? previousData.subject_bindings.map(String) : [];
     const autoReason = part.needsReason ? "本场分镜时长组合余数不足12秒" : null;
@@ -3440,6 +5000,15 @@ async function applyUnitPartition(
     // 群像单元标记：出场 ≥3 人或含 GROUP 资产或含群像镜 → crowd，供 E5 审查与编译层按群像约束处理
     const unitShots = part.shotIds.map((id) => shots.find((shot) => shot.shot_id === id)).filter(Boolean) as WorkingShot[];
     const requestedBindings = Array.isArray(fields.subject_bindings) ? fields.subject_bindings.map(String) : previousBindings;
+    const partKeys = partSettingKeys(part);
+    const previousKeys = previousUnit ? unitSettingKeys(previousUnit) : new Set<string>();
+    // 跨地点旧单元的 unit_lighting 不能直接复制到新窗口；优先找同一内嵌场景标题
+    // 的稳定光型作为零 Token 继承，避免重排时把“饭馆暖灯”带进“公园日光”。
+    const inheritedLighting = (() => {
+      const previousLighting = typeof previousData.unit_lighting === "string" ? previousData.unit_lighting.trim() : "";
+      if (previousLighting && previousKeys.size === 1 && partKeys.size === 1 && [...previousKeys][0] === [...partKeys][0]) return previousLighting;
+      return findLightingDonor(part) ?? previousLighting;
+    })();
     // 同一资产可能被模型写成“县学书吏@书吏｜默认”和“书吏@CH-005-1”两种别名。
     // 先解析到最终资产 code 再去重，避免一个形象以两个主体名进入 Seedance。
     const unitBindings: string[] = [];
@@ -3454,6 +5023,12 @@ async function applyUnitPartition(
         boundAssetCodes.add(resolved.code);
         boundAssetFamilies.add(assetFamilyCode(resolved.code));
       } else {
+        // 绑定里若明确写了只属于其它场次的资产，直接丢弃；不能把它当成普通
+        // 未解析名称保留下来，否则下一次机械补绑仍会把跨场次主体带回本单元。
+        const unavailableExplicitAsset = context.project.assets.some((candidate) =>
+          !assetAvailableInScene(candidate, part.sceneId) && explicitlyReferencesAsset(candidate, binding)
+        );
+        if (unavailableExplicitAsset) continue;
         if (!fallbackName || boundFallbackNames.has(fallbackName)) continue;
         boundFallbackNames.add(fallbackName);
       }
@@ -3491,6 +5066,7 @@ async function applyUnitPartition(
     const crowd = unitBindings.length >= 3 || unitBindings.some((b) => b.includes("GROUP")) || unitShots.some(isCrowdShot);
     const data: Record<string, unknown> = {
       unit_id: part.unitKey,
+      scene_id: part.sceneId,
       shot_ids: part.shotIds,
       unit_duration: part.duration,
       unit_dominant_goal: optionalString(fields.unit_dominant_goal) ?? previousUnit?.dominantGoal ?? null,
@@ -3500,7 +5076,7 @@ async function applyUnitPartition(
       subject_bindings: unitBindings,
       crowd,
       // 单元级光影（E4 产出）不在本岗位白名单：增量重建时必须保留，否则每次修复轮单元重算都丢
-      ...(previousData.unit_lighting ? { unit_lighting: previousData.unit_lighting } : {})
+      ...(inheritedLighting ? { unit_lighting: inheritedLighting } : {})
     };
     currentUnitKeys.push(part.unitKey);
     const unit = await prisma.seedanceUnit.upsert({
@@ -3541,6 +5117,8 @@ async function applyUnitPartition(
   await prisma.seedanceUnit.deleteMany({
     where: { episodeId: context.episodeId, unitKey: { notIn: currentUnitKeys } }
   });
+  await remapOpenUnitIssues(context, unitKeyRemap);
+  await resolveObsoleteE4UnitIssues(context, partition);
 }
 
 /**
@@ -3559,7 +5137,7 @@ async function resyncUnitsAfterShotsChanged(context: PipelineContext) {
   const needsFields: string[] = [];
   const partition = computeUnitPartition(context, full);
   for (const part of partition) {
-    const match = existing.find((unit) => JSON.stringify(unit.shotLinks.map((link) => link.shot.shotKey)) === JSON.stringify(part.shotIds));
+    const match = previousUnitForPartition(part, existing as ExistingSeedanceUnit[]);
     if (match) {
       const raw = safeParseJson(match.data);
       fieldsByShotIds.set(part.unitKey, {
@@ -3570,6 +5148,15 @@ async function resyncUnitsAfterShotsChanged(context: PipelineContext) {
         short_unit_reason: raw.short_unit_reason ?? null,
         subject_bindings: raw.subject_bindings ?? []
       });
+      const hasRequiredFields = Boolean(
+        String(raw.unit_start_premise ?? match.startPremise ?? "").trim()
+        && String(raw.unit_end_state ?? match.endState ?? "").trim()
+        && String(raw.unit_dominant_goal ?? match.dominantGoal ?? "").trim()
+        && !/待补充|待完善|暂无/.test(String(raw.unit_start_premise ?? match.startPremise ?? ""))
+        && !/待补充|待完善|暂无/.test(String(raw.unit_end_state ?? match.endState ?? ""))
+        && !/待补充|待完善|暂无/.test(String(raw.unit_dominant_goal ?? match.dominantGoal ?? ""))
+      );
+      if (!hasRequiredFields) needsFields.push(part.unitKey);
     } else {
       fieldsByShotIds.set(part.unitKey, { unit_id: part.unitKey });
       needsFields.push(part.unitKey);
@@ -3577,27 +5164,37 @@ async function resyncUnitsAfterShotsChanged(context: PipelineContext) {
   }
   await applyUnitPartition(context, full, fieldsByShotIds);
   if (needsFields.length) {
-    const coordinate = "E3.unit_fields";
-    const existingCard = await prisma.workflowIssue.findFirst({
-      where: { episodeId: context.episodeId, coordinate, code: "UNIT_FIELDS_RESET", revision: context.revision, status: "OPEN" }
-    });
-    if (!existingCard) {
+    // 每个重排后的单元使用自己的坐标，避免一个泛化的 E3.unit_fields 让 E3
+    // 不知道应该补写哪几个窗口；这类卡是可执行的 BLOCKER，而不是无目标建议。
+    for (const unitKey of needsFields) {
+      const coordinate = `${unitKey}.fields`;
+      const existingCard = await prisma.workflowIssue.findFirst({
+        where: { episodeId: context.episodeId, coordinate, code: "UNIT_FIELDS_RESET", status: "OPEN" }
+      });
+      if (existingCard) continue;
       await prisma.workflowIssue.create({
         data: {
           projectId: context.projectId,
           episodeId: context.episodeId,
           coordinate,
           code: "UNIT_FIELDS_RESET",
-          severity: "MINOR",
+          severity: "BLOCKER",
           status: "OPEN",
           ownerRole: "E3",
           expected: "分组变化后的单元补写创作字段",
-          evidence: `镜号时长变化导致分组重排：${needsFields.join("、")} 的站位前提/剧情结果已重置为待补充，请运行 E3 补写`,
-          requestedEffect: "运行 E3 定向补写命中单元字段",
+          evidence: `镜号时长或内嵌场景标题导致分组重排：${unitKey} 的站位前提/剧情结果无法安全继承，请定向补写该单元`,
+          requestedEffect: "只补写该单元的主导目标、站位前提和结束状态，禁止改动镜号归属",
           revision: context.revision
         }
       });
     }
+  } else {
+    // 旧版本留下的泛化卡在重排后已经没有执行意义，避免它再次把 E3
+    // 拉起却不给出可定位的目标。
+    await prisma.workflowIssue.updateMany({
+      where: { episodeId: context.episodeId, coordinate: "E3.unit_fields", code: "UNIT_FIELDS_RESET", status: "OPEN" },
+      data: { status: "RESOLVED", evidence: "当前单元已按镜头重叠关系保留完整字段，泛化重排卡已关闭" }
+    });
   }
 }
 
@@ -4298,6 +5895,9 @@ export function validatePipeline(context: PipelineContext, shots: WorkingShot[],
           if (boundName.length < 2) continue;
           const asset = specialAssets.find((item) => item.name.split("｜")[0].trim() === boundName);
           if (!asset) continue;
+          // 资产索引是全项目的；只属于其它场次的 BEAST/系统/Q版不能拿来给本单元开“提前绑定”卡。
+          const sceneId = String(unit.scene_id ?? included[0]?.scene_id ?? "");
+          if (!assetAvailableInScene(asset, sceneId)) continue;
           const aliases = mentionNamesByMain.get(boundName) ?? [boundName];
           if (assetMentionedIn(unitText, { name: boundName, type: asset.type, aliases })) continue;
           if (prevEnd && assetMentionedIn(prevEnd, { name: boundName, type: asset.type, aliases })) continue;
@@ -4738,6 +6338,7 @@ async function createMechanicalIssueOnce(
 
 const E5_HARD_REVISION_SUFFIX = "::E5_HARD";
 const E5_REVIEW_REVISION_SUFFIX = "::E5_REVIEW";
+const STAGE_REPORT_REVISION_SUFFIX = "::STAGE_REPORT";
 
 export function workflowIssueKey(item: { coordinate: string; code: string }) {
   return `${item.coordinate}\u001f${item.code}`;
@@ -4745,6 +6346,10 @@ export function workflowIssueKey(item: { coordinate: string; code: string }) {
 
 function isE5OwnedIssueRevision(revision: string) {
   return revision.endsWith(E5_HARD_REVISION_SUFFIX) || revision.endsWith(E5_REVIEW_REVISION_SUFFIX);
+}
+
+function isStageReportIssueRevision(revision: string) {
+  return revision.endsWith(STAGE_REPORT_REVISION_SUFFIX);
 }
 
 async function persistReviewIssues(
@@ -4756,7 +6361,14 @@ async function persistReviewIssues(
     resolveReviewedIssues?: boolean;
   } = {}
 ) {
-  const currentIssues = dedupeIssues(issues);
+  // 用户已经明确「确认保留」的建议是项目决策，不应在下一轮 E5 因同一坐标再次开成 OPEN；
+  // 否则用户刚豁免的 6 条会被复审重新激活，并被回归门误判为新增问题。
+  const approvedExceptions = await prisma.workflowIssue.findMany({
+    where: { episodeId: context.episodeId, status: "EXCEPTED" },
+    select: { coordinate: true, code: true }
+  });
+  const approvedExceptionKeys = new Set(approvedExceptions.map(workflowIssueKey));
+  const currentIssues = dedupeIssues(issues).filter((item) => !approvedExceptionKeys.has(workflowIssueKey(item)));
   const currentKeys = new Set(currentIssues.map(workflowIssueKey));
   const existingOpen = await prisma.workflowIssue.findMany({
     where: { episodeId: context.episodeId, status: "OPEN" },
@@ -4846,23 +6458,43 @@ async function persistGenericIssues(context: PipelineContext, rawIssues: Record<
     expected: String(raw.expected ?? "遵守当前岗位契约与锁定事实"),
     evidence: String(raw.actual_evidence ?? raw.evidence ?? raw.reason ?? "岗位返回未决问题"),
     requestedEffect: String(raw.requested_effect ?? "按最小坐标处理后重新校验")
-  }));
+  })).map((item) => ({
+    ...item,
+    ownerRole: repairOwnerForIssue(item).toUpperCase() === "SYSTEM" ? "SYSTEM" : item.ownerRole
+  })).filter((item, index, all) => all.findIndex((candidate) => workflowIssueKey(candidate) === workflowIssueKey(item)) === index);
   if (!normalized.length) return;
   for (const item of normalized) {
-    await prisma.workflowIssue.create({
-      data: {
-        projectId: context.projectId,
-        episodeId: context.episodeId,
-        coordinate: item.coordinate,
-        code: item.code,
-        severity: item.severity,
-        ownerRole: item.ownerRole,
-        expected: item.expected,
-        evidence: item.evidence,
-        requestedEffect: item.requestedEffect,
-        revision: context.revision
-      }
+    const exception = await prisma.workflowIssue.findFirst({
+      where: { episodeId: context.episodeId, coordinate: item.coordinate, code: item.code, status: "EXCEPTED" },
+      select: { id: true }
     });
+    if (exception) continue;
+    const existing = await prisma.workflowIssue.findFirst({
+      where: { episodeId: context.episodeId, coordinate: item.coordinate, code: item.code, status: "OPEN" },
+      select: { id: true }
+    });
+    const data = {
+      severity: item.severity,
+      ownerRole: item.ownerRole,
+      expected: item.expected,
+      evidence: item.evidence,
+      requestedEffect: item.requestedEffect,
+      // 阶段报告不是最终裁定：交给 E5 复核，若本轮已修复则安全销卡。
+      revision: `${context.revision}${STAGE_REPORT_REVISION_SUFFIX}`
+    };
+    if (existing) {
+      await prisma.workflowIssue.update({ where: { id: existing.id }, data });
+    } else {
+      await prisma.workflowIssue.create({
+        data: {
+          projectId: context.projectId,
+          episodeId: context.episodeId,
+          coordinate: item.coordinate,
+          code: item.code,
+          ...data
+        }
+      });
+    }
   }
 }
 
@@ -4916,6 +6548,32 @@ async function compileAndPersistPrompts(
 
 type AssetReferenceRow = { code: string; name: string; metadata?: string | null; type?: string };
 
+/** 场次绑定只能使用本场可用资产；没有 scene_refs 的项目级资产对所有场次可用。 */
+function assetAvailableInScene(asset: AssetReferenceRow, sceneId?: string): boolean {
+  const refs = assetSceneRefsOf(asset.metadata);
+  return !sceneId || refs.length === 0 || refs.includes(sceneId);
+}
+
+function assetsAvailableInScene(assets: readonly AssetReferenceRow[], sceneId?: string): AssetReferenceRow[] {
+  return assets.filter((asset) => assetAvailableInScene(asset, sceneId));
+}
+
+function explicitlyReferencesAsset(asset: AssetReferenceRow, rawName: string): boolean {
+  const trimmed = rawName.trim();
+  if (!trimmed) return false;
+  const candidates = trimmed.includes("@")
+    ? [trimmed.split("@")[1].trim(), trimmed.split("@")[0].trim()]
+    : [trimmed];
+  const mainName = asset.name.split("｜")[0].trim();
+  // E5 的 evidence 通常是一整句中文，而不是单独的“资产名@资产码”。
+  // 只做整句相等判断会漏掉“硬检指向GROUP-004 / 大学学生群像”的跨场次误报，
+  // 让同一张卡在下一轮再次以 BLOCKER 出现。码和完整资产名优先精确包含，
+  // 主名至少两个字时再做包含匹配，避免“人/鸟”等单字造成误命中。
+  return [asset.code, asset.name, mainName]
+    .filter((candidate) => candidate.length >= 2)
+    .some((candidate) => trimmed.includes(candidate));
+}
+
 function assetFamilyCode(code: string): string {
   return /^([A-Z]+-\d{3})(?:-\d+)?$/.exec(code)?.[1] ?? code;
 }
@@ -4929,9 +6587,11 @@ function resolveVisibleAssetReferences(
   asset: AssetReferenceRow,
   sceneId?: string
 ): VisibleAssetReference[] {
+  if (!assetAvailableInScene(asset, sceneId)) return [];
+  const sceneAssets = assetsAvailableInScene(assets, sceneId);
   const mainName = asset.name.split("｜")[0].trim();
   const family = assetFamilyCode(asset.code);
-  const familyAssets = assets.filter((candidate) =>
+  const familyAssets = sceneAssets.filter((candidate) =>
     assetFamilyCode(candidate.code) === family || candidate.name.split("｜")[0].trim() === mainName
   );
   const explicitMentions = [...new Set(familyAssets
@@ -4949,20 +6609,20 @@ function resolveVisibleAssetReferences(
       cursor = end;
       if (occupied.some((range) => start < range.end && range.start < end)) continue;
       occupied.push({ start, end });
-      const resolved = resolveAssetReference(assets, mention, sceneId);
+      const resolved = resolveAssetReference(sceneAssets, mention, sceneId);
       if (resolved) exactByCode.set(resolved.code, { ...resolved, exact: true, mention });
     }
   }
   if (exactByCode.size) return [...exactByCode.values()];
 
-  const otherMains = assets
+  const otherMains = sceneAssets
     .map((candidate) => candidate.name.split("｜")[0].trim())
     .filter((candidate) => candidate && candidate !== mainName);
   const aliases = [...new Set(familyAssets.flatMap(mentionNames))]
     .filter((name) => !otherMains.some((other) => other.includes(name) && other !== name));
   if (!assetMentionedIn(text, { name: mainName, type: asset.type ?? "", aliases })) return [];
   const mention = [...aliases].sort((a, b) => b.length - a.length).find((name) => text.includes(name)) ?? mainName;
-  const resolved = resolveAssetReference(assets, mainName, sceneId) ?? { code: asset.code, name: asset.name };
+  const resolved = resolveAssetReference(sceneAssets, mainName, sceneId) ?? { code: asset.code, name: asset.name };
   return [{ ...resolved, exact: false, mention }];
 }
 
@@ -4972,6 +6632,7 @@ function collectVisibleAssetReferences(
   asset: AssetReferenceRow,
   sceneId?: string
 ): VisibleAssetReference[] {
+  if (!assetAvailableInScene(asset, sceneId)) return [];
   const exactByCode = new Map<string, VisibleAssetReference>();
   let familyReference: VisibleAssetReference | null = null;
   for (const clause of clauses) {
@@ -4990,18 +6651,19 @@ function resolveAssetReference(
   rawName: string,
   sceneId?: string
 ): { code: string; name: string } | null {
+  const sceneAssets = assetsAvailableInScene(assets, sceneId);
   const trimmed = rawName.trim();
   if (!trimmed) return null;
   const candidates = trimmed.includes("@")
     ? [trimmed.split("@")[1].trim(), trimmed.split("@")[0].trim()]
     : [trimmed];
   for (const candidate of candidates) {
-    const exactCode = assets.find((asset) => asset.code === candidate);
+    const exactCode = sceneAssets.find((asset) => asset.code === candidate);
     if (exactCode) return { code: exactCode.code, name: exactCode.name };
-    const exactName = assets.find((asset) => asset.name === candidate);
+    const exactName = sceneAssets.find((asset) => asset.name === candidate);
     if (exactName) return { code: exactName.code, name: exactName.name };
   }
-  for (const asset of assets) {
+  for (const asset of sceneAssets) {
     const aliases = assetAliasesOf(asset.metadata);
     if (aliases.some((alias) => candidates.includes(alias))) {
       return { code: asset.code, name: asset.name };
@@ -5009,7 +6671,7 @@ function resolveAssetReference(
   }
   const fallbackName = candidates[candidates.length - 1] ?? "";
   if (!fallbackName) return null;
-  const prefixed = assets.filter((asset) => asset.name.startsWith(fallbackName));
+  const prefixed = sceneAssets.filter((asset) => asset.name.startsWith(fallbackName));
   if (!prefixed.length) return null;
   const isMain = (code: string) => /^[A-Z]+-\d{3}$/.test(code);
   const withRefs = sceneId
@@ -5226,19 +6888,7 @@ export function compileSeedancePrompts(context: PipelineContext, shots: WorkingS
         .map(formatDialogueEntry)
         .join("；");
       const range = shotRanges[index];
-      const shotTicks = Math.max(0, range.endTick - range.startTick);
-      const dialogueSchedule = buildDialogueSchedule(shot.dialogue as Array<Record<string, unknown>>, shotTicks);
       lines.push(`- 分镜${index + 1},${shot.duration}s,`);
-      lines.push(`- 时间范围: 单元内${formatTick(range.startTick)}–${formatTick(range.endTick)}s｜全片${formatTick(startTick + range.startTick)}–${formatTick(startTick + range.endTick)}s;`);
-      if ((shot.dialogue as Array<Record<string, unknown>>).length && !dialogueSchedule.length) {
-        lines.push("- 对白时段: 容量不足，需E1拆镜;");
-      } else if (dialogueSchedule.length) {
-        for (const slot of dialogueSchedule) {
-          lines.push(`- 对白时段: 单元内${formatTick(range.startTick + slot.startTick)}–${formatTick(range.startTick + slot.endTick)}s｜${formatDialogueEntry(slot)};`);
-        }
-      } else {
-        lines.push("- 对白时段: 无;");
-      }
       lines.push(`- 机位/运动: ${cells.camera_motion};`);
       lines.push(`- 画面: ${picture};`);
       lines.push(`- 声音: ${cells.sound.replace(/[“"''][^“"'']{9,}[”"'']/g, "").replace(/[，、；：]{1,2}$/, "").replace(/\s{2,}/g, " ").trim()};`);
@@ -5250,10 +6900,6 @@ export function compileSeedancePrompts(context: PipelineContext, shots: WorkingS
     prompts[unitKey] = lines.join("\n").trim();
   }
   return prompts;
-}
-
-function formatTick(tick: number): string {
-  return (tick / 10).toFixed(1);
 }
 
 function buildShotDialogue(
@@ -5301,15 +6947,19 @@ function sliceByAnchors(text: string, span: Record<string, unknown>) {
 
 function normalizeReviewIssues(rawIssues: Record<string, unknown>[]): PipelineIssue[] {
   // 防御性截断：单次审查最多 25 张卡、证据最多 200 字，避免模型输出超长导致 JSON 截断失败
-  return rawIssues.slice(0, 25).map((raw, index) => ({
-    coordinate: String(raw.coordinate ?? `E5.issue.${index + 1}`).slice(0, 120),
-    code: String(raw.issue_code ?? raw.code ?? "E5_ISSUE").slice(0, 60),
-    severity: normalizeSeverity(raw.severity, "MAJOR"),
-    ownerRole: String(raw.owner_role ?? "E5").slice(0, 20),
-    expected: String(raw.expected ?? "满足岗位契约").slice(0, 200),
-    evidence: String(raw.actual_evidence ?? raw.evidence ?? "独立审查发现问题").slice(0, 200),
-    requestedEffect: String(raw.requested_effect ?? "在最小范围内修复").slice(0, 200)
-  }));
+  return rawIssues.slice(0, 25).map((raw, index) => {
+    const coordinate = String(raw.coordinate ?? `E5.issue.${index + 1}`).slice(0, 120);
+    const code = String(raw.issue_code ?? raw.code ?? "E5_ISSUE").slice(0, 60);
+    return {
+      coordinate,
+      code,
+      severity: normalizeSeverity(raw.severity, "MAJOR"),
+      ownerRole: repairOwnerForIssue({ coordinate, code, ownerRole: raw.owner_role }),
+      expected: String(raw.expected ?? "满足岗位契约").slice(0, 200),
+      evidence: String(raw.actual_evidence ?? raw.evidence ?? "独立审查发现问题").slice(0, 200),
+      requestedEffect: String(raw.requested_effect ?? "在最小范围内修复").slice(0, 200)
+    };
+  });
 }
 
 /** E0 输入里把源节点映射为全局序号（与 buildSourcePackage 计数一致）。 */
@@ -5443,6 +7093,55 @@ function requirePatchOutput(value: Record<string, unknown>, role: string): Patch
   return value as unknown as PatchOutput;
 }
 
+function assertE0OutputReady(
+  value: Record<string, unknown>,
+  result: { sessionId: string | null; stdout: string; stderr: string }
+) {
+  const issues = Array.isArray(value.issues)
+    ? value.issues.filter(isRecord).map((item) => ({
+        code: String(item.code ?? item.issue_code ?? "E0_ISSUE"),
+        severity: String(item.severity ?? "").toUpperCase(),
+        message: String(item.message ?? item.evidence ?? "")
+      }))
+    : [];
+  const blockers = issues.filter((item) => item.severity === "BLOCKER");
+  const hasSkeleton = (Array.isArray(value.sequences) && value.sequences.length > 0)
+    || (Array.isArray(value.beats) && value.beats.length > 0);
+  const blocked = String(value.status ?? "").toUpperCase() === "BLOCKED" || blockers.length > 0 || !hasSkeleton;
+  if (!blocked) return;
+
+  const reason = blockers.length
+    ? blockers.slice(0, 3).map((item) => `${item.code}${item.message ? `：${item.message}` : ""}`).join("；")
+    : !hasSkeleton
+      ? "没有返回可用的 sequences/beats 骨架"
+      : `返回状态为 ${String(value.status ?? "BLOCKED")}`;
+  const error = new Error(`E0前置校验未通过：${reason}。已停止 E1–E5，未继续消耗额度；请先修复源文/场次结构后再重跑 E0。`);
+  (error as Error & { rawDetail?: string }).rawDetail = JSON.stringify({
+    stage: "E0",
+    sessionId: result.sessionId,
+    output: value,
+    stderr: result.stderr.slice(-12_000),
+    events: result.stdout.slice(-24_000)
+  }, null, 2);
+  throw error;
+}
+
+function attachRawResultDetail(
+  error: unknown,
+  stage: PipelineStageCode,
+  result: { sessionId: string | null; stdout: string; stderr: string; data: Record<string, unknown> }
+) {
+  const enriched = error instanceof Error ? error : new Error(String(error));
+  (enriched as Error & { rawDetail?: string }).rawDetail = JSON.stringify({
+    stage,
+    sessionId: result.sessionId,
+    output: result.data,
+    stderr: result.stderr.slice(-12_000),
+    events: result.stdout.slice(-24_000)
+  }, null, 2);
+  return enriched;
+}
+
 function requireE3(value: Record<string, unknown>): E3UnitOutput {
   if (!Array.isArray(value.units) || !Array.isArray(value.patches)) throw new Error("E3返回缺少patches或units数组。");
   return value as unknown as E3UnitOutput;
@@ -5507,8 +7206,17 @@ export async function hydrateUnitOutput(context: PipelineContext): Promise<E3Uni
   const units: Record<string, unknown>[] = [];
   for (const row of rows) {
     const raw = safeParseJson(row.data);
-    if (Array.isArray(raw.shot_ids) && (raw.shot_ids as unknown[]).length) {
-      units.push(raw);
+    // 旧数据的 data 可能只有 unit_id/shot_ids，没有 scene_id；E5 的资产范围校验
+    // 若拿不到场次就会把跨场次资产当成“全场可用”。以关系表的 sceneId 回填，
+    // 同时兼容已有 data 与没有 shot_ids 的旧单元。
+    const sceneId = context.scenes.find((scene) => scene.id === row.sceneId)?.sceneKey ?? row.sceneId;
+    const hydrated: Record<string, unknown> = {
+      ...raw,
+      unit_id: raw.unit_id ?? row.unitKey,
+      scene_id: raw.scene_id ?? sceneId
+    };
+    if (Array.isArray(hydrated.shot_ids) && (hydrated.shot_ids as unknown[]).length) {
+      units.push(hydrated);
       continue;
     }
     const links = await prisma.seedanceUnitShot.findMany({
@@ -5517,7 +7225,7 @@ export async function hydrateUnitOutput(context: PipelineContext): Promise<E3Uni
       orderBy: { sortOrder: "asc" }
     });
     units.push({
-      ...raw,
+      ...hydrated,
       unit_id: row.unitKey,
       shot_ids: links.map((link) => link.shot.shotKey),
       unit_duration: row.duration,
@@ -5553,7 +7261,15 @@ function sceneCards(context: PipelineContext) {
 }
 
 function assetRows(context: PipelineContext, types: string[]) {
-  return context.project.assets.filter((asset) => types.includes(asset.type)).map((asset) => ({ id: asset.code, type: asset.type, name: asset.name, status: asset.status }));
+  return context.project.assets
+    .filter((asset) => types.includes(asset.type))
+    .map((asset) => ({
+      id: asset.code,
+      type: asset.type,
+      name: asset.name,
+      status: asset.status,
+      scene_refs: assetSceneRefsOf(asset.metadata)
+    }));
 }
 
 function pickFields(source: Record<string, unknown>, keys: string[]) {
@@ -5793,43 +7509,97 @@ function referencedNodes(context: PipelineContext, shots: WorkingShot[]) {
     }));
 }
 
-function compactFirstPhaseContext(payload: Record<string, unknown>) {
+function compactFirstPhaseContext(payload: Record<string, unknown>, episodeNumber: number) {
   return {
-    project_memory: compactMemory(payload["全剧记忆快照"]),
+    project_memory: compactProjectMemoryForEpisode(payload["全剧记忆快照"], episodeNumber),
     episode_context: compactEpisodeContext(payload["本集上下文快照"]),
     scene_snapshot: payload["场次快照"] ?? null
   };
 }
 
-/** 全剧记忆（P1 V2）压缩：只保留稳定事实，剥离 source_node_refs 引用数组（占体积大头且 E1 用不到）。 */
-function compactMemory(value: unknown): unknown {
+/** 对外提供纯函数，便于回归测试与上下文预算检查；不调用模型、不读写数据库。 */
+export function compactProjectMemoryForEpisode(value: unknown, episodeNumber: number): unknown {
+  return compactMemory(value, episodeNumber);
+}
+
+/**
+ * 全剧记忆（P1 V2）压缩：E0/E1 只需要当前集附近的叙事连续性与当前时点已经公开的事实。
+ *
+ * 旧实现把 80 集 episodes、全部关系阶段和未来秘密原样带入每一集，
+ * 使每个 CLI 岗位重复读取约 60K 字符的全剧记忆，还可能把未来信息泄漏给当前集。
+ * 这里保留当前集前后邻集、相邻边界、当前集有效的关系/秘密和全局故事合同；
+ * source_node_refs 仍由 locked_script/source_nodes 提供，不在记忆快照中重复携带。
+ */
+function compactMemory(value: unknown, episodeNumber?: number): unknown {
   if (!value || typeof value !== "object") return value;
   const memory = value as Record<string, unknown>;
-  const strip = (list: unknown): unknown => {
-    if (!Array.isArray(list)) return list;
-    return list.map((item) => {
-      if (!item || typeof item !== "object" || Array.isArray(item)) return item;
-      const record = { ...(item as Record<string, unknown>) };
-      delete record.source_node_refs;
-      return record;
-    });
+  const stripReferences = (input: unknown): unknown => {
+    if (Array.isArray(input)) return input.map(stripReferences);
+    if (!isRecord(input)) return input;
+    const result: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(input)) {
+      if (key === "source_node_refs" || key === "scenes") continue;
+      result[key] = stripReferences(item);
+    }
+    return result;
   };
-  const episodes = Array.isArray(memory.episodes)
-    ? memory.episodes.map((episode) => {
-        const record = { ...(episode as Record<string, unknown>) };
-        delete record.source_node_refs;
-        delete record.scenes;
-        return record;
+
+  const current = Number.isInteger(episodeNumber) ? Number(episodeNumber) : null;
+  const nearbyEpisodes = Array.isArray(memory.episodes)
+    ? memory.episodes
+      .filter(isRecord)
+      .filter((item) => current === null || Math.abs(Number(item.number) - current) <= 1)
+      .map(stripReferences)
+    : [];
+  const boundaries = Array.isArray(memory.boundaries)
+    ? memory.boundaries
+      .filter(isRecord)
+      .filter((item) => current === null || Number(item.from_episode) === current || Number(item.to_episode) === current)
+      .map(stripReferences)
+    : [];
+  const relationships = Array.isArray(memory.relationships)
+    ? memory.relationships
+      .filter(isRecord)
+      .map((item) => {
+        const stages = Array.isArray(item.stages)
+          ? item.stages
+            .filter(isRecord)
+            .filter((stage) => current === null || episodeRangeIncludes(stage.episode_range, current))
+            .map(stripReferences)
+          : item.stages;
+        return { ...stripReferences(item) as Record<string, unknown>, stages };
       })
-    : memory.episodes;
+      .filter((item) => current === null || !Array.isArray(item.stages) || item.stages.length > 0)
+    : [];
+  const secrets = Array.isArray(memory.secrets)
+    ? memory.secrets
+      .filter(isRecord)
+      .filter((item) => current === null || isAudienceFactKnown(item.revealed_to_audience_at, current))
+      .map(stripReferences)
+    : [];
+
   return {
-    ...memory,
-    episodes,
-    relationships: strip(memory.relationships),
-    secrets: strip(memory.secrets),
-    foreshadowing: strip(memory.foreshadowing),
-    boundaries: strip(memory.boundaries)
+    ...(memory.schema !== undefined ? { schema: memory.schema } : {}),
+    story_contract: stripReferences(memory.story_contract),
+    episodes: nearbyEpisodes,
+    boundaries,
+    relationships,
+    secrets,
+    foreshadowing: Array.isArray(memory.foreshadowing)
+      ? memory.foreshadowing.map(stripReferences)
+      : memory.foreshadowing
   };
+}
+
+function episodeRangeIncludes(value: unknown, episodeNumber: number) {
+  const numbers = String(value ?? "").match(/\d+/g)?.map(Number) ?? [];
+  if (numbers.length >= 2) return numbers[0] <= episodeNumber && episodeNumber <= numbers[1];
+  return numbers.length === 1 ? numbers[0] === episodeNumber : true;
+}
+
+function isAudienceFactKnown(value: unknown, episodeNumber: number) {
+  const match = String(value ?? "").match(/\d+/);
+  return !match || Number(match[0]) <= episodeNumber;
 }
 
 /** 本集上下文快照压缩：场景快照已在 locked_script 全量给出，这里只留人物/地点/道具/连续性。 */
@@ -5988,4 +7758,3 @@ function bindingStrings(value: unknown): string[] {
   if (isRecord(value)) return Object.entries(value).map(([key, item]) => `${key} ${typeof item === "string" ? item : JSON.stringify(item)}`);
   return [];
 }
-

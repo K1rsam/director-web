@@ -228,4 +228,3 @@ export function parseApiJson<T>(content: string): T {
     throw new Error(`DeepSeek 返回内容不是合法JSON：${error instanceof Error ? error.message : String(error)}（原文前 400 字：${content.slice(0, 400)}）`);
   }
 }
-

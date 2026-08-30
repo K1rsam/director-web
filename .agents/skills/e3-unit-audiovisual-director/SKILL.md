@@ -79,9 +79,11 @@ description: >
 ## 返修轮（INPUT_JSON 带 revision_issues 时）
 
 - **只重写 revision_issues 命中单元的创作字段**（unit_dominant_goal / unit_start_premise / unit_end_state / short_unit_reason / subject_bindings），按 fix_hint 修复；其余单元原样保留，不要输出。
-- **unit_windows 里 `needs_fields: true` 的单元也必须补写**（它们是站位前提/结束状态/主导目标含待补充的单元，可能不在问题卡坐标里——问题卡坐标可能过期，以 needs_fields 为准），为每个这样的单元输出完整创作字段。
+- 返修轮只处理 `revision_issues` 命中的单元；未命中的 `needs_fields: true` 单元不要顺手重写，以免把已稳定的单元重新置空并制造回归。若问题卡命中 `.fields`，才一次性补齐该单元的 goal/premise/end_state；只命中 `.premise`、`.end_state` 或 `.bindings` 时，只改对应字段。
 - **镜号归属由 Python 决定，禁止输出或修改 shot_ids/unit_duration**。
 - 与命中单元相关镜号的声音/转场确需修正时用 `patches`；与修复无关的格子禁止改动。
+
+返修的每个单元都必须重新核对：`unit_start_premise` 只能写本单元第一镜开始瞬间的静态状态，`unit_end_state` 只能写末镜已经完成的状态；不得把首镜动作提前写进 premise，也不得把后续单元结果写进当前单元。若修复一个字段会要求改动其它字段，应保留其它字段原值并把冲突作为 issue 返回，不要整单元重写。
 
 ## 写法参照（来自用户 9 分稿，必须学会）
 

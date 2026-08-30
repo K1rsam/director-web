@@ -58,4 +58,3 @@ function SubmitButton({ active, hasContent, activeLabel }: { active: boolean; ha
     </button>
   );
 }
-

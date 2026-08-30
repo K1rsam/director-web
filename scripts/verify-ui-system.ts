@@ -1,6 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
+import assert from "node:assert/strict";
 import { join } from "node:path";
 import { deriveProjectGuidance } from "../lib/ui-guidance";
+import { deriveEpisodeProductionStatus, formatEpisodeGroupProgress } from "../lib/studio";
+import { sortAssetsHierarchically } from "../app/projects/[projectId]/asset-index-tabs";
 
 const root = join(import.meta.dirname, "..");
 const chrome = readFileSync(join(root, "app/ui/app-chrome.tsx"), "utf8");
@@ -8,13 +11,17 @@ const accountMenu = readFileSync(join(root, "app/ui/account-menu.tsx"), "utf8");
 const styles = readFileSync(join(root, "app/globals.css"), "utf8");
 const layout = readFileSync(join(root, "app/layout.tsx"), "utf8");
 const projectPage = readFileSync(join(root, "app/projects/[projectId]/page.tsx"), "utf8");
+const presentationContracts = readFileSync(join(root, "app/projects/[projectId]/presentation-contracts.tsx"), "utf8");
 const foundationActions = readFileSync(join(root, "app/projects/[projectId]/foundation-actions.tsx"), "utf8");
+const assetTabs = readFileSync(join(root, "app/projects/[projectId]/asset-index-tabs.tsx"), "utf8");
 const homePage = readFileSync(join(root, "app/page.tsx"), "utf8");
 const newPage = readFileSync(join(root, "app/projects/new/page.tsx"), "utf8");
 const episodePage = readFileSync(join(root, "app/projects/[projectId]/episodes/[episodeId]/page.tsx"), "utf8");
 const workspaceGrid = readFileSync(join(root, "app/projects/[projectId]/episodes/[episodeId]/workspace-grid.tsx"), "utf8");
 const resetButton = readFileSync(join(root, "app/projects/[projectId]/episodes/[episodeId]/reset-episode-button.tsx"), "utf8");
 const sceneTable = readFileSync(join(root, "app/projects/[projectId]/scene-structure-table.tsx"), "utf8");
+const foundationReferenceGrid = readFileSync(join(root, "app/projects/[projectId]/foundation-reference-grid.tsx"), "utf8");
+const providerPanel = readFileSync(join(root, "app/runner/provider-connection-panel.tsx"), "utf8");
 const currentWorkflowSources = [
   projectPage,
   readFileSync(join(root, "app/projects/new/project-create-form.tsx"), "utf8"),
@@ -54,6 +61,27 @@ for (const token of ["foundationStageForm", "foundationCardHitArea", "foundation
   if (!foundationActions.includes(token) && !projectPage.includes(token)) {
     throw new Error(`Foundation controls are missing the unified interaction ${token}`);
   }
+}
+for (const token of ["foundationHeaderState", "foundationReady ?", "重新生成 P1–P2"]) {
+  if (!foundationActions.includes(token)) throw new Error(`Foundation completion state is missing ${token}`);
+}
+if (!foundationActions.includes("{foundationReady ? (") || !foundationActions.includes(") : null}")) {
+  throw new Error("Foundation maintenance controls must be hidden until P1/P2 are ready");
+}
+for (const token of ["AssetExportButton", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "资产ID", "所属集", "assetExportButton"]) {
+  if (!assetTabs.includes(token)) throw new Error(`Asset export is missing ${token}`);
+}
+for (const token of ["buildAssetWorkbookXlsx", "sortAssetsHierarchically", "资产总览", "标准名称", "状态 / 着装 / 形态", "确认状态", "人物", "场景", "道具"]) {
+  if (!assetTabs.includes(token)) throw new Error(`Asset export workbook structure is missing ${token}`);
+}
+for (const token of ["targetEpisodeNumber", "targetEpisodeNumbers", "P1 识别的相关集（可调整）", "只应用到发现的相关集（推荐）", "修改后会同步后台"]) {
+  if (!presentationContracts.includes(token)) throw new Error(`表现规范范围编辑缺少 ${token}`);
+}
+for (const token of ["episodeStudioGroups", "episodeStudioGroup", "defaultEpisodeGroupStart"]) {
+  if (!projectPage.includes(token)) throw new Error(`Episode production list is missing grouped navigation: ${token}`);
+}
+for (const token of ["ResizeObserver", "foundationReferenceGrid", "data-reference-card", "matchMedia"]) {
+  if (!foundationReferenceGrid.includes(token)) throw new Error(`Reference panels are missing adaptive height behavior: ${token}`);
 }
 
 for (const [name, source] of [["home", homePage], ["new", newPage], ["episode", episodePage]] as const) {
@@ -98,6 +126,9 @@ if (homePage.includes("episodes={activeProject?.episodes") || !homePage.includes
 
 if (!chrome.includes("projectLabel") || !chrome.includes('activeSection !== "projects"')) {
   throw new Error("Shared navigation must distinguish project library context from project workspace context");
+}
+if (chrome.includes('activeSection === "projects" && projectLabel ? projectLabel : "全剧工作台"')) {
+  throw new Error("Project context navigation must keep the project name on API and new-project pages");
 }
 
 for (const token of ["roleStageForm", "roleCardHitArea", "roleCardAction", "episodeTopbarAction", "topbarStopForm"]) {
@@ -161,6 +192,9 @@ for (const token of ["--vision-section-gap", "--vision-panel-padding", "--vision
 for (const selector of [".projectDashboard > .studioSection", ".episodeRoleDeck > .roleProgressRail", ".episodeDashboard .storyboardCanvas", ".projectLibrary .projectCardGrid"]) {
   if (!visionStyles.includes(selector)) throw new Error(`Large-panel hierarchy is missing ${selector}`);
 }
+for (const selector of [".contractEpisodeChoices", ".contractConfirmedItem", "--vision-font-body", ".contractScopeEditor"]) {
+  if (!visionStyles.includes(selector)) throw new Error(`表现规范可读性/范围控件样式缺少 ${selector}`);
+}
 
 for (const selector of [".episodeShell .appWorkspace", ".episodeShell .appMain", ".episodeRoleDeck", ".episodeShell .unitList", ".episodeShell .seedancePrompt pre"]) {
   if (!visionStyles.includes(selector)) throw new Error(`Single-scroll episode workspace is missing ${selector}`);
@@ -176,6 +210,22 @@ if (!visionStyles.includes("--vision-page-backdrop") || !/html,\s*body\s*\{[^}]*
 
 if (!/\.viewTabs a::after\s*\{[^}]*bottom:\s*0/s.test(visionStyles)) {
   throw new Error("The active view underline must align with the tab bar instead of the next panel");
+}
+
+for (const token of ["runnerCliCheckResult", "runnerCliStatusPanel", "runnerCliStatusNote", "cliStatus", "/status"]) {
+  if (!providerPanel.includes(token)) throw new Error(`本机 CLI 状态面板缺少必要信息：${token}`);
+}
+if (providerPanel.includes("runnerLauncherPanel") || providerPanel.includes("本机状态（对应 /status）")) {
+  throw new Error("本机 CLI 状态说明不应与实际状态重复占用独立面板");
+}
+if (providerPanel.includes("runnerRefreshButton") || providerPanel.includes("刷新检测")) {
+  throw new Error("本机 CLI 检测面板不应保留重复的刷新检测按钮");
+}
+for (const token of ["status.account.email", "status.usage.lifetimeTokens", "formatRemaining(primary)", "formatRemaining(secondary)"]) {
+  if (!providerPanel.includes(token)) throw new Error(`本机 CLI 状态面板没有绑定 /status 字段：${token}`);
+}
+if (providerPanel.includes("accessToken") || providerPanel.includes("rawStatus")) {
+  throw new Error("本机 CLI 状态面板不得展示令牌或原始日志");
 }
 
 if (!/\.episodeShell \.episodeRoleDeck \.roleProgress\s*\{[^}]*height:\s*68px/s.test(visionStyles) || !visionStyles.includes(".roleProgress::before")) {
@@ -238,6 +288,17 @@ if (!styles.includes(".appChrome .projectCardBody > * { min-width: 0; }") || !st
   throw new Error("Project card content must shrink inside its card instead of clipping the right edge");
 }
 
+assert.deepEqual(
+  sortAssetsHierarchically([
+    { id: "child-b", code: "CH-002-4-3", type: "CH", name: "时烬｜黑色西装·破损带血", status: "needs_confirmation", parentId: "parent-4" },
+    { id: "parent-1", code: "CH-002-1", type: "CH", name: "时烬｜蓝白病号服", status: "needs_confirmation", parentId: null },
+    { id: "child-a", code: "CH-002-4-2", type: "CH", name: "时烬｜黑色西装·后背受伤", status: "needs_confirmation", parentId: "parent-4" },
+    { id: "parent-4", code: "CH-002-4", type: "CH", name: "时烬｜黑色西装", status: "needs_confirmation", parentId: "parent-1" }
+  ]).map((asset) => asset.code),
+  ["CH-002-1", "CH-002-4", "CH-002-4-2", "CH-002-4-3"],
+  "资产表必须把分资产紧跟在对应主资产后面"
+);
+
 if (!sceneTable.includes("useState(false)") || !sceneTable.includes("sceneStructureTable") || !sceneTable.includes("<colgroup>")) {
   throw new Error("Scene structure must default closed and declare readable column proportions");
 }
@@ -297,5 +358,54 @@ if (continueEpisode.kind !== "continue" || continueEpisode.episodeId !== "e3") {
   throw new Error("Incomplete episode must be continued");
 }
 
-console.log("light UI system verification passed");
+const batchRunning = deriveProjectGuidance({
+  pendingContracts: 0,
+  planningReady: true,
+  assetsReady: true,
+  batchMonitor: { status: "RUNNING", message: "批量推进监控已启动。", error: null, processed: 2, total: 80 },
+  episodes: [{ id: "e4", number: 4, shotCount: 0, running: true, failed: false, finished: false }]
+});
+if (batchRunning.kind !== "batch-running" || batchRunning.actionLabel !== "查看批量状态") {
+  throw new Error("Active batch monitor must be the primary project guidance");
+}
 
+const batchPaused = deriveProjectGuidance({
+  pendingContracts: 0,
+  planningReady: true,
+  assetsReady: true,
+  batchMonitor: { status: "FAILED", message: "批量推进已暂停：检测到 Codex CLI 额度不足。", error: null, processed: 16, total: 80 },
+  episodes: [{ id: "e5", number: 5, shotCount: 0, running: false, failed: true, finished: false }]
+});
+if (batchPaused.kind !== "batch-paused" || batchPaused.batchPauseReason !== "quota" || !batchPaused.description.includes("16/80")) {
+  throw new Error("Quota-paused batch must not be presented as a single-episode repair");
+}
+
+const completeAfterStaleBatch = deriveProjectGuidance({
+  pendingContracts: 0,
+  planningReady: true,
+  assetsReady: true,
+  batchMonitor: { status: "FAILED", message: "旧批量记录", error: "旧批量记录", processed: 80, total: 80 },
+  episodes: [{ id: "e6", number: 6, shotCount: 12, running: false, failed: false, finished: true }]
+});
+if (completeAfterStaleBatch.kind !== "complete") {
+  throw new Error("A stale failed monitor must not hide a fully completed project");
+}
+
+if (deriveEpisodeProductionStatus([{ status: "失败" }], false) !== "待继续") {
+  throw new Error("A failed episode with no generated content must remain resumable instead of needing repair");
+}
+if (deriveEpisodeProductionStatus([{ status: "失败" }], true) !== "需处理") {
+  throw new Error("A failed episode with generated content must remain visible as needing repair");
+}
+
+if (formatEpisodeGroupProgress({ total: 10, completed: 0, started: 0, generating: 0, needsRepair: 0, resumable: 0 }) !== "0/10 集待生成") {
+  throw new Error("A new episode group must not be labeled as completed");
+}
+if (formatEpisodeGroupProgress({ total: 10, completed: 2, started: 3, generating: 1, needsRepair: 0, resumable: 0 }) !== "2/10 集已完成 · 7 集待生成 · 1 集生成中") {
+  throw new Error("A partially running episode group has an unclear progress label");
+}
+if (formatEpisodeGroupProgress({ total: 10, completed: 10, started: 10, generating: 0, needsRepair: 0, resumable: 0 }) !== "10/10 集已完成") {
+  throw new Error("A fully generated episode group must retain the completed label");
+}
+
+console.log("light UI system verification passed");

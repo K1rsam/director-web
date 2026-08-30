@@ -28,3 +28,9 @@ TencentDB-Agent-Memory/
 
 # 内部实施记录不属于产品发布包
 docs/superpowers/
+
+# 本机生成物、协议缓存与审计导出，不进入源码仓库
+.tmp-codex-schema/
+.tmp-asset-xlsx-review/
+outputs/
+prisma/backup-before-stale-episode-errors-20260829/

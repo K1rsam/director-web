@@ -26,6 +26,7 @@ async function main() {
 苏远os：声音不建立人物资产。
 系统窗口：声音也不建立人物资产。`);
   assert.deepEqual(standardized.characters.map((asset) => asset.name), ["苏远", "赵清雅", "众人"]);
+  assert.ok(!standardized.characters.some((asset) => /系统伪人|系统面板/.test(asset.name)), "系统 UI 或系统伪人不得从粗提结果进入 CH 人物");
   assert.deepEqual(standardized.looks.map((asset) => asset.name), ["苏远｜校服受伤状态"]);
   assert.deepEqual(standardized.locations.map((asset) => asset.name), ["学校礼堂"]);
   assert.deepEqual(standardized.props.map((asset) => asset.name), ["手机", "水晶石"]);

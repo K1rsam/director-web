@@ -327,21 +327,24 @@ model PipelineRun {
 }
 
 model PresentationContract {
-  id         String   @id @default(cuid())
-  projectId  String
-  episodeId  String?
-  category   String
-  question   String
-  options    String
-  evidence   String?
-  userAnswer String?
-  status     String   @default("PENDING")
-  round      Int      @default(1)
-  note       String?
-  decidedAt  DateTime?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  id                    String   @id @default(cuid())
+  projectId             String
+  episodeId             String?
+  category              String
+  question              String
+  options               String
+  evidence              String?
+  userAnswer            String?
+  status                String   @default("PENDING")
+  round                 Int      @default(1)
+  note                  String?
+  ruleKey               String?
+  scopeMode             String   @default("SOURCE_EPISODES")
+  targetEpisodeNumbers  String?
+  decidedAt             DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  project               Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([projectId, status])
 }
@@ -494,4 +497,3 @@ model FinalScript {
   @@index([projectId])
   @@index([episodeId])
 }
-

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { prepareEpisodeAction, repairOpenIssuesAction, runSingleStageAction, resetEpisodeShotsAction, stopPipelineAction, acknowledgeIssueAction, acknowledgeAllSuggestionsAction } from "@/app/actions";
+import { prepareEpisodeAction, repairOpenIssuesAction, runSingleStageAction, resetEpisodeShotsAction, stopPipelineAction, acknowledgeIssueAction, acknowledgeRepairRegressionAction, acknowledgeAllSuggestionsAction } from "@/app/actions";
 import { getEpisodeStudio } from "@/lib/studio";
 import { formatDialogueEntry } from "@/lib/shot-cells";
 import { AppChrome } from "@/app/ui/app-chrome";
@@ -12,6 +12,7 @@ import { UnitPromptCard } from "./unit-prompt-card";
 import { ExportEpisodeButtons } from "./export-episode";
 import { WorkspaceGrid } from "./workspace-grid";
 import { requireSessionUser } from "@/lib/auth";
+import { executionErrorSource, formatExecutionErrorForUser } from "@/lib/execution-errors";
 
 export const dynamic = "force-dynamic";
 
@@ -78,7 +79,10 @@ export default async function EpisodeStudioPage({
         <summary><span>E0–E5 制作状态</span><b>{studio.roles.filter((role) => role.status === "已完成").length}/6 完成</b></summary>
       <section className="roleProgressRail" aria-label="岗位进度">
         {studio.roles.map((role) => {
-          const errorText = studio.runs.find((run) => run.stageCode === role.code && run.error)?.error;
+          const failedRun = studio.runs.find((run) => run.stageCode === role.code && run.error);
+          const errorText = failedRun?.error
+            ? formatExecutionErrorForUser(failedRun.error, { source: executionErrorSource(failedRun.provider) })
+            : null;
           const actionLabel = role.status === "已完成" ? "重跑" : role.status === "失败" ? "再试一次" : "运行";
           return (
             <form action={runSingleStageAction} className="roleStageForm" key={role.code}>
@@ -211,10 +215,10 @@ export default async function EpisodeStudioPage({
           {view === "logs" ? (
             <div className="logView">
               <section><div className="cardHeader"><div><span>PIPELINE RUNS</span><h3>完整执行日志</h3></div><em>{studio.runs.length}条</em></div>
-                {studio.runs.length ? studio.runs.map((run) => <article className="logRow" key={run.id}><b>{run.stageCode}</b><div><strong>{run.roleName}</strong><small>{run.provider} · {run.model} · {run.duration}</small></div><span>{run.status}</span><details><summary>查看输入、输出与执行日志</summary><h4>输入摘要</h4><pre>{run.inputSummary ?? "暂无"}</pre><h4>岗位输出</h4><pre>{run.outputSummary ?? "暂无"}</pre><h4>执行日志</h4><pre>{run.error ?? run.log ?? "暂无"}</pre></details></article>) : <div className="largeEmpty"><span>暂无岗位执行日志</span></div>}
+                <div className="logEntries">{studio.runs.length ? studio.runs.map((run) => <article className="logRow" key={run.id}><b>{run.stageCode}</b><div><strong>{run.roleName}</strong><small>{run.provider} · {run.model} · {run.duration}</small></div><span>{run.status}</span><details><summary>查看输入、输出与执行日志</summary><h4>输入摘要</h4><pre>{run.inputSummary ?? "暂无"}</pre><h4>岗位输出</h4><pre>{run.outputSummary ?? "暂无"}</pre><h4>用户提示</h4><pre>{run.error ?? "无错误"}</pre><h4>技术执行日志</h4><pre>{run.log ?? "暂无"}</pre></details></article>) : <div className="largeEmpty"><span>暂无岗位执行日志</span></div>}</div>
               </section>
-              <section><div className="cardHeader"><div><span>ISSUES</span><h3>坐标化问题与返修</h3></div><em>{studio.issues.length}条</em></div>
-                {studio.issues.length ? (
+              <section><div className="cardHeader"><div><span>ISSUES</span><h3>坐标化问题与返修</h3></div><em>全部 {studio.issues.length} · 未解决 {studio.issues.filter((issue) => issue.status === "OPEN").length}</em></div>
+                <div className="issueEntries">{studio.issues.length ? (
                   <>
                     <div className="issueFilters">
                       <Link className={issues === "open" ? "active" : ""} href={`?view=logs&issues=open`}>未解决 <b>{studio.issues.filter((issue) => issue.status === "OPEN").length}</b></Link>
@@ -231,13 +235,6 @@ export default async function EpisodeStudioPage({
                             <input name="episodeId" type="hidden" value={episodeId} />
                             <input name="includeSuggestions" type="hidden" value="1" />
                             <button type="submit" disabled={studio.pipelineActive} title="BLOCKER 与 MAJOR 建议卡的归属岗位一起跑（每岗一次调用带全部卡），最后 E5 复审统一销卡">连建议一起修</button>
-                          </form>
-                          <form action={repairOpenIssuesAction} className="issueRerunForm">
-                            <input name="projectId" type="hidden" value={projectId} />
-                            <input name="episodeId" type="hidden" value={episodeId} />
-                            <input name="includeSuggestions" type="hidden" value="1" />
-                            <input name="force" type="hidden" value="1" />
-                            <button type="submit" disabled={studio.pipelineActive} className="dangerQuietButton" title="绕过收敛门禁强制重跑（上一轮 BLOCKER 未减少被拒时，人工确认卡状态后使用）">强制重跑</button>
                           </form>
                         </div>
                       ) : null}
@@ -256,7 +253,14 @@ export default async function EpisodeStudioPage({
                           </div>
                           <p>{issue.evidence}</p>
                           <small>要求：{issue.requestedEffect}</small>
-                          {issue.status === "OPEN" && issue.severity !== "BLOCKER" ? (
+                          {issue.status === "OPEN" && issue.code === "REPAIR_REGRESSION" ? (
+                            <form action={acknowledgeRepairRegressionAction} className="issueAckForm">
+                              <input name="projectId" type="hidden" value={projectId} />
+                              <input name="episodeId" type="hidden" value={episodeId} />
+                              <input name="issueId" type="hidden" value={issue.id} />
+                              <button type="submit" className="dangerQuietButton" disabled={studio.pipelineActive} title="确认本轮已恢复到安全快照，然后允许下一轮按当前问题卡定向返修">确认回滚结果</button>
+                            </form>
+                          ) : issue.status === "OPEN" && issue.severity !== "BLOCKER" ? (
                             <form action={acknowledgeIssueAction} className="issueAckForm">
                               <input name="projectId" type="hidden" value={projectId} />
                               <input name="episodeId" type="hidden" value={episodeId} />
@@ -295,7 +299,7 @@ export default async function EpisodeStudioPage({
                     })()}
                   </>
                 ) : <div className="largeEmpty"><span>暂无开放问题</span><p>E5只记录能定位到单元格的真实问题。</p></div>}
-                {studio.issues.some((issue) => issue.status === "OPEN") ? <p className="issueRepairHint">「修复严重问题」只跑有 BLOCKER 卡的岗位；「连建议一起修」把 MAJOR 建议卡的归属岗位也纳入（每岗一次调用带全部卡、只动命中镜号），最后 E5 复审统一销卡；不需要修的建议用「确认保留」豁免。</p> : <p className="issueRepairHint">全部问题已清理：当前表格通过 Python 硬校验与 E5 审查，单元提示词为已放行状态。</p>}
+                {studio.issues.some((issue) => issue.status === "OPEN") ? <p className="issueRepairHint">批量阶段不会自动返修。这里每次点击只执行一轮定向返修：修复严重问题只处理 BLOCKER；连建议一起修会把 MAJOR 也交给对应岗位，最后由 E5 复审。完成后请先查看问题数量和具体卡片，再决定是否进行下一轮；不需要修的建议用「确认保留」豁免。</p> : <p className="issueRepairHint">全部问题已清理：当前表格通过 Python 硬校验与 E5 审查，单元提示词为已放行状态。</p>}</div>
               </section>
             </div>
           ) : null}

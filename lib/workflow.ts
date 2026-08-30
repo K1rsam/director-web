@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { preprocessProject } from "@/lib/project-preprocess";
 import { buildSceneSnapshot, buildTaskSchemaV4Payload, validateTaskSchemaV4Payload } from "@/lib/task-package";
 import { formatAssetIndex } from "@/lib/assets";
+import { extractScriptScenes } from "@/lib/scene-structure";
 
 type Db = PrismaClient;
 
@@ -97,6 +98,9 @@ export async function prepareEpisodeProduction(projectId: string, episodeId: str
 
   if (!episode) {
     throw new Error("Episode not found.");
+  }
+  if (episode.number < 1) {
+    throw new Error("这是第0集/前置资料，只用于全剧分析，不能进入单集 E0–E5 生产。");
   }
 
   const existingAssets: DirectorAsset[] = episode.project.assets.map((asset) => ({
@@ -208,6 +212,95 @@ export async function prepareEpisodeProduction(projectId: string, episodeId: str
   });
 }
 
+/**
+ * 在消耗模型额度前，把数据库里的场次结构与当前剧本文本重新对齐。
+ * 这是纯本地维护：只更新 ScriptScene 元数据、补齐缺失场次，不删除已有分镜/单元。
+ * 这样 Word 扁平化导入造成的「1-1电梯」场头不会继续以一个大 1-1 场次进入 E0/E1。
+ */
+export async function syncEpisodeScenes(projectId: string, episodeId: string, db: Db = prisma) {
+  const episode = await db.episode.findFirst({
+    where: { id: episodeId, projectId },
+    select: { id: true, number: true, content: true }
+  });
+  if (!episode) throw new Error("没有找到本集剧本，无法同步场次结构。");
+
+  const drafts = extractScriptScenes(episode.number, episode.content);
+  const existing = await db.scriptScene.findMany({
+    where: { episodeId },
+    select: {
+      sceneKey: true,
+      sortOrder: true,
+      heading: true,
+      location: true,
+      interiorExterior: true,
+      timeOfDay: true,
+      weather: true,
+      timeLayer: true,
+      sourceText: true,
+      metadata: true
+    }
+  });
+  const metadataOf = (draft: (typeof drafts)[number]) => JSON.stringify(draft.metadata);
+  const currentByKey = new Map(existing.map((scene) => [scene.sceneKey, scene]));
+  const changed = drafts.some((draft) => {
+    const current = currentByKey.get(draft.sceneKey);
+    return !current
+      || current.sortOrder !== draft.sortOrder
+      || (current.heading ?? null) !== draft.heading
+      || (current.location ?? null) !== draft.location
+      || (current.interiorExterior ?? null) !== draft.interiorExterior
+      || (current.timeOfDay ?? null) !== draft.timeOfDay
+      || (current.weather ?? null) !== draft.weather
+      || current.timeLayer !== draft.timeLayer
+      || current.sourceText !== draft.sourceText
+      || current.metadata !== metadataOf(draft);
+  }) || existing.some((scene) => !drafts.some((draft) => draft.sceneKey === scene.sceneKey));
+  if (!changed) return { changed: false, sceneCount: existing.length };
+
+  const sceneKeys = drafts.map((draft) => draft.sceneKey);
+  await db.$transaction(async (tx) => {
+    // 有分镜/单元的旧场次保留，避免场次修复本身造成数据删除；无引用的陈旧场次可安全清理。
+    await tx.scriptScene.deleteMany({
+      where: {
+        episodeId,
+        sceneKey: { notIn: sceneKeys },
+        shots: { none: {} },
+        units: { none: {} }
+      }
+    });
+    for (const draft of drafts) {
+      await tx.scriptScene.upsert({
+        where: { episodeId_sceneKey: { episodeId, sceneKey: draft.sceneKey } },
+        create: {
+          episodeId,
+          sceneKey: draft.sceneKey,
+          sortOrder: draft.sortOrder,
+          heading: draft.heading,
+          location: draft.location,
+          interiorExterior: draft.interiorExterior,
+          timeOfDay: draft.timeOfDay,
+          weather: draft.weather,
+          timeLayer: draft.timeLayer,
+          sourceText: draft.sourceText,
+          metadata: metadataOf(draft)
+        },
+        update: {
+          sortOrder: draft.sortOrder,
+          heading: draft.heading,
+          location: draft.location,
+          interiorExterior: draft.interiorExterior,
+          timeOfDay: draft.timeOfDay,
+          weather: draft.weather,
+          timeLayer: draft.timeLayer,
+          sourceText: draft.sourceText,
+          metadata: metadataOf(draft)
+        }
+      });
+    }
+  });
+  return { changed: true, sceneCount: drafts.length };
+}
+
 
 
 export async function preprocessProjectProduction(projectId: string, db: Db = prisma) {
@@ -232,4 +325,3 @@ export function buildChatGptPrompt(payload: unknown) {
     JSON.stringify(payload, null, 2)
   ].join("\n\n");
 }
-

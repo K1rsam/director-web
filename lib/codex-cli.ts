@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { formatExecutionErrorForUser } from "@/lib/execution-errors";
 
 export type JsonSchema = Record<string, unknown>;
 
@@ -31,6 +32,56 @@ export type CodexJsonResult<T> = {
   stderr: string;
 };
 
+export type CodexCliStatusWindow = {
+  usedPercent: number | null;
+  remainingPercent: number | null;
+  windowDurationMins: number | null;
+  resetsAt: number | null;
+};
+
+export type CodexCliStatusCredits = {
+  balance: string | null;
+  hasCredits: boolean;
+  unlimited: boolean;
+};
+
+export type CodexCliStatusIndividualLimit = {
+  limit: string;
+  used: string;
+  remainingPercent: number;
+  resetsAt: number | null;
+};
+
+export type CodexCliStatusLimit = {
+  id: string;
+  name: string | null;
+  planType: string | null;
+  primary: CodexCliStatusWindow | null;
+  secondary: CodexCliStatusWindow | null;
+  credits: CodexCliStatusCredits | null;
+  individualLimit: CodexCliStatusIndividualLimit | null;
+  rateLimitReachedType: string | null;
+};
+
+export type CodexCliStatus = {
+  version: string;
+  account: {
+    type: string;
+    email: string | null;
+    planType: string | null;
+  };
+  limits: CodexCliStatusLimit[];
+  usage: {
+    lifetimeTokens: number | null;
+    peakDailyTokens: number | null;
+    currentStreakDays: number | null;
+    longestStreakDays: number | null;
+    latestDailyUsage: { date: string; tokens: number } | null;
+  };
+  checkedAt: string;
+  warnings: string[];
+};
+
 const MINIMAL_RUNTIME_ARGS = [
   "--disable", "apps",
   "--disable", "browser_use",
@@ -41,8 +92,30 @@ const MINIMAL_RUNTIME_ARGS = [
   "--disable", "multi_agent"
 ];
 
-/** 排队前的零 Token 预检：只检查本机 CLI 可执行文件、版本与登录态。 */
+/** 排队前的零 Token 预检：读取本机 CLI 版本与 app-server 登录态，不调用模型。 */
 export async function assertCodexCliReady(): Promise<{ executable: string; version: string }> {
+  const executable = resolveCodexExecutable();
+  try {
+    const status = await readCodexCliStatus();
+    return { executable, version: status.version };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (/not logged in|login required|unauthorized|authentication|尚未完成登录|尚未登录/i.test(detail)) {
+      throw new Error("Codex CLI 尚未完成登录，请在本机终端运行 codex 并按提示完成登录后再试。");
+    }
+    if (/找不到 Codex CLI|ENOENT|不可用/i.test(detail)) {
+      throw new Error(`Codex CLI 不可用：${detail}`);
+    }
+    throw new Error(`Codex CLI 状态检查失败：${detail}`);
+  }
+}
+
+/**
+ * 读取本机 Codex 的账户状态，不发起模型调用。
+ * app-server 的 account/read、account/rateLimits/read、account/usage/read
+ * 对应交互式 CLI 的 `/status` 信息；这里只返回页面需要的脱敏摘要。
+ */
+export async function readCodexCliStatus(): Promise<CodexCliStatus> {
   const executable = resolveCodexExecutable();
   let versionResult: { stdout: string; stderr: string };
   try {
@@ -50,22 +123,40 @@ export async function assertCodexCliReady(): Promise<{ executable: string; versi
   } catch (error) {
     throw new Error(`Codex CLI 不可用：${error instanceof Error ? error.message : String(error)}`);
   }
-  const version = `${versionResult.stdout}\n${versionResult.stderr}`.trim();
-  if (!/codex-cli/i.test(version)) {
-    throw new Error(`Codex CLI 版本输出异常：${version || "无输出"}`);
+  const versionText = `${versionResult.stdout}\n${versionResult.stderr}`.trim();
+  if (!/codex-cli/i.test(versionText)) {
+    throw new Error("Codex CLI 版本检查未通过，请确认本机终端中的 codex --version 可用。");
   }
 
-  let loginResult: { stdout: string; stderr: string };
-  try {
-    loginResult = await runCommand(executable, ["login", "status"], process.cwd(), 10_000);
-  } catch (error) {
-    throw new Error(`无法确认 Codex CLI 登录状态：${error instanceof Error ? error.message : String(error)}`);
+  const version = versionText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => /codex-cli/i.test(line))
+    ?? "Codex CLI";
+  const responses = await runCodexAppServerStatus(executable, process.cwd(), 15_000);
+  const warnings: string[] = [];
+
+  const accountPayload = readRpcResult(responses, "2", "账号状态", warnings);
+  const account = asRecord(accountPayload)?.account;
+  const accountRecord = asRecord(account);
+  if (!accountRecord) {
+    throw new Error("Codex CLI 尚未完成登录，请在本机终端运行 codex 并按提示完成登录。");
   }
-  const loginText = `${loginResult.stdout}\n${loginResult.stderr}`.trim();
-  if (/not logged in/i.test(loginText) || !/logged in/i.test(loginText)) {
-    throw new Error("Codex CLI 尚未登录，请先在终端执行 codex login。");
-  }
-  return { executable, version: version.split("\n")[0] };
+
+  const ratePayload = readRpcResult(responses, "3", "额度状态", warnings);
+  const usagePayload = readRpcResult(responses, "4", "用量状态", warnings);
+  return {
+    version,
+    account: {
+      type: asString(accountRecord.type) ?? "unknown",
+      email: asString(accountRecord.email),
+      planType: asString(accountRecord.planType)
+    },
+    limits: normalizeRateLimits(ratePayload),
+    usage: normalizeUsage(usagePayload),
+    checkedAt: new Date().toISOString(),
+    warnings
+  };
 }
 
 export async function runCodexJson<T>(request: CodexJsonRequest): Promise<CodexJsonResult<T>> {
@@ -122,9 +213,89 @@ export async function runCodexJson<T>(request: CodexJsonRequest): Promise<CodexJ
 }
 
 export function resolveCodexExecutable(): string {
-  if (process.env.CODEX_CLI_PATH) return process.env.CODEX_CLI_PATH;
-  const local = process.env.HOME ? path.join(process.env.HOME, ".local", "bin", "codex") : "";
+  const configured = normalizeConfiguredExecutable(process.env.CODEX_CLI_PATH ?? "");
+  if (configured) return configured;
+
+  // Windows 上 PATH 里可能同时存在 npm 生成的 codex.cmd 和 Codex 自带的
+  // 原生 codex.exe。优先原生可执行文件，避免 cmd.exe 再启动 node.exe 时弹出
+  // 独立控制台窗口；没有原生版本时再使用 npm 的 codex.cmd。
+  if (process.platform === "win32") {
+    const pathValue = process.env.Path ?? process.env.PATH ?? "";
+    const directories = pathValue
+      .split(path.delimiter)
+      .map((directory) => directory.trim())
+      .filter(Boolean);
+    const names = ["codex.exe", "codex.cmd", "codex.bat"];
+    for (const name of names) {
+      const candidate = directories
+        .map((directory) => path.join(directory, name))
+        .find((entry) => existsSync(entry));
+      if (candidate) return candidate;
+    }
+
+    const userProfile = process.env.USERPROFILE ?? os.homedir();
+    const appData = process.env.APPDATA ?? path.join(userProfile, "AppData", "Roaming");
+    const npmCandidates = [
+      path.join(appData, "npm", "codex.cmd"),
+      path.join(appData, "npm", "codex.bat"),
+      path.join(userProfile, "AppData", "Roaming", "npm", "codex.cmd"),
+      path.join(userProfile, "AppData", "Roaming", "npm", "codex.bat")
+    ];
+    const npmExecutable = npmCandidates.find((candidate) => existsSync(candidate));
+    if (npmExecutable) return npmExecutable;
+  }
+
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? os.homedir();
+  const local = path.join(home, ".local", "bin", "codex");
   return local && existsSync(local) ? local : "codex";
+}
+
+function normalizeConfiguredExecutable(value: string): string {
+  let normalized = value.trim();
+  for (let index = 0; index < 3; index += 1) {
+    const before = normalized;
+    if (normalized.startsWith("&")) normalized = normalized.slice(1).trim();
+    if (
+      (normalized.startsWith("'") && normalized.endsWith("'")) ||
+      (normalized.startsWith('"') && normalized.endsWith('"'))
+    ) {
+      normalized = normalized.slice(1, -1).trim();
+    }
+    if (normalized === before) break;
+  }
+  return normalized;
+}
+
+function resolveSpawnInvocation(executable: string, args: string[]): { executable: string; args: string[] } {
+  if (process.platform !== "win32") return { executable, args };
+
+  // Node 在 Windows 上不能像终端一样直接 spawn .cmd/.bat；显式使用隐藏的
+  // cmd.exe，避免 shell:true 的拼接警告，也避免用户看到额外的黑色窗口。
+  const isBatchFile = /\.(?:cmd|bat)$/i.test(executable);
+  const isBareCommand = !path.extname(executable);
+  if (!isBatchFile && !isBareCommand) return { executable, args };
+
+  const commandShell = process.env.ComSpec ?? process.env.COMSPEC ?? "cmd.exe";
+  return {
+    executable: commandShell,
+    args: ["/d", "/s", "/c", executable, ...args]
+  };
+}
+
+function formatSpawnError(error: unknown, executable: string): Error {
+  const code = error && typeof error === "object" && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : "";
+  if (code === "ENOENT") {
+    return new Error(
+      `找不到 Codex CLI 启动程序（${executable}）。请确认 CLI 启动程序只填写可执行文件路径，` +
+      "不要填写 `& '路径'` 或整段带外层引号的命令。"
+    );
+  }
+  if (code === "EINVAL" && process.platform === "win32" && /\.(?:cmd|bat)$/i.test(executable)) {
+    return new Error(`Windows 无法直接启动 ${executable}，请使用 codex.cmd 或让系统自动解析 Codex CLI。`);
+  }
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 function resolveCliTimeoutMs(): number {
@@ -132,6 +303,216 @@ function resolveCliTimeoutMs(): number {
   return Number.isFinite(configured) && configured > 0
     ? Math.floor(configured)
     : 30 * 60_000;
+}
+
+type CodexRpcResponse = {
+  id?: string | number;
+  result?: unknown;
+  error?: { message?: unknown } | unknown;
+};
+
+async function runCodexAppServerStatus(executable: string, cwd: string, timeoutMs: number) {
+  return new Promise<Map<string, CodexRpcResponse>>((resolve, reject) => {
+    const invocation = resolveSpawnInvocation(executable, ["app-server", "--stdio"]);
+    const child = spawn(invocation.executable, invocation.args, {
+      cwd,
+      env: process.env,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    const responses = new Map<string, CodexRpcResponse>();
+    const expectedIds = new Set(["1", "2", "3", "4"]);
+    let stdout = "";
+    let stderr = "";
+    let buffer = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(new Error("读取 Codex CLI 状态超时，请稍后重试。"));
+    }, timeoutMs);
+
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(responses);
+    };
+
+    const consumeLine = (line: string) => {
+      const normalized = line.trim();
+      if (!normalized) return;
+      try {
+        const response = JSON.parse(normalized) as CodexRpcResponse;
+        if (response.id === undefined || response.id === null) return;
+        const id = String(response.id);
+        if (expectedIds.has(id)) responses.set(id, response);
+        if ([...expectedIds].every((expectedId) => responses.has(expectedId))) {
+          child.kill();
+          finish();
+        }
+      } catch {
+        // app-server 可能输出非协议行；不把原始内容交给页面。
+      }
+    };
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout = `${stdout}${chunk}`.slice(-200_000);
+      buffer += chunk;
+      let newline = buffer.indexOf("\n");
+      while (newline >= 0) {
+        consumeLine(buffer.slice(0, newline));
+        buffer = buffer.slice(newline + 1);
+        newline = buffer.indexOf("\n");
+      }
+    });
+    child.stderr.on("data", (chunk: string) => { stderr = `${stderr}${chunk}`.slice(-20_000); });
+    child.on("error", (error) => finish(formatSpawnError(error, executable)));
+    child.on("close", (code, signal) => {
+      if (settled) return;
+      const detail = stderr.trim() || stdout.trim();
+      finish(new Error(
+        detail && /not logged in|login|unauthorized|authentication/i.test(detail)
+          ? "Codex CLI 尚未完成登录，请在本机终端运行 codex 并按提示完成登录。"
+          : `Codex CLI 状态读取失败（code=${code ?? "null"}, signal=${signal ?? "none"}）。`
+      ));
+    });
+    child.stdin.on("error", () => {
+      // 子进程提前退出时由 close/error 事件统一处理。
+    });
+
+    const send = (value: unknown) => {
+      try {
+        child.stdin.write(`${JSON.stringify(value)}\n`);
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error("无法发送 Codex CLI 状态请求。"));
+      }
+    };
+    send({
+      id: 1,
+      method: "initialize",
+      params: {
+        clientInfo: { name: "director-workbench", title: "Director Workbench", version: "0.1.0" },
+        capabilities: { experimentalApi: false }
+      }
+    });
+    send({ method: "initialized", params: {} });
+    send({ id: 2, method: "account/read", params: { refreshToken: false } });
+    send({ id: 3, method: "account/rateLimits/read", params: null });
+    send({ id: 4, method: "account/usage/read", params: null });
+  });
+}
+
+function readRpcResult(responses: Map<string, CodexRpcResponse>, id: string, label: string, warnings: string[]) {
+  const response = responses.get(id);
+  if (!response) {
+    warnings.push(`${label}未返回，请重新检测。`);
+    return null;
+  }
+  if (response.error) {
+    warnings.push(`${label}暂时无法读取，请重新检测。`);
+    return null;
+  }
+  return response.result ?? null;
+}
+
+function normalizeRateLimits(payload: unknown): CodexCliStatusLimit[] {
+  const record = asRecord(payload);
+  if (!record) return [];
+  const byId = asRecord(record.rateLimitsByLimitId);
+  const entries = byId
+    ? Object.entries(byId)
+    : record.rateLimits
+      ? [[asString(asRecord(record.rateLimits)?.limitId) ?? "codex", record.rateLimits] as [string, unknown]]
+      : [];
+  return entries.map(([fallbackId, value]) => {
+    const limit = asRecord(value) ?? {};
+    return {
+      id: asString(limit.limitId) ?? fallbackId,
+      name: asString(limit.limitName),
+      planType: asString(limit.planType),
+      primary: normalizeWindow(limit.primary),
+      secondary: normalizeWindow(limit.secondary),
+      credits: normalizeCredits(limit.credits),
+      individualLimit: normalizeIndividualLimit(limit.individualLimit),
+      rateLimitReachedType: asString(limit.rateLimitReachedType)
+    };
+  });
+}
+
+function normalizeWindow(value: unknown): CodexCliStatusWindow | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const usedPercent = asNumber(record.usedPercent);
+  return {
+    usedPercent,
+    remainingPercent: usedPercent === null ? null : Math.max(0, Math.min(100, 100 - usedPercent)),
+    windowDurationMins: asNumber(record.windowDurationMins),
+    resetsAt: asNumber(record.resetsAt)
+  };
+}
+
+function normalizeCredits(value: unknown): CodexCliStatusCredits | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  return {
+    balance: asString(record.balance),
+    hasCredits: asBoolean(record.hasCredits) ?? false,
+    unlimited: asBoolean(record.unlimited) ?? false
+  };
+}
+
+function normalizeIndividualLimit(value: unknown): CodexCliStatusIndividualLimit | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  return {
+    limit: asString(record.limit) ?? "",
+    used: asString(record.used) ?? "",
+    remainingPercent: asNumber(record.remainingPercent) ?? 0,
+    resetsAt: asNumber(record.resetsAt)
+  };
+}
+
+function normalizeUsage(payload: unknown): CodexCliStatus["usage"] {
+  const record = asRecord(payload);
+  const summary = asRecord(record?.summary);
+  const buckets = Array.isArray(record?.dailyUsageBuckets)
+    ? record.dailyUsageBuckets
+      .map((value) => {
+        const bucket = asRecord(value);
+        const date = asString(bucket?.startDate);
+        const tokens = asNumber(bucket?.tokens);
+        return date && tokens !== null ? { date, tokens } : null;
+      })
+      .filter((value): value is { date: string; tokens: number } => Boolean(value))
+    : [];
+  return {
+    lifetimeTokens: asNumber(summary?.lifetimeTokens),
+    peakDailyTokens: asNumber(summary?.peakDailyTokens),
+    currentStreakDays: asNumber(summary?.currentStreakDays),
+    longestStreakDays: asNumber(summary?.longestStreakDays),
+    latestDailyUsage: buckets.at(-1) ?? null
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function asNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  return null;
+}
+
+function asBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
 }
 
 function parseJsonOutput<T>(value: string): T {
@@ -168,9 +549,11 @@ async function runProcess(input: {
   timeoutMs: number;
 }) {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn(input.executable, input.args, {
+    const invocation = resolveSpawnInvocation(input.executable, input.args);
+    const child = spawn(invocation.executable, invocation.args, {
       cwd: input.cwd,
       env: process.env,
+      windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"]
     });
     let stdout = "";
@@ -195,7 +578,7 @@ async function runProcess(input: {
     child.stderr.on("data", (chunk: string) => { stderr = `${stderr}${chunk}`.slice(-maxLogLength); });
     child.on("error", (error) => {
       clearTimers();
-      reject(error);
+      reject(formatSpawnError(error, input.executable));
     });
     child.on("close", (code, signal) => {
       clearTimers();
@@ -204,8 +587,12 @@ async function runProcess(input: {
       } else if (code === 0) resolve({ stdout, stderr });
       else {
         const structuredError = readCliError(stdout);
-        const detail = structuredError ?? (stderr.trim().slice(-1200) || "CLI 未返回错误详情");
-        reject(new Error(`CLI执行失败（code=${code ?? "null"}, signal=${signal ?? "none"}）：${detail}`));
+        const rawDetail = structuredError ?? (stderr.trim().slice(-1200) || "CLI 未返回错误详情");
+        const detail = formatExecutionErrorForUser(rawDetail, { source: "cli" });
+        const failure = new Error(`CLI执行失败（code=${code ?? "null"}, signal=${signal ?? "none"}）：${detail}`) as Error & { rawDetail?: string };
+        // 页面展示 friendly message；原始 CLI 文本交给上层写入技术日志，不丢失排查信息。
+        failure.rawDetail = rawDetail;
+        reject(failure);
       }
     });
     child.stdin.on("error", () => {
@@ -241,9 +628,11 @@ function readCliError(stdout: string): string | null {
 
 async function runCommand(executable: string, args: string[], cwd: string, timeoutMs: number) {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn(executable, args, {
+    const invocation = resolveSpawnInvocation(executable, args);
+    const child = spawn(invocation.executable, invocation.args, {
       cwd,
       env: process.env,
+      windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"]
     });
     let stdout = "";
@@ -259,7 +648,7 @@ async function runCommand(executable: string, args: string[], cwd: string, timeo
     child.stderr.on("data", (chunk: string) => { stderr += chunk; });
     child.on("error", (error) => {
       clearTimeout(timer);
-      reject(error);
+      reject(formatSpawnError(error, executable));
     });
     child.on("close", (code) => {
       clearTimeout(timer);

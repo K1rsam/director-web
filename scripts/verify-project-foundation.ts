@@ -3,9 +3,12 @@ import { executeProjectFoundation, type FoundationStageRunner } from "@/lib/proj
 import {
   inspectP1ChunkCoverage,
   mergeP1Outputs,
+  normalizeP2SystemSemantics,
   PROJECT_FOUNDATION_STAGES,
+  buildFoundationPrompt,
   reanchorP1PresentationDecisions,
   validateFoundationP1,
+  validateFoundationP2,
   type FoundationContext
 } from "@/lib/project-foundation-contracts";
 import { prisma } from "@/lib/prisma";
@@ -116,15 +119,15 @@ const fakeBadP2 = {
   issues: []
 };
 
-// 分片回归：同一表现类别在不同集出现时必须保留为两条，不得互相拼接引用。
+// 分片回归：同一类别但语义不同的表现问题必须保留为两条，不得互相拼接引用。
 const p1ChunkOne = { ...fakeP1, episodes: [fakeP1.episodes[0]], presentation_decisions_needed: [fakeP1.presentation_decisions_needed![0]] };
 const p1ChunkTwo = {
   ...fakeP1,
   episodes: [fakeP1.episodes[1]],
-  presentation_decisions_needed: [{ ...fakeP1.presentation_decisions_needed![0], episode_number: 2, evidence: "王老师：迟到三次，站到后面。", source_node_refs: ["N0001"] }]
+  presentation_decisions_needed: [{ ...fakeP1.presentation_decisions_needed![0], question: "迟到的表现应如何呈现？", rule_key: "late-arrival-presentation", episode_number: 2, evidence: "王老师：迟到三次，站到后面。", source_node_refs: ["N0001"] }]
 };
 const mergedChunkOutput = mergeP1Outputs([p1ChunkOne, p1ChunkTwo]);
-assert.deepEqual(mergedChunkOutput.presentation_decisions_needed?.map((item) => item.episode_number), [1, 2], "表现规范合并必须按集号隔离");
+assert.deepEqual(mergedChunkOutput.presentation_decisions_needed?.map((item) => item.episode_number), [1, 2], "不同语义的表现规范必须保持独立");
 assert.deepEqual(inspectP1ChunkCoverage(p1ChunkOne, [1, 2]), {
   expected: [1, 2],
   actual: [1],
@@ -180,6 +183,36 @@ assert.deepEqual(
   ["N0001", "N0002"],
   "原文证据存在时应自动修正错位的源节点引用"
 );
+
+// 系统语义回归：已确认的系统面板只能是 PROP；原文明确行动的系统伪人
+// 是 BEAST，不能被模型误写成 CH，也不能因为“系统”关键词被粗暴删除。
+const systemSemanticsContext = {
+  ...evidenceContext,
+  contracts: [{
+    category: "system",
+    user_answer: "A. 半透明系统面板悬浮：以黑红半透明面板显示副本名与任务。",
+    scope_mode: "ALL_EPISODES",
+    target_episode_numbers: [1]
+  }]
+} as unknown as FoundationContext;
+const systemP2 = {
+  assets: [
+    { name: "系统面板", type: "CH" as const, parent_name: null, first_seen_node: "N0001", scene_refs: ["1-1"], aliases: [], evidence: "系统提示以面板显示" },
+    { name: "系统伪人", type: "CH" as const, parent_name: null, first_seen_node: "N0001", scene_refs: ["1-1"], aliases: [], evidence: "会攻击并逃逸的伪人实体" },
+    { name: "系统伪人｜残核", type: "CH" as const, parent_name: "系统伪人", first_seen_node: "N0001", scene_refs: ["1-1"], aliases: [], evidence: "残核寄生并被消灭" }
+  ],
+  scene_asset_links: [],
+  issues: []
+};
+const rawSystemIssues = validateFoundationP2(systemP2, systemSemanticsContext);
+assert.ok(rawSystemIssues.some((issue) => issue.code === "SYSTEM_UI_TYPE_MISMATCH"), "系统面板误归人物时应被门禁识别");
+assert.ok(rawSystemIssues.some((issue) => issue.code === "SYSTEM_NON_HUMAN_TYPE_MISMATCH"), "系统伪人误归人物时应被门禁识别");
+const normalizedSystemP2 = normalizeP2SystemSemantics(systemP2, systemSemanticsContext);
+assert.equal(normalizedSystemP2.assets.find((asset) => asset.name === "系统面板")?.type, "PROP", "系统面板应确定性归为道具");
+assert.equal(normalizedSystemP2.assets.find((asset) => asset.name === "系统伪人")?.type, "BEAST", "系统伪人应确定性归为非人");
+assert.equal(normalizedSystemP2.assets.find((asset) => asset.name === "系统伪人｜残核")?.type, "BEAST", "系统伪人分资产应与主资产同为非人");
+assert.equal(validateFoundationP2(normalizedSystemP2, systemSemanticsContext).length, 0, "系统语义归类后不应留下门禁问题");
+assert.match(buildFoundationPrompt("P2", { presentation_contracts: [{ category: "system", user_answer: "半透明系统面板" }] }), /系统伪人.*BEAST/s, "P2 提示必须明确系统面板与系统伪人的区别");
 
 async function fakeStage(stageCode: string): Promise<{
   data: Record<string, unknown>;
@@ -268,6 +301,62 @@ void (async () => {
     const repairedRun = await prisma.pipelineRun.findFirst({ where: { projectId, stageCode: "P1", inputSummary: { contains: repairToken } } });
     assert.match(repairedRun?.outputSummary ?? "", /"repairs": 1/, "P1 应记录自动补齐次数");
 
+    // 表现规范证据回归：P1 给出无法锚定的 HUD 证据时，应回到 P1 修正，而不是直接取消 P2。
+    const presentationToken = "verify-foundation-presentation-repair";
+    await prisma.$transaction(PROJECT_FOUNDATION_STAGES.map((stage) => prisma.pipelineRun.create({
+      data: {
+        projectId,
+        episodeId: null,
+        stageCode: stage.code,
+        roleName: stage.name,
+        provider: "test",
+        model: stage.model,
+        inputSummary: JSON.stringify({ batchToken: presentationToken })
+      }
+    })));
+    const brokenHudP1 = {
+      ...fakeP1,
+      presentation_decisions_needed: [{
+        ...fakeP1.presentation_decisions_needed![0],
+        category: "hud",
+        question: "画面文字应如何呈现？",
+        evidence: "这段证据不在原文中",
+        source_node_refs: ["N0001"]
+      }]
+    };
+    const repairedHudDecision = {
+      ...brokenHudP1.presentation_decisions_needed[0],
+      evidence: "系统提示：任务完成",
+      source_node_refs: ["N0001"]
+    };
+    let presentationCalls = 0;
+    const presentationRepairStage: FoundationStageRunner = async (stageCode, prompt) => {
+      if (stageCode === "P1") {
+        presentationCalls += 1;
+        if (presentationCalls === 1) {
+          return { data: brokenHudP1, sessionId: "presentation-initial", stdout: "", stderr: "" };
+        }
+        assert.match(prompt, /表现规范证据回修/, "回修调用应明确说明是表现规范证据回修");
+        return {
+          data: {
+            repairs: [{ target_index: 0, action: "keep", decision: repairedHudDecision }],
+            issues: []
+          },
+          sessionId: "presentation-repair",
+          stdout: "",
+          stderr: ""
+        };
+      }
+      return { data: fakeP2, sessionId: "presentation-p2", stdout: "", stderr: "" };
+    };
+    await executeProjectFoundation(projectId, presentationToken, { stageRunner: presentationRepairStage });
+    assert.equal(presentationCalls, 2, "表现规范证据不合格后应自动回到 P1 修正一次");
+    const presentationRun = await prisma.pipelineRun.findFirst({ where: { projectId, stageCode: "P1", inputSummary: { contains: presentationToken } } });
+    assert.match(presentationRun?.outputSummary ?? "", /"presentation_repairs": 1/, "P1 应记录表现规范回修次数");
+    assert.equal(presentationRun?.status, "SUCCEEDED", "表现规范证据回修成功后 P1 应继续完成");
+    const presentationP2Run = await prisma.pipelineRun.findFirst({ where: { projectId, stageCode: "P2", inputSummary: { contains: presentationToken } } });
+    assert.equal(presentationP2Run?.status, "SUCCEEDED", "P1 回修成功后 P2 不应被取消");
+
     // 单步骤：P2 单独重跑（重复幂等）
     const singleToken = "verify-foundation-single";
     await prisma.pipelineRun.create({
@@ -276,6 +365,34 @@ void (async () => {
     await executeProjectFoundation(projectId, singleToken, { stageRunner: fakeStage, singleStage: "P2" });
     const assetsAfter = await prisma.asset.count({ where: { projectId, type: { in: ["CH", "GROUP", "BEAST", "LOC", "PROP"] } } });
     assert.equal(assetsAfter, 6, "单步骤 P2 重跑应幂等");
+
+    // P2 类型关系回归：最终门禁发现分资产错类时，只定点修复该资产，
+    // 不得重新调用整片资产拆解；修复成功后才写入正式资产表。
+    const mismatchToken = "verify-foundation-p2-targeted-repair";
+    await prisma.pipelineRun.create({
+      data: { projectId, episodeId: null, stageCode: "P2", roleName: "全剧资产拆解", provider: "test", model: "test", inputSummary: JSON.stringify({ batchToken: mismatchToken }) }
+    });
+    const mismatchedP2 = {
+      ...fakeP2,
+      assets: fakeP2.assets.map((asset) => asset.name === "苏远｜校服·受伤" ? { ...asset, type: "LOC" as const } : asset)
+    };
+    let mismatchCalls = 0;
+    await executeProjectFoundation(projectId, mismatchToken, {
+      singleStage: "P2",
+      stageRunner: (_stageCode, prompt) => {
+        mismatchCalls += 1;
+        return Promise.resolve({
+          data: prompt.includes("定点修复") ? fakeP2 : mismatchedP2,
+          sessionId: null,
+          stdout: `{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":120}}`,
+          stderr: ""
+        });
+      }
+    });
+    assert.equal(mismatchCalls, 2, "P2 错类只能再发起一次定点修复调用");
+    const targetedRepairRun = await prisma.pipelineRun.findFirst({ where: { projectId, stageCode: "P2", inputSummary: { contains: mismatchToken } } });
+    assert.equal(targetedRepairRun?.status, "SUCCEEDED", "P2 定点修复成功后应完成");
+    assert.match(targetedRepairRun?.outputSummary ?? "", /"targeted_repairs": 1/, "P2 应记录定点修复次数");
   } finally {
     await prisma.project.delete({ where: { id: projectId } });
     await prisma.$disconnect();
@@ -312,6 +429,23 @@ void (async () => {
       assert.match(String((error as Error).message), /基础资料校验未通过/, "应报告基础资料校验失败");
     }
     assert.equal(threw, true, "脏名资产应被 P3 拦截");
+
+    // 不可定点修复的脏名不能把坏检查点永久复用；下一次重试应重新判断并正常落库。
+    const checkpointRetryToken = "verify-gate-checkpoint-retry";
+    await prisma.pipelineRun.create({
+      data: { projectId: badProject.id, episodeId: null, stageCode: "P2", roleName: "全剧资产拆解", provider: "test", model: "test", inputSummary: JSON.stringify({ batchToken: checkpointRetryToken }) }
+    });
+    let checkpointCalls = 0;
+    await executeProjectFoundation(badProject.id, checkpointRetryToken, {
+      singleStage: "P2",
+      stageRunner: () => {
+        checkpointCalls += 1;
+        return Promise.resolve({ data: fakeP2, sessionId: null, stdout: "", stderr: "" });
+      }
+    });
+    assert.equal(checkpointCalls, 1, "不可定点修复的门禁失败应清理检查点并允许重新判断");
+    const checkpointRetryRun = await prisma.pipelineRun.findFirst({ where: { projectId: badProject.id, stageCode: "P2", inputSummary: { contains: checkpointRetryToken } } });
+    assert.match(checkpointRetryRun?.outputSummary ?? "", /"resumed_chunks": 0/, "重新判断时不应误报复用旧检查点");
   } finally {
     await prisma.project.delete({ where: { id: badProject.id } });
     await prisma.$disconnect();

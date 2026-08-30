@@ -154,4 +154,3 @@ export function ProjectBibleViewer({ content }: { content: string }) {
     </div>
   );
 }
-

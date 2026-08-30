@@ -6,7 +6,7 @@ import {
   readStageModel,
   type WorkingShot
 } from "@/lib/episode-pipeline-contracts";
-import { compileSeedancePrompts, computeUnitPartition, filterPythonDuplicateReviewIssues, hasOverLimitContinuityRun, executeEpisodePipeline, newRegressionBlockerKeys, planRepairPipeline, repairRunPolicy, shouldRollbackRepairRegression, sourceNodeCarrierChanged, validatePipeline, visualStepPartsForShots, type PipelineStageRunner } from "@/lib/episode-pipeline";
+import { compileSeedancePrompts, compactProjectMemoryForEpisode, computeUnitPartition, filterPythonDuplicateReviewIssues, hasOverLimitContinuityRun, executeEpisodePipeline, newRegressionBlockerKeys, newRegressionIssueKeys, planRepairPipeline, repairOwnerForIssue, repairRollbackScope, repairRunPolicy, shouldRollbackRepairRegression, sourceNodeCarrierChanged, validatePipeline, visualStepPartsForShots, workflowIssueKey, type PipelineStageRunner } from "@/lib/episode-pipeline";
 import { prisma } from "@/lib/prisma";
 
 let lastE5Prompt = "";
@@ -38,6 +38,30 @@ assert.equal((shots[0].e2 as Record<string, unknown>).action_chain, "苏远拿�
 assert.equal(readStageModel("E5").model, "gpt-5.6-sol");
 assert.equal(PIPELINE_STAGE_CONFIGS.length, 6, "E0-E5 六岗流水线");
 
+const scopedMemory = compactProjectMemoryForEpisode({
+  schema: "P1_MEMORY_V2",
+  episodes: [1, 2, 3, 4].map((number) => ({ number, one_line_progress: `第${number}集` })),
+  boundaries: [
+    { from_episode: 1, to_episode: 2, carry_over: "1→2", source_node_refs: ["N0001"] },
+    { from_episode: 3, to_episode: 4, carry_over: "3→4", source_node_refs: ["N0002"] }
+  ],
+  relationships: [{ a: "甲", b: "乙", stages: [
+    { episode_range: "1-2", state: "当前关系", source_node_refs: ["N0003"] },
+    { episode_range: "7-9", state: "未来关系", source_node_refs: ["N0004"] }
+  ] }],
+  secrets: [
+    { secret: "已公开", revealed_to_audience_at: "第1集", source_node_refs: ["N0005"] },
+    { secret: "未来秘密", revealed_to_audience_at: "第8集", source_node_refs: ["N0006"] }
+  ],
+  story_contract: { immutable_facts: [{ fact: "稳定事实", source_node_refs: ["N0007"] }] },
+  foreshadowing: [{ setup: "伏笔", payoff: "回收", source_node_refs: ["N0008"] }]
+}, 2) as Record<string, any>;
+assert.deepEqual(scopedMemory.episodes.map((item: Record<string, unknown>) => item.number), [1, 2, 3], "E0/E1 只携带当前集前后邻集摘要");
+assert.deepEqual(scopedMemory.boundaries.map((item: Record<string, unknown>) => item.carry_over), ["1→2"], "只携带当前集相邻边界");
+assert.equal(scopedMemory.relationships[0].stages.length, 1, "只携带当前集有效的关系阶段");
+assert.deepEqual(scopedMemory.secrets.map((item: Record<string, unknown>) => item.secret), ["已公开"], "不得把未来秘密带入当前集");
+assert.equal(JSON.stringify(scopedMemory).includes("source_node_refs"), false, "记忆快照不得重复携带源节点引用");
+
 assert.deepEqual(
   planRepairPipeline([{ ownerRole: "E1", severity: "BLOCKER", code: "MULTI_SPEAKER_SHOT" }]),
   { stages: ["E1", "E2", "E3", "E4", "E5"], structuralRebuild: true },
@@ -51,12 +75,57 @@ assert.deepEqual(
 assert.deepEqual(
   planRepairPipeline([{ ownerRole: "E1", severity: "MAJOR", code: "ACTION_PHASE_OVERLOAD" }]),
   { stages: [], structuralRebuild: false },
-  "ACTION_PHASE_OVERLOAD 仅在 includeSuggestions 时触发结构重建"
+  "ACTION_PHASE_OVERLOAD 未勾选建议时不进入返修"
 );
 assert.deepEqual(
   planRepairPipeline([{ ownerRole: "E1", severity: "MAJOR", code: "ACTION_PHASE_OVERLOAD" }], { includeSuggestions: true }),
-  { stages: ["E1", "E2", "E3", "E4", "E5"], structuralRebuild: true },
-  "带建议返修时 ACTION_PHASE_OVERLOAD 必须全链重建"
+  { stages: ["E1", "E5"], structuralRebuild: false },
+  "带建议返修时 ACTION_PHASE_OVERLOAD 只走 E1 局部 patch，不得全链重建"
+);
+assert.deepEqual(
+  planRepairPipeline([{ ownerRole: "E1", severity: "BLOCKER", code: "SOURCE_ORDER_MONOTONIC" }]),
+  { stages: ["E1", "E5"], structuralRebuild: false },
+  "镜间源节点顺序问题只修命中镜，不得因单个顺序卡清空 E2-E4 后全链重建"
+);
+assert.deepEqual(
+  planRepairPipeline([{ ownerRole: "E1", severity: "BLOCKER", code: "INTRA_SHOT_SOURCE_ORDER" }]),
+  { stages: ["E1", "E5"], structuralRebuild: false },
+  "镜内源节点顺序问题只走 E1 局部 patch"
+);
+assert.deepEqual(
+  planRepairPipeline([{ ownerRole: "E3", severity: "MAJOR", code: "ASSET_PREPARATION" }], { includeSuggestions: true }),
+  { stages: [], structuralRebuild: false },
+  "资产准备需要人工确认，不得因连建议一起修而自动绑定或创建资产"
+);
+assert.equal(
+  repairOwnerForIssue({ coordinate: "1-1-S029-p0.picture", code: "TEMPORAL_DUPLICATION", ownerRole: "E4" }),
+  "E2",
+  "画面重复即使历史 ownerRole 错写为 E4，也必须路由到 E2"
+);
+assert.equal(
+  repairOwnerForIssue({ coordinate: "1-1-S026.picture", code: "LIGHTING_ACTION_CONFLICT", ownerRole: "E4" }),
+  "E4",
+  "光影冲突即使坐标写在 picture，也必须路由到 E4"
+);
+assert.equal(
+  repairOwnerForIssue({ coordinate: "1-1-S029.picture", code: "CAMERA_PICTURE_MISMATCH", ownerRole: "E4" }),
+  "E2",
+  "机位与画面主体不一致时，picture 修正必须路由到 E2"
+);
+assert.equal(
+  repairOwnerForIssue({ coordinate: "1-1-S026.camera_motion", code: "CAMERA_PICTURE_MISMATCH", ownerRole: "E2" }),
+  "E4",
+  "机位与画面主体不一致时，camera_motion 修正必须路由到 E4"
+);
+assert.equal(
+  repairRollbackScope({ coordinate: "1-1-S029.source_node_refs", code: "SOURCE_NODE_DUPLICATED", ownerRole: "E1" }),
+  "field",
+  "重复源节点引用只允许回滚 source_node_refs 字段"
+);
+assert.equal(
+  repairOwnerForIssue({ coordinate: "1-1-U06.subject_bindings", code: "UNSUPPORTED_ASSET_BINDING", ownerRole: "E3" }),
+  "E3",
+  "单元绑定问题必须路由到 E3"
 );
 assert.deepEqual(
   repairRunPolicy(true),
@@ -82,6 +151,58 @@ assert.deepEqual(
   }),
   ["1-1-S001.picture\u001fCODE_B"],
   "同坐标新增 CODE_B 必须被回归门识别"
+);
+assert.deepEqual(
+  newRegressionBlockerKeys({
+    // 原 MAJOR 也在修复前基线中：严重度升级不应被当成新坐标
+    beforeKeys: ["1-1-S001.picture\u001fACTION_PHASE_OVERLOAD"],
+    beforeCoordinates: [],
+    current: [{ coordinate: "1-1-S001.picture", code: "ACTION_PHASE_OVERLOAD" }]
+  }),
+  [],
+  "原有 MAJOR 升级为 BLOCKER 不得被当成新增问题"
+);
+assert.deepEqual(
+  newRegressionIssueKeys({
+    beforeKeys: ["1-1-S001.picture\u001fCODE_A"],
+    beforeCoordinates: [],
+    current: [
+      { coordinate: "1-1-S001.picture", code: "CODE_A" },
+      { coordinate: "1-1-S001.picture", code: "CODE_B" }
+    ]
+  }),
+  ["1-1-S001.picture\u001fCODE_B"],
+  "返修回归门应拦截由本轮改动引入的新增 MAJOR/MINOR，不只拦 BLOCKER"
+);
+assert.equal(
+  repairRollbackScope({ coordinate: "1-1-S001.picture", code: "TEMPORAL_GROUNDING", ownerRole: "E2" }),
+  "field",
+  "普通镜头字段问题只恢复对应字段"
+);
+assert.equal(
+  repairRollbackScope({ coordinate: "1-1-S001.e1.sound", code: "PROMPT_LITERAL_ARTIFACT", ownerRole: "E1" }),
+  "field",
+  "带岗位前缀的镜头字段也只恢复对应字段"
+);
+assert.equal(
+  repairRollbackScope({ coordinate: "1-1-S001.duration", code: "DURATION_OVER_LIMIT", ownerRole: "E1" }),
+  "field",
+  "镜头时长问题只恢复 duration，不回滚其它岗位字段"
+);
+assert.equal(
+  repairRollbackScope({ coordinate: "1-1-U03.premise", code: "PREMISE_FUTURE_ENTITY", ownerRole: "E3" }),
+  "unit",
+  "单元字段问题只恢复对应单元"
+);
+assert.equal(
+  repairRollbackScope({ coordinate: "1-1-S027.speaker", code: "MULTI_SPEAKER_SHOT", ownerRole: "E1" }),
+  "shot",
+  "单镜结构问题只恢复对应镜头"
+);
+assert.equal(
+  repairRollbackScope({ coordinate: "source_node.N0001", code: "SOURCE_NODE_UNCOVERED", ownerRole: "E1" }),
+  "full",
+  "源节点承载问题仍保留整链安全保护"
 );
 assert.equal(
   shouldRollbackRepairRegression({ structuralRebuild: false, genuineNewBlockerKeys: [], scopeViolations: ["1-1-S002"] }),
@@ -371,7 +492,7 @@ const capacityPrompt = compileSeedancePrompts({
   unit_duration: 0.3,
   unit_start_premise: "甲站在客厅中"
 }]);
-assert.match(capacityPrompt["1-1-U01"], /- 对白时段: 容量不足，需E1拆镜;/, "compiler 不得为容量不足对白伪造时间槽");
+assert.doesNotMatch(capacityPrompt["1-1-U01"], /- 对白时段:|时间范围:/, "内部对白排期与时间范围不得进入最终 Seedance 提示词");
 assert.match(capacityPrompt["1-1-U01"], /- 台词: 甲：“一”；甲：“二”；甲：“三”；甲：“四”;/, "容量不足仍须保留原文台词总行");
 
 void (async () => {
@@ -471,8 +592,7 @@ void (async () => {
     assert.match(prompt, /苏远@CH-001-3/, "compiler 不得丢失夜行变体 code");
     assert.match(prompt, /苏远@CH-001-2/, "compiler 不得丢失雨衣变体 code");
     assert.match(prompt, /- 分镜1,5s,/);
-    assert.match(prompt, /- 时间范围: 单元内0\.0–5\.0s｜全片0\.0–5\.0s;/, "每镜应输出整数 tick 推导的单元内/全片时间范围");
-    assert.match(prompt, /- 对白时段: 单元内\d+\.\d–\d+\.\ds｜苏远：“你看。”;/, "逐条对白应输出镜内确定性时段");
+    assert.doesNotMatch(prompt, /- 时间范围:|- 对白时段:/, "内部时间轴与对白排期不得进入最终 Seedance 提示词");
     assert.match(prompt, /- 机位\/运动: /);
     assert.match(prompt, /- 画面: 苏远站在桌边；苏远｜夜行切换为苏远｜雨衣并从桌边拿起手机，说出台词，平静带点得意；结束手机停在身前；光影：主光为窗光，轮廓光勾边/, "画面应为 E2 基础画面 + E3 光影追加（光影不覆盖画面）");
     assert.match(prompt, /- 台词: 苏远：“你看。”/, "对白台词统一带中文引号（OS/VO/旁白不带引号）");
@@ -484,6 +604,35 @@ void (async () => {
     }
     assert.equal(verified?.pipelineRuns.filter((run) => run.status === "SUCCEEDED").length, 6, "E0-E5 六岗全量应全部成功");
     assert.equal(verified?.workflowIssues.filter((item) => item.status === "OPEN").length, 0);
+
+    // 用户确认保留的建议必须传给 E5，且同一坐标+code 不得被重新开成 OPEN。
+    const approvedException = await prisma.workflowIssue.create({
+      data: {
+        projectId: project.id, episodeId: episode.id,
+        coordinate: "1-1-S001.picture", code: "ACTION_PHASE_OVERLOAD", severity: "MAJOR", status: "EXCEPTED",
+        ownerRole: "E1", expected: "按用户确认保留", evidence: "用户确认无需修改", requestedEffect: "无需处理", revision: "V1_TEST"
+      }
+    });
+    await prisma.pipelineRun.create({ data: { projectId: project.id, episodeId: episode.id, stageCode: "E5", roleName: "审查总控", provider: "test", model: "test", inputSummary: JSON.stringify({ batchToken: "verify-approved-exception-e5" }) } });
+    await executeEpisodePipeline(project.id, episode.id, "verify-approved-exception-e5", {
+      singleStage: "E5",
+      stageRunner: async (stageCode, prompt) => {
+        if (stageCode !== "E5") return fakeStage(stageCode, prompt);
+        lastE5Prompt = prompt;
+        return {
+          data: {
+            ...fakeStageOutput("E5"),
+            issues: [{ coordinate: "1-1-S001.picture", code: "ACTION_PHASE_OVERLOAD", severity: "MAJOR", owner_role: "E1", expected: "按用户确认保留", actual_evidence: "再次出现", requested_effect: "无需处理" }]
+          },
+          sessionId: null, stdout: "", stderr: ""
+        };
+      }
+    });
+    const exceptionInput = JSON.parse(lastE5Prompt.split("INPUT_JSON:\n")[1] ?? "{}");
+    assert.ok(exceptionInput.approved_exceptions.some((item: Record<string, unknown>) => item.code === "ACTION_PHASE_OVERLOAD"), "E5 必须收到用户确认的例外卡");
+    const reopenedException = await prisma.workflowIssue.findFirst({ where: { episodeId: episode.id, coordinate: "1-1-S001.picture", code: "ACTION_PHASE_OVERLOAD", status: "OPEN" } });
+    assert.equal(reopenedException, null, "已确认保留的建议不得被 E5 重新打开");
+    await prisma.workflowIssue.delete({ where: { id: approvedException.id } });
 
     // 单步骤：E2 单独重跑（从数据库回填小镜号）
     await prisma.pipelineRun.create({
@@ -612,6 +761,123 @@ void (async () => {
     assert.ok(shotAfterRev?.e3Data.includes("sound"), "E1 返修轮应保留 e3Data（单元字段）");
     assert.ok(shotAfterRev?.e4Data.includes("camera_motion"), "E1 返修轮应保留 e4Data（摄影字段）");
     await prisma.workflowIssue.delete({ where: { id: issue.id } });
+
+    // E1 画面 patch 改动基础画面时，必须清掉过期 E2 picture，避免最终编译继续选旧增强层。
+    await prisma.storyboardShot.update({
+      where: { episodeId_shotKey: { episodeId: episode.id, shotKey: "1-1-S001" } },
+      data: { e2Data: JSON.stringify({ picture: "旧 E2 增强画面", keep: "本轮无关字段" }) }
+    });
+    const pictureIssue = await prisma.workflowIssue.create({
+      data: {
+        projectId: project.id, episodeId: episode.id,
+        coordinate: "1-1-S001.picture", code: "ACTION_PHASE_OVERLOAD", severity: "MAJOR",
+        ownerRole: "E1", expected: "一镜一个动作阶段", evidence: "测试画面卡", requestedEffect: "重写基础画面", revision: "V1_TEST"
+      }
+    });
+    const pictureBatch = "verify-e1-picture-patch";
+    await prisma.pipelineRun.create({
+      data: {
+        projectId: project.id, episodeId: episode.id, stageCode: "E1", roleName: "结构导演", provider: "test", model: "test",
+        inputSummary: JSON.stringify({ batchToken: pictureBatch })
+      }
+    });
+    await executeEpisodePipeline(project.id, episode.id, pictureBatch, {
+      singleStage: "E1",
+      stageRunner: async (stageCode) => stageCode === "E1"
+        ? {
+            data: {
+              base_revision: "V1_TEST",
+              patches: [{ shot_id: "1-1-S001", action: "set", fields: { picture: "新的 E1 基础画面" } }],
+              tickets: [],
+              status: "patch"
+            },
+            sessionId: null, stdout: "", stderr: ""
+          }
+        : fakeStage(stageCode)
+    });
+    const picturePatchedShot = await prisma.storyboardShot.findUnique({
+      where: { episodeId_shotKey: { episodeId: episode.id, shotKey: "1-1-S001" } },
+      select: { e1Data: true, e2Data: true }
+    });
+    const picturePatchedE1 = JSON.parse(picturePatchedShot?.e1Data ?? "{}");
+    const picturePatchedE2 = JSON.parse(picturePatchedShot?.e2Data ?? "{}");
+    assert.equal(picturePatchedE1.picture, "新的 E1 基础画面", "E1 picture patch 应写入基础画面");
+    assert.equal(picturePatchedE2.picture, undefined, "E1 picture patch 应清掉过期 E2 picture");
+    assert.equal(picturePatchedE2.keep, "本轮无关字段", "清理过期 E2 picture 不得抹掉同格其它字段");
+    const invalidatedIssue = await prisma.workflowIssue.findFirst({
+      where: { episodeId: episode.id, code: "DOWNSTREAM_PICTURE_INVALIDATED", status: "RESOLVED" }
+    });
+    assert.ok(invalidatedIssue, "清除过期 E2 picture 应留下可追溯的机械记录");
+    await prisma.workflowIssue.delete({ where: { id: pictureIssue.id } });
+
+    // 回归门：新 BLOCKER 只影响一个 E2 picture 字段时，恢复该字段，保留同一轮其它字段的有效修改。
+    await prisma.storyboardShot.update({
+      where: { episodeId_shotKey: { episodeId: episode.id, shotKey: "1-1-S001" } },
+      data: { e2Data: JSON.stringify({ picture: "旧画面", keep: "旧字段" }) }
+    });
+    const selectiveIssue = await prisma.workflowIssue.create({
+      data: {
+        projectId: project.id, episodeId: episode.id,
+        coordinate: "1-1-S001.picture", code: "SELECTIVE_TEST_TARGET", severity: "BLOCKER",
+        ownerRole: "E2", expected: "旧画面", evidence: "测试目标卡", requestedEffect: "只修改画面", revision: "V1_TEST"
+      }
+    });
+    const selectiveBatch = "verify-selective-repair";
+    const selectiveInput = {
+      batchToken: selectiveBatch, repairPipeline: true, structuralRebuild: false,
+      openBlockers: 1, openMajors: 0,
+      openBlockerCoords: [selectiveIssue.coordinate], openBlockerKeys: [workflowIssueKey(selectiveIssue)],
+      openIssueKeys: [workflowIssueKey(selectiveIssue)], openCoords: [selectiveIssue.coordinate]
+    };
+    await prisma.$transaction(["E2", "E5"].map((stageCode) => prisma.pipelineRun.create({
+      data: {
+        projectId: project.id, episodeId: episode.id, stageCode,
+        roleName: stageCode === "E2" ? "表演调度" : "审查总控", provider: "test", model: "test",
+        inputSummary: JSON.stringify(selectiveInput)
+      }
+    })));
+    await executeEpisodePipeline(project.id, episode.id, selectiveBatch, {
+      stages: ["E2", "E5"],
+      stageRunner: async (stageCode, prompt) => {
+        if (stageCode === "E2") return {
+          data: {
+            role: "E2", base_revision: "V1_TEST",
+            patches: [{ shot_id: "1-1-S001", action: "set", fields: { picture: "新画面", keep: "本轮有效字段" } }],
+            issues: []
+          },
+          sessionId: null, stdout: "", stderr: ""
+        };
+        if (stageCode === "E5") {
+          lastE5Prompt = prompt ?? "";
+          return {
+            data: {
+              ...fakeStageOutput("E5"),
+              issues: [{ coordinate: "1-1-S001.picture", code: "SELECTIVE_TEST_REGRESSION", severity: "BLOCKER", owner_role: "E2", expected: "无新回归", actual_evidence: "测试回归", requested_effect: "恢复受影响画面" }],
+              decision: "targeted_revision", verdict: "issues_found"
+            },
+            sessionId: null, stdout: "", stderr: ""
+          };
+        }
+        return fakeStage(stageCode, prompt);
+      }
+    });
+    const selectiveShot = await prisma.storyboardShot.findUnique({
+      where: { episodeId_shotKey: { episodeId: episode.id, shotKey: "1-1-S001" } },
+      select: { e2Data: true }
+    });
+    const selectiveData = JSON.parse(selectiveShot?.e2Data ?? "{}");
+    assert.equal(selectiveData.picture, "旧画面", "回归只应恢复触发问题的 picture 字段");
+    assert.equal(selectiveData.keep, "本轮有效字段", "字段级恢复不得抹掉同一轮其它有效字段");
+    const selectiveRun = await prisma.pipelineRun.findFirst({ where: { projectId: project.id, episodeId: episode.id, stageCode: "E5", inputSummary: { contains: selectiveBatch } } });
+    const selectiveRegression = JSON.parse(selectiveRun?.outputSummary ?? "{}").regression;
+    assert.equal(selectiveRegression?.partiallyRestored, true, "字段级回归应记录为部分恢复，不应宣称整集回滚");
+    assert.equal(selectiveRegression?.rolledBack, false, "字段级回归不得整集回滚");
+    const selectiveOpen = await prisma.workflowIssue.findFirst({ where: { episodeId: episode.id, coordinate: "1-1-S001.picture", code: "SELECTIVE_TEST_REGRESSION", status: "OPEN" } });
+    assert.equal(selectiveOpen, null, "局部恢复后不应保留已回滚临时卡，避免问题数量虚增");
+    const selectiveOriginal = await prisma.workflowIssue.findFirst({ where: { episodeId: episode.id, coordinate: "1-1-S001.picture", code: "SELECTIVE_TEST_TARGET", status: "OPEN" } });
+    assert.ok(selectiveOriginal, "局部恢复后应恢复返修前的原问题卡，避免数据已回滚但问题卡被误销");
+    const regressionCard = await prisma.workflowIssue.findFirst({ where: { episodeId: episode.id, coordinate: "E5.repair_regression", code: "REPAIR_REGRESSION" } });
+    assert.equal(regressionCard?.status, "RESOLVED", "局部恢复成功后系统回归卡只作审计记录，不应继续阻塞下一轮");
   } finally {
     await prisma.project.delete({ where: { id: project.id } });
     await prisma.$disconnect();

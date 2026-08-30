@@ -90,7 +90,7 @@ E5 审查总控
 
 关键实现：
 
-- 检测 `codex --version` 和 `codex login status`；
+- 检测 `codex --version` 和本机 app-server 登录态；未登录时提示在终端运行 `codex` 完成登录；
 - 通过 `codex exec` 执行岗位并解析 JSONL；
 - 保存岗位会话 ID，支持局部返修续接；
 - 全量运行使用新会话，避免旧上下文污染；
@@ -585,5 +585,3 @@ npm run build
 - `codex://threads/01a03211-5ecb-7441-ae20-3e36bc1d2850`：SHUO Canvas、Cockpit Tools 与本地 CLI 架构对照。
 - `codex://threads/01a0365c-43a5-78e3-9150-6fe90611154e`：过度工程化复盘、纯 Sites+D1+Runner 上线、原项目复刻、响应式与连接层。
 - `/Users/yue/Documents/CL`、`/Users/yue/Documents/CL-sites` 的当前代码、Git 历史和数据结构。
-
-
