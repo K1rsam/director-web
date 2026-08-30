@@ -311,7 +311,7 @@ Prisma 6 + 本地 SQLite
 - API Key 来自本机 `.env`；
 - Codex CLI 使用本机登录；
 - 数据写入本地 SQLite；
-- GitHub `main` 当前为 `5c63758`；`public/runner/director-runner.mjs` 与 Sites 版共用同一份 Runner 镜像。
+- GitHub `main` 已推送且保持干净；`public/runner/director-runner.mjs` 与 Sites 版共用同一份 Runner 镜像。
 
 ### 5.2 Sites 云端版 `director-workbench-sites`
 
