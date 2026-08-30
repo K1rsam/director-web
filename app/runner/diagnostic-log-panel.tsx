@@ -74,9 +74,12 @@ export function DiagnosticLogPanel({ devices }: { devices: RunnerStatusDevice[] 
   }
 
   useEffect(() => {
-    void loadDiagnostics();
+    const initialLoad = window.setTimeout(() => void loadDiagnostics(), 0);
     const timer = window.setInterval(() => void loadDiagnostics(), 15_000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearTimeout(initialLoad);
+      window.clearInterval(timer);
+    };
   }, []);
 
   async function requestDetailedUpload(runnerTokenId: string) {
