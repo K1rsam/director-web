@@ -3,9 +3,7 @@ import { getCurrentUser } from "@/lib/auth";
 
 export async function AccountMenu() {
   const user = await getCurrentUser();
-  if (!user) {
-    return null;
-  }
+  if (!user) return null;
 
   const label = user.name || user.username;
   return (

@@ -7,22 +7,13 @@ export type ProjectEpisodeGuidanceInput = {
   finished: boolean;
 };
 
-export type ProjectBatchGuidanceInput = {
-  status: string;
-  message?: string | null;
-  error?: string | null;
-  processed?: number | null;
-  total?: number | null;
-};
-
 export type ProjectGuidance = {
-  kind: "contracts" | "foundation" | "batch-running" | "batch-paused" | "running" | "repair" | "continue" | "complete";
+  kind: "contracts" | "foundation" | "running" | "repair" | "continue" | "complete";
   eyebrow: string;
   title: string;
   description: string;
   actionLabel: string;
   episodeId?: string;
-  batchPauseReason?: "quota" | "error";
 };
 
 export function deriveProjectGuidance(input: {
@@ -31,7 +22,6 @@ export function deriveProjectGuidance(input: {
   assetsReady: boolean;
   foundationActive?: boolean;
   foundationReady?: boolean;
-  batchMonitor?: ProjectBatchGuidanceInput | null;
   episodes: ProjectEpisodeGuidanceInput[];
 }): ProjectGuidance {
   if (input.pendingContracts > 0) {
@@ -47,54 +37,20 @@ export function deriveProjectGuidance(input: {
   if (input.foundationActive) {
     return {
       kind: "foundation",
-      eyebrow: "基础工程执行中",
-      title: "正在执行全剧基础工程",
-      description: "P1 完成后会继续执行 P2；完成后再进入单集分镜生产。",
+      eyebrow: "P1/P2 执行中",
+      title: "全剧基础工程正在执行",
+      description: "任务已进入线上队列，由已连接 Runner 使用本地 P1/P2 代码执行；完成后再进入单集分镜生产。",
       actionLabel: "查看 P1/P2 进度"
     };
   }
 
-  // 有完整成功的 P1/P2 批次时，以流水线事实为准；旧的策划/资产计数不能把页面再推回“未开始”。
-  const foundationMissing = input.foundationReady !== true && (
-    input.foundationReady === false || !input.planningReady || !input.assetsReady
-  );
-  if (foundationMissing) {
+  if (input.foundationReady === false || !input.planningReady || !input.assetsReady) {
     return {
       kind: "foundation",
       eyebrow: "推荐下一步",
-      title: "建立全剧基础工程",
-      description: "先完成基础策划与资产索引，再进入单集分镜生产。",
-      actionLabel: "开始全剧基础工程"
-    };
-  }
-
-  const batchStatus = input.batchMonitor?.status;
-  if (batchStatus === "QUEUED" || batchStatus === "RUNNING") {
-    return {
-      kind: "batch-running",
-      eyebrow: "自动推进中",
-      title: "正在批量生成全剧初稿",
-      description: "页面会按集推进 E0–E5；每集完成后自动启动下一集，批量阶段不自动返修。",
-      actionLabel: "查看批量状态"
-    };
-  }
-
-  const hasIncompleteEpisode = input.episodes.some((episode) => !episode.finished);
-  if (batchStatus === "FAILED" && hasIncompleteEpisode) {
-    const rawReason = `${input.batchMonitor?.message ?? ""} ${input.batchMonitor?.error ?? ""}`;
-    const quotaPause = isCapacityPause(rawReason);
-    const progress = formatBatchProgress(input.batchMonitor?.processed, input.batchMonitor?.total);
-    return {
-      kind: "batch-paused",
-      eyebrow: quotaPause ? "额度不足，已暂停" : "批量推进已暂停",
-      title: quotaPause ? "等待额度恢复后继续" : "批量推进需要处理",
-      description: progress
-        ? `${progress} ${quotaPause ? "未继续启动新的剧集任务，也不会继续消耗额度。" : "未完成剧集不会自动继续，请先查看批量状态。"}`
-        : quotaPause
-          ? "未继续启动新的剧集任务，也不会继续消耗额度；额度恢复后可从批量卡继续。"
-          : "未完成剧集不会自动继续，请先查看批量状态和暂停原因。",
-      actionLabel: "查看批量状态",
-      batchPauseReason: quotaPause ? "quota" : "error"
+      title: "开始 P1 + P2 全剧基础工程",
+      description: "先完成全剧基础策划与资产索引，再进入单集分镜生产。",
+      actionLabel: "开始 P1 + P2"
     };
   }
 
@@ -116,7 +72,7 @@ export function deriveProjectGuidance(input: {
       kind: "repair",
       eyebrow: "需要处理",
       title: `修复第 ${failed.number} 集`,
-      description: "本集已有生成记录存在失败步骤或阻断问题，请进入单集处理后再继续。",
+      description: "本集存在失败步骤或阻断问题，处理后再继续生成。",
       actionLabel: `修复第 ${failed.number} 集`,
       episodeId: failed.id
     };
@@ -142,13 +98,4 @@ export function deriveProjectGuidance(input: {
     actionLabel: input.episodes.at(-1) ? `查看第 ${input.episodes.at(-1)!.number} 集` : "查看分集",
     episodeId: input.episodes.at(-1)?.id
   };
-}
-
-function isCapacityPause(value: string) {
-  return /额度不足|配额不足|余额不足|频率限制|rate\s*limit|usage\s*limit|quota/i.test(value);
-}
-
-function formatBatchProgress(processed: number | null | undefined, total: number | null | undefined) {
-  if (!Number.isInteger(processed) || !Number.isInteger(total) || Number(total) <= 0) return "";
-  return `已完成 ${processed}/${total} 集初稿。`;
 }

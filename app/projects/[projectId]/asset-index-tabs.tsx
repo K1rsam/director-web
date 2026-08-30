@@ -54,10 +54,45 @@ const ROLE_TAG_CLASS: Record<string, string> = {
 };
 
 const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-const XML_HEADER = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+const XML_HEADER = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>";
+
+type AssetExportSheet = {
+  name: string;
+  rows: readonly (readonly string[])[];
+  columnWidths: readonly number[];
+  freezeRows?: number;
+  headerRow?: number;
+  titleRows?: number;
+  autoFilter?: boolean;
+};
+
+const ASSET_EXPORT_HEADERS = [
+  "资产ID",
+  "标准名称",
+  "状态 / 着装 / 形态",
+  "确认状态",
+  "资产类型",
+  "角色",
+  "所属集",
+  "父资产ID",
+  "父资产名称",
+  "来源文本",
+  "备注"
+];
+
+const ASSET_EXPORT_SHEETS = [
+  { name: "人物", types: ["CH", "LOOK"], summary: "人物（含人物状态）", note: "人物名称、状态/着装/形态分列" },
+  { name: "场景", types: ["LOC"], summary: "场景", note: "拍摄地点、空间和场景状态" },
+  { name: "道具", types: ["PROP"], summary: "道具", note: "关键道具及其使用状态" },
+  { name: "群像", types: ["GROUP"], summary: "群像", note: "群体角色或群体资产" },
+  { name: "非人", types: ["BEAST"], summary: "非人", note: "非人角色、异象或形态资产" },
+  { name: "其他", types: ["STYLE", "NEG"], summary: "其他", note: "风格和负面约束等辅助资产" }
+] as const;
+
+const ASSET_EXPORT_WIDTHS = [16, 22, 28, 14, 14, 14, 12, 16, 28, 58, 40];
 
 function escapeXml(value: string): string {
-  return value
+  return String(value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -106,139 +141,8 @@ function writeU32(view: DataView, offset: number, value: number): void {
   view.setUint32(offset, value >>> 0, true);
 }
 
-/**
- * Create a small dependency-free XLSX workbook in the browser. The workbook
- * is intentionally store-only (rather than compressed) so the download does
- * not require a client-side package or another server round trip.
- */
-export function buildXlsx(rows: readonly (readonly string[])[]): Uint8Array {
-  const encoder = new TextEncoder();
-  const maxColumn = Math.max(...rows.map((row) => row.length), 1);
-  const lastColumn = columnName(maxColumn - 1);
-  const rowXml = rows.map((row, rowIndex) => {
-    const cells = row.map((value, columnIndex) => {
-      const style = rowIndex === 0 ? ' s="1"' : "";
-      const cellRef = `${columnName(columnIndex)}${rowIndex + 1}`;
-      return `<c r="${cellRef}"${style} t="inlineStr"><is><t xml:space="preserve">${escapeXml(value)}</t></is></c>`;
-    }).join("");
-    return `<row r="${rowIndex + 1}">${cells}</row>`;
-  }).join("");
-  const worksheet = `${XML_HEADER}<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${lastColumn}${rows.length}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A2" sqref="A2"/></sheetView></sheetViews><cols><col min="1" max="1" width="16" customWidth="1"/><col min="2" max="2" width="14" customWidth="1"/><col min="3" max="3" width="28" customWidth="1"/><col min="4" max="7" width="16" customWidth="1"/><col min="8" max="9" width="48" customWidth="1"/></cols><sheetData>${rowXml}</sheetData><autoFilter ref="A1:${lastColumn}${rows.length}"/><pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.3" footer="0.3"/></worksheet>`;
-  const styles = `${XML_HEADER}<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="等线"/></font><font><b/><sz val="11"/><name val="等线"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEDEBFF"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/><xf numFmtId="0" fontId="1" fillId="1" borderId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
-  const now = new Date().toISOString();
-  const entries = [
-    ["[Content_Types].xml", `${XML_HEADER}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>`],
-    ["_rels/.rels", `${XML_HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`],
-    ["docProps/core.xml", `${XML_HEADER}<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>导演工作台</dc:creator><cp:lastModifiedBy>导演工作台</cp:lastModifiedBy><dcterms:created xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="dcterms:W3CDTF">${now}</dcterms:created><dcterms:modified xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="dcterms:W3CDTF">${now}</dcterms:modified></cp:coreProperties>`],
-    ["docProps/app.xml", `${XML_HEADER}<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>导演工作台</Application><DocSecurity>0</DocSecurity><ScaleCrop>false</ScaleCrop><HeadingPairs><vt:vector xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes" size="2" baseType="variant"><vt:variant><vt:lpstr>Worksheets</vt:lpstr></vt:variant><vt:variant><vt:i4>1</vt:i4></vt:variant></vt:vector></HeadingPairs><TitlesOfParts><vt:vector xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes" size="1" baseType="lpstr"><vt:lpstr>资产表</vt:lpstr></vt:vector></TitlesOfParts></Properties>`],
-    ["xl/workbook.xml", `${XML_HEADER}<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><fileVersion appName="xl"/><workbookPr/><bookViews><workbookView xWindow="0" yWindow="0" windowWidth="18000" windowHeight="12000"/></bookViews><sheets><sheet name="资产表" sheetId="1" r:id="rId1"/></sheets></workbook>`],
-    ["xl/_rels/workbook.xml.rels", `${XML_HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`],
-    ["xl/styles.xml", styles],
-    ["xl/worksheets/sheet1.xml", worksheet]
-  ].map(([name, content]) => ({ name, data: encoder.encode(content) }));
-
-  const localParts: Uint8Array[] = [];
-  const centralParts: Uint8Array[] = [];
-  let offset = 0;
-  for (const entry of entries) {
-    const nameBytes = encoder.encode(entry.name);
-    const checksum = crc32(entry.data);
-    const localHeader = new Uint8Array(30 + nameBytes.length);
-    const localView = new DataView(localHeader.buffer);
-    writeU32(localView, 0, 0x04034b50);
-    writeU16(localView, 4, 20);
-    writeU16(localView, 6, 0x0800);
-    writeU16(localView, 8, 0);
-    writeU16(localView, 10, 0);
-    writeU16(localView, 12, 0);
-    writeU32(localView, 14, checksum);
-    writeU32(localView, 18, entry.data.length);
-    writeU32(localView, 22, entry.data.length);
-    writeU16(localView, 26, nameBytes.length);
-    writeU16(localView, 28, 0);
-    localHeader.set(nameBytes, 30);
-    localParts.push(localHeader, entry.data);
-
-    const centralHeader = new Uint8Array(46 + nameBytes.length);
-    const centralView = new DataView(centralHeader.buffer);
-    writeU32(centralView, 0, 0x02014b50);
-    writeU16(centralView, 4, 20);
-    writeU16(centralView, 6, 20);
-    writeU16(centralView, 8, 0x0800);
-    writeU16(centralView, 10, 0);
-    writeU16(centralView, 12, 0);
-    writeU16(centralView, 14, 0);
-    writeU32(centralView, 16, checksum);
-    writeU32(centralView, 20, entry.data.length);
-    writeU32(centralView, 24, entry.data.length);
-    writeU16(centralView, 28, nameBytes.length);
-    writeU16(centralView, 30, 0);
-    writeU16(centralView, 32, 0);
-    writeU16(centralView, 34, 0);
-    writeU16(centralView, 36, 0);
-    writeU32(centralView, 38, 0);
-    writeU32(centralView, 42, offset);
-    centralHeader.set(nameBytes, 46);
-    centralParts.push(centralHeader);
-    offset += localHeader.length + entry.data.length;
-  }
-
-  const centralDirectory = concatBytes(centralParts);
-  const endOfCentralDirectory = new Uint8Array(22);
-  const endView = new DataView(endOfCentralDirectory.buffer);
-  writeU32(endView, 0, 0x06054b50);
-  writeU16(endView, 4, 0);
-  writeU16(endView, 6, 0);
-  writeU16(endView, 8, entries.length);
-  writeU16(endView, 10, entries.length);
-  writeU32(endView, 12, centralDirectory.length);
-  writeU32(endView, 16, offset);
-  writeU16(endView, 20, 0);
-  return concatBytes([...localParts, centralDirectory, endOfCentralDirectory]);
-}
-
-type AssetNameParts = {
-  standardName: string;
-  descriptor: string;
-};
-
-type AssetExportSheet = {
-  name: string;
-  rows: readonly (readonly string[])[];
-  columnWidths: readonly number[];
-  freezeRows?: number;
-  headerRow?: number;
-  titleRows?: number;
-  autoFilter?: boolean;
-};
-
-const ASSET_EXPORT_HEADERS = [
-  "资产ID",
-  "标准名称",
-  "状态 / 着装 / 形态",
-  "确认状态",
-  "资产类型",
-  "角色",
-  "所属集",
-  "父资产ID",
-  "父资产名称",
-  "来源文本",
-  "备注"
-];
-
-const ASSET_EXPORT_SHEET_DEFINITIONS = [
-  { name: "人物", types: ["CH", "LOOK"], summary: "人物（含人物状态）", note: "人物名称、状态/着装/形态分列" },
-  { name: "场景", types: ["LOC"], summary: "场景", note: "拍摄地点、空间和场景状态" },
-  { name: "道具", types: ["PROP"], summary: "道具", note: "关键道具及其使用状态" },
-  { name: "群像", types: ["GROUP"], summary: "群像", note: "群体角色或群体资产" },
-  { name: "非人", types: ["BEAST"], summary: "非人", note: "非人角色、异象或形态资产" },
-  { name: "其他", types: ["STYLE", "NEG"], summary: "其他", note: "风格和负面约束等辅助资产" }
-] as const;
-
-const ASSET_EXPORT_COLUMN_WIDTHS = [16, 22, 28, 14, 14, 14, 12, 16, 28, 58, 40];
-
-function splitAssetName(value: string): AssetNameParts {
-  const name = value.trim();
+function splitAssetName(value: string): { standardName: string; descriptor: string } {
+  const name = String(value || "").trim();
   const separatorIndex = name.indexOf("｜");
   if (separatorIndex < 0) return { standardName: name || "—", descriptor: "—" };
   return {
@@ -249,29 +153,29 @@ function splitAssetName(value: string): AssetNameParts {
 
 function assetEpisodeLabel(episodeNumber?: number | null): string {
   if (episodeNumber == null) return "全剧";
-  return episodeNumber < 1 ? "前置资料" : `第${episodeNumber}集`;
+  return episodeNumber < 1 ? "前置资料" : "第" + episodeNumber + "集";
 }
 
 function displayAssetName(asset?: AssetIndexRow | null): string {
   if (!asset) return "—";
   const parts = splitAssetName(asset.name);
-  return parts.descriptor === "—" ? parts.standardName : `${parts.standardName}｜${parts.descriptor}`;
+  return parts.descriptor === "—" ? parts.standardName : parts.standardName + "｜" + parts.descriptor;
 }
 
-function compareAssetCode(a: AssetIndexRow, b: AssetIndexRow): number {
-  return a.code.localeCompare(b.code, "zh-Hans-CN", { numeric: true }) || a.id.localeCompare(b.id);
+function compareAssetCode(left: AssetIndexRow, right: AssetIndexRow): number {
+  return left.code.localeCompare(right.code, "zh-Hans-CN", { numeric: true }) || left.id.localeCompare(right.id);
 }
 
 /**
- * 资产表按“主资产 → 直属分资产”展开，而不是单纯按字符串排序。
- * 这样 CH-002-4-2/3 会紧跟 CH-002-4，保留后台稳定 ID，不需要重编号。
+ * 资产表按“主资产 → 分资产”展开，保留稳定 ID，不因展示排序重编号。
+ * 因此 CH-002-4-2/3 会紧跟 CH-002-4，而不是跑到表格末尾。
  */
 export function sortAssetsHierarchically(assets: readonly AssetIndexRow[]): AssetIndexRow[] {
   const byId = new Map(assets.map((asset) => [asset.id, asset]));
   const childrenByParent = new Map<string, AssetIndexRow[]>();
   for (const asset of assets) {
     if (!asset.parentId || !byId.has(asset.parentId)) continue;
-    const children = childrenByParent.get(asset.parentId) ?? [];
+    const children = childrenByParent.get(asset.parentId) || [];
     children.push(asset);
     childrenByParent.set(asset.parentId, children);
   }
@@ -283,7 +187,7 @@ export function sortAssetsHierarchically(assets: readonly AssetIndexRow[]): Asse
     if (visited.has(asset.id)) return;
     visited.add(asset.id);
     ordered.push(asset);
-    for (const child of childrenByParent.get(asset.id) ?? []) visit(child);
+    for (const child of childrenByParent.get(asset.id) || []) visit(child);
   };
 
   const roots = assets
@@ -291,31 +195,28 @@ export function sortAssetsHierarchically(assets: readonly AssetIndexRow[]): Asse
     .slice()
     .sort(compareAssetCode);
   for (const root of roots) visit(root);
-
-  // 脏数据或筛选后的分类可能留下孤儿分资产：仍然稳定显示，但放在末尾，
-  // 不让它打乱已有主资产的层级顺序。
   for (const asset of assets.slice().sort(compareAssetCode)) visit(asset);
   return ordered;
 }
 
 function safeExportSheetName(value: string, index: number, used: Set<string>): string {
-  const base = value.replace(/[\\/*?:\[\]]/g, "_").trim().slice(0, 31) || `Sheet${index + 1}`;
+  const base = value.replace(/[\\/*?:[\]]/g, "_").trim().slice(0, 31) || "Sheet" + (index + 1);
   let name = base;
   let suffix = 2;
   while (used.has(name)) {
-    const suffixText = `_${suffix}`;
-    name = `${base.slice(0, Math.max(1, 31 - suffixText.length))}${suffixText}`;
+    const suffixText = "_" + suffix;
+    name = base.slice(0, Math.max(1, 31 - suffixText.length)) + suffixText;
     suffix += 1;
   }
   used.add(name);
   return name;
 }
 
-function estimateExportRowHeight(row: readonly string[], widths: readonly number[], rowIndex: number, titleRows: number, headerRow: number): number {
+function estimateRowHeight(row: readonly string[], widths: readonly number[], rowIndex: number, titleRows: number, headerRow: number): number {
   if (rowIndex < titleRows) return 32;
   if (rowIndex === headerRow) return 30;
   const lineCount = row.reduce((maxLines, value, index) => {
-    const width = Math.max(8, widths[index] ?? 18);
+    const width = Math.max(8, widths[index] || 18);
     const segments = String(value || "").split(/\r?\n/);
     const estimated = segments.reduce((total, segment) => total + Math.max(1, Math.ceil(segment.length / Math.max(8, width * 0.9))), 0);
     return Math.max(maxLines, estimated);
@@ -323,32 +224,44 @@ function estimateExportRowHeight(row: readonly string[], widths: readonly number
   return Math.min(112, Math.max(26, lineCount * 16 + 8));
 }
 
-function buildAssetExportWorksheet(sheet: AssetExportSheet): string {
+function buildWorksheet(sheet: AssetExportSheet): string {
   const rows = sheet.rows;
-  const maxColumn = Math.max(...rows.map((row) => row.length), 1);
+  const maxColumn = Math.max(rows.reduce((max, row) => Math.max(max, row.length), 0), 1);
   const lastColumn = columnName(maxColumn - 1);
   const lastRow = Math.max(rows.length, 1);
-  const widths = Array.from({ length: maxColumn }, (_, index) => sheet.columnWidths[index] ?? 18);
-  const headerRow = Math.max(0, sheet.headerRow ?? 0);
-  const titleRows = Math.max(0, sheet.titleRows ?? 0);
-  const freezeRows = Math.max(0, sheet.freezeRows ?? (sheet.autoFilter === false ? 0 : 1));
+  const widths = Array.from({ length: maxColumn }, (_, index) => sheet.columnWidths[index] || 18);
+  const headerRow = Math.max(0, sheet.headerRow || 0);
+  const titleRows = Math.max(0, sheet.titleRows || 0);
+  const freezeRows = Math.max(0, sheet.freezeRows == null ? 1 : sheet.freezeRows);
   const rowsXml = rows.map((row, rowIndex) => {
     const style = rowIndex < titleRows ? 2 : rowIndex === headerRow ? 1 : 0;
     const cells = row.map((value, columnIndex) => {
-      const cellRef = `${columnName(columnIndex)}${rowIndex + 1}`;
-      return `<c r="${cellRef}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${escapeXml(value)}</t></is></c>`;
+      const cellRef = columnName(columnIndex) + (rowIndex + 1);
+      return "<c r=\"" + cellRef + "\" s=\"" + style + "\" t=\"inlineStr\"><is><t xml:space=\"preserve\">" +
+        escapeXml(value) + "</t></is></c>";
     }).join("");
-    const height = estimateExportRowHeight(row, widths, rowIndex, titleRows, headerRow);
-    return `<row r="${rowIndex + 1}" ht="${height}" customHeight="1">${cells}</row>`;
+    return "<row r=\"" + (rowIndex + 1) + "\" ht=\"" +
+      estimateRowHeight(row, widths, rowIndex, titleRows, headerRow) +
+      "\" customHeight=\"1\">" + cells + "</row>";
   }).join("");
-  const columnsXml = widths.map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${Math.max(8, Math.min(80, width))}" customWidth="1"/>`).join("");
+  const columnsXml = widths.map((width, index) =>
+    "<col min=\"" + (index + 1) + "\" max=\"" + (index + 1) + "\" width=\"" +
+    Math.max(8, Math.min(80, width)) + "\" customWidth=\"1\"/>"
+  ).join("");
   const freezeXml = freezeRows > 0
-    ? `<pane ySplit="${freezeRows}" topLeftCell="A${freezeRows + 1}" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A${freezeRows + 1}" sqref="A${freezeRows + 1}"/>`
-    : `<selection activeCell="A1" sqref="A1"/>`;
+    ? "<pane ySplit=\"" + freezeRows + "\" topLeftCell=\"A" + (freezeRows + 1) +
+      "\" activePane=\"bottomLeft\" state=\"frozen\"/><selection pane=\"bottomLeft\" activeCell=\"A" +
+      (freezeRows + 1) + "\" sqref=\"A" + (freezeRows + 1) + "\"/>"
+    : "<selection activeCell=\"A1\" sqref=\"A1\"/>";
   const filterXml = sheet.autoFilter === false || rows.length <= headerRow + 1
     ? ""
-    : `<autoFilter ref="A${headerRow + 1}:${lastColumn}${rows.length}"/>`;
-  return `${XML_HEADER}<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${lastColumn}${lastRow}"/><sheetViews><sheetView workbookViewId="0">${freezeXml}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols>${columnsXml}</cols><sheetData>${rowsXml}</sheetData>${filterXml}<pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.3" footer="0.3"/></worksheet>`;
+    : "<autoFilter ref=\"A" + (headerRow + 1) + ":" + lastColumn + rows.length + "\"/>";
+  return XML_HEADER +
+    "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">" +
+    "<dimension ref=\"A1:" + lastColumn + lastRow + "\"/><sheetViews><sheetView workbookViewId=\"0\">" +
+    freezeXml + "</sheetView></sheetViews><sheetFormatPr defaultRowHeight=\"18\"/><cols>" +
+    columnsXml + "</cols><sheetData>" + rowsXml + "</sheetData>" + filterXml +
+    "<pageMargins left=\"0.25\" right=\"0.25\" top=\"0.5\" bottom=\"0.5\" header=\"0.3\" footer=\"0.3\"/></worksheet>";
 }
 
 function buildZip(entries: readonly { name: string; data: Uint8Array }[]): Uint8Array {
@@ -412,28 +325,76 @@ function buildZip(entries: readonly { name: string; data: Uint8Array }[]): Uint8
   return concatBytes([...localParts, centralDirectory, endOfCentralDirectory]);
 }
 
-/** Build the user-facing multi-sheet asset workbook without a browser package. */
 export function buildAssetWorkbookXlsx(sheets: readonly AssetExportSheet[]): Uint8Array {
   const encoder = new TextEncoder();
   const usedNames = new Set<string>();
-  const normalizedSheets = (sheets.length ? sheets : [{ name: "资产表", rows: [], columnWidths: [] }]).map((sheet, index) => ({
+  const normalizedSheets = (sheets.length ? sheets : [{ name: "资产总览", rows: [], columnWidths: [] }]).map((sheet, index) => ({
     ...sheet,
     name: safeExportSheetName(sheet.name, index, usedNames)
   }));
   const sheetNames = normalizedSheets.map((sheet) => sheet.name);
-  const worksheetOverrides = normalizedSheets.map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("");
-  const worksheetRelationships = normalizedSheets.map((_, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`).join("");
-  const workbookSheets = normalizedSheets.map((sheet, index) => `<sheet name="${escapeXml(sheet.name)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`).join("");
-  const titles = sheetNames.map((name) => `<vt:lpstr>${escapeXml(name)}</vt:lpstr>`).join("");
+  const worksheetOverrides = normalizedSheets.map((_, index) =>
+    "<Override PartName=\"/xl/worksheets/sheet" + (index + 1) +
+    ".xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
+  ).join("");
+  const worksheetRelationships = normalizedSheets.map((_, index) =>
+    "<Relationship Id=\"rId" + (index + 1) +
+    "\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet" +
+    (index + 1) + ".xml\"/>"
+  ).join("");
+  const workbookSheets = normalizedSheets.map((sheet, index) =>
+    "<sheet name=\"" + escapeXml(sheet.name) + "\" sheetId=\"" + (index + 1) + "\" r:id=\"rId" + (index + 1) + "\"/>"
+  ).join("");
+  const titles = sheetNames.map((name) => "<vt:lpstr>" + escapeXml(name) + "</vt:lpstr>").join("");
   const now = new Date().toISOString();
-  const styles = `${XML_HEADER}<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="3"><font><sz val="11"/><name val="等线"/></font><font><b/><sz val="11"/><name val="等线"/></font><font><b/><sz val="14"/><color rgb="FF22264A"/><name val="等线"/></font></fonts><fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEDEBFF"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF4F2FF"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFD9D7EE"/></left><right style="thin"><color rgb="FFD9D7EE"/></right><top style="thin"><color rgb="FFD9D7EE"/></top><bottom style="thin"><color rgb="FFD9D7EE"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="3" borderId="1" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
-  const contentTypes = `${XML_HEADER}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${worksheetOverrides}<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>`;
-  const rootRelationships = `${XML_HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/package/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`;
-  const coreProperties = `${XML_HEADER}<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>导演工作台</dc:creator><cp:lastModifiedBy>导演工作台</cp:lastModifiedBy><dcterms:created xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="dcterms:W3CDTF">${now}</dcterms:created><dcterms:modified xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="dcterms:W3CDTF">${now}</dcterms:modified></cp:coreProperties>`;
-  const appProperties = `${XML_HEADER}<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>导演工作台</Application><DocSecurity>0</DocSecurity><ScaleCrop>false</ScaleCrop><HeadingPairs><vt:vector xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes" size="2" baseType="variant"><vt:variant><vt:lpstr>Worksheets</vt:lpstr></vt:variant><vt:variant><vt:i4>${sheetNames.length}</vt:i4></vt:variant></vt:vector></HeadingPairs><TitlesOfParts><vt:vector xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes" size="${sheetNames.length}" baseType="lpstr">${titles}</vt:vector></TitlesOfParts></Properties>`;
-  const workbookXml = `${XML_HEADER}<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><fileVersion appName="xl"/><workbookPr/><bookViews><workbookView xWindow="0" yWindow="0" windowWidth="18000" windowHeight="12000"/></bookViews><sheets>${workbookSheets}</sheets></workbook>`;
+  const styles = XML_HEADER +
+    "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">" +
+    "<fonts count=\"3\"><font><sz val=\"11\"/><name val=\"等线\"/></font>" +
+    "<font><b/><sz val=\"11\"/><name val=\"等线\"/></font><font><b/><sz val=\"14\"/>" +
+    "<color rgb=\"FF22264A\"/><name val=\"等线\"/></font></fonts><fills count=\"4\">" +
+    "<fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill>" +
+    "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFEDEBFF\"/><bgColor indexed=\"64\"/></patternFill></fill>" +
+    "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFF4F2FF\"/><bgColor indexed=\"64\"/></patternFill></fill>" +
+    "</fills><borders count=\"2\"><border><left/><right/><top/><bottom/><diagonal/></border>" +
+    "<border><left style=\"thin\"><color rgb=\"FFD9D7EE\"/></left><right style=\"thin\"><color rgb=\"FFD9D7EE\"/></right>" +
+    "<top style=\"thin\"><color rgb=\"FFD9D7EE\"/></top><bottom style=\"thin\"><color rgb=\"FFD9D7EE\"/></bottom><diagonal/></border></borders>" +
+    "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>" +
+    "<cellXfs count=\"3\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"1\" applyAlignment=\"1\"><alignment vertical=\"center\" wrapText=\"1\"/></xf>" +
+    "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"2\" borderId=\"1\" applyFont=\"1\" applyFill=\"1\" applyAlignment=\"1\"><alignment vertical=\"center\" wrapText=\"1\"/></xf>" +
+    "<xf numFmtId=\"0\" fontId=\"2\" fillId=\"3\" borderId=\"1\" applyFont=\"1\" applyFill=\"1\" applyAlignment=\"1\"><alignment vertical=\"center\" wrapText=\"1\"/></xf>" +
+    "</cellXfs><cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles></styleSheet>";
+  const contentTypes = XML_HEADER +
+    "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">" +
+    "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>" +
+    "<Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>" +
+    worksheetOverrides + "<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>" +
+    "<Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/>" +
+    "<Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/></Types>";
+  const rootRelationships = XML_HEADER +
+    "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
+    "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>" +
+    "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties\" Target=\"docProps/core.xml\"/>" +
+    "<Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties\" Target=\"docProps/app.xml\"/></Relationships>";
+  const coreProperties = XML_HEADER +
+    "<cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\">" +
+    "<dc:creator>导演工作台</dc:creator><cp:lastModifiedBy>导演工作台</cp:lastModifiedBy>" +
+    "<dcterms:created xmlns:dcterms=\"http://purl.org/dc/terms/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"dcterms:W3CDTF\">" + now + "</dcterms:created>" +
+    "<dcterms:modified xmlns:dcterms=\"http://purl.org/dc/terms/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"dcterms:W3CDTF\">" + now + "</dcterms:modified></cp:coreProperties>";
+  const appProperties = XML_HEADER +
+    "<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\"><Application>导演工作台</Application>" +
+    "<DocSecurity>0</DocSecurity><ScaleCrop>false</ScaleCrop><HeadingPairs><vt:vector xmlns:vt=\"http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes\" size=\"2\" baseType=\"variant\">" +
+    "<vt:variant><vt:lpstr>Worksheets</vt:lpstr></vt:variant><vt:variant><vt:i4>" + sheetNames.length + "</vt:i4></vt:variant></vt:vector></HeadingPairs>" +
+    "<TitlesOfParts><vt:vector xmlns:vt=\"http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes\" size=\"" + sheetNames.length +
+    "\" baseType=\"lpstr\">" + titles + "</vt:vector></TitlesOfParts></Properties>";
+  const workbookXml = XML_HEADER +
+    "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">" +
+    "<fileVersion appName=\"xl\"/><workbookPr/><bookViews><workbookView xWindow=\"0\" yWindow=\"0\" windowWidth=\"18000\" windowHeight=\"12000\"/></bookViews>" +
+    "<sheets>" + workbookSheets + "</sheets></workbook>";
   const styleRelationshipId = normalizedSheets.length + 1;
-  const workbookRelationships = `${XML_HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${worksheetRelationships}<Relationship Id="rId${styleRelationshipId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
+  const workbookRelationships = XML_HEADER +
+    "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
+    worksheetRelationships + "<Relationship Id=\"rId" + styleRelationshipId +
+    "\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/></Relationships>";
   const entries = [
     ["[Content_Types].xml", contentTypes],
     ["_rels/.rels", rootRelationships],
@@ -442,17 +403,13 @@ export function buildAssetWorkbookXlsx(sheets: readonly AssetExportSheet[]): Uin
     ["xl/workbook.xml", workbookXml],
     ["xl/_rels/workbook.xml.rels", workbookRelationships],
     ["xl/styles.xml", styles],
-    ...normalizedSheets.map((sheet, index) => [`xl/worksheets/sheet${index + 1}.xml`, buildAssetExportWorksheet(sheet)])
+    ...normalizedSheets.map((sheet, index) => ["xl/worksheets/sheet" + (index + 1) + ".xml", buildWorksheet(sheet)])
   ].map(([name, content]) => ({ name, data: encoder.encode(content) }));
   return buildZip(entries);
 }
 
 function safeFileName(value: string): string {
-  return value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim().slice(0, 80) || "项目";
-}
-
-function assetTypeLabel(type: string): string {
-  return TYPE_TAG[type] ?? type;
+  return String(value || "").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim().slice(0, 80) || "项目";
 }
 
 function assetStatusLabel(status: string): string {
@@ -470,14 +427,11 @@ export function AssetExportButton({ projectTitle, assets }: { projectTitle: stri
     try {
       const assetById = new Map(assets.map((asset) => [asset.id, asset]));
       const sortedAssets = sortAssetsHierarchically(assets);
-      const dataSheets: AssetExportSheet[] = ASSET_EXPORT_SHEET_DEFINITIONS.map((definition) => {
-        const sheetAssets = sortedAssets.filter((asset) => definition.types.includes(asset.type as never));
+      const dataSheets: AssetExportSheet[] = ASSET_EXPORT_SHEETS.map((definition) => {
+        const sheetAssets = sortedAssets.filter((asset) => definition.types.some((type) => type === asset.type));
         return {
           name: definition.name,
-          columnWidths: ASSET_EXPORT_COLUMN_WIDTHS,
-          freezeRows: 1,
-          headerRow: 0,
-          autoFilter: true,
+          columnWidths: ASSET_EXPORT_WIDTHS,
           rows: [
             ASSET_EXPORT_HEADERS,
             ...sheetAssets.map((asset) => {
@@ -488,7 +442,7 @@ export function AssetExportButton({ projectTitle, assets }: { projectTitle: stri
                 nameParts.standardName,
                 nameParts.descriptor,
                 assetStatusLabel(asset.status),
-                assetTypeLabel(asset.type),
+                TYPE_TAG[asset.type] || asset.type,
                 asset.role || "—",
                 assetEpisodeLabel(asset.episodeNumber),
                 parent ? parent.code : asset.parentId || "—",
@@ -501,14 +455,14 @@ export function AssetExportButton({ projectTitle, assets }: { projectTitle: stri
         };
       });
       const summaryRows: readonly (readonly string[])[] = [
-        [`${projectTitle}｜资产清单`, "", "", ""],
+        [projectTitle + "｜资产清单", "", "", ""],
         ["导出说明", "人物、场景、道具等资产已按类别拆分到独立 Sheet；资产 ID、所属集、父资产、来源文本和备注均保留。", "", ""],
         ["字段说明", "标准名称取原名称中第一个“｜”前的部分；状态 / 着装 / 形态取其后的描述，不拆分描述中的“·”。", "", ""],
         ["工作表", "资产类别", "资产数量", "使用说明"],
-        ...ASSET_EXPORT_SHEET_DEFINITIONS.map((definition) => [
+        ...ASSET_EXPORT_SHEETS.map((definition) => [
           definition.name,
           definition.summary,
-          String(sortedAssets.filter((asset) => definition.types.includes(asset.type as never)).length),
+          String(sortedAssets.filter((asset) => definition.types.some((type) => type === asset.type)).length),
           definition.note
         ])
       ];
@@ -516,13 +470,11 @@ export function AssetExportButton({ projectTitle, assets }: { projectTitle: stri
         { name: "资产总览", rows: summaryRows, columnWidths: [18, 68, 12, 34], freezeRows: 4, headerRow: 3, titleRows: 1, autoFilter: false },
         ...dataSheets
       ]);
-      const downloadBytes = new ArrayBuffer(workbook.byteLength);
-      new Uint8Array(downloadBytes).set(workbook);
-      const blob = new Blob([downloadBytes], { type: XLSX_MIME });
+      const blob = new Blob([new Uint8Array(workbook)], { type: XLSX_MIME });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = `${safeFileName(projectTitle)}-资产表.xlsx`;
+      anchor.download = safeFileName(projectTitle) + "-资产表.xlsx";
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -547,8 +499,8 @@ export function AssetExportButton({ projectTitle, assets }: { projectTitle: stri
 
 export function AssetIndexTabs({ assets }: { assets: AssetIndexRow[] }) {
   const visibleTabs = ASSET_INDEX_TABS.filter((tab) => assets.some((asset) => tab.types.includes(asset.type)));
-  const [activeKey, setActiveKey] = useState(visibleTabs[0]?.key ?? "people");
-  const activeTab = ASSET_INDEX_TABS.find((tab) => tab.key === activeKey) ?? ASSET_INDEX_TABS[0];
+  const [activeKey, setActiveKey] = useState(visibleTabs[0]?.key || "people");
+  const activeTab = ASSET_INDEX_TABS.find((tab) => tab.key === activeKey) || ASSET_INDEX_TABS[0];
   const visible = sortAssetsHierarchically(assets.filter((asset) => activeTab.types.includes(asset.type)));
 
   if (!assets.length) {
@@ -559,16 +511,15 @@ export function AssetIndexTabs({ assets }: { assets: AssetIndexRow[] }) {
   const childrenByParent = new Map<string, AssetIndexRow[]>();
   for (const asset of visible) {
     if (!asset.parentId) continue;
-    const list = childrenByParent.get(asset.parentId) ?? [];
+    const list = childrenByParent.get(asset.parentId) || [];
     list.push(asset);
     childrenByParent.set(asset.parentId, list);
   }
   const orphanChildren = visible.filter((asset) => asset.parentId && !mainAssets.some((main) => main.id === asset.parentId));
-
   const rows: Array<{ asset: AssetIndexRow; depth: number }> = [];
   for (const main of mainAssets) {
     rows.push({ asset: main, depth: 0 });
-    for (const child of childrenByParent.get(main.id) ?? []) rows.push({ asset: child, depth: 1 });
+    for (const child of childrenByParent.get(main.id) || []) rows.push({ asset: child, depth: 1 });
   }
   for (const orphan of orphanChildren) rows.push({ asset: orphan, depth: 1 });
 
@@ -598,15 +549,15 @@ export function AssetIndexTabs({ assets }: { assets: AssetIndexRow[] }) {
                 <td>
                   {depth === 0 ? (
                     <span className="assetTags">
-                      <i className={`assetTypeTag ${TYPE_TAG_CLASS[asset.type] ?? "typeOther"}`}>{TYPE_TAG[asset.type] ?? asset.type}</i>
-                      {asset.role ? <i className={`assetRoleTag ${ROLE_TAG_CLASS[asset.role] ?? ""}`}>{asset.role}</i> : null}
+                      <i className={"assetTypeTag " + (TYPE_TAG_CLASS[asset.type] || "typeOther")}>{TYPE_TAG[asset.type] || asset.type}</i>
+                      {asset.role ? <i className={"assetRoleTag " + (ROLE_TAG_CLASS[asset.role] || "")}>{asset.role}</i> : null}
                     </span>
                   ) : null}
                 </td>
                 <td style={depth > 0 ? { paddingLeft: "34px" } : undefined}>
                   {depth > 0 ? <span className="assetChildMarker" aria-hidden="true">└ </span> : null}{asset.name}
                 </td>
-                <td><span className={`stateDot ${asset.status === "confirmed" ? "ok" : "warn"}`}>{asset.status === "confirmed" ? "已确认" : "待确认"}</span></td>
+                <td><span className={"stateDot " + (asset.status === "confirmed" ? "ok" : "warn")}>{asset.status === "confirmed" ? "已确认" : "待确认"}</span></td>
               </tr>
             ))}
             {!rows.length ? <tr><td colSpan={4} className="emptyCell">该分类暂无资产</td></tr> : null}

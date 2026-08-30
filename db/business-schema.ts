@@ -1,0 +1,25 @@
+export const BUSINESS_TABLES = [
+  "ApiRoleSession",
+  "Asset",
+  "CliRoleSession",
+  "CompiledPromptVersion",
+  "Episode",
+  "FinalScript",
+  "GenerationRun",
+  "PipelineRun",
+  "PresentationContract",
+  "Project",
+  "ProjectRole",
+  "ReviewRound",
+  "SceneSnapshot",
+  "ScriptScene",
+  "SeedanceUnit",
+  "SeedanceUnitShot",
+  "Session",
+  "StoryboardShot",
+  "TaskPackage",
+  "User",
+  "WorkflowIssue",
+] as const;
+
+export type BusinessTable = (typeof BUSINESS_TABLES)[number];

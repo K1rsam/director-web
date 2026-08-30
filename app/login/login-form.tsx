@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
+
 import { loginAction, type LoginState } from "@/app/auth-actions";
 
 const initialState: LoginState = { error: "" };
@@ -35,9 +36,7 @@ export function LoginForm({ returnTo }: { returnTo: string }) {
         />
       </label>
       {state.error ? <p className="loginError" role="alert">{state.error}</p> : null}
-      <button type="submit" disabled={isPending}>
-        {isPending ? "正在登录…" : "进入工作台"}
-      </button>
+      <button type="submit" disabled={isPending}>{isPending ? "正在登录…" : "进入工作台"}</button>
     </form>
   );
 }

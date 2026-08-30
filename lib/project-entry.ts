@@ -42,7 +42,7 @@ export type ProjectSubmission =
       aspectRatio: string;
       executionMode: ProjectExecutionMode;
       sourceName: string;
-      buffer: Buffer;
+      sourceText: string;
     };
 
 const ALLOWED_ASPECT_RATIOS = new Set(["16:9", "9:16", "4:3", "3:4", "1:1"]);
@@ -188,6 +188,9 @@ export async function readProjectSubmission(formData: FormData): Promise<Project
   const file = formData.get("script");
   if (!(file instanceof File) || file.size === 0) throw new Error("请选择剧本文件。");
   if (!/\.(txt|md|docx)$/i.test(file.name)) throw new Error("仅支持 TXT、MD 或 DOCX 剧本文件。");
+  if (/\.docx$/i.test(file.name)) {
+    throw new Error("DOCX 导入将在本地 Runner 接通后开放，请先粘贴剧本文本。");
+  }
 
   return {
     title,
@@ -196,6 +199,6 @@ export async function readProjectSubmission(formData: FormData): Promise<Project
     aspectRatio,
     executionMode,
     sourceName: file.name,
-    buffer: Buffer.from(await file.arrayBuffer())
+    sourceText: await file.text()
   };
 }

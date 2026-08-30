@@ -22,7 +22,7 @@ type ContractRow = {
   decidedAt: Date | null;
 };
 
-function cleanOption(option: string) {
+function cleanOption(option: string): string {
   return option.replace(/^\s*[A-ZＡ-Ｄ][\.．、]\s*/, "").trim();
 }
 
@@ -41,12 +41,12 @@ function ContractScopeEditor({
         ? [contract.sourceEpisodeNumber]
         : [];
   const discovered = contract.scopeMode === "ALL_EPISODES"
-    ? `全部${formalEpisodeNumbers.length}集（当前设置）`
+    ? "全部" + formalEpisodeNumbers.length + "集（当前设置）"
     : discoveredNumbers.length
-    ? formatPresentationEpisodeNumbers(discoveredNumbers)
-    : contract.sourceEpisodeNumber !== null
-      ? `第${contract.sourceEpisodeNumber}集`
-      : "P1 尚未给出正式集范围";
+      ? formatPresentationEpisodeNumbers(discoveredNumbers)
+      : contract.sourceEpisodeNumber !== null
+        ? "第" + contract.sourceEpisodeNumber + "集"
+        : "P1 尚未给出正式集范围";
 
   return (
     <div className="contractScopeEditor">
@@ -75,12 +75,7 @@ function ContractScopeEditor({
           <div>
             {discoveredNumbers.map((number) => (
               <label key={number}>
-                <input
-                  type="checkbox"
-                  name="targetEpisodeNumber"
-                  value={number}
-                  defaultChecked
-                />
+                <input name="targetEpisodeNumber" type="checkbox" value={number} defaultChecked />
                 <span>第{number}集</span>
               </label>
             ))}
@@ -88,7 +83,8 @@ function ContractScopeEditor({
         </fieldset>
       ) : null}
       <p className="contractScopeHelp">
-        P1 定位：{discovered}。默认只传给这些相关集；勾选或补充集号后，只有所选集的 P2 和 E0–E5 会收到这条规则。选择“全部正式集”时无需填写集号。当前项目共 {formalEpisodeNumbers.length} 集。
+        P1 定位：{discovered}。默认只传给这些相关集；勾选或补充集号后，只有所选集的 P2 和 E0–E5 会收到这条规则。
+        选择“全部正式集”时无需填写集号。当前项目共 {formalEpisodeNumbers.length} 集。
       </p>
     </div>
   );
@@ -106,7 +102,7 @@ function ContractDecisionForm({
   editing?: boolean;
 }) {
   return (
-    <form action={decidePresentationContractAction} className={`contractDecisionForm${editing ? " contractDecisionFormEditing" : ""}`}>
+    <form action={decidePresentationContractAction} className={"contractDecisionForm" + (editing ? " contractDecisionFormEditing" : "")}>
       <input name="projectId" type="hidden" value={projectId} />
       <input name="contractId" type="hidden" value={contract.id} />
       <ContractScopeEditor contract={contract} formalEpisodeNumbers={formalEpisodeNumbers} />
@@ -116,13 +112,7 @@ function ContractDecisionForm({
           const label = String.fromCharCode(65 + index);
           const text = cleanOption(option);
           return (
-            <button
-              type="submit"
-              name="answer"
-              value={`${label}. ${text}`}
-              title={text}
-              key={label}
-            >
+            <button type="submit" name="answer" value={label + ". " + text} title={text} key={label}>
               <b>{label}</b>
               <span>{text}</span>
             </button>
@@ -190,24 +180,22 @@ function ConfirmedContractList({
 function ConfirmedContracts({
   projectId,
   contracts,
-  formalEpisodeNumbers,
-  compact = false
+  formalEpisodeNumbers
 }: {
   projectId: string;
   contracts: ContractRow[];
   formalEpisodeNumbers: number[];
-  compact?: boolean;
 }) {
   if (!contracts.length) return null;
   return (
-    <details className={`contractConfirmed${compact ? " contractConfirmedCompact" : ""}`}>
+    <details className="contractConfirmed">
       <summary>已锁定的表现规范（{contracts.length}）<span>可展开编辑适用集和方案</span></summary>
       <ConfirmedContractList projectId={projectId} contracts={contracts} formalEpisodeNumbers={formalEpisodeNumbers} />
     </details>
   );
 }
 
-/** 表现规范确认面板：P1 通读全剧本后提出需要拍板的非常规表现元素。 */
+/** P1 发现非常规表现元素，确认时明确规则的适用集，避免把无关上下文灌给全部集。 */
 export function PresentationContracts({
   projectId,
   pending,
@@ -247,13 +235,13 @@ export function PresentationContracts({
       </div>
       <p className="contractHint">只处理 P1 依据原文定位到的非常规表现。确认时请同时选择适用范围：默认只传给相关集；只有明确选择“全部正式集”才会全剧使用。</p>
       {[...pending]
-        .sort((a, b) => a.round - b.round || a.category.localeCompare(b.category))
+        .sort((left, right) => left.round - right.round || left.category.localeCompare(right.category))
         .map((contract) => (
           <article className="contractCard" key={contract.id}>
             <div className="contractHead">
               <span>{contract.category}</span>
               <b>{contract.question}</b>
-              <em>{contract.round > 1 ? `第${contract.round}轮 · ` : ""}{contract.sourceEpisodeNumber !== null ? `发现于第${contract.sourceEpisodeNumber}集` : "P1 定位"}</em>
+              <em>{contract.round > 1 ? "第" + contract.round + "轮 · " : ""}{contract.sourceEpisodeNumber !== null ? "发现于第" + contract.sourceEpisodeNumber + "集" : "P1 定位"}</em>
             </div>
             {contract.evidence ? <p className="contractEvidence">出现处：{contract.evidence}</p> : null}
             <ContractDecisionForm projectId={projectId} contract={contract} formalEpisodeNumbers={formalEpisodeNumbers} />
