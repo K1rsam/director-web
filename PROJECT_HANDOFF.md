@@ -18,8 +18,8 @@
 
 | 代码库 | 定位 | 当前状态 |
 |---|---|---|
-| `director-web`（GitHub `main`） | 本地完整生产版 | P1–P2、E0–E5、DeepSeek API、Codex CLI、SQLite、账号隔离均已实现；共用 Sites Runner 镜像已同步 |
-| `director-workbench-sites`（Sites） | Sites 云端版 | 原页面、账号、21 张业务表、D1、D1 快照任务和设备 Runner 已上线；真实剧集生产仍需单任务端到端验收 |
+| `director-web`（GitHub `main`） | 公共基线 + 线下完整生产版 | P1–P2、E0–E5、DeepSeek API、Codex CLI、SQLite、账号隔离均已实现；公共代码由 `main` 统一维护 |
+| `director-workbench-sites`（Sites） | Sites 云端版生成目录 | 由 `main` 公共基线叠加 GitHub `sites-online` overlay 生成；原页面、账号、21 张业务表、D1、D1 快照任务和设备 Runner 已上线 |
 
 线上地址：<https://director-workbench-yue.a8197772.chatgpt.site>
 
@@ -330,7 +330,16 @@ Sites / vinext / React
 - 公开链接访问，应用内部仍要求业务账号登录；
 - 当前数据库可见 21 张业务表、2 张正式 Runner 表和 2 张早期 prototype 表；
 - 当前线上版本为第 27 版，Sites 源仓库 HEAD 为 `92c4298`；本地构建与线上保存版本一致；
-- Sites 源码已同步到 GitHub 私有仓库的独立 `sites-online` 分支，避免覆盖线下生产版 `main`；Windows Runner 启动器已加入代理和本地镜像兜底。
+- GitHub `sites-online` 已整理为基于 `main` 的差异层；旧的完整 Sites 快照保存在 `sites-online-full-archive-20260830`，避免覆盖线下生产版 `main`；Windows Runner 启动器已加入代理和本地镜像兜底。
+
+### 5.3.1 `main` 与 `sites-online` 的维护边界
+
+- `common_once`：只改 `main`，生成 Sites 时自动继承。
+- `dual_until_split`：当前有 55 个同路径的平台差异，改动时需要同时检查 `main` 和 `sites-online`；后续逐步抽成公共模块。
+- `sites_only`：只改 `sites-online`，包括 D1、线上 Runner、Sites hosting 和 Sites 专属测试。
+- `local_only`：只改 `main`，包括 Prisma、本地流水线、线下 CLI、知识库和本地工具。
+- 先运行 `node .platform/change-scope.mjs <文件路径>` 判断范围；用 `node .platform/materialize-sites.mjs` 将公共基线和 overlay 生成完整 Sites 源码。
+- Git 分支不会动态读取另一个分支，Sites 的“读取 main”由 materialize 步骤实现；不要直接把线下完整树上传到 `sites-online`。
 
 ### 5.3 当前 Runner
 
@@ -442,7 +451,7 @@ Sites / vinext / React
 | 停止任务 | 本地已完成 | Runner 租约可回传，云端闭环未验收 |
 | 导出 Seedance 提示词 | 已完成 | 可导出现有迁移结果 |
 | 响应式 UI | 已完成 | 已完成并上线 |
-| 外部源码备份 | GitHub 私有仓库 `main` | GitHub `sites-online` 分支 + Sites 源仓库 |
+| 外部源码备份 | GitHub 私有仓库 `main` | GitHub `sites-online` overlay + `sites-online-full-archive-20260830` + Sites 源仓库 |
 
 ## 9. 已知风险与不要踩的坑
 
@@ -456,14 +465,14 @@ Sites / vinext / React
 8. **API Key 放 `localStorage` 有 XSS 风险。** 这是当前 Beta 的便利方案，不是长期秘密存储方案。
 9. **D1 中还保留 `prototype_projects`、`prototype_runner_jobs`。** 清理前先确认没有生产代码依赖。
 10. **当前没有 R2。** 大文件、剧本原件、导出包和日志不应无限塞入 D1。
-11. **Sites 源码与线下版架构分叉。** 更新 Sites 后同时推送 GitHub `sites-online` 分支；不要直接覆盖 `main`。
+11. **Sites 由 overlay 生成。** 公共功能只改 `main`；只有 `sites_only` 改 `sites-online`，`dual_until_split` 才需要两边检查；不要把完整生成树当作独立权威源码维护。
 12. **用户离开页面后的 API 长任务仍无可靠方案。** 必须先决定 Key 的执行位置和存储策略。
 
 ## 10. 推荐的最小后续路线
 
 ### 里程碑 1：建立安全基线
 
-1. 已完成：Sites 源码推送到 GitHub `sites-online` 分支。
+1. 已完成：Sites 源码整理为 `main` + `sites-online` overlay，并保留完整快照归档分支。
 2. 已完成：记录线上第 26 版及提交 `b664121` 为当前回滚基线。
 3. 冻结 `CL` 的未完成设备分支，不继续追加功能，只挑选可复用代码。
 4. 轮换测试账号密码，整理账号与 Sites 所有权交接清单。
