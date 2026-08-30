@@ -132,6 +132,11 @@ test("personal runner uses each device's own CLI and a D1 task snapshot", () => 
   assert.match(form, /一次性临时工作库/);
   assert.match(form, /下载 Windows 启动器/);
   assert.match(form, /复制 Mac 启动命令/);
+  assert.match(form, /DIRECTOR_PROXY/);
+  assert.match(form, /127\.0\.0\.1:7890/);
+  assert.match(form, /NODE_USE_ENV_PROXY/);
+  assert.match(form, /copy_local_runner/);
+  assert.match(form, /--noproxy/);
   assert.match(runner, /codex_prompt/);
   assert.match(runner, /codexCommand[^;]*"codex"/);
   assert.match(runner, /spawnSpec\(command, commandArgs\)/);
