@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { recordLocalDiagnosticLog } from "../lib/local-diagnostic-log";
+
 type Row = Record<string, unknown>;
 type TableRows = Record<string, Row[]>;
 
@@ -84,6 +86,15 @@ try {
   await writeFile(outputPath, JSON.stringify(output));
 } catch (error) {
   executionError = messageOf(error);
+  await recordLocalDiagnosticLog({
+    kind: /超时|timeout/i.test(executionError) ? "task_timeout" : "task_failed",
+    code: /超时|timeout/i.test(executionError) ? "LOCAL_TASK_TIMEOUT" : "LOCAL_TASK_FAILED",
+    operation: "task",
+    error,
+    jobId: input.job.id,
+    taskKind: input.job.kind,
+    attempt: input.job.attempt,
+  });
   // 如果数据库已经完成初始化，尽量导出部分结果。这样网站仍能把已经完成的
   // 岗位状态和诊断日志写回 D1，而不是只留下一个永远“进行中”的任务。
   try {

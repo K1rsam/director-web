@@ -8,6 +8,9 @@
     "local_only": "线下 Prisma/本地流水线/本地工具专属：只改 main"
   },
   "common_once": [
+    "lib/diagnostic-log.ts",
+    "public/runner/diagnostic-log.mjs",
+    "public/runner/director-runner.mjs",
     "public/style-covers/2d-anime.webp",
     "public/style-covers/3d-guoman.webp",
     "public/style-covers/costume-cinematic.webp",
@@ -69,7 +72,6 @@
     "next.config.ts",
     "package-lock.json",
     "package.json",
-    "public/runner/director-runner.mjs",
     "tsconfig.json"
   ],
   "sites_only_patterns": [
@@ -77,6 +79,7 @@
     "app/api/providers/deepseek/test/route.ts",
     "app/api/runner/**",
     "app/runner/codex-status-panel.tsx",
+    "app/runner/diagnostic-log-panel.tsx",
     "app/runner/deepseek-key-setup.tsx",
     "app/runner/token-form.tsx",
     "db/**",
@@ -128,6 +131,7 @@
     "lib/episode-pipeline-quality.ts",
     "lib/episode-pipeline.ts",
     "lib/execution-errors.ts",
+    "lib/local-diagnostic-log.ts",
     "lib/pipeline-skills.ts",
     "lib/prisma.ts",
     "lib/process-control.ts",

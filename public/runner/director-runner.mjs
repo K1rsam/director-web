@@ -3,6 +3,12 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  createDiagnosticEvent,
+  readLocalDiagnosticEvents,
+  saveLocalDiagnosticEvent,
+  toDiagnosticEnvelope,
+} from "./diagnostic-log.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 const siteUrl = requiredUrl(args.site);
@@ -17,17 +23,36 @@ const headers = {
 };
 const codexCommand = process.platform === "win32" ? "codex.cmd" : "codex";
 const STATUS_REFRESH_MS = 5 * 60_000;
+const DIAGNOSTIC_POLL_MS = 5_000;
+const DIAGNOSTIC_RING_LIMIT = 50;
 let lastStatusAttemptAt = 0;
+let lastDiagnosticPollAt = 0;
+let detailedBuffer = [];
+const diagnosticCooldowns = new Map();
 
-await verifyCodex();
-const initialStatusSynced = await refreshCodexStatus(true);
-console.log(`\n✓ 本机 Codex CLI 已就绪（登录状态由本机 app-server 检查）`);
-console.log(initialStatusSynced ? "✓ 本机账号、额度与用量状态已同步到线上" : "! 本机账号已就绪，但线上额度状态暂未同步");
-console.log(`✓ 分镜工作台已连接：${deviceId}`);
-console.log("保持此窗口打开即可使用 CLI；按 Ctrl+C 可停止。\n");
+let runnerStarted = false;
+try {
+  await verifyCodex();
+  const initialStatusSynced = await refreshCodexStatus(true);
+  console.log(`\n✓ 本机 Codex CLI 已就绪（登录状态由本机 app-server 检查）`);
+  console.log(initialStatusSynced ? "✓ 本机账号、额度与用量状态已同步到线上" : "! 本机账号已就绪，但线上额度状态暂未同步");
+  console.log(`✓ 分镜工作台已连接：${deviceId}`);
+  console.log("保持此窗口打开即可使用 CLI；按 Ctrl+C 可停止。\n");
+  runnerStarted = true;
+} catch (error) {
+  await recordDiagnostic({
+    kind: "runner_start_failed",
+    code: "RUNNER_START_FAILED",
+    operation: "startup",
+    error,
+  });
+  console.error(`Runner 启动失败：${messageOf(error)}`);
+  process.exitCode = 1;
+}
 
-while (true) {
+if (runnerStarted) while (true) {
   try {
+    await pollDiagnosticUpload();
     await refreshCodexStatus();
     const job = await claim();
     if (!job) {
@@ -37,6 +62,13 @@ while (true) {
     console.log(`收到任务：${job.kind}`);
     await executeAndReport(job);
   } catch (error) {
+    await recordDiagnostic({
+      kind: "runner_connection_failed",
+      code: error?.runnerCode || "RUNNER_LOOP_FAILED",
+      operation: error?.runnerOperation || "runner_loop",
+      error,
+      httpStatus: error?.runnerStatus,
+    });
     console.error(`连接异常：${messageOf(error)}`);
     if (isFatalRunnerError(error)) {
       console.error("Runner 已停止：请回网站“API 与 CLI”重新生成这台设备的启动器，再重新打开。\n");
@@ -74,9 +106,22 @@ async function refreshCodexStatus(force = false) {
     return true;
   } catch (error) {
     if (isLocalCodexAuthError(error)) {
+      await recordDiagnostic({
+        kind: "runner_connection_failed",
+        code: "CODEX_AUTH_REQUIRED",
+        operation: "status",
+        error,
+      });
       throw new Error("本机 Codex 尚未完成登录。请在本机终端运行 codex，按提示完成登录后重新打开启动器。");
     }
     if (isFatalRunnerError(error)) throw error;
+    await recordDiagnostic({
+      kind: "runner_connection_failed",
+      code: error?.runnerCode || "STATUS_SYNC_FAILED",
+      operation: error?.runnerOperation || "status",
+      error,
+      httpStatus: error?.runnerStatus,
+    });
     console.warn(`本机额度状态暂时未同步：${messageOf(error)}`);
     return false;
   }
@@ -372,6 +417,8 @@ async function runnerHttpError(response, operation) {
   }
   const error = new Error(message);
   error.runnerStatus = status;
+  error.runnerOperation = operation;
+  error.runnerCode = `RUNNER_HTTP_${status}`;
   return error;
 }
 
@@ -401,11 +448,43 @@ async function executeAndReport(job) {
       throw new Error(`当前启动器不支持任务类型：${String(job.kind)}`);
     }
     await report(job, resultError ? "failed" : "succeeded", result, resultError);
-    if (resultError) console.error(`✗ 任务失败：${resultError}`);
+    if (resultError) {
+      await recordDiagnostic({
+        kind: /超时|timeout/i.test(resultError) ? "task_timeout" : "task_failed",
+        code: /超时|timeout/i.test(resultError) ? "LOCAL_TASK_TIMEOUT" : "LOCAL_TASK_FAILED",
+        operation: "task",
+        message: resultError,
+        jobId: job.id,
+        taskKind: job.kind,
+        attempt: job.attempt,
+      });
+      console.error(`✗ 任务失败：${resultError}`);
+    }
     else console.log("✓ 任务完成");
   } catch (error) {
     const message = messageOf(error);
-    await report(job, "failed", null, message);
+    await recordDiagnostic({
+      kind: /超时|timeout/i.test(message) ? "task_timeout" : "task_failed",
+      code: /超时|timeout/i.test(message) ? "RUNNER_TASK_TIMEOUT" : "RUNNER_TASK_FAILED",
+      operation: "task",
+      error,
+      jobId: job.id,
+      taskKind: job.kind,
+      attempt: job.attempt,
+    });
+    try {
+      await report(job, "failed", null, message);
+    } catch (reportError) {
+      await recordDiagnostic({
+        kind: "runner_connection_failed",
+        code: reportError?.runnerCode || "TASK_REPORT_FAILED",
+        operation: reportError?.runnerOperation || "report",
+        error: reportError,
+        httpStatus: reportError?.runnerStatus,
+        jobId: job.id,
+        taskKind: job.kind,
+      });
+    }
     console.error(`✗ 任务失败：${message}`);
   } finally {
     if (heartbeat) clearInterval(heartbeat);
@@ -454,7 +533,7 @@ async function requestJobInput(job) {
     headers,
     body: JSON.stringify({ jobId: job.id, leaseToken: job.leaseToken }),
   });
-  if (!response.ok) throw new Error(`读取线上任务包失败（${response.status}）`);
+  if (!response.ok) throw await runnerHttpError(response, "读取线上任务包");
   const body = await response.json();
   if (!body?.input) throw new Error("线上任务包为空。");
   return body.input;
@@ -498,7 +577,16 @@ async function renewLease(job) {
       headers,
       body: JSON.stringify({ jobId: job.id, leaseToken: job.leaseToken }),
     });
-  } catch {
+  } catch (error) {
+    await recordDiagnostic({
+      kind: "runner_connection_failed",
+      code: error?.runnerCode || "HEARTBEAT_FAILED",
+      operation: error?.runnerOperation || "heartbeat",
+      error,
+      httpStatus: error?.runnerStatus,
+      jobId: job.id,
+      taskKind: job.kind,
+    });
     // The final report will surface a lost connection.
   }
 }
@@ -509,7 +597,93 @@ async function report(job, status, result, error) {
     headers,
     body: JSON.stringify({ jobId: job.id, leaseToken: job.leaseToken, status, result, error }),
   });
-  if (!response.ok) throw new Error(`回传任务失败（${response.status}）`);
+  if (!response.ok) throw await runnerHttpError(response, "回传任务");
+}
+
+async function recordDiagnostic(input) {
+  const cooldownKey = `${input.kind}:${input.code}:${input.operation}`;
+  const now = Date.now();
+  if (input.kind === "runner_connection_failed" && now - (diagnosticCooldowns.get(cooldownKey) || 0) < 60_000) return;
+  diagnosticCooldowns.set(cooldownKey, now);
+  const event = createDiagnosticEvent({
+    ...input,
+    deviceId,
+    nodeVersion: process.version,
+    platform: process.platform,
+    runnerVersion: "0.1.0",
+  });
+  detailedBuffer = [event, ...detailedBuffer.filter((item) => item.eventId !== event.eventId)].slice(0, DIAGNOSTIC_RING_LIMIT);
+  await saveLocalDiagnosticEvent(event);
+  await uploadMinimalDiagnostic(event);
+}
+
+async function uploadMinimalDiagnostic(event) {
+  try {
+    const response = await fetch(`${siteUrl}/api/runner/diagnostics/report`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(toDiagnosticEnvelope(event, "minimal")),
+      signal: AbortSignal.timeout(10_000),
+    });
+    // 401/403 等连接问题不再递归记日志；本机文件仍然保留完整记录。
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function pollDiagnosticUpload() {
+  const now = Date.now();
+  if (now - lastDiagnosticPollAt < DIAGNOSTIC_POLL_MS) return;
+  lastDiagnosticPollAt = now;
+  try {
+    const response = await fetch(`${siteUrl}/api/runner/diagnostics/pending`, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (response.status === 204 || !response.ok) return;
+    const body = await response.json();
+    if (!body?.requestId) return;
+
+    const persisted = await readLocalDiagnosticEvents(DIAGNOSTIC_RING_LIMIT);
+    const eventsById = new Map();
+    for (const event of [...persisted, ...detailedBuffer]) {
+      if (event?.eventId) eventsById.set(event.eventId, event);
+    }
+    let events = [...eventsById.values()].slice(0, DIAGNOSTIC_RING_LIMIT);
+    if (!events.length) {
+      events = [createDiagnosticEvent({
+        kind: "runner_connection_failed",
+        code: "DIAGNOSTIC_BUFFER_EMPTY",
+        operation: "detailed_upload",
+        message: "本机没有可上传的详细错误记录。",
+        severity: "warning",
+        deviceId,
+        nodeVersion: process.version,
+        platform: process.platform,
+        runnerVersion: "0.1.0",
+      })];
+    }
+    const detailedEnvelopes = events.map((event) => toDiagnosticEnvelope(event, "detailed"));
+    while (detailedEnvelopes.length > 1 && JSON.stringify({ schemaVersion: 1, scope: "detailed", requestId: body.requestId, events: detailedEnvelopes }).length > 360_000) {
+      detailedEnvelopes.pop();
+    }
+    const upload = await fetch(`${siteUrl}/api/runner/diagnostics/report`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        schemaVersion: 1,
+        scope: "detailed",
+        requestId: body.requestId,
+        events: detailedEnvelopes,
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (upload.ok) console.log("✓ 详细诊断已按网站请求上传");
+  } catch {
+    // 详细上传失败时不影响任务循环；下一个请求会继续保留本机日志。
+  }
 }
 
 function runProcess(command, commandArgs, input, timeoutMs, cwd = process.cwd()) {
@@ -526,18 +700,18 @@ function runProcess(command, commandArgs, input, timeoutMs, cwd = process.cwd())
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
-      reject(new Error("本机 CLI 执行超时。"));
+      reject(withProcessDetails(new Error("本机 CLI 执行超时。"), stdout, stderr));
     }, timeoutMs);
     child.stdout.on("data", (chunk) => (stdout = tail(stdout + chunk, 100_000)));
     child.stderr.on("data", (chunk) => (stderr = tail(stderr + chunk, 100_000)));
     child.on("error", (error) => {
       clearTimeout(timer);
-      reject(new Error(`启动 ${command} 失败：${messageOf(error)}`));
+      reject(withProcessDetails(new Error(`启动 ${command} 失败：${messageOf(error)}`), stdout, stderr));
     });
     child.on("close", (code) => {
       clearTimeout(timer);
       if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(`${tail(stderr || stdout || `Codex CLI 退出码：${code}`, 20_000)}（退出码 ${code}）`));
+      else reject(withProcessDetails(new Error(`${tail(stderr || stdout || `Codex CLI 退出码：${code}`, 20_000)}（退出码 ${code}）`), stdout, stderr));
     });
     if (input) child.stdin.end(input);
     else child.stdin.end();
@@ -558,13 +732,13 @@ function runProcessOutcome(command, commandArgs, input, timeoutMs, cwd = process
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
-      reject(new Error("本地流水线执行超时。"));
+      reject(withProcessDetails(new Error("本地流水线执行超时。"), stdout, stderr));
     }, timeoutMs);
     child.stdout.on("data", (chunk) => (stdout = tail(stdout + chunk, 100_000)));
     child.stderr.on("data", (chunk) => (stderr = tail(stderr + chunk, 100_000)));
     child.on("error", (error) => {
       clearTimeout(timer);
-      reject(error);
+      reject(withProcessDetails(error, stdout, stderr));
     });
     child.on("close", (code) => {
       clearTimeout(timer);
@@ -573,6 +747,16 @@ function runProcessOutcome(command, commandArgs, input, timeoutMs, cwd = process
     if (input) child.stdin.end(input);
     else child.stdin.end();
   });
+}
+
+function withProcessDetails(error, stdout, stderr) {
+  if (error && typeof error === "object") {
+    error.diagnosticDetails = {
+      stdoutTail: tail(stdout, 12_000),
+      stderrTail: tail(stderr, 12_000),
+    };
+  }
+  return error;
 }
 
 function spawnSpec(command, commandArgs) {

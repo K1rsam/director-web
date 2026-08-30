@@ -15,6 +15,7 @@ import { isFlashModel, resolveApiOutputCap, runDeepSeekJson } from "@/lib/deepse
 import { loadStageSkillText } from "@/lib/pipeline-skills";
 import { getProjectDeepSeekCredential } from "@/lib/provider-credentials";
 import { prisma } from "@/lib/prisma";
+import { recordLocalDiagnosticLog } from "@/lib/local-diagnostic-log";
 
 export type PipelineProvider = "CLI" | "API";
 export type RoleSessionMode = "fresh" | "resume" | "ephemeral";
@@ -275,20 +276,35 @@ export async function runRoleByProvider(input: {
   prompt: string;
   sessionMode?: RoleSessionMode;
 }): Promise<RoleRunResult> {
-  return input.provider === "API"
-    ? runApiRoleJson({
-        role: input.role,
-        prompt: input.prompt,
-        projectId: input.projectId,
-        episodeId: input.episodeId ?? undefined,
-        useSession: input.sessionMode === "resume",
-        noSession: input.sessionMode === "ephemeral"
-      })
-    : runCliRoleJson({
-        projectId: input.projectId,
-        episodeId: input.episodeId ?? null,
-        role: input.role,
-        prompt: input.prompt,
-        sessionMode: input.sessionMode ?? "fresh"
-      });
+  try {
+    return input.provider === "API"
+      ? await runApiRoleJson({
+          role: input.role,
+          prompt: input.prompt,
+          projectId: input.projectId,
+          episodeId: input.episodeId ?? undefined,
+          useSession: input.sessionMode === "resume",
+          noSession: input.sessionMode === "ephemeral"
+        })
+      : await runCliRoleJson({
+          projectId: input.projectId,
+          episodeId: input.episodeId ?? null,
+          role: input.role,
+          prompt: input.prompt,
+          sessionMode: input.sessionMode ?? "fresh"
+        });
+  } catch (error) {
+    const raw = error && typeof error === "object" ? error as { rawDetail?: unknown } : {};
+    await recordLocalDiagnosticLog({
+      kind: "task_failed",
+      code: input.provider === "API" ? "MODEL_API_FAILED" : "MODEL_CLI_FAILED",
+      operation: "model_call",
+      error,
+      taskKind: input.role.code,
+      details: {
+        stderrTail: typeof raw.rawDetail === "string" ? raw.rawDetail : undefined,
+      },
+    });
+    throw error;
+  }
 }
