@@ -23,7 +23,7 @@
 
 线上地址：<https://director-workbench-yue.a8197772.chatgpt.site>
 
-截至 2026-08-30，线上已部署第 26 版，对应 `director-workbench-sites` 提交 `b664121`，访问策略为公开链接，业务数据仍由应用账号隔离。
+截至 2026-08-30，线上已部署第 27 版，对应 `director-workbench-sites` 提交 `92c4298`，访问策略为公开链接，业务数据仍由应用账号隔离。
 
 最重要的当前判断：
 
@@ -329,8 +329,8 @@ Sites / vinext / React
 - D1 绑定名为 `DB`，R2 尚未启用；
 - 公开链接访问，应用内部仍要求业务账号登录；
 - 当前数据库可见 21 张业务表、2 张正式 Runner 表和 2 张早期 prototype 表；
-- 当前线上版本为第 26 版，Sites 源仓库 HEAD 为 `b664121`；本地构建与线上保存版本一致；
-- Sites 源码已同步到 GitHub 私有仓库的独立 `sites-online` 分支，避免覆盖线下生产版 `main`。
+- 当前线上版本为第 27 版，Sites 源仓库 HEAD 为 `92c4298`；本地构建与线上保存版本一致；
+- Sites 源码已同步到 GitHub 私有仓库的独立 `sites-online` 分支，避免覆盖线下生产版 `main`；Windows Runner 启动器已加入代理和本地镜像兜底。
 
 ### 5.3 当前 Runner
 
@@ -342,7 +342,10 @@ Sites / vinext / React
 - 租约、心跳、成功/失败回传；
 - `smoke`、`project_foundation`、`episode_pipeline` 命令映射；
 - Windows 启动器与 Mac 启动命令入口；
+- Windows 启动器会继承 `HTTP_PROXY`/`HTTPS_PROXY`，自动尝试本机 `127.0.0.1:7890`，最后使用本地项目中的 Runner 镜像；成功走代理时同步设置 Node 的环境代理；
 - 设备撤销与最后在线时间。
+
+当前网络结论：Sites 的 Cloudflare 入口会对终端直连返回 `403`，浏览器或代理访问可用；因此 Windows Runner 必须沿用本机可用代理，不能只靠重新生成设备令牌解决。
 
 当前尚未完成或尚未验收：
 
