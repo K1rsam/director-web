@@ -69,3 +69,46 @@ export const runnerJobs = sqliteTable(
     index("idx_runner_jobs_project_created").on(table.projectId, table.createdAt),
   ],
 );
+
+export const runnerDiagnosticLogs = sqliteTable(
+  "runner_diagnostic_logs",
+  {
+    id: text("id").primaryKey(),
+    ownerUserId: text("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    runnerTokenId: text("runner_token_id").notNull().references(() => runnerTokens.id, { onDelete: "cascade" }),
+    deviceId: text("device_id").notNull(),
+    eventId: text("event_id").notNull(),
+    scope: text("scope", { enum: ["minimal", "detailed"] }).notNull(),
+    kind: text("kind").notNull(),
+    code: text("code").notNull(),
+    operation: text("operation").notNull(),
+    severity: text("severity").notNull(),
+    jobId: text("job_id"),
+    taskKind: text("task_kind"),
+    occurredAt: integer("occurred_at", { mode: "timestamp_ms" }).notNull(),
+    receivedAt: integer("received_at", { mode: "timestamp_ms" }).notNull(),
+    eventJson: text("event_json").notNull(),
+  },
+  (table) => [
+    uniqueIndex("idx_runner_diagnostic_token_event").on(table.runnerTokenId, table.eventId),
+    index("idx_runner_diagnostic_owner_received").on(table.ownerUserId, table.receivedAt),
+    index("idx_runner_diagnostic_token_received").on(table.runnerTokenId, table.receivedAt),
+    index("idx_runner_diagnostic_job").on(table.jobId),
+  ],
+);
+
+export const runnerDiagnosticUploadRequests = sqliteTable(
+  "runner_diagnostic_upload_requests",
+  {
+    id: text("id").primaryKey(),
+    ownerUserId: text("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    runnerTokenId: text("runner_token_id").notNull().references(() => runnerTokens.id, { onDelete: "cascade" }),
+    status: text("status", { enum: ["requested", "uploaded", "expired"] }).notNull().default("requested"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    completedAt: integer("completed_at", { mode: "timestamp_ms" }),
+  },
+  (table) => [
+    index("idx_runner_diagnostic_request_token_status").on(table.runnerTokenId, table.status, table.createdAt),
+    index("idx_runner_diagnostic_request_owner_created").on(table.ownerUserId, table.createdAt),
+  ],
+);

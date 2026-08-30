@@ -4,6 +4,7 @@ import { useEffect, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
 import type { RunnerStatusLimit, RunnerStatusSnapshot, RunnerStatusWindow } from "@/lib/runner-status";
+import { DiagnosticLogPanel } from "./diagnostic-log-panel";
 
 export type RunnerStatusDevice = {
   id: string;
@@ -28,6 +29,7 @@ export function CodexStatusPanel({ devices }: { devices: RunnerStatusDevice[] })
   }
 
   return (
+    <>
     <section className="runnerStatusCard studioCard" aria-label="本机 Codex 账号与额度">
       <header className="runnerStatusHeader">
         <div>
@@ -65,6 +67,8 @@ export function CodexStatusPanel({ devices }: { devices: RunnerStatusDevice[] })
         </div>
       )}
     </section>
+    <DiagnosticLogPanel devices={devices} />
+    </>
   );
 }
 
