@@ -42,7 +42,7 @@ const dualUntilSplit = new Set(manifest.dual_until_split.map(normalize));
 export function classify(input) {
   const file = normalize(input);
   if (file === ".platform" || file.startsWith(".platform/")) {
-    return { category: "local_only", label: "main-only", reason: "同步工具与边界清单" };
+    return { category: "platform_tooling", label: "main-only", reason: "同步工具与边界清单" };
   }
   if (commonOnce.has(file)) {
     return { category: "common_once", label: "main-only", reason: "公共文件，Sites 由 main 生成" };
@@ -66,6 +66,7 @@ async function readStdin() {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
 const args = process.argv.slice(2);
 function option(name) {
   const index = args.indexOf(name);
@@ -135,5 +136,6 @@ if (files.length === 0) {
   } else {
     console.log("结论：只需要修改 main；生成 Sites 时会自动继承公共代码。");
   }
+}
 }
 }

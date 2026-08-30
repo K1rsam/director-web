@@ -13,6 +13,7 @@ function argument(name, fallback = null) {
 const mainDir = path.resolve(argument("--main") ?? "");
 const overlayDir = path.resolve(argument("--overlay") ?? "");
 const targetDir = path.resolve(argument("--target") ?? "");
+const mainRef = argument("--main-ref", "HEAD");
 const overlayRef = argument("--overlay-ref", "HEAD");
 const manifestPath = path.join(mainDir, ".platform", "platform-boundaries.json");
 
@@ -46,7 +47,7 @@ function nulSeparated(buffer) {
 }
 
 function trackedFiles(cwd) {
-  return nulSeparated(gitBuffer(cwd, ["ls-files", "-z"]));
+  return nulSeparated(gitBuffer(cwd, ["ls-tree", "-r", "--name-only", "-z", mainRef]));
 }
 
 function overlayChanges(cwd) {
@@ -61,11 +62,11 @@ function overlayChanges(cwd) {
   return changes;
 }
 
-async function copyTrackedFile(sourceRoot, targetRoot, file) {
-  const source = path.join(sourceRoot, ...file.split("/"));
+async function copyBlob(sourceRoot, sourceRef, targetRoot, file) {
   const target = path.join(targetRoot, ...file.split("/"));
   await fs.mkdir(path.dirname(target), { recursive: true });
-  await fs.copyFile(source, target);
+  const content = gitBuffer(sourceRoot, ["show", `${sourceRef}:${file}`]);
+  await fs.writeFile(target, content);
 }
 
 async function removeTargetFile(file) {
@@ -81,8 +82,8 @@ for (const file of trackedFiles(mainDir)) {
   if (classification.category === "unknown") {
     throw new Error(`main 中存在未归类文件：${file}`);
   }
-  if (classification.category === "local_only" || classification.category === "sites_only") continue;
-  await copyTrackedFile(mainDir, targetDir, file);
+  if (classification.category === "local_only" || classification.category === "sites_only" || classification.category === "platform_tooling") continue;
+  await copyBlob(mainDir, mainRef, targetDir, file);
   mainCopied += 1;
 }
 
@@ -93,7 +94,8 @@ for (const change of overlayChanges(overlayDir)) {
   if (classification.category === "unknown") {
     throw new Error(`sites-online overlay 中存在未归类文件：${change.file}`);
   }
-  if (classification.category === "local_only" || classification.category === "common_once") {
+  if (classification.category === "local_only" || classification.category === "common_once" || classification.category === "platform_tooling") {
+    if (classification.category === "platform_tooling") continue;
     if (change.status !== "D") {
       throw new Error(`overlay 不应拥有 ${classification.category} 文件：${change.file}`);
     }
@@ -104,7 +106,7 @@ for (const change of overlayChanges(overlayDir)) {
       await removeTargetFile(change.file);
       overlayRemoved += 1;
     } else {
-      await copyTrackedFile(overlayDir, targetDir, change.file);
+      await copyBlob(overlayDir, overlayRef, targetDir, change.file);
       overlayCopied += 1;
     }
     continue;
@@ -119,4 +121,3 @@ if (!fsSync.existsSync(hostingPath)) {
 
 console.log(`Sites 源码已生成：${targetDir}`);
 console.log(`main 公共文件：${mainCopied}；overlay 覆盖/新增：${overlayCopied}；overlay 删除：${overlayRemoved}`);
-
