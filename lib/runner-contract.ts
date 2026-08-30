@@ -1,4 +1,4 @@
-import { normalizeRunnerStatus, type RunnerStatusSnapshot } from "@/lib/runner-status";
+import { normalizeRunnerStatus, type RunnerStatusSnapshot } from "./runner-status.ts";
 
 const MAX_ID_CHARS = 120;
 const MAX_LEASE_TOKEN_CHARS = 512;

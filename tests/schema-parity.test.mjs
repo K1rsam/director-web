@@ -7,18 +7,32 @@ const sourceDb = "/Users/yue/Documents/CL/prisma/dev.db";
 const migrationPath = "drizzle/0001_original_business_schema.sql";
 const passwordMigrationPath = "drizzle/0003_sites_password_compat.sql";
 
-test("D1 migration contains every original business table", () => {
-  const source = execFileSync(
-    "sqlite3",
-    [
-      "-readonly",
-      sourceDb,
-      "SELECT name FROM sqlite_master WHERE type='table' AND name <> '_prisma_migrations' ORDER BY name;",
-    ],
-    { encoding: "utf8" },
-  )
-    .trim()
-    .split("\n");
+test("D1 migration contains every original business table", (t) => {
+  if (!existsSync(sourceDb)) {
+    t.skip("DIRECTOR_SOURCE_DB 未提供，跳过需要本地源数据库的迁移回归。");
+    return;
+  }
+
+  let sourceOutput;
+  try {
+    sourceOutput = execFileSync(
+      "sqlite3",
+      [
+        "-readonly",
+        sourceDb,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name <> '_prisma_migrations' ORDER BY name;",
+      ],
+      { encoding: "utf8" },
+    );
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      t.skip("当前环境未安装 sqlite3，跳过需要本地源数据库的迁移回归。");
+      return;
+    }
+    throw error;
+  }
+
+  const source = sourceOutput.trim().split("\n");
 
   assert.equal(source.length, 21);
   assert.ok(existsSync(migrationPath), "D1 business migration should exist");

@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import test from "node:test";
 
-const sourceDb = "/Users/yue/Documents/CL/prisma/dev.db";
+const sourceDb = process.env.DIRECTOR_SOURCE_DB || "/Users/yue/Documents/CL/prisma/dev.db";
 
-test("local import snapshot contains the complete original database", async () => {
+test("local import snapshot contains the complete original database", async (t) => {
+  if (!existsSync(sourceDb)) {
+    t.skip("DIRECTOR_SOURCE_DB 未提供，跳过需要本地源数据库的迁移回归。");
+    return;
+  }
   const importScript = await import("../scripts/import-original-database.mjs").catch(() => null);
   assert.ok(importScript, "database import script should exist");
 
