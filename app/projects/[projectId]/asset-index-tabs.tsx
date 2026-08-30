@@ -428,7 +428,7 @@ export function AssetExportButton({ projectTitle, assets }: { projectTitle: stri
       const assetById = new Map(assets.map((asset) => [asset.id, asset]));
       const sortedAssets = sortAssetsHierarchically(assets);
       const dataSheets: AssetExportSheet[] = ASSET_EXPORT_SHEETS.map((definition) => {
-        const sheetAssets = sortedAssets.filter((asset) => definition.types.includes(asset.type));
+        const sheetAssets = sortedAssets.filter((asset) => definition.types.some((type) => type === asset.type));
         return {
           name: definition.name,
           columnWidths: ASSET_EXPORT_WIDTHS,
@@ -462,7 +462,7 @@ export function AssetExportButton({ projectTitle, assets }: { projectTitle: stri
         ...ASSET_EXPORT_SHEETS.map((definition) => [
           definition.name,
           definition.summary,
-          String(sortedAssets.filter((asset) => definition.types.includes(asset.type)).length),
+          String(sortedAssets.filter((asset) => definition.types.some((type) => type === asset.type)).length),
           definition.note
         ])
       ];

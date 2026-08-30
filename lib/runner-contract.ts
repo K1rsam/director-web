@@ -1,6 +1,8 @@
 const MAX_ID_CHARS = 120;
 const MAX_LEASE_TOKEN_CHARS = 512;
-const MAX_RESULT_CHARS = 200_000;
+// P1/P2 的资产表可能包含上千条带 metadata 的记录；结果仍然是有范围的 JSON，
+// 但 200K 会在正常项目上被误判为超限。上限与单次 Runner 任务范围、40 条一批回写配套。
+const MAX_RESULT_CHARS = 8_000_000;
 const MAX_ERROR_CHARS = 20_000;
 
 type RecordValue = Record<string, unknown>;
@@ -30,6 +32,12 @@ export function parseHeartbeatBody(
   const jobId = shortString(body?.jobId, MAX_ID_CHARS);
   const leaseToken = shortString(body?.leaseToken, MAX_LEASE_TOKEN_CHARS);
   return jobId && leaseToken ? { jobId, leaseToken } : null;
+}
+
+export function parseJobInputBody(
+  value: unknown,
+): { jobId: string; leaseToken: string } | null {
+  return parseHeartbeatBody(value);
 }
 
 export function parseReportBody(value: unknown): {

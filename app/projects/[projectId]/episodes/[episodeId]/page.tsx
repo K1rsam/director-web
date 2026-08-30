@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { resetEpisodeShotsAction, acknowledgeIssueAction, acknowledgeAllSuggestionsAction } from "@/app/actions";
+import { resetEpisodeShotsAction, acknowledgeIssueAction, acknowledgeAllSuggestionsAction, startEpisodePipelineAction } from "@/app/actions";
 import { getEpisodeStudio } from "@/lib/studio";
 import { formatDialogueEntry } from "@/lib/shot-cells";
 import { AppChrome } from "@/app/ui/app-chrome";
@@ -74,16 +74,17 @@ export default async function EpisodeStudioPage({
           const actionLabel = role.status === "已完成" ? "重跑" : role.status === "失败" ? "再试一次" : "运行";
           return (
             <div className="roleStageForm" key={role.code}>
-              <input name="projectId" type="hidden" value={projectId} />
-              <input name="episodeId" type="hidden" value={episodeId} />
-              <input name="stageCode" type="hidden" value={role.code} />
-              <button
-                type="button"
-                className="roleCardHitArea"
-                disabled
-                aria-label={`${actionLabel} ${role.code} ${role.name}`}
-                title="执行引擎将在 API/Runner 阶段接通"
-              />
+              <form action={startEpisodePipelineAction}>
+                <input name="projectId" type="hidden" value={projectId} />
+                <input name="episodeId" type="hidden" value={episodeId} />
+                <input name="stageCode" type="hidden" value={role.code} />
+                <button
+                  type="submit"
+                  className="roleCardHitArea"
+                  disabled={studio.pipelineActive || role.status === "排队中" || role.status === "进行中"}
+                  aria-label={`${actionLabel} ${role.code} ${role.name}`}
+                />
+              </form>
               <article className={`roleProgress ${role.status === "已完成" ? "done" : role.status === "进行中" ? "running" : role.status === "失败" ? "failed" : ""}`}>
                 <span>{role.code}</span>
                 <div><strong>{role.name}</strong><small>{role.model} · {role.duration}</small></div>

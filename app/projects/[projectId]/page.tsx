@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { confirmAllAssetsAction } from "@/app/actions";
+import { confirmAllAssetsAction, startProjectFoundationAction } from "@/app/actions";
 import { getD1 } from "@/db";
 import { getProjectStudio } from "@/lib/studio";
 import { listPresentationContracts } from "@/lib/repositories/project-studio";
@@ -66,7 +66,7 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
   const episodeStates = productionEpisodes.map((episode) => {
     const running = episode.roles.some((role) => role.status === "进行中");
     const failed = episode.roles.some((role) => role.status === "失败");
-    const finished = episode.roles.at(-1)?.status === "已完成";
+    const finished = episode.roles.length === 6 && episode.roles.every((role) => role.status === "已完成");
     return {
       id: episode.id,
       number: episode.number,
@@ -105,9 +105,12 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
         ? `/projects/${projectId}/episodes/${guidance.episodeId}`
         : "#phase-two";
   const guidanceAction = guidance.kind === "foundation" ? (
-    <button type="button" className="glassPrimary" disabled title="本地 Runner 执行将在下一阶段接通">
-      {foundationActive ? foundationStatusLabel : guidance.actionLabel}
-    </button>
+    <form action={startProjectFoundationAction}>
+      <input name="projectId" type="hidden" value={projectId} />
+      <button type="submit" className="glassPrimary" disabled={foundationActive}>
+        {foundationActive ? foundationStatusLabel : guidance.actionLabel}
+      </button>
+    </form>
   ) : null;
   const guidedEpisodeNumber = guidance.episodeId
     ? studio.episodes.find((episode) => episode.id === guidance.episodeId)?.number
@@ -124,7 +127,10 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
       activeSection="project"
       episodes={episodeStates.map(({ id, number, title, state }) => ({ id, number, title, state }))}
       primaryAction={guidance.kind === "foundation" ? (
-        <button type="button" disabled title="线上展示版需要连接个人 Runner 后执行">{foundationActive ? foundationStatusLabel : guidance.actionLabel}</button>
+        <form action={startProjectFoundationAction}>
+          <input name="projectId" type="hidden" value={projectId} />
+          <button type="submit" disabled={foundationActive}>{foundationActive ? foundationStatusLabel : guidance.actionLabel}</button>
+        </form>
       ) : topbarNextStep ? (
         <span className="topbarNextStep" aria-label={topbarNextStep}>{topbarNextStep}</span>
       ) : (

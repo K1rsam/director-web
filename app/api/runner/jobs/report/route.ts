@@ -10,10 +10,14 @@ export async function POST(request: Request): Promise<Response> {
   const body = parseReportBody(await readJson(request));
   if (!body) return Response.json({ error: "invalid_request" }, { status: 400 });
 
-  const accepted = await reportJob(identity, body);
-  return accepted
-    ? Response.json({ ok: true })
-    : Response.json({ error: "lease_lost" }, { status: 409 });
+  try {
+    const accepted = await reportJob(identity, body);
+    return accepted
+      ? Response.json({ ok: true })
+      : Response.json({ error: "lease_lost" }, { status: 409 });
+  } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : "任务结果回写失败。" }, { status: 422 });
+  }
 }
 
 async function readJson(request: Request): Promise<unknown> {

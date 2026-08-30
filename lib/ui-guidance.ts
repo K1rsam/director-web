@@ -37,9 +37,9 @@ export function deriveProjectGuidance(input: {
   if (input.foundationActive) {
     return {
       kind: "foundation",
-      eyebrow: "正在整理",
-      title: "正在整理全剧基础工程",
-      description: "P1 完成后会继续执行 P2；完成后再进入单集分镜生产。",
+      eyebrow: "P1/P2 执行中",
+      title: "全剧基础工程正在执行",
+      description: "任务已进入线上队列，由已连接 Runner 使用本地 P1/P2 代码执行；完成后再进入单集分镜生产。",
       actionLabel: "查看 P1/P2 进度"
     };
   }
@@ -48,9 +48,9 @@ export function deriveProjectGuidance(input: {
     return {
       kind: "foundation",
       eyebrow: "推荐下一步",
-      title: "建立全剧基础工程",
-      description: "先完成基础策划与资产索引，再进入单集分镜生产。",
-      actionLabel: "开始整理全剧资料"
+      title: "开始 P1 + P2 全剧基础工程",
+      description: "先完成全剧基础策划与资产索引，再进入单集分镜生产。",
+      actionLabel: "开始 P1 + P2"
     };
   }
 

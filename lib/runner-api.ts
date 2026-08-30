@@ -9,6 +9,7 @@ import {
   runnerIdentityFromRow,
   type RunnerIdentity,
 } from "@/lib/runner-ownership";
+import { applyRunnerResult, markPipelineRunsFailed } from "@/lib/runner-pipeline";
 
 const LEASE_MS = 5 * 60_000;
 
@@ -146,6 +147,64 @@ export async function reportJob(
 ): Promise<boolean> {
   const db = getDb();
   const leaseTokenHash = await hashRunnerToken(input.leaseToken);
+  const [claimed] = await db
+    .select({
+      id: runnerJobs.id,
+      projectId: runnerJobs.projectId,
+      kind: runnerJobs.kind,
+      payload: runnerJobs.payload,
+      attempt: runnerJobs.attempt,
+    })
+    .from(runnerJobs)
+    .where(
+      and(
+        eq(runnerJobs.id, input.jobId),
+        eq(runnerJobs.ownerUserId, identity.ownerUserId),
+        eq(runnerJobs.status, "running"),
+        eq(runnerJobs.leaseTokenHash, leaseTokenHash),
+      ),
+    )
+    .limit(1);
+  if (!claimed) {
+    const [existing] = await db
+      .select({ status: runnerJobs.status })
+      .from(runnerJobs)
+      .where(and(eq(runnerJobs.id, input.jobId), eq(runnerJobs.ownerUserId, identity.ownerUserId)))
+      .limit(1);
+    return existing?.status === input.status;
+  }
+
+  const payload = safeJsonRecord(claimed.payload);
+  const job = {
+    id: claimed.id,
+    projectId: claimed.projectId,
+    kind: claimed.kind as "project_foundation" | "episode_pipeline" | "smoke" | "codex_prompt",
+    payload,
+    attempt: Number(claimed.attempt),
+  };
+  try {
+    if ((job.kind === "project_foundation" || job.kind === "episode_pipeline") && input.status === "succeeded" && !input.result) {
+      throw new Error("流水线任务没有返回结果，不能标记为完成。");
+    }
+    const result = input.result === null ? null : parseResultJson(input.result);
+    await applyRunnerResult(job, result, input.status, input.error);
+  } catch (error) {
+    const message = `线上结果回写失败：${error instanceof Error ? error.message : String(error)}`;
+    await markPipelineRunsFailed(job, message).catch(() => undefined);
+    await db
+      .update(runnerJobs)
+      .set({
+        status: "failed",
+        result: input.result,
+        error: message,
+        leasedBy: null,
+        leaseTokenHash: null,
+        leaseExpiresAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(runnerJobs.id, claimed.id));
+    throw new Error(message);
+  }
   const [updated] = await db
     .update(runnerJobs)
     .set({
@@ -167,13 +226,7 @@ export async function reportJob(
     )
     .returning({ id: runnerJobs.id });
   if (updated) return true;
-
-  const [existing] = await db
-    .select({ status: runnerJobs.status })
-    .from(runnerJobs)
-    .where(and(eq(runnerJobs.id, input.jobId), eq(runnerJobs.ownerUserId, identity.ownerUserId)))
-    .limit(1);
-  return existing?.status === input.status;
+  return false;
 }
 
 function safeJson(value: string): unknown {
@@ -181,5 +234,20 @@ function safeJson(value: string): unknown {
     return JSON.parse(value);
   } catch {
     return {};
+  }
+}
+
+function safeJsonRecord(value: string): Record<string, unknown> {
+  const parsed = safeJson(value);
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : {};
+}
+
+function parseResultJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new Error("Runner 返回的结果不是合法 JSON。");
   }
 }

@@ -30,6 +30,7 @@ import {
   skipPresentationContract,
 } from "@/lib/repositories/project-studio";
 import { createRunnerToken, hashRunnerToken } from "@/lib/runner-auth";
+import { enqueueEpisodePipeline, enqueueProjectFoundation } from "@/lib/runner-pipeline";
 
 export type ProjectCreationState = { error: string };
 export type RunnerTokenState = { token: string | null; error: string | null };
@@ -169,6 +170,30 @@ export async function resetEpisodeShotsAction(formData: FormData) {
   const episodeId = String(formData.get("episodeId") ?? "");
   await requireEpisodeAccess(projectId, episodeId);
   await resetEpisodeData(getD1(), projectId, episodeId);
+  revalidatePath(`/projects/${projectId}/episodes/${episodeId}`);
+}
+
+/** 线上只创建 D1 任务和流水线记录；实际 P1/P2 由已连接的个人 Runner 执行。 */
+export async function startProjectFoundationAction(formData: FormData) {
+  const projectId = String(formData.get("projectId") ?? "");
+  const stageValue = String(formData.get("stageCode") ?? "").trim();
+  const user = await requireProjectAccess(projectId);
+  const stage = stageValue === "P1" || stageValue === "P2" ? stageValue : undefined;
+  await enqueueProjectFoundation(projectId, user.id, stage);
+  revalidatePath(`/projects/${projectId}`);
+}
+
+/** 线上只创建 D1 单集任务；本地 Runner 使用任务快照执行 E0–E5 并回写结果。 */
+export async function startEpisodePipelineAction(formData: FormData) {
+  const projectId = String(formData.get("projectId") ?? "");
+  const episodeId = String(formData.get("episodeId") ?? "");
+  const stageValue = String(formData.get("stageCode") ?? "").trim();
+  const user = await requireEpisodeAccess(projectId, episodeId);
+  const stage = ["E0", "E1", "E2", "E3", "E4", "E5"].includes(stageValue)
+    ? stageValue as "E0" | "E1" | "E2" | "E3" | "E4" | "E5"
+    : undefined;
+  await enqueueEpisodePipeline(projectId, episodeId, user.id, stage ? { stage } : {});
+  revalidatePath(`/projects/${projectId}`);
   revalidatePath(`/projects/${projectId}/episodes/${episodeId}`);
 }
 

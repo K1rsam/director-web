@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { startProjectFoundationAction } from "@/app/actions";
 
 export type FoundationRunView = {
   stageCode: string;
@@ -40,13 +41,16 @@ export function FoundationActions({
       <div className="foundationControlHeader">
         <div>
           <strong>P1 → P2</strong>
-          <span>一键执行全剧基础策划与资产拆解</span>
+          <span>线上建立任务；由已连接 Runner 使用本地 P1/P2 代码执行</span>
         </div>
-        <button type="button" className="foundationRunAllButton" disabled title="线上展示版需要连接个人 Runner 后执行">
-          {active ? "P1/P2 执行中…" : foundationReady ? "P1 + P2 已完成" : "一键执行 P1 + P2（需连接 Runner）"}
-        </button>
+        <form action={startProjectFoundationAction}>
+          <input name="projectId" type="hidden" value={projectId} />
+          <button type="submit" className="foundationRunAllButton" disabled={active}>
+            {active ? "P1/P2 已排队或执行中…" : foundationReady ? "重新执行 P1 + P2" : "开始 P1 + P2"}
+          </button>
+        </form>
       </div>
-      <p className="foundationRunnerNote">线上版本已同步控制台与执行状态；真正执行需要在“API 与 CLI”中连接个人 Runner。</p>
+      <p className="foundationRunnerNote">项目资料以线上数据库为准；Runner 只取本次任务快照执行，完成后把结果写回线上。</p>
       <div className="foundationRail" aria-label="全剧基础工程岗位">
         <article className={`foundationRole automatic ${preprocessReady ? "done" : ""}`}>
           <span>P0</span>
@@ -62,9 +66,11 @@ export function FoundationActions({
         const actionLabel = run?.status === "已完成" ? "重跑" : run?.status === "失败" ? "再试一次" : "运行";
         return (
           <div className="foundationStageForm" key={code}>
+            <form action={startProjectFoundationAction}>
               <input name="projectId" type="hidden" value={projectId} />
               <input name="stageCode" type="hidden" value={code} />
-              <button type="button" className="foundationCardHitArea" disabled aria-label={`${actionLabel} ${code}`} title="本地 Runner 执行将在下一阶段接通" />
+              <button type="submit" className="foundationCardHitArea" disabled={active || run?.status === "排队中" || run?.status === "进行中"} aria-label={`${actionLabel} ${code}`} />
+            </form>
               <article className={`foundationRole ${className}`}>
                 <span>{code}</span>
                 <div>
@@ -90,8 +96,10 @@ export function FoundationActions({
         <div>
           <p>重新整理会覆盖当前全剧策划与资产索引，但不会删除已生成的单集分镜。</p>
           <div className="foundationRunAll">
-            <input name="projectId" type="hidden" value={projectId} />
-            <button type="button" className="dangerQuietButton" disabled title="本地 Runner 执行将在下一阶段接通">重新整理全剧资料</button>
+            <form action={startProjectFoundationAction}>
+              <input name="projectId" type="hidden" value={projectId} />
+              <button type="submit" className="dangerQuietButton" disabled={active}>重跑全剧基础工程</button>
+            </form>
           </div>
         </div>
       </details>

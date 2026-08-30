@@ -24,20 +24,21 @@ test("original project library and creation surfaces replace the control prototy
   assert.doesNotMatch(home, /创建连通测试任务|Sites 控制面/);
 });
 
-test("foundation execution controls stay visible but cannot enqueue fake work", () => {
+test("foundation execution controls enqueue a scoped D1 task for the personal runner", () => {
   const actions = readFileSync("app/projects/[projectId]/foundation-actions.tsx", "utf8");
-  assert.match(actions, /本地 Runner 执行将在下一阶段接通/);
-  assert.doesNotMatch(actions, /runFoundationStageAction|startProjectFoundationAction/);
+  assert.match(actions, /startProjectFoundationAction/);
+  assert.match(actions, /线上数据库/);
+  assert.doesNotMatch(actions, /下一阶段接通/);
 });
 
-test("episode execution controls are explicit placeholders while edits and exports remain", () => {
+test("episode execution controls enqueue real D1 snapshot jobs while edits and exports remain", () => {
   const page = readFileSync("app/projects/[projectId]/episodes/[episodeId]/page.tsx", "utf8");
   const pipelineButton = readFileSync("app/projects/[projectId]/episodes/[episodeId]/episode-pipeline-button.tsx", "utf8");
-  assert.match(page, /执行引擎将在 API\/Runner 阶段接通/);
+  assert.match(page, /startEpisodePipelineAction|执行代码/);
   assert.match(page, /acknowledgeIssueAction/);
   assert.match(page, /resetEpisodeShotsAction/);
-  assert.match(pipelineButton, /disabled/);
-  assert.doesNotMatch(page, /runSingleStageAction|repairOpenIssuesAction|stopPipelineAction/);
+  assert.match(pipelineButton, /startEpisodePipelineAction/);
+  assert.match(pipelineButton, /disabled={active}/);
   assert.equal(existsSync("app/api/episodes/[episodeId]/final/route.ts"), true);
   assert.equal(existsSync("app/api/task-packages/[taskPackageId]/prompt/route.ts"), true);
 });
@@ -111,18 +112,30 @@ test("DeepSeek uses each user's browser key without server-side persistence", ()
   assert.doesNotMatch(route, /getDb|getD1|process\.env|DEEPSEEK_API_KEY/);
 });
 
-test("personal runner starts without a CL-sites source directory", () => {
+test("personal runner uses each device's own CLI and a D1 task snapshot", () => {
   const page = readFileSync("app/runner/page.tsx", "utf8");
   const form = readFileSync("app/runner/token-form.tsx", "utf8");
   const runner = readFileSync("public/runner/director-runner.mjs", "utf8");
 
-  assert.doesNotMatch(page, /打开\s*<code[^>]*>CL-sites|DIRECTOR_PROJECT_DIR/);
+  assert.match(page, /自己的 Codex CLI、账号和额度/);
+  assert.match(page, /网站只保存线上项目数据与任务结果/);
+  assert.match(form, /本地执行代码目录/);
+  assert.match(form, /一次性临时工作库/);
   assert.match(form, /下载 Windows 启动器/);
   assert.match(form, /复制 Mac 启动命令/);
   assert.match(runner, /codex_prompt/);
   assert.match(runner, /codexCommand[^;]*"codex"/);
   assert.match(runner, /const commandArgs = \[\s*"exec"/s);
-  assert.doesNotMatch(runner, /CL-sites|DIRECTOR_PROJECT_DIR|run-episode-pipeline|run-project-foundation/);
+  assert.match(runner, /DIRECTOR_PROJECT_DIR/);
+  assert.match(runner, /api\/runner\/jobs\/input/);
+  assert.match(runner, /run-runner-job\.ts/);
+  assert.doesNotMatch(runner, /run-episode-pipeline|run-project-foundation/);
+});
+
+test("legacy runner entry delegates to the snapshot bridge", () => {
+  const entry = readFileSync("runner/index.mjs", "utf8");
+  assert.match(entry, /public\/runner\/director-runner\.mjs/);
+  assert.doesNotMatch(entry, /buildRunnerCommand|dev\.db|run-episode-pipeline|run-project-foundation/);
 });
 
 test("runner settings reuse the shared workbench chrome", () => {
