@@ -125,6 +125,9 @@ test("personal runner uses each device's own CLI and a D1 task snapshot", () => 
   assert.match(form, /复制 Mac 启动命令/);
   assert.match(runner, /codex_prompt/);
   assert.match(runner, /codexCommand[^;]*"codex"/);
+  assert.match(runner, /spawnSpec\(command, commandArgs\)/);
+  assert.match(runner, /process\.env\.ComSpec/);
+  assert.match(runner, /本机 Codex CLI 检测失败/);
   assert.match(runner, /const commandArgs = \[\s*"exec"/s);
   assert.match(runner, /DIRECTOR_PROJECT_DIR/);
   assert.match(runner, /api\/runner\/jobs\/input/);

@@ -38,8 +38,8 @@ async function verifyCodex() {
   }
   try {
     await runProcess(codexCommand, ["login", "status"], null, 20_000);
-  } catch {
-    throw new Error("Codex CLI 尚未安装或登录。请先在终端运行 codex login，再重新打开启动器。");
+  } catch (error) {
+    throw new Error(`本机 Codex CLI 检测失败：${messageOf(error)}。如果提示未登录，请在终端运行 codex login 后重新打开启动器。`);
   }
 }
 
@@ -184,7 +184,14 @@ async function report(job, status, result, error) {
 
 function runProcess(command, commandArgs, input, timeoutMs, cwd = process.cwd()) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, commandArgs, { cwd, shell: false, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const spec = spawnSpec(command, commandArgs);
+    let child;
+    try {
+      child = spawn(spec.command, spec.args, { cwd, shell: false, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    } catch (error) {
+      reject(new Error(`启动 ${command} 失败：${messageOf(error)}`));
+      return;
+    }
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => {
@@ -195,12 +202,12 @@ function runProcess(command, commandArgs, input, timeoutMs, cwd = process.cwd())
     child.stderr.on("data", (chunk) => (stderr = tail(stderr + chunk, 100_000)));
     child.on("error", (error) => {
       clearTimeout(timer);
-      reject(error);
+      reject(new Error(`启动 ${command} 失败：${messageOf(error)}`));
     });
     child.on("close", (code) => {
       clearTimeout(timer);
       if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(tail(stderr || stdout || `Codex 退出码：${code}`, 20_000)));
+      else reject(new Error(`${tail(stderr || stdout || `Codex CLI 退出码：${code}`, 20_000)}（退出码 ${code}）`));
     });
     if (input) child.stdin.end(input);
     else child.stdin.end();
@@ -209,7 +216,14 @@ function runProcess(command, commandArgs, input, timeoutMs, cwd = process.cwd())
 
 function runProcessOutcome(command, commandArgs, input, timeoutMs, cwd = process.cwd()) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, commandArgs, { cwd, shell: false, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const spec = spawnSpec(command, commandArgs);
+    let child;
+    try {
+      child = spawn(spec.command, spec.args, { cwd, shell: false, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    } catch (error) {
+      reject(error);
+      return;
+    }
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => {
@@ -229,6 +243,16 @@ function runProcessOutcome(command, commandArgs, input, timeoutMs, cwd = process
     if (input) child.stdin.end(input);
     else child.stdin.end();
   });
+}
+
+function spawnSpec(command, commandArgs) {
+  if (process.platform === "win32" && /\.cmd$/i.test(command)) {
+    return {
+      command: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", command, ...commandArgs],
+    };
+  }
+  return { command, args: commandArgs };
 }
 
 function parseArgs(values) {
