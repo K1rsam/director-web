@@ -11,14 +11,18 @@ const deviceId = args.device || hostname();
 const projectDir = args["project-dir"] || process.env.DIRECTOR_PROJECT_DIR || "";
 const headers = { authorization: `Bearer ${runnerToken}`, "content-type": "application/json" };
 const codexCommand = process.platform === "win32" ? "codex.cmd" : "codex";
+const STATUS_REFRESH_MS = 5 * 60_000;
+let lastStatusAttemptAt = 0;
 
 await verifyCodex();
+await refreshCodexStatus(true);
 console.log(`\n✓ 本机 Codex 已登录`);
 console.log(`✓ 分镜工作台已连接：${deviceId}`);
 console.log("保持此窗口打开即可使用 CLI；按 Ctrl+C 可停止。\n");
 
 while (true) {
   try {
+    await refreshCodexStatus();
     const job = await claim();
     if (!job) {
       await delay(5_000);
@@ -41,6 +45,283 @@ async function verifyCodex() {
   } catch (error) {
     throw new Error(`本机 Codex CLI 检测失败：${messageOf(error)}。如果提示未登录，请在终端运行 codex login 后重新打开启动器。`);
   }
+}
+
+/** 只读取本机 CLI 的状态，不调用模型；读取失败不阻塞任务领取。 */
+async function refreshCodexStatus(force = false) {
+  const now = Date.now();
+  if (!force && now - lastStatusAttemptAt < STATUS_REFRESH_MS) return;
+  lastStatusAttemptAt = now;
+  try {
+    const status = await readCodexStatus();
+    const response = await fetch(`${siteUrl}/api/runner/status`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ status }),
+    });
+    if (!response.ok) throw new Error(`回传本机状态失败（${response.status}）`);
+    console.log("✓ 本机账号、额度与用量状态已同步到线上");
+  } catch (error) {
+    console.warn(`本机额度状态暂时未同步：${messageOf(error)}`);
+  }
+}
+
+async function readCodexStatus() {
+  let versionResult;
+  try {
+    versionResult = await runProcess(codexCommand, ["--version"], null, 20_000);
+  } catch (error) {
+    throw new Error(`Codex CLI 不可用：${messageOf(error)}`);
+  }
+  const versionText = `${versionResult.stdout}\n${versionResult.stderr}`.trim();
+  if (!/codex-cli/i.test(versionText)) {
+    throw new Error("Codex CLI 版本检查未通过，请确认本机终端中的 codex --version 可用。");
+  }
+  const version = versionText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => /codex-cli/i.test(line)) || "Codex CLI";
+
+  const responses = await runCodexAppServerStatus(20_000);
+  const warnings = [];
+  const accountPayload = readRpcResult(responses, "2", "账号状态", warnings);
+  const accountRecord = asRecord(asRecord(accountPayload)?.account);
+  if (!accountRecord) throw new Error("Codex CLI 尚未登录，请先在本机终端执行 codex login。");
+
+  const ratePayload = readRpcResult(responses, "3", "额度状态", warnings);
+  const usagePayload = readRpcResult(responses, "4", "用量状态", warnings);
+  return {
+    version,
+    account: {
+      type: asString(accountRecord.type) || "unknown",
+      email: asString(accountRecord.email),
+      planType: asString(accountRecord.planType),
+    },
+    limits: normalizeRateLimits(ratePayload),
+    usage: normalizeUsage(usagePayload),
+    checkedAt: new Date().toISOString(),
+    warnings,
+  };
+}
+
+function runCodexAppServerStatus(timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const spec = spawnSpec(codexCommand, ["app-server", "--stdio"]);
+    let child;
+    try {
+      child = spawn(spec.command, spec.args, {
+        cwd: process.cwd(),
+        shell: false,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (error) {
+      reject(new Error(`启动 Codex 状态读取失败：${messageOf(error)}`));
+      return;
+    }
+
+    const responses = new Map();
+    const expectedIds = new Set(["1", "2", "3", "4"]);
+    let stdout = "";
+    let stderr = "";
+    let buffer = "";
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(responses);
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      finish(new Error("读取 Codex CLI 状态超时，请稍后重试。"));
+    }, timeoutMs);
+
+    const consumeLine = (line) => {
+      const normalized = line.trim();
+      if (!normalized) return;
+      try {
+        const response = JSON.parse(normalized);
+        if (response.id === undefined || response.id === null) return;
+        const id = String(response.id);
+        if (expectedIds.has(id)) responses.set(id, response);
+        if ([...expectedIds].every((expectedId) => responses.has(expectedId))) {
+          child.kill("SIGTERM");
+          finish();
+        }
+      } catch {
+        // 忽略 app-server 的非协议行，不把原始输出回传到网站。
+      }
+    };
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout = tail(stdout + chunk, 200_000);
+      buffer += chunk;
+      let newline = buffer.indexOf("\n");
+      while (newline >= 0) {
+        consumeLine(buffer.slice(0, newline));
+        buffer = buffer.slice(newline + 1);
+        newline = buffer.indexOf("\n");
+      }
+    });
+    child.stderr.on("data", (chunk) => { stderr = tail(stderr + chunk, 20_000); });
+    child.on("error", (error) => finish(new Error(`启动 Codex 状态读取失败：${messageOf(error)}`)));
+    child.on("close", (code, signal) => {
+      if (settled) return;
+      if (buffer.trim()) consumeLine(buffer);
+      if (settled) return;
+      const detail = stderr.trim() || stdout.trim();
+      finish(detail && /not logged in|login|unauthorized|authentication/i.test(detail)
+        ? new Error("Codex CLI 尚未登录，请先在本机终端执行 codex login。")
+        : new Error(`Codex CLI 状态读取失败（code=${code ?? "null"}, signal=${signal ?? "none"}）。`));
+    });
+    child.stdin.on("error", () => {
+      // 子进程提前退出时由 close/error 事件统一处理。
+    });
+
+    const send = (value) => {
+      try {
+        child.stdin.write(`${JSON.stringify(value)}\n`);
+      } catch (error) {
+        finish(new Error(`无法发送 Codex CLI 状态请求：${messageOf(error)}`));
+      }
+    };
+    send({
+      id: 1,
+      method: "initialize",
+      params: {
+        clientInfo: { name: "director-workbench", title: "Director Workbench", version: "0.1.0" },
+        capabilities: { experimentalApi: false },
+      },
+    });
+    send({ method: "initialized", params: {} });
+    send({ id: 2, method: "account/read", params: { refreshToken: true } });
+    send({ id: 3, method: "account/rateLimits/read", params: null });
+    send({ id: 4, method: "account/usage/read", params: null });
+  });
+}
+
+function readRpcResult(responses, id, label, warnings) {
+  const response = responses.get(id);
+  if (!response) {
+    warnings.push(`${label}未返回，请重新检测。`);
+    return null;
+  }
+  if (response.error) {
+    warnings.push(`${label}暂时无法读取，请重新检测。`);
+    return null;
+  }
+  return response.result ?? null;
+}
+
+function normalizeRateLimits(payload) {
+  const value = asRecord(payload);
+  if (!value) return [];
+  const byId = asRecord(value.rateLimitsByLimitId);
+  const entries = byId
+    ? Object.entries(byId)
+    : value.rateLimits
+      ? [[asString(asRecord(value.rateLimits)?.limitId) || "codex", value.rateLimits]]
+      : [];
+  return entries.slice(0, 8).map(([fallbackId, raw]) => {
+    const limit = asRecord(raw) || {};
+    return {
+      id: asString(limit.limitId) || fallbackId,
+      name: asString(limit.limitName),
+      planType: asString(limit.planType),
+      primary: normalizeWindow(limit.primary),
+      secondary: normalizeWindow(limit.secondary),
+      credits: normalizeCredits(limit.credits),
+      individualLimit: normalizeIndividualLimit(limit.individualLimit),
+      rateLimitReachedType: asString(limit.rateLimitReachedType),
+    };
+  });
+}
+
+function normalizeWindow(value) {
+  const item = asRecord(value);
+  if (!item) return null;
+  const usedPercent = asNumber(item.usedPercent);
+  const remainingPercent = asNumber(item.remainingPercent);
+  return {
+    usedPercent: clampPercent(usedPercent),
+    remainingPercent: clampPercent(remainingPercent === null && usedPercent !== null ? 100 - usedPercent : remainingPercent),
+    windowDurationMins: asNumber(item.windowDurationMins),
+    resetsAt: asNumber(item.resetsAt),
+  };
+}
+
+function normalizeCredits(value) {
+  const item = asRecord(value);
+  if (!item) return null;
+  return {
+    balance: asString(item.balance),
+    hasCredits: asBoolean(item.hasCredits) || false,
+    unlimited: asBoolean(item.unlimited) || false,
+  };
+}
+
+function normalizeIndividualLimit(value) {
+  const item = asRecord(value);
+  if (!item) return null;
+  return {
+    limit: asString(item.limit) || "",
+    used: asString(item.used) || "",
+    remainingPercent: clampPercent(asNumber(item.remainingPercent)) ?? 0,
+    resetsAt: asNumber(item.resetsAt),
+  };
+}
+
+function normalizeUsage(payload) {
+  const item = asRecord(payload);
+  const summary = asRecord(item?.summary);
+  const buckets = Array.isArray(item?.dailyUsageBuckets)
+    ? item.dailyUsageBuckets
+      .map((value) => {
+        const bucket = asRecord(value);
+        const date = asString(bucket?.startDate);
+        const tokens = asNumber(bucket?.tokens);
+        return date && tokens !== null ? { date, tokens: Math.max(0, tokens) } : null;
+      })
+      .filter(Boolean)
+    : [];
+  return {
+    lifetimeTokens: nonNegativeNumber(summary?.lifetimeTokens),
+    peakDailyTokens: nonNegativeNumber(summary?.peakDailyTokens),
+    currentStreakDays: asNumber(summary?.currentStreakDays),
+    longestStreakDays: asNumber(summary?.longestStreakDays),
+    latestDailyUsage: buckets.at(-1) || null,
+  };
+}
+
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function asString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function asNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  return null;
+}
+
+function asBoolean(value) {
+  return typeof value === "boolean" ? value : null;
+}
+
+function nonNegativeNumber(value) {
+  const numberValue = asNumber(value);
+  return numberValue === null ? null : Math.max(0, numberValue);
+}
+
+function clampPercent(value) {
+  return value === null ? null : Math.max(0, Math.min(100, value));
 }
 
 async function claim() {
@@ -80,6 +361,7 @@ async function executeAndReport(job) {
     console.error(`✗ 任务失败：${message}`);
   } finally {
     if (heartbeat) clearInterval(heartbeat);
+    await refreshCodexStatus(true);
   }
 }
 

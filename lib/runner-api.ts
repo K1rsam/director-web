@@ -10,6 +10,7 @@ import {
   type RunnerIdentity,
 } from "@/lib/runner-ownership";
 import { applyRunnerResult, markPipelineRunsFailed } from "@/lib/runner-pipeline";
+import type { RunnerStatusSnapshot } from "@/lib/runner-status";
 
 const LEASE_MS = 5 * 60_000;
 
@@ -33,6 +34,17 @@ export async function authenticateRunner(request: Request): Promise<RunnerIdenti
   if (!identity) return null;
   await db.update(runnerTokens).set({ lastSeenAt: new Date() }).where(eq(runnerTokens.id, identity.tokenId));
   return identity;
+}
+
+export async function reportRunnerStatus(identity: RunnerIdentity, status: RunnerStatusSnapshot): Promise<void> {
+  await getDb()
+    .update(runnerTokens)
+    .set({
+      statusJson: JSON.stringify(status),
+      statusCheckedAt: new Date(status.checkedAt),
+      lastSeenAt: new Date(),
+    })
+    .where(eq(runnerTokens.id, identity.tokenId));
 }
 
 export async function claimNextJob(identity: RunnerIdentity, deviceId: string) {

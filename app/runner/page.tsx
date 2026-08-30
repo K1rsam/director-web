@@ -8,7 +8,9 @@ import { runnerTokens } from "@/db/schema";
 import { requireSessionUser } from "@/lib/auth";
 import { getProjectLibrary } from "@/lib/project-library";
 import { AppChrome } from "@/app/ui/app-chrome";
+import { parseStoredRunnerStatus } from "@/lib/runner-status";
 import { DeepSeekKeySetup } from "./deepseek-key-setup";
+import { CodexStatusPanel, type RunnerStatusDevice } from "./codex-status-panel";
 import { RunnerTokenForm } from "./token-form";
 
 export const dynamic = "force-dynamic";
@@ -25,6 +27,13 @@ export default async function RunnerPage({ searchParams }: { searchParams: Promi
     .from(runnerTokens)
     .where(eq(runnerTokens.ownerUserId, user.id))
     .orderBy(desc(runnerTokens.createdAt));
+  const devices: RunnerStatusDevice[] = tokens.map((token) => ({
+    id: token.id,
+    name: token.name,
+    revoked: Boolean(token.revokedAt),
+    status: parseStoredRunnerStatus(token.statusJson),
+  }));
+  const hasStatus = devices.some((device) => device.status && !device.revoked);
 
   return (
     <AppChrome
@@ -34,7 +43,7 @@ export default async function RunnerPage({ searchParams }: { searchParams: Promi
       projectLabel={activeProject?.title}
       episodes={activeProject?.episodes.map(({ id, number, title }) => ({ id, number, title: title ?? `第${number}集` }))}
       activeSection="runner"
-      utility={<div className="runnerTopbarMeta"><span>个人凭证</span><span>本机额度</span></div>}
+      utility={<div className="runnerTopbarMeta"><span>个人凭证</span><span>{hasStatus ? "额度已同步" : "等待本机状态"}</span></div>}
       primaryAction={<Link href={projectLibraryHref} className="topbarPrimary">返回项目总览</Link>}
     >
       <section className="runnerSettingsPage">
@@ -52,6 +61,8 @@ export default async function RunnerPage({ searchParams }: { searchParams: Promi
           <DeepSeekKeySetup />
           <RunnerTokenForm />
         </div>
+
+        <CodexStatusPanel devices={devices} />
 
         <section className="runnerChoiceGuide studioCard">
           <header className="runnerSectionHeader">

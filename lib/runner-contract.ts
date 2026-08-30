@@ -1,3 +1,5 @@
+import { normalizeRunnerStatus, type RunnerStatusSnapshot } from "@/lib/runner-status";
+
 const MAX_ID_CHARS = 120;
 const MAX_LEASE_TOKEN_CHARS = 512;
 // P1/P2 的资产表可能包含上千条带 metadata 的记录；结果仍然是有范围的 JSON，
@@ -63,4 +65,9 @@ export function parseReportBody(value: unknown): {
   if (body.error !== undefined && body.error !== null && error === null) return null;
 
   return { ...lease, status: body.status, result, error };
+}
+
+export function parseRunnerStatusBody(value: unknown): RunnerStatusSnapshot | null {
+  const body = record(value);
+  return normalizeRunnerStatus(body?.status);
 }

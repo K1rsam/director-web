@@ -114,11 +114,20 @@ test("DeepSeek uses each user's browser key without server-side persistence", ()
 
 test("personal runner uses each device's own CLI and a D1 task snapshot", () => {
   const page = readFileSync("app/runner/page.tsx", "utf8");
+  const statusPanel = readFileSync("app/runner/codex-status-panel.tsx", "utf8");
+  const statusRoute = readFileSync("app/api/runner/status/route.ts", "utf8");
+  const statusContract = readFileSync("lib/runner-status.ts", "utf8");
   const form = readFileSync("app/runner/token-form.tsx", "utf8");
   const runner = readFileSync("public/runner/director-runner.mjs", "utf8");
 
   assert.match(page, /自己的 Codex CLI、账号和额度/);
   assert.match(page, /网站只保存线上项目数据与任务结果/);
+  assert.match(page, /CodexStatusPanel/);
+  assert.match(statusPanel, /本机账号与额度/);
+  assert.match(statusPanel, /刷新线上状态/);
+  assert.match(statusRoute, /authenticateRunner/);
+  assert.match(statusRoute, /reportRunnerStatus/);
+  assert.match(statusContract, /normalizeRunnerStatus/);
   assert.match(form, /本地执行代码目录/);
   assert.match(form, /一次性临时工作库/);
   assert.match(form, /下载 Windows 启动器/);
@@ -131,6 +140,11 @@ test("personal runner uses each device's own CLI and a D1 task snapshot", () => 
   assert.match(runner, /const commandArgs = \[\s*"exec"/s);
   assert.match(runner, /DIRECTOR_PROJECT_DIR/);
   assert.match(runner, /api\/runner\/jobs\/input/);
+  assert.match(runner, /api\/runner\/status/);
+  assert.match(runner, /account\/read/);
+  assert.match(runner, /account\/rateLimits\/read/);
+  assert.match(runner, /account\/usage\/read/);
+  assert.match(runner, /refreshCodexStatus/);
   assert.match(runner, /run-runner-job\.ts/);
   assert.doesNotMatch(runner, /run-episode-pipeline|run-project-foundation/);
 });

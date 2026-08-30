@@ -33,6 +33,8 @@ export const runnerTokens = sqliteTable(
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     lastSeenAt: integer("last_seen_at", { mode: "timestamp_ms" }),
     revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
+    statusJson: text("status_json"),
+    statusCheckedAt: integer("status_checked_at", { mode: "timestamp_ms" }),
   },
   (table) => [
     uniqueIndex("idx_runner_tokens_hash").on(table.tokenHash),

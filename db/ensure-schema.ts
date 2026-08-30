@@ -13,7 +13,9 @@ export function ensureControlPlaneSchema(): Promise<void> {
         token_hash TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         last_seen_at INTEGER,
-        revoked_at INTEGER
+        revoked_at INTEGER,
+        status_json TEXT,
+        status_checked_at INTEGER
       )`),
       d1.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_runner_tokens_hash ON runner_tokens(token_hash)"),
       d1.prepare("CREATE INDEX IF NOT EXISTS idx_runner_tokens_owner ON runner_tokens(owner_user_id)"),
@@ -36,6 +38,10 @@ export function ensureControlPlaneSchema(): Promise<void> {
       d1.prepare("CREATE INDEX IF NOT EXISTS idx_runner_jobs_owner_status_created ON runner_jobs(owner_user_id, status, created_at)"),
       d1.prepare("CREATE INDEX IF NOT EXISTS idx_runner_jobs_project_created ON runner_jobs(project_id, created_at)"),
     ]);
+    // Existing Sites databases were created before Runner status snapshots were added.
+    // ALTER is intentionally idempotent so an already published project upgrades on first request.
+    await d1.prepare("ALTER TABLE runner_tokens ADD COLUMN status_json TEXT").run().catch(() => undefined);
+    await d1.prepare("ALTER TABLE runner_tokens ADD COLUMN status_checked_at INTEGER").run().catch(() => undefined);
   })();
 
   return schemaReady;

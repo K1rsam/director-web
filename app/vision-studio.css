@@ -1524,6 +1524,44 @@ body { background: transparent; font-size: var(--vision-font-body); }
 .runnerRevokeButton { border: 1px solid rgba(217,88,110,.24); border-radius: 10px; background: rgba(255,244,246,.82); padding: 7px 11px; color: var(--vision-bad); font: inherit; font-size: var(--vision-font-caption); cursor: pointer; }
 .runnerDeviceEmpty { margin: 0; padding: 32px 0 12px; color: var(--vision-faint); font-size: var(--vision-font-small); text-align: center; }
 
+.runnerStatusCard.studioCard { padding: var(--vision-panel-padding) !important; }
+.runnerStatusHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+.runnerStatusHeader > div:first-child { min-width: 0; }
+.runnerStatusHeader h2 { margin: 5px 0 7px; font-size: var(--vision-font-heading); letter-spacing: -.025em; }
+.runnerStatusHeader p { max-width: 720px; margin: 0; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.7; }
+.runnerStatusActions { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; }
+.runnerStatusSyncState { border: 1px solid var(--vision-line); border-radius: 999px; background: rgba(241,244,250,.86); padding: 7px 11px; color: var(--vision-faint); font-size: var(--vision-font-caption); font-weight: 700; white-space: nowrap; }
+.runnerStatusSyncState.synced { border-color: rgba(36,154,124,.20); background: rgba(237,250,246,.86); color: var(--vision-good); }
+.runnerStatusRefresh { min-height: 38px; padding: 0 13px; color: var(--vision-primary); font-size: var(--vision-font-small); font-weight: 750; cursor: pointer; }
+.runnerStatusRefresh:disabled { cursor: wait; opacity: .65; }
+.runnerStatusDeviceGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; margin-top: 20px; }
+.runnerStatusDevice { min-width: 0; border: 1px solid rgba(103,94,228,.16); border-radius: 16px; background: linear-gradient(135deg, rgba(249,250,255,.88), rgba(244,240,255,.62)); padding: 15px; }
+.runnerStatusDevice > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.runnerStatusDevice > header > div { display: grid; min-width: 0; gap: 4px; }
+.runnerStatusDevice > header strong { overflow: hidden; color: var(--vision-text); font-size: var(--vision-font-small); text-overflow: ellipsis; white-space: nowrap; }
+.runnerStatusDevice > header small { color: var(--vision-muted); font-size: var(--vision-font-caption); }
+.runnerStatusDeviceReady { color: var(--vision-good); font-size: var(--vision-font-caption); font-weight: 750; white-space: nowrap; }
+.runnerStatusDevice.pending { display: flex; min-height: 92px; flex-direction: column; justify-content: center; }
+.runnerStatusDevice.pending > header { align-items: center; }
+.runnerStatusDevice.pending > header span { color: var(--vision-faint); font-size: var(--vision-font-caption); }
+.runnerStatusDevice.pending > p { margin: 7px 0 0; color: var(--vision-muted); font-size: var(--vision-font-small); }
+.runnerStatusIdentity { display: grid; gap: 4px; margin-top: 13px; border-top: 1px solid var(--vision-line); padding-top: 12px; }
+.runnerStatusIdentity strong { overflow: hidden; color: var(--vision-text); font-size: var(--vision-font-body); text-overflow: ellipsis; white-space: nowrap; }
+.runnerStatusIdentity span { color: var(--vision-muted); font-size: var(--vision-font-caption); }
+.runnerStatusMetricGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.runnerStatusMetric { display: grid; min-width: 0; gap: 4px; border: 1px solid rgba(103,94,228,.11); border-radius: 12px; background: rgba(255,255,255,.58); padding: 10px; }
+.runnerStatusMetric span { color: var(--vision-muted); font-size: var(--vision-font-caption); }
+.runnerStatusMetric strong { overflow: hidden; color: var(--vision-text); font-size: var(--vision-font-small); text-overflow: ellipsis; white-space: nowrap; }
+.runnerStatusMetric small { overflow: hidden; color: var(--vision-faint); font-size: var(--vision-font-caption); line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.runnerStatusWarning { margin: 11px 0 0; color: var(--vision-bad); font-size: var(--vision-font-caption); line-height: 1.55; }
+.runnerStatusEmpty { margin: 20px 0 0; border: 1px dashed rgba(103,94,228,.22); border-radius: 14px; background: rgba(249,250,255,.58); padding: 18px; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.7; text-align: center; }
+.runnerStatusPendingList { display: grid; gap: 10px; text-align: left; }
+.runnerStatusPendingDevice { display: flex; align-items: center; gap: 12px; }
+.runnerStatusPendingDevice > div { display: grid; gap: 3px; }
+.runnerStatusPendingDevice strong { color: var(--vision-text); font-size: var(--vision-font-small); }
+.runnerStatusPendingDevice small { color: var(--vision-muted); font-size: var(--vision-font-caption); }
+.runnerStatusPendingList > p { margin: 2px 0 0; border-top: 1px solid var(--vision-line); padding-top: 10px; color: var(--vision-faint); font-size: var(--vision-font-caption); }
+
 @media (max-width: 1180px) {
   .runnerConnectionGrid { grid-template-columns: 1fr; }
   .runnerConnectionCard.studioCard { min-height: 0; }
@@ -1533,9 +1571,12 @@ body { background: transparent; font-size: var(--vision-font-body); }
   .runnerHero.studioCard { grid-template-columns: 48px minmax(0, 1fr); }
   .runnerHeroIcon { width: 48px; height: 48px; border-radius: 16px; }
   .runnerHeroAssurance { grid-column: 1 / -1; border-top: 1px solid var(--vision-line); border-left: 0; padding-top: 14px; padding-left: 0; }
-  .runnerFieldGrid, .runnerDeviceForm, .runnerChoiceGrid { grid-template-columns: 1fr; }
+  .runnerFieldGrid, .runnerDeviceForm, .runnerChoiceGrid, .runnerStatusMetricGrid { grid-template-columns: 1fr; }
   .runnerSectionHeader { align-items: flex-start; flex-direction: column; }
   .runnerSectionHeader > p { text-align: left; }
+  .runnerStatusHeader { flex-direction: column; }
+  .runnerStatusActions { width: 100%; justify-content: space-between; }
+  .runnerStatusDeviceGrid { grid-template-columns: 1fr; }
 }
 
 /* Episode workspace legibility */
