@@ -94,6 +94,7 @@
     "lib/runner-api.ts",
     "lib/runner-auth.ts",
     "lib/runner-contract.ts",
+    "lib/runner-diagnostics.ts",
     "lib/runner-ownership.ts",
     "lib/runner-pipeline.ts",
     "lib/runner-status.ts",
