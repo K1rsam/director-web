@@ -54,7 +54,7 @@ async function verifyCodex() {
   try {
     await runProcess(codexCommand, ["--version"], null, 20_000);
   } catch (error) {
-    throw new Error(`本机 Codex CLI 不可用：${messageOf(error)}。请在本机终端运行 codex，按提示完成登录后重新打开启动器。`);
+    throw new Error(`本机 Codex CLI 检测失败：${messageOf(error)}。请在本机终端运行 codex，按提示完成登录后重新打开启动器。`);
   }
 }
 

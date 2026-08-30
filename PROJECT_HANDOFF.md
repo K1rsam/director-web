@@ -1,6 +1,6 @@
 # Seedance 导演工作台：项目全过程与交接文档
 
-> 更新时间：2026-08-26  
+> 更新时间：2026-08-30
 > 适用对象：产品负责人、接手开发者、测试人员、部署维护人员  
 > 结论基于四个指定 Codex 任务、两个实际代码库、Git 历史、数据库结构及 Sites 当前状态交叉核对。
 
@@ -18,18 +18,18 @@
 
 | 代码库 | 定位 | 当前状态 |
 |---|---|---|
-| `/Users/yue/Documents/CL` | 本地完整生产版 | P1–P2、E0–E5、DeepSeek API、Codex CLI、SQLite、账号隔离均已实现；`main` 已推送私有 GitHub |
-| `/Users/yue/Documents/CL-sites` | Sites 云端版 | 原页面、账号、21 张业务表、D1 数据和 Runner 控制面已迁移；线上公开访问，但生产流水线按钮仍未接通 |
+| `director-web`（GitHub `main`） | 本地完整生产版 | P1–P2、E0–E5、DeepSeek API、Codex CLI、SQLite、账号隔离均已实现；共用 Sites Runner 镜像已同步 |
+| `director-workbench-sites`（Sites） | Sites 云端版 | 原页面、账号、21 张业务表、D1、D1 快照任务和设备 Runner 已上线；真实剧集生产仍需单任务端到端验收 |
 
 线上地址：<https://director-workbench-yue.a8197772.chatgpt.site>
 
-截至 2026-08-26，线上已部署第 13 版，对应 `CL-sites` 提交 `eec787a`，访问策略为公开链接，业务数据仍由应用账号隔离。
+截至 2026-08-30，线上已部署第 26 版，对应 `director-workbench-sites` 提交 `b664121`，访问策略为公开链接，业务数据仍由应用账号隔离。
 
 最重要的当前判断：
 
 - 本地版是“能真正生产”的版本。
-- Sites 版是“能登录、浏览、建项目、查看迁移数据、配置 API/CLI 连接”的版本。
-- Sites 版的 P1–P2、E0–E5 执行按钮目前仍禁用；API Key 只完成连接测试，CLI Runner 只完成配对、领任务、心跳和回传基础设施，尚未形成真实分镜生产闭环。
+- Sites 版是“能登录、浏览、建项目、查看迁移数据、配置 API/CLI 连接并创建 D1 快照任务”的版本。
+- Sites 版的 P1–P2、E0–E5 已接入任务快照与设备 Runner 协议，但本次没有启动真实剧集任务，因此不能把协议/构建通过当成真实分镜生产闭环已验收。
 
 ## 2. 产品目标、边界与原则
 
@@ -236,7 +236,7 @@ Runner 主动轮询云端，不让线上网页直接请求用户 `localhost`。�
 
 ### 阶段 H：纯 Sites + D1 + Runner 上线（2026-08-25）
 
-为尽快上线，创建了独立的 `/Users/yue/Documents/CL-sites`。
+为尽快上线，创建了独立的 Sites 项目 checkout `director-workbench-sites`。
 
 第一次上线只做了 Runner 控制原型，使用 ChatGPT 登录，只有 3 张控制表，且页面不是原项目。用户指出这既不是原 UI，也无法新建并进入项目，因此方向被推翻。
 
@@ -253,7 +253,7 @@ Runner 主动轮询云端，不让线上网页直接请求用户 `localhost`。�
 - Runner 页最终复用主站 AppChrome、悬浮顶栏、侧栏和玻璃卡片；
 - 所有 Logo 的“镜”改为 “L”。
 
-第 4 个任务没有留下最终答复，但实际核对确认：最后的 Runner UI 提交 `eec787a` 已成为 Sites 第 13 版，线上地址和公开访问均有效。
+第 4 个任务没有留下最终答复；随后线上已从第 13 版持续推进到第 26 版，当前源仓库提交为 `b664121`，线上地址和公开访问均有效。
 
 ## 4. 当前业务工作流
 
@@ -311,9 +311,9 @@ Prisma 6 + 本地 SQLite
 - API Key 来自本机 `.env`；
 - Codex CLI 使用本机登录；
 - 数据写入本地 SQLite；
-- GitHub `main` 当前停在账号隔离版本 `fb6d81b`。
+- GitHub `main` 当前为 `e708494`；`public/runner/director-runner.mjs` 与 Sites 版共用同一份 Runner 镜像。
 
-### 5.2 Sites 云端版 `CL-sites`
+### 5.2 Sites 云端版 `director-workbench-sites`
 
 ```text
 Sites / vinext / React
@@ -329,8 +329,8 @@ Sites / vinext / React
 - D1 绑定名为 `DB`，R2 尚未启用；
 - 公开链接访问，应用内部仍要求业务账号登录；
 - 当前数据库可见 21 张业务表、2 张正式 Runner 表和 2 张早期 prototype 表；
-- `CL-sites` 本地 Git 当前干净，但没有配置外部 Git remote，主要版本保存在本地 Git 和 Sites 版本历史中；
-- 最新线上版本与本地 HEAD 一致。
+- 当前线上版本为第 26 版，Sites 源仓库 HEAD 为 `b664121`；本地构建与线上保存版本一致；
+- Sites 源码已同步到 GitHub 私有仓库的独立 `sites-online` 分支，避免覆盖线下生产版 `main`。
 
 ### 5.3 当前 Runner
 
@@ -344,13 +344,12 @@ Sites / vinext / React
 - Windows 启动器与 Mac 启动命令入口；
 - 设备撤销与最后在线时间。
 
-尚未具备真实闭环：
+当前尚未完成或尚未验收：
 
-- Sites 的 P1/P2、E0–E5 按钮仍是 `disabled`；
-- Sites 尚未把业务任务完整写入 Runner 队列；
-- Runner 执行原 `CL` 脚本后主要写本地 SQLite，结果尚未可靠回写 D1；
-- D1 与本地 SQLite 的同 ID 数据同步、冲突、重试和幂等策略未完成；
-- 停止、局部返修和版本回写未做云端端到端验收。
+- 真实 P1/P2、E0–E5 尚未在本次检查中启动；
+- 网页任务 → 当前设备 CLI → 结构化结果 → D1 的生产级端到端验收仍未完成；
+- 停止、局部返修、重试、冲突和版本回写仍需云端端到端验收；
+- 正式安装包、自动更新和托盘状态尚未产品化。
 
 ## 6. API 与 CLI 当前真实状态
 
@@ -382,6 +381,7 @@ Sites / vinext / React
 
 - 用户使用自己的 Codex 登录和额度；
 - 网页生成设备启动器/令牌；
+- Runner 读取本机账号、额度、用量快照并按设备回传脱敏状态；
 - Runner 可连接、领任务、心跳、回传；
 - 网站不保存 ChatGPT 密码或 Codex 凭据。
 
@@ -412,38 +412,38 @@ Sites / vinext / React
 
 | 位置 | 用途 |
 |---|---|
-| `/Users/yue/Documents/CL-sites/app/` | 云端页面、账号和接口 |
-| `/Users/yue/Documents/CL-sites/db/business-schema.ts` | 21 张业务表清单 |
-| `/Users/yue/Documents/CL-sites/db/schema.ts` | Runner 控制表的 Drizzle 映射 |
-| `/Users/yue/Documents/CL-sites/db/ensure-schema.ts` | Runner 表初始化 |
-| `/Users/yue/Documents/CL-sites/lib/repositories/` | D1 项目/单集读写 |
-| `/Users/yue/Documents/CL-sites/app/runner/` | API/CLI 连接设置页 |
-| `/Users/yue/Documents/CL-sites/runner/` | 本地 Runner 轮询与命令执行 |
-| `/Users/yue/Documents/CL-sites/public/runner/` | 用户下载的 Runner 启动文件 |
-| `/Users/yue/Documents/CL-sites/tests/` | 当前云端版测试 |
-| `/Users/yue/Documents/CL-sites/.openai/hosting.json` | Sites 项目与 D1 绑定；不要写入密钥 |
+| `director-workbench-sites/app/` | 云端页面、账号和接口 |
+| `director-workbench-sites/db/business-schema.ts` | 21 张业务表清单 |
+| `director-workbench-sites/db/schema.ts` | Runner 控制表的 Drizzle 映射 |
+| `director-workbench-sites/db/ensure-schema.ts` | Runner 表初始化 |
+| `director-workbench-sites/lib/repositories/` | D1 项目/单集读写 |
+| `director-workbench-sites/app/runner/` | API/CLI 连接设置页 |
+| `director-workbench-sites/runner/` | 本地 Runner 轮询与命令执行 |
+| `director-workbench-sites/public/runner/` | 用户下载的 Runner 启动文件 |
+| `director-workbench-sites/tests/` | 当前云端版测试 |
+| `director-workbench-sites/.openai/hosting.json` | Sites 项目与 D1 绑定；不要写入密钥 |
 
 ## 8. 当前完成度矩阵
 
-| 能力 | 本地 `CL` | 线上 `CL-sites` |
+| 能力 | 本地 `director-web` | 线上 `director-workbench-sites` |
 |---|---|---|
 | 项目/剧集浏览 | 已完成 | 已完成 |
 | 新建项目 | 已完成 | 已完成 |
 | 账号登录与项目隔离 | 已完成 | 已完成 |
 | 21 张业务表 | SQLite 已完成 | D1 已迁移 |
-| P1/P2 真实执行 | 已完成 | 未接通 |
-| E0–E5 真实执行 | 已完成 | 未接通 |
+| P1/P2 真实执行 | 已完成 | 已接入 D1 快照任务，未做真实端到端验收 |
+| E0–E5 真实执行 | 已完成 | 已接入 D1 快照任务，未做真实端到端验收 |
 | DeepSeek 连接 | 已完成 | 仅 Key 保存与连接测试 |
-| Codex CLI | 已完成 | Runner 协议完成，业务闭环未完成 |
-| 问题卡与局部返修 | 已完成 | 可查看历史数据，不能在线执行返修 |
-| 停止任务 | 本地已完成 | 云端闭环未验收 |
+| Codex CLI | 已完成 | Runner 使用各设备自己的 CLI，并同步状态；业务闭环未验收 |
+| 问题卡与局部返修 | 已完成 | 可查看/进入任务控制，云端返修闭环未验收 |
+| 停止任务 | 本地已完成 | Runner 租约可回传，云端闭环未验收 |
 | 导出 Seedance 提示词 | 已完成 | 可导出现有迁移结果 |
 | 响应式 UI | 已完成 | 已完成并上线 |
-| 外部源码备份 | GitHub 私有仓库 | 尚无外部 remote |
+| 外部源码备份 | GitHub 私有仓库 `main` | GitHub `sites-online` 分支 + Sites 源仓库 |
 
 ## 9. 已知风险与不要踩的坑
 
-1. **不要把 Sites 版说成已能生成。** 页面像完整产品，但多个执行按钮明确禁用。
+1. **不要把 Sites 协议说成真实生成已验收。** 页面和任务入口已接通，但本次没有启动真实剧集任务。
 2. **不要直接合并 `feature/device-connections`。** 它规模大、仍有未提交文件，与后来的 `CL-sites` 架构已经分叉。
 3. **不要让 Runner 直接把本地 SQLite 当云端事实源。** 必须定义任务包输入和 D1 结果回写协议。
 4. **不要同时维护两个“权威数据库”。** 后续需明确 D1 是云端事实源，本地 SQLite 只是缓存/执行沙箱，或明确只做本地产品。
@@ -453,15 +453,15 @@ Sites / vinext / React
 8. **API Key 放 `localStorage` 有 XSS 风险。** 这是当前 Beta 的便利方案，不是长期秘密存储方案。
 9. **D1 中还保留 `prototype_projects`、`prototype_runner_jobs`。** 清理前先确认没有生产代码依赖。
 10. **当前没有 R2。** 大文件、剧本原件、导出包和日志不应无限塞入 D1。
-11. **`CL-sites` 没有外部 Git remote。** 应尽快建立私有远端备份，Sites 版本历史不能替代正常源码管理。
+11. **Sites 源码与线下版架构分叉。** 更新 Sites 后同时推送 GitHub `sites-online` 分支；不要直接覆盖 `main`。
 12. **用户离开页面后的 API 长任务仍无可靠方案。** 必须先决定 Key 的执行位置和存储策略。
 
 ## 10. 推荐的最小后续路线
 
 ### 里程碑 1：建立安全基线
 
-1. 给 `CL-sites` 增加私有 Git 远端并推送当前 `main`。
-2. 记录当前线上第 13 版为回滚基线。
+1. 已完成：Sites 源码推送到 GitHub `sites-online` 分支。
+2. 已完成：记录线上第 26 版及提交 `b664121` 为当前回滚基线。
 3. 冻结 `CL` 的未完成设备分支，不继续追加功能，只挑选可复用代码。
 4. 轮换测试账号密码，整理账号与 Sites 所有权交接清单。
 
@@ -525,9 +525,9 @@ Sites 从 D1 生成不可变 TaskPackage
 
 - [ ] 能访问私有 GitHub `K1rsam/director-web`
 - [ ] 能访问 Sites 项目“导演工作台”及 D1 数据库
-- [ ] 知道 `/Users/yue/Documents/CL` 与 `/Users/yue/Documents/CL-sites` 的不同职责
+- [ ] 知道 `director-web` 与 `director-workbench-sites` 的不同职责
 - [ ] 知道 `feature/device-connections` 不能直接合并
-- [ ] 知道线上执行按钮当前不可用是预期状态，不是偶发 Bug
+- [ ] 知道线上任务入口已接通，但真实剧集闭环仍需单任务验收
 - [ ] 已从安全渠道获得测试账号，不在聊天和仓库传播密码
 
 ### 本地完整版启动
@@ -573,8 +573,8 @@ npm run build
 ## 12. 交接时必须说明的五句话
 
 1. 这是一个“剧本到 Seedance 分镜生产资料”的工具，不是视频生成器。
-2. 本地 `CL` 功能完整；线上 `CL-sites` 目前只完成数据、页面、账号和连接层。
-3. 云端最大未完成项是“网页任务 → 用户本机执行 → 结果原子写回 D1”。
+2. 本地 `director-web` 功能完整；线上 `director-workbench-sites` 已完成数据、页面、账号、Runner 和任务快照层。
+3. 云端最大未完成项是“网页任务 → 用户本机执行 → 结果原子写回 D1”的真实端到端验收。
 4. 旧设备分支投入很大但未闭环，不能因为代码多就默认采用。
 5. 后续以真实 E0 闭环为第一优先级，不再先做大规模安全和测试扩展。
 
