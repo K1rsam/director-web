@@ -114,12 +114,11 @@ export default async function EpisodeStudioPage({
                     } as Record<string, string>)[role.code]}</small>
                   </div>
                 </div>
-                <small className="episodeRoleModel" title={role.model}>{role.model}</small>
                 <div className="episodeRoleFoot">
                   <em>{role.status}</em>
+                  <small className="episodeRoleModel" title={role.model}>{role.model.replace(/^gpt-[\d.]+-/, "")}</small>
                   <span className="episodeRoleDuration" title={`执行耗时：${role.duration}`}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
-                    {role.duration}
+                    {role.duration.replace(/(\d+)分(\d+)秒/, (_, minutes: string, seconds: string) => `${minutes}:${seconds.padStart(2,"0")}`)}
                   </span>
                   <span className="roleCardAction" aria-hidden="true">{role.status === "进行中" ? "执行中" : role.status === "排队中" ? "排队中" : actionLabel}</span>
                 </div>

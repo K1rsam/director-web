@@ -71,6 +71,7 @@ export function AppChrome({
   ];
   // 全剧工作台的正文已有 h1，顶部只保留页面标识，避免重复一级标题。
   const TitleTag = activeSection === "project" ? "p" : "h1";
+  const episodeTitle = activeSection === "episode" ? /^第\s*(\d+)\s*集\s*[·・]?\s*(.*)$/.exec(title) : null;
 
   return (
     <div className={`appChrome ${activeSection === "episode" ? "episodeShell" : ""}`} data-section={activeSection}>
@@ -105,7 +106,7 @@ export function AppChrome({
               <div className="mobileAccountMenu"><AccountMenu /></div>
             </nav>
           </details>
-          <div className="topbarIdentity" data-route-label><small>{eyebrow}</small><TitleTag id="page-title" className="pageTitle">{title}</TitleTag></div>
+          <div className="topbarIdentity" data-route-label><small>{eyebrow}{activeSection === "episode" ? " / 分集工作台" : ""}</small><TitleTag id="page-title" className="pageTitle">{episodeTitle ? <><span className="pageTitleNumber">第 {episodeTitle[1]} 集</span>{episodeTitle[2]}</> : title}</TitleTag></div>
           <div className="topbarTools">{utility}{primaryAction}</div>
         </header>
         <main id="main-content" className="appMain" tabIndex={-1} aria-labelledby="page-title">{children}</main>
