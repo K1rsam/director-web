@@ -10,6 +10,7 @@
   "common_once": [
     "app/episode-surface.css",
     "app/page-surfaces.css",
+    "app/workbench-refinement.css",
     "app/ui/prompt-document.tsx",
     "lib/diagnostic-log.ts",
     "public/runner/diagnostic-log.mjs",

@@ -259,7 +259,7 @@ if (!homePage.includes('className="projectCardHitArea"') || !homePage.includes("
   throw new Error("Each active project card must expose an accessible full-card link");
 }
 
-if (homePage.includes('className="libraryHeading"') || !homePage.includes('title="我的剧本项目"') || !homePage.includes('className="libraryTopbarMeta"')) {
+if (homePage.includes('className="libraryHeading"') || !homePage.includes('title="所有项目"') || !homePage.includes('className="libraryTopbarMeta"')) {
   throw new Error("Project library must move its repeated hero information into the compact topbar");
 }
 

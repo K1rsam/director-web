@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { startEpisodeBatchMonitorAction, stopEpisodeBatchMonitorAction } from "@/app/actions";
@@ -31,6 +31,7 @@ export function BatchMonitorControl({
   monitor: MonitorView | null;
 }) {
   const router = useRouter();
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const submitting = useRef(false);
   const active = Boolean(monitor && ACTIVE_STATUSES.has(monitor.status));
   const providerLabel = String(executionMode).toUpperCase() === "API" ? "API" : "CLI";
@@ -80,13 +81,42 @@ export function BatchMonitorControl({
 
   return (
     <section className="batchMonitorCard" id="batch-episode-monitor" aria-labelledby="batch-monitor-title">
-      <div className="batchMonitorCopy">
+      <div className="batchMonitorBar">
         <div className="batchMonitorHeading">
-          <div>
-            <span className="batchMonitorEyebrow">EPISODE AUTOMATION</span>
-            <h2 id="batch-monitor-title">批量剧集推进</h2>
-          </div>
+          <h2 id="batch-monitor-title">批量剧集推进</h2>
+          <span className={`batchMonitorStatus batchMonitorStatusInline ${statusClass}`} aria-live="polite"><i aria-hidden="true" />{statusLabel}</span>
         </div>
+        <div className="batchMonitorActions">
+          <button type="button" className="studioButton batchMonitorDisclosure" data-variant="secondary" aria-expanded={detailsOpen} aria-controls="batch-monitor-detail-content" onClick={() => setDetailsOpen((open) => !open)}>
+            {detailsOpen ? "收起详情" : "展开详情"}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+          </button>
+          {active ? (
+            <form action={stopEpisodeBatchMonitorAction} onSubmit={(event) => {
+              if (submitting.current || !window.confirm("确定停止页面上的批量推进监控吗？已经启动的剧集任务会继续完成。")) {
+                event.preventDefault();
+                return;
+              }
+              submitting.current = true;
+            }}>
+              <input name="projectId" type="hidden" value={projectId} />
+              <StopBatchMonitorButton submitting={submitting} />
+            </form>
+          ) : (
+            <form action={startEpisodeBatchMonitorAction} onSubmit={(event) => {
+              if (!canStart || monitor?.status === "SUCCEEDED" || submitting.current) {
+                event.preventDefault();
+                return;
+              }
+              submitting.current = true;
+            }}>
+              <input name="projectId" type="hidden" value={projectId} />
+              <StartBatchMonitorButton disabled={!canStart || monitor?.status === "SUCCEEDED"} label={actionLabel} hasRun={Boolean(monitor)} submitting={submitting} />
+            </form>
+          )}
+        </div>
+      </div>
+      <div className="batchMonitorCopy batchMonitorExpanded" id="batch-monitor-detail-content" hidden={!detailsOpen}>
         {!hasMonitorNotice ? <p className="batchMonitorSummary">{compactDescription}</p> : null}
         {monitor?.legacyAutoRepair ? (
           <>
@@ -106,8 +136,8 @@ export function BatchMonitorControl({
             ) : null}
           </>
         )}
-        <details className="batchMonitorDetails">
-          <summary>查看执行规则与历史说明</summary>
+        <section className="batchMonitorDetails" aria-labelledby="batch-monitor-rules-title">
+          <h3 id="batch-monitor-rules-title">执行规则与历史说明</h3>
           <div className="batchMonitorDetailsBody">
             <p>从页面启动后台监控（当前使用 {providerLabel}）：先完成所有正式集的 E0–E5 初稿；{concurrencyLabel}，避免 CLI 同时读取多份大上下文并触发额度窗口限制。普通执行失败会整集重做 1 次，仍失败就自动跳过并继续后续剧集；如果检测到额度不足或频率限制，批量会立即暂停，不会继续消耗额度。BLOCKER、MAJOR 和 MINOR 只记录，不在批量阶段自动返修；全部初稿完成后，再到各集的“问题与返修”中统一处理。</p>
             <div className="batchMonitorMeta" aria-label="批量推进规则">
@@ -121,34 +151,7 @@ export function BatchMonitorControl({
               <span>问题完成后统一返修</span>
             </div>
           </div>
-        </details>
-      </div>
-
-      <div className="batchMonitorActions">
-        <span className={`batchMonitorStatus batchMonitorStatusInline ${statusClass}`}><i aria-hidden="true" />{statusLabel}</span>
-        {active ? (
-          <form action={stopEpisodeBatchMonitorAction} onSubmit={(event) => {
-            if (submitting.current || !window.confirm("确定停止页面上的批量推进监控吗？已经启动的剧集任务会继续完成。")) {
-              event.preventDefault();
-              return;
-            }
-            submitting.current = true;
-          }}>
-            <input name="projectId" type="hidden" value={projectId} />
-            <StopBatchMonitorButton submitting={submitting} />
-          </form>
-        ) : (
-          <form action={startEpisodeBatchMonitorAction} onSubmit={(event) => {
-            if (!canStart || monitor?.status === "SUCCEEDED" || submitting.current) {
-              event.preventDefault();
-              return;
-            }
-            submitting.current = true;
-          }}>
-            <input name="projectId" type="hidden" value={projectId} />
-            <StartBatchMonitorButton disabled={!canStart || monitor?.status === "SUCCEEDED"} label={actionLabel} hasRun={Boolean(monitor)} submitting={submitting} />
-          </form>
-        )}
+        </section>
       </div>
     </section>
   );

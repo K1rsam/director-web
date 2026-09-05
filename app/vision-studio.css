@@ -1999,7 +1999,7 @@ button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible,t
 .skipLink {position:fixed;left:20px;top:-100px;z-index:200;border-radius:10px;background:var(--vision-primary);padding:12px 20px;color:white;}
 .skipLink:focus {top:16px;}
 
-/* One stationary navigation rail; the workspace owns vertical scrolling. */
+/* The header and navigation stay anchored; only the main work area scrolls. */
 .visionRouteFrame,.visionRouteFrame>.appChrome {min-height:100dvh;}
 .appChrome,.episodeShell {height:100dvh;min-height:0;overflow:hidden;background:transparent;}
 .appChrome::before,.appChrome::after {display:none;}
@@ -2026,20 +2026,18 @@ button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible,t
 .appChrome .sidebarEpisodes a b {font-size:.8125rem;color:var(--vision-primary);font-weight:500;}
 .appChrome .sidebarEpisodes a i {font-size:.75rem;color:var(--vision-good);}
 .appChrome .sidebarFooter {flex:0 0 auto;margin:auto 13px 0;padding:13px 0 8px;border-top:1px solid var(--vision-line);background:transparent;}
-.sidebarWorkflow {gap:2px;padding:0 9px 9px;}
-.appChrome .sidebarWorkflow span,.appChrome .sidebarWorkflow strong {font-size:.75rem;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .accountMenu {grid-template-columns:32px minmax(0,1fr) auto;gap:8px;padding:8px;border:0;background:rgba(255,255,255,.14);box-shadow:none;border-radius:13px;}
 .accountMenu strong,.accountMenu small,.accountMenu button {font-size:.8125rem;}
 .accountMenu button {min-height:36px;padding:4px;background:transparent;border:0;color:var(--vision-muted);}
 .accountAvatar {width:32px;height:32px;background:rgba(175,155,222,.19);color:var(--vision-primary);}
-.appChrome .appWorkspace,.episodeShell .appWorkspace {display:block;margin-left:var(--vision-workspace-offset);height:100dvh;min-height:0;padding:20px 18px 22px 12px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;mask-image:linear-gradient(#000 calc(100% - 10px),transparent);}
-.appChrome .appTopbar {position:relative;top:auto;margin:0 0 24px;min-height:96px;display:flex;flex-wrap:wrap;gap:16px;padding:19px 24px;border:1px solid rgba(255,255,255,.67);border-radius:22px;background:linear-gradient(120deg,rgba(233,239,255,.6),rgba(242,229,255,.58));box-shadow:var(--vision-shadow);backdrop-filter:blur(24px) saturate(115%);}
+.appChrome .appWorkspace,.episodeShell .appWorkspace {display:flex;flex-direction:column;margin-left:var(--vision-workspace-offset);height:100dvh;min-height:0;padding:20px 18px 22px 12px;overflow:hidden;mask-image:none;}
+.appChrome .appTopbar {position:relative;flex:0 0 auto;top:auto;margin:0 0 24px;min-height:96px;display:flex;flex-wrap:wrap;gap:16px;padding:19px 24px;border:1px solid rgba(255,255,255,.67);border-radius:22px;background:linear-gradient(120deg,rgba(233,239,255,.6),rgba(242,229,255,.58));box-shadow:var(--vision-shadow);backdrop-filter:blur(24px) saturate(115%);}
 .topbarIdentity {flex:1 1 20rem;gap:5px;}
 .topbarIdentity small {font-size:.8125rem;line-height:1.5;color:var(--vision-muted);font-weight:400;}
 .topbarIdentity .pageTitle,.topbarIdentity strong {display:block;margin:0;max-width:none;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;color:var(--vision-text);font-size:var(--vision-font-title);font-weight:650;line-height:1.35;letter-spacing:-.025em;}
 .topbarTools {display:flex;flex:0 1 auto;align-items:center;flex-wrap:wrap;justify-content:flex-end;gap:8px;}
 .topbarTools>* {max-width:100%;}
-.appChrome .appMain,.episodeShell .appMain {display:block;overflow:visible;min-height:0;width:100%;padding:0 2px 22px;}
+.appChrome .appMain,.episodeShell .appMain {display:block;flex:1 1 auto;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;min-height:0;width:100%;padding:0 2px 22px;mask-image:linear-gradient(#000 calc(100% - 12px),transparent);scroll-padding-block:14px;}
 .projectDashboard,.episodeDashboard,.episodeShell .episodeDashboard {display:grid;height:auto;grid-template-columns:minmax(0,1fr);gap:24px;width:100%;max-width:var(--vision-content-max);margin:0 auto;}
 .workspaceGrid,.storyboardCanvas,.roleProgressRail,.episodeRoleDeck {min-width:0;max-width:100%;}
 .libraryTopbarMeta>span,.projectTopbarMeta>span,.episodeTopbarMeta>span {padding:3px 7px;border:0;border-radius:5px;background:rgba(228,225,246,.42);box-shadow:none;font-size:.8125rem;}
@@ -2116,6 +2114,7 @@ button[aria-busy=true]::before {content:"";width:14px;height:14px;flex:0 0 14px;
 .runnerDiagnosticLogItem pre {white-space:pre-wrap;overflow:auto;font-size:.875rem;}
 dialog.infoPanelBackdrop {inset:0;width:100%;max-width:none;height:100dvh;max-height:none;margin:0;border:0;padding:0;color:var(--vision-text);background:transparent;}
 dialog.infoPanelBackdrop::backdrop {background:rgba(70,65,107,.2);backdrop-filter:blur(7px);}
+.appChrome:has(dialog[open]) .appMain {overflow:hidden;}
 .infoPanelArea {width:min(42rem,calc(100vw - 24px));border:1px solid rgba(255,255,255,.75);border-radius:22px 0 0 22px;background:var(--vision-solid)!important;box-shadow:var(--vision-shadow-float);backdrop-filter:blur(30px);}
 .infoPanelHead {padding:20px;background:rgba(239,236,252,.5)!important;}
 .infoPanelBody {padding:20px;overscroll-behavior:contain;}
@@ -2126,10 +2125,10 @@ dialog.infoPanelBackdrop::backdrop {background:rgba(70,65,107,.2);backdrop-filte
 .loginForm label>span,.loginFootnote,.loginError {font-size:.875rem;}
 
 /* Subtle edge fade and native scrolling, without detached square shadow bands. */
-:is(.appWorkspace,.sidebarEpisodeScroller,.unitList,.studioTableScroll,.storyboardTableWrap,.infoPanelBody)::-webkit-scrollbar {width:6px;height:6px;}
-:is(.appWorkspace,.sidebarEpisodeScroller,.unitList,.studioTableScroll,.storyboardTableWrap,.infoPanelBody)::-webkit-scrollbar-button {display:none;width:0;height:0;}
-:is(.appWorkspace,.sidebarEpisodeScroller,.unitList,.studioTableScroll,.storyboardTableWrap,.infoPanelBody)::-webkit-scrollbar-track {background:transparent;margin-block:16px;}
-:is(.appWorkspace,.sidebarEpisodeScroller,.unitList,.studioTableScroll,.storyboardTableWrap,.infoPanelBody)::-webkit-scrollbar-thumb {background:rgba(119,108,166,.3);border-radius:20px;}
+:is(.appMain,.appWorkspace,.sidebarEpisodeScroller,.unitList,.studioTableScroll,.storyboardTableWrap,.infoPanelBody)::-webkit-scrollbar {width:6px;height:6px;}
+:is(.appMain,.appWorkspace,.sidebarEpisodeScroller,.unitList,.studioTableScroll,.storyboardTableWrap,.infoPanelBody)::-webkit-scrollbar-button {display:none;width:0;height:0;}
+:is(.appMain,.appWorkspace,.sidebarEpisodeScroller,.unitList,.studioTableScroll,.storyboardTableWrap,.infoPanelBody)::-webkit-scrollbar-track {background:transparent;margin-block:16px;}
+:is(.appMain,.appWorkspace,.sidebarEpisodeScroller,.unitList,.studioTableScroll,.storyboardTableWrap,.infoPanelBody)::-webkit-scrollbar-thumb {background:rgba(119,108,166,.3);border-radius:20px;}
 .visionRouteFrame[data-navigating=true]::after {content:"";position:fixed;z-index:100;top:0;left:var(--vision-workspace-offset);right:20px;height:2px;transform-origin:left;background:linear-gradient(90deg,#7c8ad7,#b398d9);animation:studioRouteProgress 1.4s var(--motion-ease) infinite;}
 [data-route-pending] {background:rgba(224,219,246,.72)!important;}
 @keyframes studioRouteProgress {0%{transform:scaleX(.03);opacity:.5}85%{transform:scaleX(.9);opacity:.85}100%{transform:scaleX(.94);opacity:0}}

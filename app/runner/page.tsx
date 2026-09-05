@@ -26,8 +26,8 @@ export default async function RunnerPage({ searchParams }: { searchParams: Promi
 
   return (
     <AppChrome
-      title="API 与 CLI"
-      eyebrow="执行设置"
+      title="CLI 与 API"
+      eyebrow="执行连接"
       activeSection="runner"
       projectId={activeProject?.id}
       projectLabel={activeProject?.title}

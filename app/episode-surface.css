@@ -160,7 +160,7 @@
   background: var(--vision-reading) !important;
   box-shadow: 0 5px 20px rgba(111, 107, 160, .05) !important;
 }
-.episodeSurface .episodeReadingCanvas .canvasToolbar { min-height: 54px; padding: 0 172px 0 16px; gap: 12px; background: transparent !important; }
+.episodeSurface .episodeReadingCanvas .canvasToolbar { position: relative; top: auto; z-index: auto; backdrop-filter: none; min-height: 54px; padding: 0 172px 0 16px; gap: 12px; background: transparent !important; }
 .episodeSurface .episodeReadingCanvas .viewTabs { min-width:0; max-width:100%; overflow-x:auto; gap:4px; margin-block:8px; padding:4px; border-radius:13px; background:rgba(210,209,237,.22); }
 .episodeSurface .episodeReadingCanvas .viewTabs a { flex:0 0 auto; white-space:nowrap; min-height:38px; padding:8px 13px; border:0; border-radius:10px; font-size:0.875rem; font-weight:500; }
 .episodeSurface .episodeReadingCanvas .viewTabs a.active { background:rgba(249,247,255,.72); box-shadow:0 3px 8px rgba(108,95,161,.12),inset 0 1px 0 rgba(255,255,255,.82); color:var(--episode-ink); }
@@ -234,9 +234,9 @@
   background: transparent !important;
   color: var(--episode-ink) !important;
   font-family: var(--studio-font, system-ui, "Microsoft YaHei", sans-serif);
-  font-size: 1rem;
+  font-size: 0.9375rem;
   font-weight: 400;
-  line-height: 1.6;
+  line-height: 1.55;
   letter-spacing: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -280,21 +280,21 @@
   padding: 0;
   color: var(--episode-ink);
   font-family: var(--studio-font, system-ui, "Microsoft YaHei", sans-serif);
-  font-size: 1rem;
+  font-size: 0.9375rem;
   font-weight: 400;
-  line-height: 1.6;
+  line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: normal;
 }
 .episodeSurface .promptDocument > * { max-width: none; margin: 0; padding: 0; }
-.episodeSurface .promptDocument .promptDocumentSpace { display: block; height: 8px; font-size: 0; line-height: 0; }
-.episodeShell .episodeSurface .promptDocument .promptDocumentTitle { margin-bottom: 2px; color: var(--episode-ink); font-size: 1.125rem; font-weight: 600; line-height: 1.5; }
+.episodeSurface .promptDocument .promptDocumentSpace { display: block; height: 6px; font-size: 0; line-height: 0; }
+.episodeShell .episodeSurface .promptDocument .promptDocumentTitle { margin-bottom: 2px; color: var(--episode-ink); font-size: 1rem; font-weight: 600; line-height: 1.5; }
 .episodeShell .episodeSurface .promptDocument .promptDocumentSectionTitle { color: var(--episode-accent); font-size: 0.875rem; font-weight: 600; line-height: 1.6; }
-.episodeSurface .promptDocument .promptDocumentShot { padding: 6px 0 3px; border-top: 1px solid var(--episode-line); color: var(--episode-ink); font-size: 1rem; font-weight: 500; line-height: 1.6; }
+.episodeSurface .promptDocument .promptDocumentShot { padding: 5px 0 2px; border-top: 1px solid var(--episode-line); color: var(--episode-ink); font-size: 0.9375rem; font-weight: 500; line-height: 1.55; }
 .episodeSurface .promptDocumentShotNumber { color: var(--episode-accent); font-weight: 600; }
 .episodeSurface .promptDocumentShotTiming { color: var(--episode-muted); font-size: 0.875rem; font-weight: 400; }
-.episodeSurface .promptDocument .promptDocumentField { margin-block: 2px; }
+.episodeSurface .promptDocument .promptDocumentField { margin-block: 1px; }
 .episodeSurface .promptDocumentLabel { color: var(--episode-muted); font-size: 0.875rem; font-weight: 600; }
 .episodeSurface .promptDocumentSyntax { color: var(--episode-muted); font-size: 0.75rem; font-weight: 400; }
 .episodeSurface .promptDocument .promptDocumentLine { color: inherit; font-size: inherit; line-height: inherit; }
@@ -346,7 +346,8 @@
 .episodeShell .episodeSurface .storyboardTable td:first-child {background:rgba(233,232,246,.94)!important;}
 .episodeShell .episodeSurface .storyboardTable td :is(b,strong) {font-size:.8125rem;font-weight:500;}
 .episodeShell .episodeSurface .storyboardTable td small {font-size:.75rem;color:var(--episode-muted);}
-.episodeShell .episodeSurface .storyboardTable tbody tr:hover td {background:rgba(245,242,255,.6)!important;}
-.episodeShell .episodeSurface .storyboardTable tbody tr:hover td:first-child {background:rgba(238,235,250,.98)!important;}
+.episodeShell .episodeSurface .storyboardTable tbody tr:is(:hover,:focus-within) {background:transparent!important;}
+.episodeShell .episodeSurface .storyboardTable tbody tr:is(:hover,:focus-within) td {background:rgba(214,210,240,.36)!important;}
+.episodeShell .episodeSurface .storyboardTable tbody tr:is(:hover,:focus-within) td:first-child {background:rgba(214,210,240,.36)!important;}
 .episodeShell .episodeSurface .episodeReadingCanvas .logView>section {background:rgba(233,232,246,.45)!important;border:1px solid var(--episode-line);box-shadow:none;}
 @container episode-surface (max-width:41.25rem) {.episodeShell .episodeSurface .storyboardTableWrap {padding-inline:8px;}}
