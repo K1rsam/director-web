@@ -8,6 +8,7 @@
     "local_only": "线下 Prisma/本地流水线/本地工具专属：只改 main"
   },
   "common_once": [
+    "app/ui/motion-selection.tsx",
     "app/episode-surface.css",
     "app/page-surfaces.css",
     "app/workbench-refinement.css",
