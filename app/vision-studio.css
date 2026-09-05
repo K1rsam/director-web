@@ -2207,7 +2207,7 @@ pre, code { font-family: var(--studio-mono); }
 .runnerProviderGrid { gap: 24px; align-items: start; }
 .runnerProviderHeader { align-items: flex-start; gap: 16px; }
 .runnerProviderHeader > div { min-width: 0; }
-.runnerCredentialField input, .runnerTokenForm input, .runnerTokenForm select { min-height: 46px; font-size: var(--vision-font-body); }
+.runnerSettingsPage input:not([type="checkbox"]):not([type="radio"]), .runnerSettingsPage select { min-height: 46px; font-size: var(--vision-font-body); font-weight: 400; }
 .runnerCliStatusPanel { border: 1px solid var(--vision-line); border-radius: 10px; background: #f8f9fc; padding: 16px; }
 .runnerCliStatusEyebrow, .runnerCliStatusHeader time { font-size: var(--vision-font-caption); color: var(--vision-muted); letter-spacing: .02em; }
 .runnerCliStatusGrid { grid-template-columns: repeat(auto-fit,minmax(min(100%, 11rem),1fr)); gap: 12px; }
