@@ -80,11 +80,14 @@ export function ProjectBibleViewer({ content }: { content: string }) {
               <span>核心欲望</span><b>{bible.story_contract?.core_desire || "—"}</b>
             </div>
             {(bible.story_contract?.immutable_facts ?? []).length ? (
-              <ul className="bibleFactList">
-                {(bible.story_contract?.immutable_facts ?? []).map((fact, index) => (
-                  <li key={index}><b>不可变事实</b>{fact.fact}<small>@{fact.source_node_refs.join("、")}</small></li>
-                ))}
-              </ul>
+              <section className="bibleFacts" aria-label="不可变事实">
+                <h4 className="bibleFactsTitle">不可变事实</h4>
+                <ol className="bibleFactList">
+                  {(bible.story_contract?.immutable_facts ?? []).map((fact, index) => (
+                    <li key={index}><p className="bibleFactText">{fact.fact}</p><small>@{fact.source_node_refs.join("、")}</small></li>
+                  ))}
+                </ol>
+              </section>
             ) : null}
           </div>
         ) : null}

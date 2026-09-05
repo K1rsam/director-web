@@ -7,7 +7,7 @@
   --episode-line: rgba(122, 113, 175, .19);
   --episode-tile: rgba(230, 233, 249, .40);
   container: episode-surface / inline-size;
-  gap: 12px;
+  gap: 24px;
   min-width: 0;
 }
 
@@ -26,7 +26,7 @@
   color: var(--episode-ink);
 }
 .episodeSurface .episodeRoleDeck[open] > summary { border: 0; }
-.episodeSurface .episodeDeckTitle { display: inline-flex; align-items: baseline; gap: 10px; font-size: 1.25rem; font-weight: 600; }
+.episodeSurface .episodeDeckTitle { display: inline-flex; align-items: baseline; gap: 10px; font-size: 1.125rem; font-weight: 600; }
 .episodeSurface .episodeDeckTitle small,
 .episodeSurface .episodeRoleDeck > summary b { color: var(--episode-muted); font-size: 0.75rem; font-weight: 500; }
 .episodeShell .episodeSurface .episodeRoleDeck > .roleProgressRail {
@@ -41,9 +41,9 @@
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: 1fr auto auto;
+  grid-template-rows: 1fr auto;
   align-content: stretch;
-  gap: 5px;
+  gap: 13px;
   box-sizing: border-box;
   height: 7.625rem;
   min-height: 7.625rem !important;
@@ -62,11 +62,11 @@
   bottom: 0;
   left: 15px;
   width: auto;
-  height: 2px;
+  height: 1.5px;
   background: var(--episode-line);
   border-radius: 2px;
 }
-.episodeShell .episodeSurface .episodeRoleDeck .roleProgress.done::before { background: var(--vision-good, #34836c); }
+.episodeShell .episodeSurface .episodeRoleDeck .roleProgress.done::before { background: linear-gradient(90deg,rgba(111,139,215,.5),rgba(146,123,196,.45)); }
 .episodeShell .episodeSurface .episodeRoleDeck .roleProgress.running::before { background: var(--episode-accent); }
 .episodeShell .episodeSurface .episodeRoleDeck .roleProgress.failed::before { background: var(--vision-bad, #b44d67); }
 .episodeShell .episodeSurface .episodeRoleDeck .roleProgress.running { border-color: rgba(115, 105, 180, .5) !important; }
@@ -117,7 +117,7 @@
 .episodeShell .episodeSurface .episodeRoleDeck .roleProgress > .episodeRoleFoot {
   display: flex;
   grid-column: 1;
-  grid-row: 3;
+  grid-row: 2;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
@@ -328,3 +328,25 @@
   .episodeSurface .episodeReadingCanvas .viewTabs { gap: 4px; }
   .episodeSurface .episodeReadingCanvas .viewTabs a { font-size: 0.8125rem; }
 }
+
+/* Measured against the approved 3180 composition at normal browser scale. */
+.episodeShell .episodeSurface .episodeRoleDeck .episodeRoleModel {margin-left:auto;font-size:.75rem;line-height:1.5;}
+.episodeShell .episodeSurface .episodeRoleDuration {margin-left:0;padding-left:7px;border-left:1px solid var(--episode-line);font-size:.75rem;}
+.episodeShell .episodeSurface .episodeRoleDeck .roleStageForm:has(.roleCardHitArea:not(:disabled)):is(:hover,:focus-within) .episodeRoleModel {padding-right:0;}
+.episodeSurface .episodeRoleIcon {transition:transform 320ms var(--motion-ease),box-shadow 260ms;}
+.episodeSurface .roleStageForm:hover .episodeRoleIcon {transform:translateY(-1px) rotate(-4deg);box-shadow:0 5px 12px rgba(109,96,169,.17),inset 0 1px 0 rgba(255,255,255,.9);}
+.episodeShell .episodeSurface .episodeRoleDeck .roleProgress {backdrop-filter:blur(24px) saturate(1.15);}
+.episodeShell .episodeSurface .episodeReadingCanvas .viewTabs a.active {color:var(--episode-ink)!important;}
+.episodeShell .episodeSurface .episodeReadingCanvas .viewTabs b {min-width:19px;padding:1px 4px;border-radius:5px;background:rgba(134,113,205,.14)!important;color:var(--episode-muted)!important;font-size:.6875rem;font-weight:400;}
+.episodeShell .episodeSurface .storyboardTableWrap {padding:16px 20px 24px;}
+.episodeShell .episodeSurface .storyboardTable {min-width:1080px;background:transparent;}
+.episodeShell .episodeSurface .storyboardTable :is(th,td) {border-bottom:1px solid var(--episode-line)!important;letter-spacing:0;text-transform:none;}
+.episodeShell .episodeSurface .storyboardTable th {padding:10px 12px 14px;background:rgba(233,232,246,.94)!important;color:var(--episode-muted);font-size:.75rem;font-weight:500;}
+.episodeShell .episodeSurface .storyboardTable td {padding:18px 12px;background:transparent!important;color:var(--episode-ink);font-size:.875rem;font-weight:400;line-height:1.8;}
+.episodeShell .episodeSurface .storyboardTable td:first-child {background:rgba(233,232,246,.94)!important;}
+.episodeShell .episodeSurface .storyboardTable td :is(b,strong) {font-size:.8125rem;font-weight:500;}
+.episodeShell .episodeSurface .storyboardTable td small {font-size:.75rem;color:var(--episode-muted);}
+.episodeShell .episodeSurface .storyboardTable tbody tr:hover td {background:rgba(245,242,255,.6)!important;}
+.episodeShell .episodeSurface .storyboardTable tbody tr:hover td:first-child {background:rgba(238,235,250,.98)!important;}
+.episodeShell .episodeSurface .episodeReadingCanvas .logView>section {background:rgba(233,232,246,.45)!important;border:1px solid var(--episode-line);box-shadow:none;}
+@container episode-surface (max-width:41.25rem) {.episodeShell .episodeSurface .storyboardTableWrap {padding-inline:8px;}}

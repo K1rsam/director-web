@@ -265,7 +265,7 @@ body {
 .foundationControlHeader > div { display: grid; gap: 3px; min-width: 0; }
 .foundationControlHeader strong { color: var(--vision-text); font-size: var(--vision-font-small); letter-spacing: -.01em; }
 .foundationControlHeader span, .foundationRunnerNote { color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.55; }
-.foundationRunAllButton { min-height: 34px; border: 1px solid rgba(103,94,228,.22); border-radius: 999px; background: linear-gradient(135deg, #7167e7, #8469e9); box-shadow: 0 8px 18px rgba(100,88,208,.16); padding: 0 16px; color: #fff; font-size: var(--vision-font-small); font-weight: 800; white-space: nowrap; cursor: pointer; }
+.foundationRunAllButton { min-height: 34px; border: 1px solid rgba(103,94,228,.22); border-radius: 999px; background: linear-gradient(135deg, #7167e7, #8469e9); box-shadow: 0 8px 18px rgba(100,88,208,.16); padding: 0 16px; color: #fff; font-size: var(--vision-font-small); font-weight: 600; white-space: nowrap; cursor: pointer; }
 .foundationRunAllButton:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 11px 22px rgba(100,88,208,.22); }
 .foundationRunAllButton:disabled { cursor: not-allowed; opacity: .58; }
 .foundationRunnerNote { margin: -4px 2px 12px; }
@@ -302,7 +302,7 @@ body {
   background: rgba(126,137,166,.30);
   content: "";
 }
-.foundationRole > span:first-child { display: grid; width: 28px; height: 28px; grid-column: 1; grid-row: 1 / 3; place-items: center; align-self: center; border-radius: 9px; background: rgba(242,241,255,.86); color: #655ad7; font-size: var(--vision-font-small); font-weight: 850; }
+.foundationRole > span:first-child { display: grid; width: 28px; height: 28px; grid-column: 1; grid-row: 1 / 3; place-items: center; align-self: center; border-radius: 9px; background: rgba(242,241,255,.86); color: #655ad7; font-size: var(--vision-font-small); font-weight: 600; }
 .foundationRole > div { grid-column: 2; grid-row: 1 / 3; align-self: center; min-width: 0; }
 .foundationRole strong { color: var(--vision-text) !important; font-size: var(--vision-font-small); }
 .foundationRole small { color: var(--vision-muted) !important; }
@@ -323,17 +323,17 @@ body {
 .foundationRole.automatic { cursor: default; }
 .foundationCardHitArea { position: absolute; z-index: 3; inset: 0; width: 100%; height: 100%; border: 0; border-radius: 19px; background: transparent; cursor: pointer; }
 .foundationStageForm:hover .foundationRole, .foundationStageForm:focus-within .foundationRole { transform: translateY(-4px); border-color: rgba(104,91,218,.37) !important; background: rgba(255,255,255,.88) !important; box-shadow: var(--vision-shadow-float) !important; }
-.foundationCardAction { position: absolute; right: 13px; bottom: 11px; color: #8a92a8; font-size: var(--vision-font-small); font-weight: 800; transition: color var(--motion-fast), transform var(--motion-fast), opacity var(--motion-fast); }
+.foundationCardAction { position: absolute; right: 13px; bottom: 11px; color: #8a92a8; font-size: var(--vision-font-small); font-weight: 600; transition: color var(--motion-fast), transform var(--motion-fast), opacity var(--motion-fast); }
 .foundationStageForm:hover .foundationCardAction { transform: translateX(2px); color: #5f56d1; }
 .foundationRole .roleRunError { position: absolute; right: 12px; bottom: 27px; left: 13px; overflow: hidden; color: var(--vision-bad); font-size: var(--vision-font-small); text-overflow: ellipsis; white-space: nowrap; }
 .foundationFailureDetails { margin-top: 10px; border: 1px solid rgba(217,88,110,.18); border-radius: 12px; background: rgba(255,244,247,.42); color: var(--vision-muted); font-size: var(--vision-font-small); }
-.foundationFailureDetails summary { cursor: pointer; padding: 8px 11px; color: var(--vision-bad); font-weight: 750; }
+.foundationFailureDetails summary { cursor: pointer; padding: 8px 11px; color: var(--vision-bad); font-weight: 600; }
 .foundationFailureDetails > div { display: grid; gap: 5px; padding: 0 11px 10px; line-height: 1.55; }
 .foundationFailureDetails p { margin: 0; color: var(--vision-text); }
 .foundationFailureDetails ul { display: grid; gap: 3px; margin: 0; padding-left: 17px; }
 .foundationFailureDetails li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maintenancePanel { margin-top: 11px; border: 1px solid rgba(255,255,255,.70); border-radius: 15px; background: rgba(255,255,255,.38); color: var(--vision-muted); }
-.maintenancePanel > summary { display: flex; min-height: 42px; align-items: center; justify-content: space-between; padding: 0 14px; color: #707b93; font-size: var(--vision-font-small); font-weight: 750; cursor: pointer; list-style: none; }
+.maintenancePanel > summary { display: flex; min-height: 42px; align-items: center; justify-content: space-between; padding: 0 14px; color: #707b93; font-size: var(--vision-font-small); font-weight: 600; cursor: pointer; list-style: none; }
 .maintenancePanel > summary::-webkit-details-marker { display: none; }
 .maintenancePanel > summary::after { color: #7167df; content: "＋"; font-size: var(--vision-font-small); }
 .maintenancePanel[open] > summary::after { content: "−"; }
@@ -369,7 +369,7 @@ body {
   content: "";
 }
 .batchMonitorCopy { min-width: 0; }
-.batchMonitorEyebrow { display: block; margin-bottom: 5px; color: #7567df; font-size: var(--vision-font-caption); font-weight: 850; letter-spacing: .16em; }
+.batchMonitorEyebrow { display: block; margin-bottom: 5px; color: #7567df; font-size: var(--vision-font-caption); font-weight: 600; letter-spacing: .16em; }
 .batchMonitorCopy h2 { margin: 0 0 7px; color: var(--vision-text); font-size: var(--vision-font-heading); letter-spacing: -.025em; }
 .batchMonitorCopy > p { max-width: 920px; margin: 0; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.7; }
 .batchMonitorMeta { display: flex; flex-wrap: wrap; gap: 7px 16px; margin-top: 12px; color: var(--vision-faint); font-size: var(--vision-font-caption); }
@@ -384,7 +384,7 @@ body {
 .batchMonitorLegacyDetails p { margin: 6px 0 0; color: var(--vision-faint); }
 .batchMonitorActions { display: grid; min-width: 164px; justify-items: stretch; gap: 10px; }
 .batchMonitorActions form { margin: 0; }
-.batchMonitorStatus { display: inline-flex; align-items: center; justify-content: center; gap: 7px; color: var(--vision-faint); font-size: var(--vision-font-caption); font-weight: 750; white-space: nowrap; }
+.batchMonitorStatus { display: inline-flex; align-items: center; justify-content: center; gap: 7px; color: var(--vision-faint); font-size: var(--vision-font-caption); font-weight: 600; white-space: nowrap; }
 .batchMonitorStatus i { width: 7px; height: 7px; border-radius: 50%; background: #aab2c4; box-shadow: 0 0 0 4px rgba(170,178,196,.12); }
 .batchMonitorStatus.active { color: #6259d5; }
 .batchMonitorStatus.active i { background: #6d70e8; box-shadow: 0 0 0 4px rgba(109,112,232,.12); animation: uiPulse 1.5s ease-in-out infinite; }
@@ -392,7 +392,7 @@ body {
 .batchMonitorStatus.success i { background: var(--vision-good); box-shadow: 0 0 0 4px rgba(36,154,124,.11); }
 .batchMonitorStatus.blocked { color: var(--vision-bad); }
 .batchMonitorStatus.blocked i { background: var(--vision-bad); box-shadow: 0 0 0 4px rgba(217,88,110,.11); }
-.batchMonitorButton { display: inline-flex; width: 100%; min-height: 38px; align-items: center; justify-content: center; gap: 8px; border: 1px solid rgba(103,94,228,.22); border-radius: 12px; padding: 0 14px; font: inherit; font-size: var(--vision-font-small); font-weight: 800; cursor: pointer; transition: transform var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast), opacity var(--motion-fast); }
+.batchMonitorButton { display: inline-flex; width: 100%; min-height: 38px; align-items: center; justify-content: center; gap: 8px; border: 1px solid rgba(103,94,228,.22); border-radius: 12px; padding: 0 14px; font: inherit; font-size: var(--vision-font-small); font-weight: 600; cursor: pointer; transition: transform var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast), opacity var(--motion-fast); }
 .batchMonitorButton.primary { background: linear-gradient(135deg, #7167e7, #8469e9); box-shadow: 0 10px 22px rgba(100,88,208,.18), inset 0 1px rgba(255,255,255,.4); color: #fff; }
 .batchMonitorButton.stop { border-color: rgba(217,88,110,.22); background: rgba(255,244,247,.82); color: var(--vision-bad); }
 .batchMonitorButton:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 13px 26px rgba(82,78,205,.20), inset 0 1px rgba(255,255,255,.5); }
@@ -500,11 +500,6 @@ body {
 .viewTabs a.active { border-bottom: 0 !important; color: #554ec8 !important; }
 .viewTabs a.active::after { opacity: 1; transform: scaleX(1); }
 .viewTabs b { border-radius: 999px; background: #eef0f7 !important; color: #77829a !important; }
-.storyboardTableWrap { background: #fff; }
-.storyboardTable th { background: #f1f4fa !important; }
-.storyboardTable td { background: rgba(255,255,255,.98); }
-.storyboardTable td:first-child { background: #fcfdff !important; }
-.storyboardTable tbody tr:hover td { background: #fbfaff !important; }
 .cellText { line-height: 1.68; }
 
 .unitList, .logView { padding: 16px !important; }
@@ -698,13 +693,13 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
   background: linear-gradient(145deg, #7e91ff, #7550e8);
   box-shadow: 0 11px 25px rgba(95,80,222,.30), inset 0 1px rgba(255,255,255,.55);
   color: white;
-  font-weight: 760;
+  font-weight: 600;
 }
 .loginBrand div { display: grid; gap: 2px; }
 .loginBrand strong { color: var(--vision-text); font-size: var(--vision-font-small); }
 .loginBrand small { color: var(--vision-faint); font-size: var(--vision-font-small); letter-spacing: .14em; text-transform: uppercase; }
 .loginHeading { margin: 34px 0 25px; }
-.loginHeading p { margin: 0 0 8px; color: var(--vision-primary); font-size: var(--vision-font-small); font-weight: 780; letter-spacing: .18em; }
+.loginHeading p { margin: 0 0 8px; color: var(--vision-primary); font-size: var(--vision-font-small); font-weight: 600; letter-spacing: .18em; }
 .loginHeading h1 { margin: 0; color: var(--vision-text); font-size: var(--vision-font-title); letter-spacing: -.045em; }
 .loginHeading span { display: block; margin-top: 10px; color: var(--vision-muted); line-height: 1.7; }
 .loginForm { display: grid; gap: 15px; }
@@ -736,7 +731,7 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
   color: white;
   font: inherit;
   font-size: var(--vision-font-small);
-  font-weight: 760;
+  font-weight: 600;
   cursor: pointer;
   transition: transform var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast);
 }
@@ -747,7 +742,7 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
 
 .sidebarWorkflow { display: grid; }
 .accountMenu { display: grid; align-items: center; border-top: 1px solid var(--vision-line); padding-top: 12px; }
-.accountAvatar { display: grid; place-items: center; border-radius: 10px; background: linear-gradient(145deg, #eef1ff, #f3edff); color: #675bd8 !important; font-weight: 800; }
+.accountAvatar { display: grid; place-items: center; border-radius: 10px; background: linear-gradient(145deg, #eef1ff, #f3edff); color: #675bd8 !important; font-weight: 600; }
 .accountMenu > div { display: grid; min-width: 0; gap: 1px; }
 .accountMenu > div strong { overflow: hidden; color: var(--vision-text); text-overflow: ellipsis; white-space: nowrap; }
 .accountMenu > div small { overflow: hidden; color: var(--vision-faint); text-overflow: ellipsis; white-space: nowrap; }
@@ -874,7 +869,7 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   line-height: 1;
 }
 .appChrome .episodeStudioList .episodeSummary > div { gap: 8px; margin-bottom: 4px; }
-.appChrome .episodeStudioList .episodeSummary h3 { font-weight: 780; line-height: 1.35; }
+.appChrome .episodeStudioList .episodeSummary h3 { font-weight: 600; line-height: 1.35; }
 .appChrome .episodeStudioList .episodeSummary p { margin: 0; color: #7a849a; font-size: var(--vision-font-small); line-height: 1.45; }
 
 @media (max-width: 760px) {
@@ -957,14 +952,14 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   padding: 6px 10px;
   color: var(--vision-faint);
   font-size: var(--vision-font-caption);
-  font-weight: 700;
+  font-weight: 600;
 }
 .runnerConnectionStatus.connected { border-color: rgba(36,154,124,.20); background: rgba(237,250,246,.86); color: var(--vision-good); }
 .runnerConnectionStatus.attention { border-color: rgba(217,88,110,.22); background: rgba(255,244,246,.86); color: var(--vision-bad); }
 .runnerFieldGrid { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 12px; margin-top: 28px; }
-.runnerFieldGrid label, .runnerDeviceForm label { display: grid; min-width: 0; gap: 8px; color: var(--vision-text); font-size: var(--vision-font-small); font-weight: 700; }
+.runnerFieldGrid label, .runnerDeviceForm label { display: grid; min-width: 0; gap: 8px; color: var(--vision-text); font-size: var(--vision-font-small); font-weight: 600; }
 .runnerCredentialForm { display: flex; min-height: 0; flex: 1; flex-direction: column; }
-.runnerWideField { display: grid; min-width: 0; gap: 8px; margin-top: 12px; color: var(--vision-text); font-size: var(--vision-font-small); font-weight: 700; }
+.runnerWideField { display: grid; min-width: 0; gap: 8px; margin-top: 12px; color: var(--vision-text); font-size: var(--vision-font-small); font-weight: 600; }
 .runnerCredentialMeta { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 12px; color: var(--vision-faint); font-size: var(--vision-font-caption); line-height: 1.5; }
 .runnerConnectionNote { margin: 12px 0 0; color: var(--vision-muted); font-size: var(--vision-font-caption); line-height: 1.55; }
 .runnerFieldGrid input, .runnerFieldGrid select, .runnerDeviceForm input {
@@ -998,7 +993,7 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 .runnerFieldGrid input:focus, .runnerFieldGrid select:focus, .runnerDeviceForm input:focus { border-color: rgba(103,94,228,.42); background: white; box-shadow: 0 0 0 4px rgba(103,94,228,.08); }
 .runnerWideField input:focus { border-color: rgba(103,94,228,.42); background: white; box-shadow: 0 0 0 4px rgba(103,94,228,.08); }
 .runnerActions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: auto; padding-top: 24px; }
-.runnerPrimaryButton, .runnerSecondaryButton { min-height: 42px; padding: 0 16px; font-size: var(--vision-font-small); font-weight: 750; cursor: pointer; }
+.runnerPrimaryButton, .runnerSecondaryButton { min-height: 42px; padding: 0 16px; font-size: var(--vision-font-small); font-weight: 600; cursor: pointer; }
 .runnerMessage { flex: 1 1 100%; margin: 0; font-size: var(--vision-font-small); line-height: 1.5; }
 .runnerMessage.success { color: var(--vision-good); }
 .runnerMessage.error { color: var(--vision-bad); }
@@ -1016,7 +1011,7 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 .runnerCliStatusPanel { margin-top: 12px; }
 .runnerCliStatusHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .runnerCliStatusHeader > div { display: grid; gap: 3px; min-width: 0; }
-.runnerCliStatusEyebrow { color: #7567df; font-size: var(--vision-font-small); font-weight: 850; letter-spacing: .14em; }
+.runnerCliStatusEyebrow { color: #7567df; font-size: var(--vision-font-small); font-weight: 600; letter-spacing: .14em; }
 .runnerCliStatusHeader strong { color: var(--vision-text); font-size: var(--vision-font-small); }
 .runnerCliStatusHeader time { color: var(--vision-faint); font-size: var(--vision-font-caption); white-space: nowrap; }
 .runnerCliStatusNote { margin: 8px 0 0; color: var(--vision-muted); font-size: var(--vision-font-caption); line-height: 1.5; }
@@ -1036,7 +1031,7 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 .runnerSectionHeader > p { max-width: 520px; text-align: right; }
 .runnerChoiceGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
 .runnerChoiceGrid article { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 14px; border: 1px solid var(--vision-line); border-radius: 16px; background: rgba(249,250,255,.70); padding: 16px; }
-.runnerChoiceGrid article > span { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 12px; background: rgba(241,239,255,.92); color: var(--vision-primary); font-size: var(--vision-font-caption); font-weight: 800; }
+.runnerChoiceGrid article > span { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 12px; background: rgba(241,239,255,.92); color: var(--vision-primary); font-size: var(--vision-font-caption); font-weight: 600; }
 .runnerChoiceGrid strong { font-size: var(--vision-font-body); }
 .runnerChoiceGrid p { margin: 6px 0 0; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.65; }
 .runnerDeviceList { display: grid; margin-top: 18px; border-top: 1px solid var(--vision-line); }
@@ -1062,11 +1057,11 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 .runnerDiagnosticLogItem strong { color: var(--vision-text); font-size: var(--vision-font-small); }
 .runnerDiagnosticLogItem header small, .runnerDiagnosticMeta { color: var(--vision-muted); font-size: var(--vision-font-caption); }
 .runnerDiagnosticLogItem > p { margin: 9px 0 6px; color: var(--vision-text); font-size: var(--vision-font-small); line-height: 1.55; overflow-wrap: anywhere; }
-.runnerDiagnosticBadge { border-radius: 999px; padding: 5px 8px; font-size: var(--vision-font-caption); font-weight: 750; white-space: nowrap; }
+.runnerDiagnosticBadge { border-radius: 999px; padding: 5px 8px; font-size: var(--vision-font-caption); font-weight: 600; white-space: nowrap; }
 .runnerDiagnosticBadge.minimal { background: rgba(241,244,250,.9); color: var(--vision-muted); }
 .runnerDiagnosticBadge.detailed { background: rgba(237,250,246,.9); color: var(--vision-good); }
 .runnerDiagnosticLogItem details { margin-top: 10px; border-top: 1px solid var(--vision-line); padding-top: 9px; }
-.runnerDiagnosticLogItem summary { color: var(--vision-primary); cursor: pointer; font-size: var(--vision-font-caption); font-weight: 750; }
+.runnerDiagnosticLogItem summary { color: var(--vision-primary); cursor: pointer; font-size: var(--vision-font-caption); font-weight: 600; }
 .runnerDiagnosticLogItem pre { max-height: 260px; margin: 8px 0 0; border-radius: 9px; background: rgba(244,246,252,.86); padding: 10px; color: var(--vision-text); font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 @media (max-width: 1180px) {
@@ -1197,11 +1192,11 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   color: #655bd6;
   padding: 0 12px;
   font-size: var(--vision-font-small);
-  font-weight: 750;
+  font-weight: 600;
   white-space: nowrap;
 }
 .appChrome .sceneStructureHead .cardHeader h3 { font-size: var(--vision-font-heading); }
-.appChrome .sceneStructureHead .cardHeader em { font-size: var(--vision-font-small); font-weight: 750; }
+.appChrome .sceneStructureHead .cardHeader em { font-size: var(--vision-font-small); font-weight: 600; }
 .appChrome .episodeStudioList .episodeNumber {
   width: 44px;
   height: 44px;
@@ -1234,7 +1229,7 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   gap: 8px;
   padding: 0 13px;
   font-size: var(--vision-font-small);
-  font-weight: 750;
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -1355,7 +1350,7 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 .contractCompactDetails > summary::-webkit-details-marker { display: none; }
 .contractCompactDetails > summary::after { margin-left: auto; color: #7567df; content: "＋"; font-size: var(--vision-font-small); }
 .contractCompactDetails[open] > summary::after { content: "−"; }
-.contractCompactDetails > summary > span { color: #7567df; font-size: var(--vision-font-caption); font-weight: 850; letter-spacing: .12em; }
+.contractCompactDetails > summary > span { color: #7567df; font-size: var(--vision-font-caption); font-weight: 600; letter-spacing: .12em; }
 .contractCompactDetails > summary > b { color: var(--vision-text); font-size: var(--vision-font-small); }
 .contractCompactDetails > summary > em { color: var(--vision-good); font-size: var(--vision-font-caption); font-style: normal; white-space: nowrap; }
 .contractCompactDetails > summary > i { color: var(--vision-faint); font-size: var(--vision-font-caption); font-style: normal; }
@@ -1401,7 +1396,7 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 .projectDashboard > .studioSection .foundationControlHeader .foundationHeaderState {
   color: var(--vision-good);
   font-size: var(--vision-font-small);
-  font-weight: 800;
+  font-weight: 600;
   line-height: 1.2;
   white-space: nowrap;
 }
@@ -1437,7 +1432,7 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   color: #7567df;
   content: "＋";
   font-size: var(--vision-font-small);
-  font-weight: 700;
+  font-weight: 600;
   text-align: center;
 }
 .episodeStudioGroup[open] > summary::before { content: "−"; }
@@ -1694,7 +1689,7 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   padding: 0 14px;
   color: var(--vision-text);
   cursor: pointer;
-  font-weight: 800;
+  font-weight: 600;
   list-style: none;
 }
 .appChrome .projectDashboard .contractConfirmed > summary::-webkit-details-marker,
@@ -1738,7 +1733,7 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 .appChrome .projectDashboard .contractConfirmedItem > summary > b {
   overflow: hidden;
   color: var(--vision-text);
-  font-weight: 700;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1968,14 +1963,14 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   --studio-font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
   --studio-mono:"SFMono-Regular",Consolas,monospace;
   --vision-font-caption:.8125rem; --vision-font-small:.875rem; --vision-font-body:1rem;
-  --vision-font-unit:1.125rem; --vision-font-heading:1.25rem; --vision-font-title:clamp(1.5rem,1.15rem + .55vw,1.875rem);
+  --vision-font-unit:1.125rem; --vision-font-heading:1.125rem; --vision-font-title:clamp(1.375rem,1.2rem + .35vw,1.625rem);
   --vision-canvas:#eceaf9; --vision-canvas-deep:#e2e5f7;
   --vision-page-backdrop:radial-gradient(ellipse at 12% 4%,rgba(146,171,246,.29),transparent 55%),radial-gradient(ellipse at 92% 8%,rgba(192,158,237,.26),transparent 52%),radial-gradient(ellipse at 20% 100%,rgba(247,218,216,.24),transparent 52%),linear-gradient(135deg,#e4e8fa,#eceaf9 55%,#eee6f5);
   --vision-glass:rgba(245,242,255,.43); --vision-glass-strong:rgba(240,238,252,.72);
   --vision-reading:rgba(233,232,246,.8); --vision-solid:rgba(247,246,253,.94);
   --vision-line:rgba(139,127,186,.2); --vision-line-strong:rgba(131,112,187,.4);
-  --vision-text:#30324f; --vision-muted:#626785; --vision-faint:#737892;
-  --vision-primary:#7061bc; --vision-primary-2:#6254aa; --vision-good:#287c6c; --vision-warn:#986422; --vision-bad:#ad4560;
+  --vision-text:#303352; --vision-muted:#5b5f80; --vision-faint:#676b89;
+  --vision-primary:#6858ab; --vision-primary-2:#6254aa; --vision-good:#347968; --vision-warn:#8d6234; --vision-bad:#ad4560;
   --vision-radius-sm:10px; --vision-radius-md:16px; --vision-radius-lg:22px; --vision-radius-xl:26px;
   --vision-shadow-sm:0 4px 12px rgba(100,87,151,.075),inset 0 1px 0 rgba(255,255,255,.68);
   --vision-shadow:0 12px 32px rgba(103,87,156,.11),inset 0 1px 0 rgba(255,255,255,.75);
@@ -1989,7 +1984,7 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   --primary:var(--vision-primary); --primary-hover:var(--vision-primary-2); --primary-soft:rgba(167,153,222,.15);
   --border:var(--vision-line); --border-strong:var(--vision-line-strong); --canvas:var(--vision-canvas);
   --surface-1:var(--vision-reading); --surface-2:var(--vision-glass-strong); --surface-3:var(--vision-glass);
-  --studio-button:linear-gradient(125deg,#5d70ce,#8766b3);
+  --studio-button:linear-gradient(125deg,#576ecd 0%,#7365be 58%,#8c67b3 100%);
 }
 html { font-family:var(--studio-font);font-size:100%;text-size-adjust:100%;-webkit-text-size-adjust:100%;background:var(--vision-canvas);color-scheme:light; }
 body { margin:0;font-family:var(--studio-font);color:var(--vision-text);line-height:1.6;background:var(--vision-page-backdrop); }
@@ -2172,3 +2167,28 @@ dialog.infoPanelBackdrop::backdrop {background:rgba(70,65,107,.2);backdrop-filte
 .mobileEpisodeList>div {max-height:35dvh;overflow:auto;overscroll-behavior:contain;}
 .mobileNav .mobileEpisodeList a {display:block;white-space:normal;line-height:1.5;}
 .mobileNav .mobileEpisodeList a[aria-current=page] {background:var(--primary-soft);color:var(--vision-primary);}
+
+/* Bridge legacy component tokens to the approved material system. */
+.appChrome {--ui-canvas:var(--vision-canvas);--ui-surface:var(--vision-glass);--ui-surface-solid:var(--vision-reading);--ui-line:var(--vision-line);--ui-line-strong:var(--vision-line-strong);--ui-text:var(--vision-text);--ui-muted:var(--vision-muted);--ui-faint:var(--vision-faint);--ui-blue:var(--vision-primary);--ui-violet:var(--vision-primary);--ui-good:var(--vision-good);--ui-bad:var(--vision-bad);--ui-warn:var(--vision-warn);}
+.appChrome .topbarIdentity .pageTitle {font-weight:600;letter-spacing:-.035em;line-height:1.4;}
+.appChrome .topbarIdentity .pageTitleNumber {font-size:1.25rem;font-weight:400;letter-spacing:0;color:var(--vision-muted);margin-right:10px;}
+.appChrome .topbarIdentity small {letter-spacing:0;text-transform:none;}
+.appChrome :is(.sectionHeading h2,.formSectionHeader h2,.runnerSectionHeader h2,.runnerProviderHeader h2) {font-size:1.125rem;font-weight:600;}
+.appChrome :is(.sectionEyebrow,.cardHeader>div>span,.batchMonitorEyebrow,.runnerCliStatusEyebrow) {font-size:.75rem;font-weight:500;letter-spacing:.04em;color:var(--vision-muted)!important;}
+.appChrome .cardHeader h3 {font-size:1rem;font-weight:600;}
+.appChrome :is(.foundationCardAction,.maintenancePanel>summary,.contractCompactDetails>summary,.contractCompactDetails>summary>span) {font-size:.8125rem;font-weight:500;letter-spacing:0;}
+.appChrome .foundationRole>span:first-child {font-weight:500;font-size:.8125rem;background:var(--primary-soft);color:var(--vision-primary);}
+.appChrome :is(.studioTableScroll,.sceneStructureScroll) :is(table,td) {background:transparent!important;}
+.appChrome :is(.studioTableScroll,.sceneStructureScroll) th {background:rgba(233,232,246,.94)!important;border-color:var(--vision-line)!important;font-size:.75rem;font-weight:500;letter-spacing:0;text-transform:none;}
+.appChrome :is(.studioTableScroll,.sceneStructureScroll) td {border-color:var(--vision-line)!important;font-size:.8125rem;font-weight:400;}
+.appChrome :is(.studioTableScroll,.sceneStructureScroll) tbody tr:hover td {background:rgba(245,242,255,.6)!important;}
+.appChrome :is(.logRow details,.promptVersionChip) {background:rgba(245,242,255,.3)!important;border-color:var(--vision-line)!important;}
+
+/* Quiet supporting controls and status headings; only page identity is large. */
+.appChrome .studioButton,.appChrome .studioButton strong,.appChrome .appTopbar .episodePipelineButton {font-weight:500!important;line-height:1.4;}
+.appChrome .promptVersionChips .promptVersionChip {font-size:.8125rem;font-weight:500!important;border-style:solid!important;border-color:var(--vision-line)!important;background:rgba(245,242,255,.35)!important;color:var(--vision-muted);}
+.appChrome .promptVersionChips .promptVersionChip.active {background:rgba(211,211,241,.38)!important;color:var(--vision-primary)!important;}
+.appChrome .guidanceCopy h1 {font-size:1.125rem!important;font-weight:600!important;line-height:1.5;letter-spacing:0;}
+.appChrome .guidanceCopy p {font-size:.75rem!important;font-weight:500!important;letter-spacing:.02em;}
+.appChrome .cardHeader,.appChrome .studioCard>.cardHeader,.appChrome .logView>section>.cardHeader {background:linear-gradient(135deg,rgba(255,255,255,.2),rgba(220,220,246,.12))!important;box-shadow:none;}
+.appChrome .cardHeader em {font-size:.75rem;font-weight:400;}
