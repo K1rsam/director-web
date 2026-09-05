@@ -45,6 +45,18 @@ node .platform/materialize-sites.mjs `
 
 生成目录包含完整 Sites 源码，但不包含 `.platform` 工具目录，也不会把线下专属文件带到 Sites。
 
+### Mac / Linux 示例
+
+从仓库根目录执行；以下两个相邻目录应尚不存在：
+
+```bash
+git fetch origin
+git worktree add -b sites/mac-next ../director-web-sites origin/sites-online
+node .platform/materialize-sites.mjs --main . --overlay ../director-web-sites --target ../director-web-sites-build
+```
+
+这里生成的是发布源码目录；依赖安装、平台构建和发布仍需按 Sites 工具及该目录平台配置完成。不能把生成源码等同于已经更新线上。当前交接与 3180 参考见 [2026-09-05 交接说明](../docs/HANDOFF-2026-09-05.md)。
+
 ## 日常修改流程
 
 1. 先用 `change-scope.mjs` 判断文件范围。
