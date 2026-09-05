@@ -2084,7 +2084,8 @@ button[aria-busy=true]::before {content:"";width:14px;height:14px;flex:0 0 14px;
 .bibleLineValue,.bibleLineValue b,.bibleFactList li {font-size:1rem;line-height:1.75;}
 .appChrome .bibleLine,.contractConfirmedItem,.contractScopeEditor {background:rgba(246,244,254,.24);border-color:var(--vision-line);}
 .bibleFactList li {padding:7px 0;}
-.appChrome .assetTabBar {max-width:100%;overflow-x:auto;}
+/* Keep category controls visible when the adjacent bible card collapses. */
+.appChrome .assetTabBar {flex:0 0 auto;max-width:100%;overflow-x:auto;}
 .appChrome .studioTableScroll,.storyboardTableWrap {overflow-x:auto;scrollbar-gutter:stable;}
 .appChrome .compactTable,.appChrome .studioTableScroll table {font-size:.875rem;}
 .appChrome .compactTable th,.appChrome .compactTable td {padding:10px 12px;line-height:1.6;border-color:var(--vision-line);}
