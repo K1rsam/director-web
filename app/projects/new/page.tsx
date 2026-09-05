@@ -26,8 +26,6 @@ export default async function NewProjectPage({ searchParams }: { searchParams: P
     >
       <section className="createProjectPage">
         <div className="createPageHeading">
-          <p className="sectionEyebrow">NEW PROJECT</p>
-          <h1>创建剧本项目</h1>
           <p>提供完整剧本并选择固定风格模板，系统将从全剧资料整理开始。</p>
         </div>
         <ProjectCreateForm styles={PROJECT_STYLE_OPTIONS} />

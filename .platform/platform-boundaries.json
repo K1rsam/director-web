@@ -82,6 +82,7 @@
     "app/runner/diagnostic-log-panel.tsx",
     "app/runner/deepseek-key-setup.tsx",
     "app/runner/token-form.tsx",
+    "app/runner/sites-status.css",
     "db/**",
     "docs/superpowers/plans/2026-08-25-*.md",
     "docs/superpowers/specs/2026-08-25-*.md",

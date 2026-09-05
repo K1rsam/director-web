@@ -38,9 +38,9 @@ export default async function RunnerPage({ searchParams }: { searchParams: Promi
         <header className="runnerHero studioCard">
           <span className="runnerHeroIcon" aria-hidden="true">↗</span>
           <div>
-            <p className="sectionEyebrow">PERSONAL EXECUTION</p>
-            <h1>统一连接与执行</h1>
-            <p>线上显示与本地执行使用同一套清晰的连接入口：API 使用当前账号的 DeepSeek Key，CLI 使用本机已登录的 Codex。</p>
+            <p className="sectionEyebrow">执行连接</p>
+            <h2>连接你的生产工具</h2>
+            <p>API 使用当前账号的 DeepSeek Key，CLI 使用本机已登录的 Codex。连接完成后，在项目中选择执行方式。</p>
           </div>
           <div className="runnerHeroAssurance"><span>本地版本</span><strong>账号隔离 · 密文保存</strong></div>
         </header>
@@ -49,7 +49,7 @@ export default async function RunnerPage({ searchParams }: { searchParams: Promi
 
         <section className="runnerChoiceGuide studioCard">
           <header className="runnerSectionHeader">
-            <div><p className="sectionEyebrow">QUICK GUIDE</p><h2>怎么选择</h2></div>
+            <div><p className="sectionEyebrow">使用指引</p><h2>怎么选择</h2></div>
             <p>执行方式按项目单独设置；连接凭证按账号隔离，不会混用其他测试账号。</p>
           </header>
           <div className="runnerChoiceGrid">
@@ -60,11 +60,11 @@ export default async function RunnerPage({ searchParams }: { searchParams: Promi
 
         <section className="runnerDeviceCard studioCard">
           <header className="runnerSectionHeader">
-            <div><p className="sectionEyebrow">LOCAL EXECUTION</p><h2>本机执行边界</h2></div>
+            <div><p className="sectionEyebrow">本机执行</p><h2>连接与数据</h2></div>
             <p>无需云端设备令牌</p>
           </header>
           <div className="runnerDeviceList">
-            <p className="runnerDeviceEmpty">本地版本直接使用 Prisma/SQLite 执行链路。API Key 仅以密文保存在本地数据库，Codex 登录态由本机 CLI 管理。</p>
+            <p className="runnerDeviceEmpty">项目和任务保存在本机。API Key 加密保存，Codex 沿用本机登录状态，无需配对云端设备。</p>
           </div>
         </section>
       </section>
