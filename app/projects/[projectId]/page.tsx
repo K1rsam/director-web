@@ -114,12 +114,13 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
       </button>
     </form>
   ) : null;
-  const guidedEpisodeNumber = guidance.episodeId
-    ? studio.episodes.find((episode) => episode.id === guidance.episodeId)?.number
-    : null;
-  const topbarNextStep = guidance.kind === "continue" && guidedEpisodeNumber
-    ? `下一步：第${guidedEpisodeNumber}集`
-    : null;
+  const topbarNeedsAttention = !foundationActive && (foundationRuns.some((run) => run.status === "失败") || contracts.length > 0);
+  const topbarStatusText = foundationActive
+    ? foundationStatusLabel
+    : foundationRuns.some((run) => run.status === "失败")
+      ? "基础工程需处理"
+      : contracts.length > 0 ? "表现规范待确认"
+        : foundationReady ? "工作台已就绪" : "基础工程待制作";
 
   return (
     <AppChrome
@@ -128,17 +129,7 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
       projectId={projectId}
       activeSection="project"
       episodes={episodeStates.map(({ id, number, title, state }) => ({ id, number, title, state }))}
-      primaryAction={guidance.kind === "foundation" ? (
-        <form action={startProjectFoundationAction}>
-          <input name="projectId" type="hidden" value={projectId} />
-          <button type="submit" className="studioButton" data-variant="primary" disabled={foundationActive} aria-busy={foundationActive}>{foundationActive ? foundationStatusLabel : guidance.actionLabel}</button>
-        </form>
-      ) : topbarNextStep ? (
-        <span className="topbarNextStep" aria-label={topbarNextStep}>{topbarNextStep}</span>
-      ) : (
-        <Link href={guidanceHref} className="topbarPrimary">{guidance.actionLabel}</Link>
-      )}
-      utility={<><div className="projectTopbarMeta" aria-label={`视觉风格 ${studio.project.style}，画幅 ${studio.project.aspectRatio}，${productionEpisodes.length} 集`}><span>{studio.project.style}</span><span>{studio.project.aspectRatio}</span><span>{productionEpisodes.length} 集</span></div><ModeSwitch projectId={studio.project.id} current={studio.project.executionMode} compact /><span className="topbarStatus"><i className={foundationActive ? "live" : ""} />{foundationActive ? foundationStatusLabel : "工作台已就绪"}</span></>}
+      utility={<><div className="projectTopbarMeta" aria-label={`视觉风格 ${studio.project.style}，画幅 ${studio.project.aspectRatio}，${productionEpisodes.length} 集`}><span>{studio.project.style}</span><span>{studio.project.aspectRatio}</span><span>{productionEpisodes.length} 集</span></div><ModeSwitch projectId={studio.project.id} current={studio.project.executionMode} compact /><span className="topbarStatus"><i className={foundationActive ? "live" : topbarNeedsAttention ? "attention" : ""} />{topbarStatusText}</span></>}
     >
       <div className="projectDashboard pageSurface workbenchSurface workbenchRefinement">
         <WorkflowGuidance

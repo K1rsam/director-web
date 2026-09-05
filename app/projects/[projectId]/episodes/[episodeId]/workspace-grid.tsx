@@ -7,6 +7,7 @@ import "@/app/episode-surface.css";
 export type WorkspaceGridProps = {
   rail?: ReactNode;
   canvas: ReactNode;
+  episodeLabel?: string;
   content: string;
   scenes: InfoPanelScene[];
   assets: InfoPanelAsset[];
@@ -14,7 +15,7 @@ export type WorkspaceGridProps = {
 };
 
 /** The information drawer overlays the canvas without changing its reading width. */
-export function WorkspaceGrid({ rail, canvas, content, scenes, assets, infoPackage }: WorkspaceGridProps) {
+export function WorkspaceGrid({ rail, canvas, episodeLabel, content, scenes, assets, infoPackage }: WorkspaceGridProps) {
   const [open, setOpen] = useState(false);
   const dialogId = useId();
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -38,6 +39,7 @@ export function WorkspaceGrid({ rail, canvas, content, scenes, assets, infoPacka
         <dialog id={dialogId} ref={dialogRef} className="infoPanelBackdrop" aria-label="本集信息包" onCancel={() => setOpen(false)} onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
           <aside className="infoPanelArea" onClick={(event) => event.stopPropagation()}>
             <EpisodeInfoPanel
+              episodeLabel={episodeLabel}
               content={content}
               scenes={scenes}
               assets={assets}
