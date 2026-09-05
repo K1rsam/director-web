@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { EpisodeInfoPanel, type InfoPanelAsset, type InfoPanelScene } from "./episode-info-panel";
+import "@/app/episode-surface.css";
 
 export type WorkspaceGridProps = {
   rail?: ReactNode;
@@ -15,6 +16,7 @@ export type WorkspaceGridProps = {
 /** The information drawer overlays the canvas without changing its reading width. */
 export function WorkspaceGrid({ rail, canvas, content, scenes, assets, infoPackage }: WorkspaceGridProps) {
   const [open, setOpen] = useState(false);
+  const dialogId = useId();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
@@ -29,11 +31,11 @@ export function WorkspaceGrid({ rail, canvas, content, scenes, assets, infoPacka
   }, [open]);
 
   return (
-    <div className={`workspaceGrid ${rail ? "with-rail" : "no-rail"}`}>
+    <div className={`workspaceGrid episodeWorkspaceGrid ${rail ? "with-rail" : "no-rail"}`}>
       {rail ?? null}
       {canvas}
       {open ? (
-        <dialog ref={dialogRef} className="infoPanelBackdrop" aria-label="本集信息包" onCancel={() => setOpen(false)} onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
+        <dialog id={dialogId} ref={dialogRef} className="infoPanelBackdrop" aria-label="本集信息包" onCancel={() => setOpen(false)} onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
           <aside className="infoPanelArea" onClick={(event) => event.stopPropagation()}>
             <EpisodeInfoPanel
               content={content}
@@ -45,7 +47,8 @@ export function WorkspaceGrid({ rail, canvas, content, scenes, assets, infoPacka
           </aside>
         </dialog>
       ) : null}
-        <button ref={triggerRef} type="button" className="infoPanelToggleBtn" onClick={() => setOpen(true)} aria-label="展开本集信息包" aria-haspopup="dialog" aria-expanded={open}>
+        <button ref={triggerRef} type="button" className="infoPanelToggleBtn" onClick={() => setOpen(true)} aria-label="展开本集信息包" aria-haspopup="dialog" aria-controls={open ? dialogId : undefined} aria-expanded={open}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h6a3 3 0 0 1 3 3v14a4 4 0 0 0-3-2H4z M13 7a3 3 0 0 1 3-3h5v15h-5a4 4 0 0 0-3 2" /></svg>
           本集信息包 <span aria-hidden="true">◂</span>
         </button>
     </div>

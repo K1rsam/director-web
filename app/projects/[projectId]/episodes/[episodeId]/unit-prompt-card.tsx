@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { restorePromptVersionAction, saveManualPromptVersionAction } from "@/app/actions";
 import { CopyPromptButton } from "./copy-prompt-button";
+import { PromptDocument } from "@/app/ui/prompt-document";
 
 export type UnitPromptVersion = {
   id: string;
@@ -107,7 +108,7 @@ export function UnitPromptCard({
           </div>
         </form>
       ) : (
-        <pre>{selected.content}</pre>
+        <PromptDocument content={selected.content} />
       )}
     </div>
   );

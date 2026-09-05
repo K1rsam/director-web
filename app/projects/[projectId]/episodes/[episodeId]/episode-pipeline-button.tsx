@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { startEpisodePipelineAction } from "@/app/actions";
@@ -21,6 +21,7 @@ export function EpisodePipelineButton({
   activeLabel?: string;
 }) {
   const router = useRouter();
+  const submitting = useRef(false);
   useEffect(() => {
     if (!active) return;
     const timer = window.setInterval(() => router.refresh(), 3000);
@@ -31,6 +32,10 @@ export function EpisodePipelineButton({
     <form
       action={startEpisodePipelineAction}
       onSubmit={(event) => {
+        if (active || submitting.current) {
+          event.preventDefault();
+          return;
+        }
         // #10 防护：本集已有分镜（尤其已放行）时，重新生成会整批覆盖，必须二次确认
         if (hasContent && !window.confirm(
           released
@@ -38,21 +43,30 @@ export function EpisodePipelineButton({
             : "本集已有分镜/单元。重新生成会整批覆盖（仅影响本集），确定继续？"
         )) {
           event.preventDefault();
+          return;
         }
+        submitting.current = true;
       }}
     >
       <input name="projectId" type="hidden" value={projectId} />
       <input name="episodeId" type="hidden" value={episodeId} />
-      <SubmitButton active={active} hasContent={hasContent} activeLabel={activeLabel} />
+      <SubmitButton active={active} hasContent={hasContent} activeLabel={activeLabel} submitting={submitting} />
     </form>
   );
 }
 
-function SubmitButton({ active, hasContent, activeLabel }: { active: boolean; hasContent: boolean; activeLabel?: string }) {
+function SubmitButton({ active, hasContent, activeLabel, submitting }: { active: boolean; hasContent: boolean; activeLabel?: string; submitting: RefObject<boolean> }) {
   const { pending } = useFormStatus();
+  useEffect(() => { submitting.current = pending; }, [pending, submitting]);
   const busy = active || pending;
   return (
-    <button type="submit" className={`episodePipelineButton ${hasContent ? "rerun" : "firstRun"}`} disabled={busy}>
+    <button
+      type="submit"
+      className={`studioButton episodePipelineButton ${hasContent ? "rerun" : "firstRun"}`}
+      data-variant={hasContent ? "secondary" : "primary"}
+      disabled={busy}
+      aria-busy={busy}
+    >
       <strong>{busy ? activeLabel ?? "正在执行 E0–E5…" : hasContent ? "重新执行本集 E0–E5" : "开始本集 E0–E5"}</strong>
       {!busy && !hasContent ? <small>自动运行 E0–E5</small> : null}
     </button>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useRef } from "react";
+import { useActionState, useEffect, useRef, type FormEvent } from "react";
 import {
   checkCodexCliAction,
   removeDeepSeekCredentialAction,
@@ -25,6 +25,16 @@ export function ProviderConnectionPanel({ initialApi }: { initialApi: InitialApi
   const [removeState, removeAction, removePending] = useActionState(removeDeepSeekCredentialAction, initialActionState);
   const [cliState, cliAction, cliPending] = useActionState(checkCodexCliAction, initialActionState);
   const apiKeyRef = useRef<HTMLInputElement>(null);
+  const credentialPending = apiPending || removePending;
+  const credentialSubmitting = useRef(false);
+  const cliSubmitting = useRef(false);
+  useEffect(() => { credentialSubmitting.current = credentialPending; }, [credentialPending]);
+  useEffect(() => { cliSubmitting.current = cliPending; }, [cliPending]);
+
+  function guardCredentialSubmit(event: FormEvent<HTMLFormElement>) {
+    if (credentialPending || credentialSubmitting.current) event.preventDefault();
+    else credentialSubmitting.current = true;
+  }
 
   useEffect(() => {
     if (apiState.ok && apiState.provider === "DEEPSEEK" && apiKeyRef.current) {
@@ -32,8 +42,8 @@ export function ProviderConnectionPanel({ initialApi }: { initialApi: InitialApi
     }
   }, [apiState]);
 
-  const apiMessage = apiState.message || initialApi.error || "Key 只会加密保存在当前账号下，不会写入浏览器 localStorage。";
-  const apiMessageClass = apiState.message
+  const apiMessage = apiPending ? "正在验证并保存，请稍候。" : apiState.message || initialApi.error || "Key 只会加密保存在当前账号下，不会写入浏览器 localStorage。";
+  const apiMessageClass = apiPending ? "pending" : apiState.message
     ? (apiState.ok ? "success" : "error")
     : (initialApi.error ? "error" : "");
   const cliHasResult = Boolean(cliState.message);
@@ -65,7 +75,7 @@ export function ProviderConnectionPanel({ initialApi }: { initialApi: InitialApi
         </div>
 
         <div className="runnerCredentialForm">
-          <form action={apiAction} className="runnerSaveForm">
+          <form action={apiAction} className="runnerSaveForm" onSubmit={guardCredentialSubmit}>
             <div className="runnerFieldGrid">
               <label>
                 <span>DeepSeek API Key</span>
@@ -96,21 +106,25 @@ export function ProviderConnectionPanel({ initialApi }: { initialApi: InitialApi
               {initialApi.lastTestedAt ? <time dateTime={initialApi.lastTestedAt}>最近验证：{formatDate(initialApi.lastTestedAt)}</time> : null}
             </div>
             <div className="runnerActions">
-              <button className="glassPrimary runnerPrimaryButton" type="submit" disabled={apiPending}>
+              <button className="studioButton glassPrimary runnerPrimaryButton" data-variant="primary" type="submit" disabled={credentialPending} aria-busy={apiPending}>
                 {apiPending ? "正在验证…" : "验证并保存"}
               </button>
-              {apiMessage ? <p className={`runnerMessage ${apiMessageClass}`} role="status">{apiMessage}</p> : null}
+              {apiMessage ? <p className={`runnerMessage ${apiMessageClass}`} role={apiMessageClass === "error" ? "alert" : "status"}>{apiMessage}</p> : null}
             </div>
             {apiState.ok && apiState.models?.length ? (
               <p className="runnerConnectionNote">已读取模型：{apiState.models.slice(0, 5).join("、")}{apiState.models.length > 5 ? " 等" : ""}</p>
             ) : null}
           </form>
           {initialApi.connected ? (
-            <form action={removeAction} className="runnerActions runnerRemoveAction">
-              <button className="quietButton runnerSecondaryButton" type="submit" disabled={removePending}>
+            <form action={removeAction} className="runnerActions runnerRemoveAction" onSubmit={guardCredentialSubmit}>
+              <button className="studioButton quietButton dangerQuietButton runnerSecondaryButton" data-variant="danger" type="submit" disabled={credentialPending} aria-busy={removePending}>
                 {removePending ? "正在删除…" : "删除已保存 Key"}
               </button>
-              {removeState.message ? <p className={`runnerMessage ${removeState.ok ? "success" : "error"}`} role="status">{removeState.message}</p> : null}
+              {removePending || removeState.message ? (
+                <p className={`runnerMessage ${removePending ? "pending" : removeState.ok ? "success" : "error"}`} role={!removePending && !removeState.ok ? "alert" : "status"}>
+                  {removePending ? "正在删除已保存 Key，请稍候。" : removeState.message}
+                </p>
+              ) : null}
             </form>
           ) : null}
         </div>
@@ -137,8 +151,11 @@ export function ProviderConnectionPanel({ initialApi }: { initialApi: InitialApi
             </div>
           </div>
         )}
-        <form action={cliAction} className="runnerCliCheckForm">
-          <button className="glassPrimary runnerPrimaryButton" type="submit" disabled={cliPending}>
+        <form action={cliAction} className="runnerCliCheckForm" onSubmit={(event) => {
+          if (cliPending || cliSubmitting.current) event.preventDefault();
+          else cliSubmitting.current = true;
+        }}>
+          <button className="studioButton glassPrimary runnerPrimaryButton" data-variant={cliHasResult ? "secondary" : "primary"} type="submit" disabled={cliPending} aria-busy={cliPending}>
             {cliPending ? "正在检查…" : cliHasResult ? "重新检测本机 CLI" : "测试本机 Codex CLI"}
           </button>
         </form>
@@ -162,7 +179,7 @@ function CodexCliStatusView({ status, note }: { status: CliStatus; note?: string
         </div>
         <time dateTime={status.checkedAt}>更新于 {formatDate(status.checkedAt)}</time>
       </header>
-      {note ? <p className="runnerCliStatusNote">{note}</p> : null}
+      {note ? <p className="runnerCliStatusNote" role="status">{note}</p> : null}
       <div className="runnerCliStatusGrid">
         <article>
           <span>账号</span>

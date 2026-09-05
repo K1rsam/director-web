@@ -1,0 +1,456 @@
+/* Imported by the five page.tsx entries. Every selector stays inside their
+   pageSurface roots: Next may retain this sheet after client navigation.
+   Shell, shared buttons and global typography remain owned by the main theme. */
+.pageSurface {
+  --surface-reading: rgba(233, 232, 246, .8);
+  --surface-flow: rgba(230, 233, 249, .4);
+  --surface-glass: rgba(237, 233, 253, .57);
+  --surface-line: rgba(122, 113, 175, .2);
+  --surface-edge: rgba(255, 255, 255, .9);
+  --surface-shadow: 0 12px 32px rgba(103, 87, 148, .08),
+    inset 0 1px 0 rgba(255, 255, 255, .55),
+    inset 1px 0 0 rgba(255, 255, 255, .3);
+  min-width: 0;
+  color: var(--vision-text, #303352);
+  font-size: var(--vision-font-body, 1rem);
+}
+
+.pageSurface .surfaceIntro {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 0 0 20px;
+}
+.pageSurface .surfaceIntro p {
+  max-width: 76ch;
+  margin: 0;
+  color: var(--vision-muted, #5b5f80);
+  font-size: var(--vision-font-small, .875rem);
+  line-height: 1.7;
+}
+.pageSurface .surfaceCaption,
+.pageSurface .surfaceTextLink {
+  font-size: var(--vision-font-caption, .8125rem);
+  line-height: 1.6;
+}
+.pageSurface .surfaceCaption { color: var(--vision-muted, #5b5f80); }
+.pageSurface .surfaceTextLink { color: var(--vision-primary, #6858ab); }
+.pageSurface :is(.surfaceTextLink, .workbenchSectionNav a):hover { text-decoration: underline; text-underline-offset: 4px; }
+
+/* Library: modest abstract covers, readable project copy, real production facts. */
+.pageSurface.librarySurface { width: min(100%, 1500px); padding-block: 4px 28px; }
+.pageSurface.librarySurface .projectCardGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 21rem), 1fr));
+  align-items: stretch;
+  gap: 24px;
+}
+.pageSurface.librarySurface .projectCardGrid.singleProject {
+  width: min(100%, 27rem);
+  grid-template-columns: minmax(0, 1fr);
+}
+.pageSurface.librarySurface .projectCard {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  border: 1px solid var(--surface-line);
+  border-top-color: var(--surface-edge);
+  border-radius: 22px;
+  background: var(--surface-reading);
+  box-shadow: var(--surface-shadow);
+  overflow: visible;
+}
+.pageSurface.librarySurface .projectCard:hover {
+  border-color: rgba(122, 113, 175, .35);
+  box-shadow: 0 16px 36px rgba(103, 87, 148, .12), inset 0 1px rgba(255, 255, 255, .7);
+}
+.pageSurface.librarySurface .projectCard .projectColorCover {
+  --cover-start: #d9ddf4;
+  --cover-end: #beb5e1;
+  position: relative;
+  height: 166px;
+  min-height: 0;
+  flex: 0 0 auto;
+  aspect-ratio: auto;
+  overflow: hidden;
+  border-radius: 21px 21px 0 0;
+  border-bottom: 1px solid var(--surface-line);
+  background: radial-gradient(ellipse at 18% 5%, rgba(255, 250, 248, .65), transparent 65%),
+    linear-gradient(125deg, var(--cover-start), var(--cover-end));
+}
+.pageSurface.librarySurface .projectColorCover[data-cover-tone="1"] { --cover-start: #d4e3f3; --cover-end: #b7c2e4; }
+.pageSurface.librarySurface .projectColorCover[data-cover-tone="2"] { --cover-start: #e3dbef; --cover-end: #c5b6d8; }
+.pageSurface.librarySurface .projectColorCover[data-cover-tone="3"] { --cover-start: #d6e1eb; --cover-end: #b9c3d6; }
+.pageSurface.librarySurface .projectColorCover::before {
+  inset: -50% -18% auto auto;
+  width: 65%;
+  height: 250%;
+  border: 1px solid rgba(255, 255, 255, .38);
+  border-radius: 50%;
+  background: linear-gradient(100deg, rgba(255, 255, 255, .13), transparent);
+  filter: none;
+  transform: rotate(32deg);
+}
+.pageSurface.librarySurface .projectColorCover::after {
+  background: linear-gradient(180deg, transparent 40%, rgba(66, 58, 100, .12));
+}
+.pageSurface.librarySurface .projectCard:hover .projectColorCover::before { filter: none; transform: rotate(32deg); }
+.pageSurface.librarySurface .posterFrame {
+  inset: 18px;
+  align-items: flex-start;
+  border: 1px solid rgba(255, 255, 255, .45);
+  border-radius: 12px;
+  padding: 8px 10px;
+}
+.pageSurface.librarySurface .posterFrame > span { color: rgba(48, 51, 82, .62); font-size: 13px; letter-spacing: .08em; }
+.pageSurface.librarySurface .posterFrame i { margin-top: 9px; background: rgba(255, 255, 255, .45); }
+.pageSurface.librarySurface .projectColorCover > strong {
+  position: absolute;
+  left: 26px;
+  bottom: 24px;
+  max-width: calc(100% - 52px);
+  color: #353650;
+  font-size: var(--vision-font-small, .875rem);
+  font-weight: 600;
+  line-height: 1.5;
+  text-shadow: none;
+  overflow-wrap: anywhere;
+}
+.pageSurface.librarySurface .projectStageBadge {
+  top: 24px;
+  right: 26px;
+  left: auto;
+  max-width: calc(100% - 100px);
+  border: 1px solid rgba(255, 255, 255, .6);
+  background: rgba(237, 233, 253, .72);
+  color: #484360;
+  font-size: var(--vision-font-caption, .8125rem);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .45);
+}
+.pageSurface.librarySurface .projectCardBody {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 20px;
+  padding: 24px;
+  border-radius: 0 0 21px 21px;
+  background: transparent;
+}
+.pageSurface.librarySurface .projectTitleRow { gap: 14px; align-items: flex-start; }
+.pageSurface.librarySurface .projectTitleRow > div { min-width: 0; }
+.pageSurface.librarySurface .projectTitleRow h2 {
+  margin: 0 0 8px;
+  font-size: var(--vision-font-unit, 1.125rem);
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.pageSurface.librarySurface .projectTitleRow p {
+  display: block;
+  margin: 0;
+  overflow: visible;
+  -webkit-line-clamp: unset;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: var(--vision-font-small, .875rem);
+  line-height: 1.7;
+}
+.pageSurface.librarySurface .aspectBadge { flex: 0 0 auto; background: var(--surface-flow); font-size: var(--vision-font-caption, .8125rem); }
+.pageSurface.librarySurface .projectCardFacts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: auto 0 0;
+  border-block: 1px solid var(--surface-line);
+  padding-block: 14px;
+}
+.pageSurface.librarySurface .projectCardFacts dt { color: var(--vision-muted); font-size: var(--vision-font-caption, .8125rem); }
+.pageSurface.librarySurface .projectCardFacts dd { margin: 6px 0 0; font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pageSurface.librarySurface .projectCardFacts dd span { font-size: 13px; font-weight: 400; color: var(--vision-muted); }
+.pageSurface.librarySurface .projectProgress { margin: 0; }
+.pageSurface.librarySurface .projectProgress > div { font-size: var(--vision-font-caption, .8125rem); }
+.pageSurface.librarySurface .projectProgress > i { background: rgba(122, 113, 175, .13); }
+.pageSurface.librarySurface .projectCardFooter { margin: 0; gap: 12px; }
+.pageSurface.librarySurface .projectCardMenu > div { border-color: var(--surface-line) !important; background: #eeebf8 !important; }
+.pageSurface.librarySurface .archiveSection { margin-top: 32px; border-top: 1px solid var(--surface-line); padding-top: 20px; scroll-margin-top: 110px; }
+.pageSurface.librarySurface .archiveSection > summary { color: var(--vision-muted); font-size: 16px; }
+.pageSurface.librarySurface .archiveSection .projectCardGrid { margin-top: 20px; }
+.pageSurface.librarySurface .projectCard.archived { opacity: 1; filter: none; background: var(--surface-flow); }
+.pageSurface.librarySurface .projectCard.archived .projectCardBody { border-radius: 21px; }
+.pageSurface.librarySurface .projectCard.archived .projectCardFooter { margin-top: auto; }
+.pageSurface.librarySurface .projectEmptyState { padding: 48px 24px; border-color: var(--surface-line); border-radius: 22px; background: var(--surface-reading); box-shadow: var(--surface-shadow); }
+.pageSurface.librarySurface .projectEmptyState h2 { font-size: 20px; }
+
+/* Creation: source and configuration form one workspace; the original form
+   owns uploads, tabs, selections, errors and submission without modification. */
+.pageSurface.createSurface { width: min(100%, 1400px); margin: 0 auto; }
+.pageSurface.createSurface .createProjectForm { grid-template-columns: minmax(0, .8fr) minmax(0, 1.35fr); align-items: start; gap: 24px; }
+.pageSurface.createSurface :is(.createFormSection, .createFormFooter) {
+  min-width: 0;
+  border: 1px solid var(--surface-line) !important;
+  border-top-color: var(--surface-edge) !important;
+  border-radius: 22px !important;
+  background: var(--surface-reading) !important;
+  box-shadow: var(--surface-shadow) !important;
+  padding: 26px;
+  backdrop-filter: blur(20px) saturate(1.15);
+}
+.pageSurface.createSurface .formSectionHeader { gap: 12px; margin-bottom: 24px; }
+.pageSurface.createSurface .formSectionHeader h2 { font-size: var(--vision-font-heading, 1.25rem); }
+.pageSurface.createSurface .formSectionHeader p { font-size: var(--vision-font-small, .875rem); line-height: 1.7; }
+.pageSurface.createSurface .sourceTabs { width: fit-content; max-width: 100%; margin-bottom: 18px; border-color: var(--surface-line); background: var(--surface-flow); }
+.pageSurface.createSurface .scriptDropzone {
+  min-height: 288px;
+  border-color: rgba(122, 113, 175, .38);
+  border-radius: 16px;
+  background: radial-gradient(ellipse at 20% 0, rgba(216, 224, 251, .64), transparent 70%), var(--surface-flow);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .65);
+}
+.pageSurface.createSurface .scriptDropzone strong { max-width: 100%; overflow-wrap: anywhere; font-size: var(--vision-font-body, 1rem); }
+.pageSurface.createSurface .scriptDropzone :is(small, em) { font-size: var(--vision-font-caption, .8125rem); }
+.pageSurface.createSurface .scriptPasteField textarea { min-height: 320px; resize: vertical; font-size: var(--vision-font-body, 1rem); line-height: 1.8; }
+.pageSurface.createSurface .basicConfigGrid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: 16px; }
+.pageSurface.createSurface :is(.basicConfigGrid label > span, .styleFieldset legend, .scriptPasteField > span) { font-size: var(--vision-font-body, 1rem); }
+.pageSurface.createSurface :is(.basicConfigGrid input, .basicConfigGrid select, .scriptPasteField textarea, .executionModeFooter select) { border-color: var(--surface-line); background: rgba(245, 243, 252, .7); }
+.pageSurface.createSurface .styleFieldset > p { margin-block: 22px 12px; color: var(--vision-muted); font-size: var(--vision-font-caption, .8125rem); }
+.pageSurface.createSurface .styleOptionGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.pageSurface.createSurface .styleOption {
+  grid-template-columns: 76px minmax(0, 1fr);
+  align-items: stretch;
+  min-height: 112px;
+  border-color: var(--surface-line);
+  border-radius: 14px;
+  background: var(--surface-flow);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .5);
+}
+.pageSurface.createSurface .styleOption:hover { transform: none; border-color: rgba(122, 113, 175, .5); }
+.pageSurface.createSurface .styleOption:has(input:checked) { border-color: var(--vision-primary); background: rgba(222, 216, 245, .72); box-shadow: 0 0 0 1px var(--vision-primary), inset 0 1px rgba(255, 255, 255, .6); }
+.pageSurface.createSurface .stylePreview { height: 100%; min-height: 112px; }
+.pageSurface.createSurface .stylePreview > b { left: 6px; right: auto; bottom: 8px; max-width: calc(100% - 12px); padding: 3px 5px; font-size: 13px; letter-spacing: 0; overflow-wrap: anywhere; }
+.pageSurface.createSurface .styleOptionCopy { align-content: center; gap: 6px; padding: 16px 14px; }
+.pageSurface.createSurface .styleOptionCopy strong { padding-right: 12px; font-size: var(--vision-font-body, 1rem); line-height: 1.5; }
+.pageSurface.createSurface .styleOptionCopy small { overflow: visible; white-space: normal; font-size: var(--vision-font-caption, .8125rem); line-height: 1.65; }
+.pageSurface.createSurface .styleOption > em { top: 7px; right: 7px; width: 18px; height: 18px; }
+.pageSurface.createSurface :is(.createFormFooter, .formError) { grid-column: 1 / -1; }
+.pageSurface.createSurface .createFormFooter { position: static; gap: 20px; padding: 22px 26px; background: var(--surface-glass) !important; }
+.pageSurface.createSurface .createFooterInfo { min-width: 0; }
+.pageSurface.createSurface .createFooterInfo p { font-size: var(--vision-font-caption, .8125rem); line-height: 1.7; }
+
+/* Connection settings: two working panels, then concise help and data scope. */
+.pageSurface.runnerSurface { display: grid; width: min(100%, 1500px); margin: 0 auto; gap: 24px; }
+.pageSurface.runnerSurface .runnerIntro { margin: 0; }
+.pageSurface.runnerSurface .runnerConnectionGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 24px; }
+.pageSurface.runnerSurface :is(.runnerConnectionCard, .runnerChoiceGuide, .runnerDeviceCard) {
+  min-width: 0;
+  border: 1px solid var(--surface-line) !important;
+  border-top-color: var(--surface-edge) !important;
+  border-radius: 22px !important;
+  background: var(--surface-reading) !important;
+  box-shadow: var(--surface-shadow) !important;
+  padding: 26px !important;
+  backdrop-filter: blur(20px) saturate(1.15);
+}
+.pageSurface.runnerSurface .runnerConnectionCard { min-height: 0; }
+.pageSurface.runnerSurface .runnerConnectionHeader { padding-bottom: 22px; border-bottom: 1px solid var(--surface-line); gap: 16px; }
+.pageSurface.runnerSurface .runnerConnectionHeader h2 { font-size: var(--vision-font-heading, 1.25rem); line-height: 1.4; }
+.pageSurface.runnerSurface .runnerConnectionHeader > div > p:last-child { font-size: var(--vision-font-small, .875rem); }
+.pageSurface.runnerSurface .runnerConnectionStatus { flex-shrink: 0; font-size: var(--vision-font-caption, .8125rem); }
+.pageSurface.runnerSurface .runnerFieldGrid { grid-template-columns: minmax(0, 1fr); margin-top: 22px; gap: 18px; }
+.pageSurface.runnerSurface :is(.runnerFieldGrid input, .runnerFieldGrid select, .runnerWideField input) { background: rgba(245, 243, 252, .7); border-color: var(--surface-line); }
+.pageSurface.runnerSurface :is(.runnerFieldGrid label, .runnerWideField > span) { font-size: var(--vision-font-body, 1rem); font-weight: 500; }
+.pageSurface.runnerSurface .runnerActions { flex-wrap: wrap; align-items: flex-start; gap: 14px; }
+.pageSurface.runnerSurface .runnerMessage { min-width: 0; font-size: var(--vision-font-small, .875rem); line-height: 1.7; overflow-wrap: anywhere; }
+.pageSurface.runnerSurface :is(.runnerCredentialMeta, .runnerConnectionNote, .runnerCliStatusNote, .runnerCliStatusFooter, .runnerCliStatusWarning) { font-size: var(--vision-font-caption, .8125rem); line-height: 1.7; overflow-wrap: anywhere; }
+.pageSurface.runnerSurface .runnerCliCheckResult { margin-block: 22px; padding: 20px; background: var(--surface-flow); }
+.pageSurface.runnerSurface .runnerCliCheckResult strong { font-size: var(--vision-font-body, 1rem); }
+.pageSurface.runnerSurface .runnerCliCheckResult p { font-size: var(--vision-font-small, .875rem); line-height: 1.7; }
+.pageSurface.runnerSurface .runnerCliCheckForm { margin-top: 18px; }
+.pageSurface.runnerSurface .runnerCliStatusPanel { margin-top: 22px; border-color: var(--surface-line); background: var(--surface-flow); }
+.pageSurface.runnerSurface .runnerCliStatusHeader { flex-wrap: wrap; }
+.pageSurface.runnerSurface .runnerCliStatusGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.pageSurface.runnerSurface .runnerCliStatusGrid article { border-color: var(--surface-line); background: rgba(237, 233, 253, .57); padding: 16px; }
+.pageSurface.runnerSurface .runnerSupportGrid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+.pageSurface.runnerSurface :is(.runnerChoiceGuide, .runnerDeviceCard) { background: var(--surface-flow) !important; box-shadow: inset 0 1px rgba(255, 255, 255, .6) !important; }
+.pageSurface.runnerSurface .runnerSectionHeader { display: grid; gap: 8px; margin-bottom: 18px; }
+.pageSurface.runnerSurface .runnerSectionHeader h2 { margin: 0; font-size: var(--vision-font-heading, 1.25rem); }
+.pageSurface.runnerSurface .runnerSectionHeader > p { font-size: var(--vision-font-caption, .8125rem); }
+.pageSurface.runnerSurface .runnerChoiceGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.pageSurface.runnerSurface .runnerChoiceGrid article { padding: 0; border: 0; background: transparent; }
+.pageSurface.runnerSurface .runnerChoiceGrid article strong { font-size: var(--vision-font-body, 1rem); }
+.pageSurface.runnerSurface .runnerChoiceGrid article p { font-size: var(--vision-font-small, .875rem); line-height: 1.75; }
+.pageSurface.runnerSurface .runnerDeviceEmpty { margin: 0; padding: 0; border: 0; background: transparent; font-size: var(--vision-font-small, .875rem); line-height: 1.8; }
+
+/* Whole-project workbench: current action, compact navigation, foundation
+   references, then batch control immediately beside its episode list. */
+.pageSurface.workbenchSurface { width: min(100%, 1500px); gap: 20px; }
+.pageSurface.workbenchSurface > .workflowGuidance {
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  gap: 10px 18px;
+  min-height: 0;
+  border: 1px solid var(--surface-line);
+  border-top-color: var(--surface-edge);
+  border-radius: 20px;
+  padding: 22px 24px;
+  background: var(--surface-glass);
+  box-shadow: var(--surface-shadow);
+}
+.pageSurface.workbenchSurface > .workflowGuidance::after { content: none; }
+.pageSurface.workbenchSurface .guidanceSignal { grid-row: 1 / 3; width: 40px; height: 40px; box-shadow: inset 0 1px rgba(255, 255, 255, .7); }
+.pageSurface.workbenchSurface > .workflowGuidance .guidanceCopy { grid-column: 2; grid-row: 1; }
+.pageSurface.workbenchSurface > .workflowGuidance .guidanceCopy p { font-size: var(--vision-font-caption, .8125rem); letter-spacing: .02em; }
+.pageSurface.workbenchSurface > .workflowGuidance .guidanceCopy h1 { margin: 2px 0 8px; font-size: 28px; line-height: 1.35; }
+.pageSurface.workbenchSurface > .workflowGuidance .guidanceCopy > span { max-width: 80ch; overflow: visible; white-space: normal; font-size: var(--vision-font-small, .875rem); line-height: 1.7; }
+.pageSurface.workbenchSurface > .workflowGuidance .guidanceMeta { display: flex; grid-column: 2; grid-row: 2; flex-wrap: wrap; gap: 8px 18px; font-size: var(--vision-font-caption, .8125rem); white-space: normal; }
+.pageSurface.workbenchSurface > .workflowGuidance > :is(form, a) { grid-column: 3; grid-row: 1 / 3; }
+.pageSurface.workbenchSurface .workbenchSectionNav { display: flex; flex-wrap: wrap; gap: 10px 28px; padding: 2px 4px; }
+.pageSurface.workbenchSurface .workbenchSectionNav a { display: inline-flex; gap: 8px; align-items: center; color: var(--vision-muted); font-size: 14px; }
+.pageSurface.workbenchSurface .workbenchSectionNav span { color: var(--vision-primary); font-size: 13px; font-variant-numeric: tabular-nums; }
+.pageSurface.workbenchSurface > .studioSection {
+  margin: 0;
+  padding: 24px;
+  min-width: 0;
+  border: 1px solid var(--surface-line) !important;
+  border-top-color: var(--surface-edge) !important;
+  border-radius: 22px !important;
+  background: var(--surface-flow) !important;
+  box-shadow: var(--surface-shadow) !important;
+  scroll-margin-top: 110px;
+}
+.pageSurface.workbenchSurface > .studioSection > .sectionHeading { align-items: baseline; flex-wrap: wrap; gap: 10px 24px; margin-bottom: 22px; padding: 0; }
+.pageSurface.workbenchSurface > .studioSection > .sectionHeading h2 { font-size: var(--vision-font-heading, 1.25rem); }
+.pageSurface.workbenchSurface > .studioSection > .sectionHeading p { max-width: 74ch; font-size: var(--vision-font-small, .875rem); line-height: 1.7; }
+.pageSurface.workbenchSurface :is(.studioCard, .sceneStructureCard, .contractSection) {
+  border: 1px solid var(--surface-line) !important;
+  border-top-color: var(--surface-edge) !important;
+  border-radius: 18px !important;
+  background: var(--surface-reading) !important;
+  box-shadow: inset 0 1px rgba(255, 255, 255, .55) !important;
+}
+.pageSurface.workbenchSurface .foundationControlRoom { margin-block: 20px; background: transparent; border: 0; padding: 0; box-shadow: none; }
+.pageSurface.workbenchSurface .foundationControlHeader { flex-wrap: wrap; gap: 12px; }
+.pageSurface.workbenchSurface .foundationRail { border: 0; background: transparent; gap: 14px; }
+.pageSurface.workbenchSurface .foundationRole {
+  border-color: var(--surface-line) !important;
+  border-top-color: var(--surface-edge) !important;
+  border-radius: 16px !important;
+  background: var(--surface-flow) !important;
+  box-shadow: inset 0 1px rgba(255, 255, 255, .55), 0 6px 18px rgba(103, 87, 148, .04) !important;
+}
+.pageSurface.workbenchSurface .foundationRole.done { border-color: rgba(52, 121, 104, .27) !important; }
+.pageSurface.workbenchSurface .foundationRole.running { border-color: rgba(104, 88, 171, .4) !important; }
+.pageSurface.workbenchSurface .foundationRole.failed { border-color: rgba(177, 46, 72, .35) !important; }
+.pageSurface.workbenchSurface .foundationReferenceGrid { gap: 20px; margin-block: 22px; }
+.pageSurface.workbenchSurface .surfaceReferenceCard { padding: 0; overflow: hidden; }
+.pageSurface.workbenchSurface .cardHeader { border-bottom-color: var(--surface-line); background: var(--surface-flow); padding: 18px 20px; gap: 12px; }
+.pageSurface.workbenchSurface .cardHeader h3 { font-size: var(--vision-font-unit, 1.125rem); line-height: 1.5; }
+.pageSurface.workbenchSurface :is(.bibleLine, .contractCard) { background: var(--surface-flow); border-color: var(--surface-line); }
+.pageSurface.workbenchSurface .contractSectionCompact { margin-bottom: 18px; }
+.pageSurface.workbenchSurface .contractCompactDetails { border-color: var(--surface-line); background: var(--surface-flow); }
+.pageSurface.workbenchSurface .batchMonitorCard {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 20px;
+  min-height: 0;
+  margin: 0 0 22px;
+  border: 1px solid var(--surface-line);
+  border-top-color: var(--surface-edge);
+  border-radius: 18px;
+  padding: 22px;
+  background: var(--surface-reading);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .55);
+}
+.pageSurface.workbenchSurface .batchMonitorCopy { min-width: 0; }
+.pageSurface.workbenchSurface .batchMonitorCopy h2 { margin: 4px 0 10px; font-size: var(--vision-font-unit, 1.125rem); }
+.pageSurface.workbenchSurface .batchMonitorEyebrow { font-size: var(--vision-font-caption, .8125rem); letter-spacing: .04em; }
+.pageSurface.workbenchSurface :is(.batchMonitorSummary, .batchMonitorMessage, .batchMonitorDetailsBody p) { max-width: 90ch; overflow: visible; white-space: normal; font-size: var(--vision-font-small, .875rem); line-height: 1.75; overflow-wrap: anywhere; }
+.pageSurface.workbenchSurface .batchMonitorDetails { margin-top: 12px; }
+.pageSurface.workbenchSurface .batchMonitorMessage { font-size: var(--vision-font-small, .875rem) !important; }
+.pageSurface.workbenchSurface .batchMonitorDetails > summary { color: var(--vision-muted); font-size: var(--vision-font-caption, .8125rem); }
+.pageSurface.workbenchSurface .batchMonitorMeta { flex-wrap: wrap; gap: 8px 16px; font-size: var(--vision-font-caption, .8125rem); }
+.pageSurface.workbenchSurface .batchMonitorActions { display: flex; min-width: 0; flex-direction: column; align-items: flex-end; gap: 12px; }
+.pageSurface.workbenchSurface .episodeStudioGroup { border-color: var(--surface-line); border-radius: 16px; background: var(--surface-reading); overflow: hidden; }
+.pageSurface.workbenchSurface .episodeStudioGroup > summary { gap: 12px; padding: 18px 20px; background: var(--surface-flow); }
+.pageSurface.workbenchSurface .episodeStudioList > article { min-width: 0; grid-template-columns: 40px minmax(0, 1fr) auto auto; gap: 18px; padding: 18px; border-color: var(--surface-line); background: rgba(237, 233, 253, .4); box-shadow: inset 0 1px rgba(255, 255, 255, .4); }
+.pageSurface.workbenchSurface .episodeSummary { min-width: 0; }
+.pageSurface.workbenchSurface .episodeSummary > div { flex-wrap: wrap; gap: 8px 12px; }
+.pageSurface.workbenchSurface .episodeSummary h3 { font-size: var(--vision-font-body, 1rem); overflow-wrap: anywhere; }
+.pageSurface.workbenchSurface .episodeSummary p { display: block; overflow: visible; -webkit-line-clamp: unset; white-space: normal; font-size: var(--vision-font-small, .875rem); line-height: 1.7; overflow-wrap: anywhere; }
+.pageSurface.workbenchSurface .episodeStudioGroupMeta { font-size: var(--vision-font-caption, .8125rem); white-space: normal; }
+
+/* Login: a small orientation panel and one focused, unchanged login form. */
+.pageSurface.loginSurface {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 32px 24px;
+  background: radial-gradient(ellipse at 15% 12%, rgba(214, 225, 250, .85), transparent 55%),
+    radial-gradient(ellipse at 90% 75%, rgba(223, 207, 239, .6), transparent 60%), #eceaf9;
+}
+.pageSurface.loginSurface .loginComposition {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  width: min(100%, 940px);
+  border: 1px solid var(--surface-line);
+  border-top-color: var(--surface-edge);
+  border-radius: 28px;
+  background: var(--surface-flow);
+  box-shadow: 0 24px 64px rgba(103, 87, 148, .13), inset 0 1px rgba(255, 255, 255, .65);
+  overflow: hidden;
+  backdrop-filter: blur(26px) saturate(1.15);
+}
+.pageSurface.loginSurface .loginContext { display: flex; flex-direction: column; gap: 48px; padding: 40px; background: radial-gradient(ellipse at 0 0, rgba(230, 221, 247, .7), transparent 75%); }
+.pageSurface.loginSurface .loginBrand { margin: 0; }
+.pageSurface.loginSurface .loginWorkflow h2 { margin: 0 0 24px; font-size: var(--vision-font-heading, 1.25rem); font-weight: 600; }
+.pageSurface.loginSurface .loginWorkflow ol { display: grid; gap: 24px; margin: 0; padding: 0; list-style: none; }
+.pageSurface.loginSurface .loginWorkflow li { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 12px; }
+.pageSurface.loginSurface .loginWorkflow li > span { padding-top: 3px; color: var(--vision-primary); font-size: 13px; font-variant-numeric: tabular-nums; }
+.pageSurface.loginSurface .loginWorkflow strong { font-size: 16px; font-weight: 600; }
+.pageSurface.loginSurface .loginWorkflow p { margin: 6px 0 0; color: var(--vision-muted); font-size: 13px; line-height: 1.75; }
+.pageSurface.loginSurface .loginCard { width: 100%; align-self: stretch; display: flex; flex-direction: column; justify-content: center; border: 0; border-left: 1px solid var(--surface-line); border-radius: 0; background: var(--surface-reading); padding: 44px 40px; box-shadow: inset 0 1px rgba(255, 255, 255, .65); }
+.pageSurface.loginSurface .loginHeading { margin: 0 0 28px; }
+.pageSurface.loginSurface .loginHeading h1 { font-size: 28px; line-height: 1.35; }
+.pageSurface.loginSurface .loginHeading span { font-size: var(--vision-font-small, .875rem); line-height: 1.7; }
+.pageSurface.loginSurface .loginForm { gap: 20px; }
+.pageSurface.loginSurface .loginForm label > span { color: var(--vision-text); font-size: var(--vision-font-body, 1rem); }
+.pageSurface.loginSurface .loginForm input { min-width: 0; border-color: var(--surface-line); background: rgba(245, 243, 252, .7); font-size: var(--vision-font-body, 1rem); }
+.pageSurface.loginSurface .loginForm input::placeholder { color: var(--vision-muted); }
+.pageSurface.loginSurface .loginFootnote { margin: 22px 0 0; border-top: 1px solid var(--surface-line); padding-top: 18px; font-size: var(--vision-font-caption, .8125rem); line-height: 1.7; }
+
+@media (max-width: 1200px) {
+  .pageSurface.createSurface .createProjectForm { grid-template-columns: minmax(0, 1fr); }
+  .pageSurface.createSurface .scriptDropzone { min-height: 220px; }
+  .pageSurface.runnerSurface :is(.runnerConnectionGrid, .runnerSupportGrid) { grid-template-columns: minmax(0, 1fr); }
+  .pageSurface.runnerSurface .runnerFieldGrid { grid-template-columns: minmax(0, 1fr) minmax(180px, .6fr); }
+  .pageSurface.workbenchSurface .episodeStudioList > article { grid-template-columns: 40px minmax(0, 1fr) auto; }
+  .pageSurface.workbenchSurface .episodeCounts { grid-column: 2; justify-self: start; }
+  .pageSurface.workbenchSurface .episodeStudioList > article > a { grid-column: 3; grid-row: 1 / 3; }
+  .pageSurface.workbenchSurface .batchMonitorCard { grid-template-columns: minmax(0, 1fr); }
+  .pageSurface.workbenchSurface .batchMonitorActions { flex-direction: row; flex-wrap: wrap; align-items: center; }
+}
+@media (max-width: 760px) {
+  .pageSurface.librarySurface .projectCardGrid { grid-template-columns: minmax(0, 1fr); }
+  .pageSurface.librarySurface .projectCardGrid.singleProject { width: 100%; }
+  .pageSurface.createSurface :is(.createFormSection, .createFormFooter),
+  .pageSurface.runnerSurface :is(.runnerConnectionCard, .runnerChoiceGuide, .runnerDeviceCard) { padding: 20px !important; }
+  .pageSurface.createSurface .createFormFooter { flex-direction: column; align-items: stretch; }
+  .pageSurface.createSurface .styleOptionGrid { grid-template-columns: minmax(0, 1fr); }
+  .pageSurface.createSurface .basicConfigGrid { grid-template-columns: minmax(0, 1fr); }
+  .pageSurface.runnerSurface :is(.runnerFieldGrid, .runnerChoiceGrid, .runnerCliStatusGrid) { grid-template-columns: minmax(0, 1fr); }
+  .pageSurface.workbenchSurface > .workflowGuidance { grid-template-columns: minmax(0, 1fr); padding: 20px; }
+  .pageSurface.workbenchSurface .guidanceSignal { display: none; }
+  .pageSurface.workbenchSurface > .workflowGuidance :is(.guidanceCopy, .guidanceMeta),
+  .pageSurface.workbenchSurface > .workflowGuidance > :is(form, a) { grid-column: 1; grid-row: auto; }
+  .pageSurface.workbenchSurface > .studioSection { padding: 18px; }
+  .pageSurface.workbenchSurface .batchMonitorCard { padding: 18px; }
+  .pageSurface.workbenchSurface .episodeStudioList > article { grid-template-columns: 32px minmax(0, 1fr); gap: 12px; padding: 14px; }
+  .pageSurface.workbenchSurface .episodeStudioList > article > a { grid-column: 2; grid-row: auto; justify-self: start; }
+  .pageSurface.workbenchSurface .episodeCounts { flex-wrap: wrap; }
+  .pageSurface.loginSurface { padding: 20px 16px; }
+  .pageSurface.loginSurface .loginComposition { max-width: 480px; grid-template-columns: minmax(0, 1fr); border-radius: 22px; }
+  .pageSurface.loginSurface .loginContext { gap: 24px; padding: 28px; }
+  .pageSurface.loginSurface .loginWorkflow { display: none; }
+  .pageSurface.loginSurface .loginCard { border-left: 0; border-top: 1px solid var(--surface-line); padding: 30px 28px; }
+}

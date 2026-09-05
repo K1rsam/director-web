@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef, useState, type ButtonHTMLAttributes, type FormEvent } from "react";
+import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { runFoundationStageAction, startProjectFoundationAction } from "@/app/actions";
 import type { FoundationRunDiagnostics } from "@/lib/studio";
@@ -57,6 +58,9 @@ export function FoundationActions({
   validationReady: boolean;
 }) {
   const router = useRouter();
+  const [submissionPending, setSubmissionPending] = useState(false);
+  const submitting = useRef(false);
+  useEffect(() => { submitting.current = active || submissionPending; }, [active, submissionPending]);
   useEffect(() => {
     if (!active) return;
     const timer = window.setInterval(() => router.refresh(), 3000);
@@ -64,6 +68,15 @@ export function FoundationActions({
   }, [active, router]);
 
   const statusOf = (code: string) => runs.find((run) => run.stageCode === code);
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>, confirmation?: string) {
+    if (active || submitting.current || (confirmation && !window.confirm(confirmation))) {
+      event.preventDefault();
+      return;
+    }
+    // 这里只锁住重复提交；disabled 等 useFormStatus 确认提交后再更新。
+    submitting.current = true;
+  }
 
   return (
     <div className="foundationControlRoom" id="foundation-actions">
@@ -77,11 +90,9 @@ export function FoundationActions({
         ) : foundationReady ? (
           <span className="foundationHeaderState done">P1 + P2 已完成</span>
         ) : (
-          <form action={startProjectFoundationAction} className="foundationRunAll" onSubmit={(event) => {
-            if (!window.confirm("确定按 P1 → P2 顺序执行全剧基础工程吗？")) event.preventDefault();
-          }}>
+          <form action={startProjectFoundationAction} className="foundationRunAll" onSubmit={(event) => handleSubmit(event, "确定按 P1 → P2 顺序执行全剧基础工程吗？")}>
             <input name="projectId" type="hidden" value={projectId} />
-            <button type="submit" className="foundationRunAllButton">执行 P1 + P2</button>
+            <FoundationSubmitButton className="studioButton foundationRunAllButton" data-variant="primary" disabled={active || submissionPending} onPendingChange={setSubmissionPending}>执行 P1 + P2</FoundationSubmitButton>
           </form>
         )}
       </div>
@@ -99,10 +110,19 @@ export function FoundationActions({
           : "";
         const actionLabel = run?.status === "已完成" ? "重跑" : run?.status === "失败" ? "再试一次" : "运行";
         return (
-          <form action={runFoundationStageAction} className="foundationStageForm" key={code}>
+          <form action={runFoundationStageAction} className="foundationStageForm" key={code} onSubmit={(event) => handleSubmit(event)}>
               <input name="projectId" type="hidden" value={projectId} />
               <input name="stageCode" type="hidden" value={code} />
-              <button type="submit" className="foundationCardHitArea" disabled={active} aria-label={`${actionLabel} ${code}`} title={`点击整张卡片${actionLabel} ${code}`} />
+              <FoundationSubmitButton
+                className="foundationCardHitArea"
+                data-control="card"
+                data-variant={run?.status === "已完成" ? "secondary" : "primary"}
+                disabled={active || submissionPending}
+                aria-busy={active && (run?.status === "进行中" || run?.status === "排队中")}
+                aria-label={`${actionLabel} ${code}`}
+                title={`点击整张卡片${actionLabel} ${code}`}
+                onPendingChange={setSubmissionPending}
+              />
               <article className={`foundationRole ${className}`} title={run?.error ?? undefined}>
                 <span>{code}</span>
                 <div>
@@ -148,15 +168,34 @@ export function FoundationActions({
           <summary>维护与重置 <span>低频操作</span></summary>
           <div>
             <p>重新执行会覆盖当前全剧策划与资产索引，但不会删除已生成的单集分镜。</p>
-            <form action={startProjectFoundationAction} className="foundationRunAll" onSubmit={(event) => {
-              if (!window.confirm("确定重新运行 P1–P2 并覆盖当前全剧基础资料吗？")) event.preventDefault();
-            }}>
+            <form action={startProjectFoundationAction} className="foundationRunAll" onSubmit={(event) => handleSubmit(event, "确定重新运行 P1–P2 并覆盖当前全剧基础资料吗？")}>
               <input name="projectId" type="hidden" value={projectId} />
-              <button type="submit" className="dangerQuietButton" disabled={active}>重新生成 P1–P2</button>
+              <FoundationSubmitButton className="studioButton quietButton" data-variant="secondary" disabled={active || submissionPending} onPendingChange={setSubmissionPending}>重新生成 P1–P2</FoundationSubmitButton>
             </form>
           </div>
         </details>
       ) : null}
     </div>
+  );
+}
+
+function FoundationSubmitButton({
+  children,
+  disabled,
+  onPendingChange,
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement> & { onPendingChange: (pending: boolean) => void }) {
+  const { pending } = useFormStatus();
+  useEffect(() => { onPendingChange(pending); }, [pending, onPendingChange]);
+  return (
+    <button
+      {...props}
+      type="submit"
+      disabled={disabled || pending}
+      aria-busy={pending || props["aria-busy"]}
+      aria-label={pending && props["aria-label"] ? `正在启动：${props["aria-label"]}` : props["aria-label"]}
+    >
+      {children ? pending ? "启动中…" : children : null}
+    </button>
   );
 }

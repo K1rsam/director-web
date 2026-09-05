@@ -111,7 +111,7 @@ function ContractDecisionForm({
       <input name="contractId" type="hidden" value={contract.id} />
       <ContractScopeEditor contract={contract} formalEpisodeNumbers={formalEpisodeNumbers} />
       <div className="contractOptionsLabel">确认后，仅适用集的 P2 和 E0–E5 会使用这条规则：</div>
-      <div className="contractOptions">
+      <div className="contractOptions" role="group" aria-label="表现规范方案">
         {contract.options.map((option, index) => {
           const label = String.fromCharCode(65 + index);
           const text = cleanOption(option);
@@ -120,6 +120,9 @@ function ContractDecisionForm({
               type="submit"
               name="answer"
               value={`${label}. ${text}`}
+              className="contractOptionButton"
+              data-control="choice"
+              aria-pressed={contract.userAnswer === `${label}. ${text}`}
               title={text}
               key={label}
             >
@@ -130,7 +133,7 @@ function ContractDecisionForm({
         })}
         <div className="contractCustom">
           <input name="customAnswer" type="text" placeholder="输入自定义方案…" aria-label="自定义表现规范方案" />
-          <button type="submit" name="useCustom" value="1">使用自定义</button>
+          <button type="submit" name="useCustom" value="1" className="studioButton contractCustomAction" data-variant="secondary">使用自定义</button>
         </div>
       </div>
       {editing ? <p className="contractEditNote">修改后会同步后台；只影响之后新生成或返修的任务，已有成品不会被自动重写。</p> : null}
@@ -143,7 +146,7 @@ function SkipContractForm({ projectId, contractId }: { projectId: string; contra
     <form action={skipPresentationContractAction} className="contractSkipForm">
       <input name="projectId" type="hidden" value={projectId} />
       <input name="contractId" type="hidden" value={contractId} />
-      <button type="submit" className="contractSkip">暂不处理</button>
+      <button type="submit" className="studioButton contractSkip" data-variant="ghost">暂不处理</button>
     </form>
   );
 }

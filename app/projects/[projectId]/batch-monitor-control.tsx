@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { startEpisodeBatchMonitorAction, stopEpisodeBatchMonitorAction } from "@/app/actions";
@@ -31,6 +31,7 @@ export function BatchMonitorControl({
   monitor: MonitorView | null;
 }) {
   const router = useRouter();
+  const submitting = useRef(false);
   const active = Boolean(monitor && ACTIVE_STATUSES.has(monitor.status));
   const providerLabel = String(executionMode).toUpperCase() === "API" ? "API" : "CLI";
   const concurrencyLabel = providerLabel === "CLI" ? "CLI 单集串行" : "API 最多 3 集并发";
@@ -127,15 +128,25 @@ export function BatchMonitorControl({
         <span className={`batchMonitorStatus batchMonitorStatusInline ${statusClass}`}><i aria-hidden="true" />{statusLabel}</span>
         {active ? (
           <form action={stopEpisodeBatchMonitorAction} onSubmit={(event) => {
-            if (!window.confirm("确定停止页面上的批量推进监控吗？已经启动的剧集任务会继续完成。")) event.preventDefault();
+            if (submitting.current || !window.confirm("确定停止页面上的批量推进监控吗？已经启动的剧集任务会继续完成。")) {
+              event.preventDefault();
+              return;
+            }
+            submitting.current = true;
           }}>
             <input name="projectId" type="hidden" value={projectId} />
-            <StopBatchMonitorButton />
+            <StopBatchMonitorButton submitting={submitting} />
           </form>
         ) : (
-          <form action={startEpisodeBatchMonitorAction}>
+          <form action={startEpisodeBatchMonitorAction} onSubmit={(event) => {
+            if (!canStart || monitor?.status === "SUCCEEDED" || submitting.current) {
+              event.preventDefault();
+              return;
+            }
+            submitting.current = true;
+          }}>
             <input name="projectId" type="hidden" value={projectId} />
-            <StartBatchMonitorButton disabled={!canStart || monitor?.status === "SUCCEEDED"} label={actionLabel} />
+            <StartBatchMonitorButton disabled={!canStart || monitor?.status === "SUCCEEDED"} label={actionLabel} hasRun={Boolean(monitor)} submitting={submitting} />
           </form>
         )}
       </div>
@@ -143,19 +154,21 @@ export function BatchMonitorControl({
   );
 }
 
-function StartBatchMonitorButton({ disabled, label }: { disabled: boolean; label: string }) {
+function StartBatchMonitorButton({ disabled, label, hasRun, submitting }: { disabled: boolean; label: string; hasRun: boolean; submitting: RefObject<boolean> }) {
   const { pending } = useFormStatus();
+  useEffect(() => { submitting.current = pending; }, [pending, submitting]);
   return (
-    <button type="submit" className="batchMonitorButton primary" disabled={disabled || pending}>
+    <button type="submit" className="studioButton batchMonitorButton primary" data-variant={hasRun ? "secondary" : "primary"} disabled={disabled || pending} aria-busy={pending}>
       {pending ? "启动中…" : label}
       {!pending && !disabled ? <span aria-hidden="true">→</span> : null}
     </button>
   );
 }
 
-function StopBatchMonitorButton() {
+function StopBatchMonitorButton({ submitting }: { submitting: RefObject<boolean> }) {
   const { pending } = useFormStatus();
-  return <button type="submit" className="batchMonitorButton stop" disabled={pending}>{pending ? "停止中…" : "停止监控"}</button>;
+  useEffect(() => { submitting.current = pending; }, [pending, submitting]);
+  return <button type="submit" className="studioButton batchMonitorButton stop cautionQuietButton" data-variant="caution" disabled={pending} aria-busy={pending}>{pending ? "停止中…" : "停止监控"}</button>;
 }
 
 function monitorStatusLabel(monitor: MonitorView | null, foundationReady: boolean, foundationActive: boolean) {
