@@ -1505,9 +1505,9 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 .appChrome .projectDashboard .contractCard {
   position: relative;
   margin: 0 0 12px;
-  border: 1px solid rgba(210,216,239,.92);
+  border: 1px solid var(--vision-line);
   border-radius: 16px;
-  background: rgba(255,255,255,.62);
+  background: rgba(232,228,248,.28);
   box-shadow: var(--vision-shadow-sm);
   padding: 16px 18px;
 }
@@ -1520,11 +1520,11 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 .appChrome .projectDashboard .contractHead > span,
 .appChrome .projectDashboard .contractCategoryBadge {
   flex: 0 0 auto;
-  border: 1px solid rgba(189,129,40,.34);
+  border: 1px solid rgba(143,130,195,.22);
   border-radius: 999px;
-  background: rgba(255,249,231,.72);
+  background: rgba(213,203,242,.25);
   padding: 3px 9px;
-  color: var(--vision-warn);
+  color: var(--vision-muted);
   font-size: var(--vision-font-caption);
   line-height: 1.2;
 }
@@ -1590,9 +1590,9 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 .appChrome .projectDashboard .contractCustom input {
   min-width: 0;
   min-height: 38px;
-  border: 1px solid rgba(199,207,233,.96);
+  border: 1px solid var(--vision-line);
   border-radius: 10px;
-  background: rgba(255,255,255,.78);
+  background: rgba(244,240,255,.36);
   color: var(--vision-text);
   font: inherit;
   font-size: var(--vision-font-small);
@@ -1622,9 +1622,9 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 .appChrome .projectDashboard .contractCustom > button,
 .appChrome .projectDashboard .contractSkip {
   min-height: 42px;
-  border: 1px solid rgba(198,207,235,.98);
+  border: 1px solid var(--vision-line);
   border-radius: 11px;
-  background: rgba(250,251,255,.90);
+  background: rgba(235,231,250,.3);
   color: var(--vision-text);
   cursor: pointer;
   font: inherit;
@@ -1661,7 +1661,7 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 }
 .appChrome .projectDashboard .contractCustom > button {
   border-color: rgba(103,94,228,.34);
-  background: linear-gradient(135deg, rgba(242,241,255,.96), rgba(249,242,255,.96));
+  background: linear-gradient(135deg, rgba(225,221,246,.36), rgba(238,224,247,.3));
   color: var(--vision-primary);
   white-space: nowrap;
 }
@@ -1677,9 +1677,9 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 }
 .appChrome .projectDashboard .contractConfirmed {
   margin-top: 12px;
-  border: 1px solid rgba(210,216,239,.88);
+  border: 1px solid var(--vision-line);
   border-radius: 14px;
-  background: rgba(255,255,255,.43);
+  background: rgba(232,228,248,.18);
 }
 .appChrome .projectDashboard .contractConfirmed > summary,
 .appChrome .projectDashboard .contractCompactDetails > summary {
@@ -1716,9 +1716,9 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 }
 .appChrome .projectDashboard .contractConfirmedItem {
   overflow: hidden;
-  border: 1px solid rgba(211,217,237,.90);
+  border: 1px solid rgba(143,130,195,.18);
   border-radius: 11px;
-  background: rgba(255,255,255,.68);
+  background: rgba(230,226,247,.28);
 }
 .appChrome .projectDashboard .contractConfirmedItem > summary {
   display: grid;
@@ -1726,16 +1726,16 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   align-items: center;
   gap: 9px;
   min-height: 42px;
-  padding: 0 11px;
+  padding: 8px 11px;
   cursor: pointer;
   list-style: none;
 }
 .appChrome .projectDashboard .contractConfirmedItem > summary > b {
-  overflow: hidden;
+  min-width: 0;
   color: var(--vision-text);
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-weight: 400;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 .appChrome .projectDashboard .contractConfirmedItem > summary > em {
   color: var(--vision-good);
@@ -1760,9 +1760,9 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   margin: 0;
 }
 .appChrome .projectDashboard .contractCompactDetails {
-  border: 1px solid rgba(210,216,239,.84);
+  border: 1px solid var(--vision-line);
   border-radius: 12px;
-  background: rgba(255,255,255,.48);
+  background: rgba(232,228,248,.18);
 }
 .appChrome .projectDashboard .contractCompactDetails > summary {
   min-height: 44px;
@@ -1810,12 +1810,12 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 /* 表现规范可读性：正文只使用 small/unit/body 三档，caption 仅保留给标签。 */
 .appChrome .projectDashboard .contractSection .cardHeader > em {
   color: var(--vision-primary);
-  font-size: var(--vision-font-unit);
+  font-size: .8125rem;
   line-height: 1.4;
 }
 .appChrome .projectDashboard .contractSection .contractHint {
   color: var(--vision-muted);
-  font-size: var(--vision-font-body);
+  font-size: .875rem;
   line-height: 1.6;
 }
 .appChrome .projectDashboard .contractSection .contractCard {
@@ -1823,22 +1823,24 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 }
 .appChrome .projectDashboard .contractSection .contractHead > span,
 .appChrome .projectDashboard .contractSection .contractCategoryBadge {
-  font-size: var(--vision-font-small);
+  font-size: .75rem;
 }
 .appChrome .projectDashboard .contractSection .contractHead > b {
-  font-size: var(--vision-font-body);
+  font-size: .9375rem;
+  font-weight: 500;
   line-height: 1.5;
 }
 .appChrome .projectDashboard .contractSection .contractHead > em {
-  font-size: var(--vision-font-unit);
+  font-size: .8125rem;
 }
 .appChrome .projectDashboard .contractSection .contractEvidence,
 .appChrome .projectDashboard .contractSection .contractConfirmedQuestion {
-  font-size: var(--vision-font-unit);
+  font-size: .875rem;
   line-height: 1.6;
 }
 .appChrome .projectDashboard .contractSection .contractScopeLabel strong {
-  font-size: var(--vision-font-body);
+  font-size: .875rem;
+  font-weight: 500;
 }
 .appChrome .projectDashboard .contractSection .contractScopeLabel span,
 .appChrome .projectDashboard .contractSection .contractScopeHelp,
@@ -1848,10 +1850,11 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   line-height: 1.6;
 }
 .appChrome .projectDashboard .contractSection .contractScopeControls select,
-.appChrome .projectDashboard .contractSection .contractScopeControls input,
-.appChrome .projectDashboard .contractSection .contractCustom input {
+.appChrome .projectDashboard .contractSection .contractScopeControls input[type="text"],
+.appChrome .projectDashboard .contractSection .contractCustom input[type="text"] {
   min-height: 42px;
-  font-size: var(--vision-font-unit);
+  font-size: .875rem;
+  background: rgba(244,240,255,.36) !important;
 }
 .appChrome .projectDashboard .contractSection .contractOptions {
   /* 选项文案通常较长，桌面端固定为两列，避免 4 个方案和自定义输入被挤成一行。 */
@@ -1861,14 +1864,15 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 .appChrome .projectDashboard .contractSection .contractOptions > button,
 .appChrome .projectDashboard .contractSection .contractCustom > button {
   min-height: 60px;
-  font-size: var(--vision-font-unit);
+  font-size: .875rem;
   line-height: 1.45;
   padding: 10px 13px;
   white-space: normal;
   overflow-wrap: anywhere;
 }
 .appChrome .projectDashboard .contractSection .contractOptions > button b {
-  font-size: var(--vision-font-body);
+  font-size: .875rem;
+  font-weight: 500;
 }
 .appChrome .projectDashboard .contractSection .contractOptions > button span {
   display: block;
@@ -1891,9 +1895,9 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   grid-column: 2;
   min-width: 0;
   margin: 0;
-  border: 1px solid rgba(210,216,239,.84);
+  border: 1px solid var(--vision-line);
   border-radius: 11px;
-  background: rgba(248,249,255,.62);
+  background: rgba(232,228,248,.18);
   padding: 8px 10px 9px;
 }
 .appChrome .projectDashboard .contractEpisodeChoices legend {
@@ -1915,9 +1919,9 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   min-height: 32px;
   align-items: center;
   gap: 6px;
-  border: 1px solid rgba(206,214,239,.9);
+  border: 1px solid var(--vision-line);
   border-radius: 9px;
-  background: rgba(255,255,255,.78);
+  background: rgba(239,235,251,.3);
   padding: 0 9px;
   color: var(--vision-text);
   font-size: var(--vision-font-small);
@@ -1925,7 +1929,7 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
 }
 .appChrome .projectDashboard .contractEpisodeChoices label:has(input:checked) {
   border-color: rgba(103,94,228,.42);
-  background: rgba(241,240,255,.92);
+  background: rgba(213,204,244,.42);
   color: var(--vision-primary);
 }
 .appChrome .projectDashboard .contractEpisodeChoices input {
@@ -1942,13 +1946,13 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   font-size: var(--vision-font-small);
 }
 .appChrome .projectDashboard .contractConfirmedItem > summary > b {
-  font-size: var(--vision-font-unit);
+  font-size: .875rem;
 }
 .appChrome .projectDashboard .contractConfirmedItem > summary > em,
 .appChrome .projectDashboard .contractConfirmedItem > summary > i,
 .appChrome .projectDashboard .contractCompactDetails > summary > em,
 .appChrome .projectDashboard .contractCompactDetails > summary > i {
-  font-size: var(--vision-font-small);
+  font-size: .75rem;
 }
 .appChrome .projectDashboard .contractCompactDetails > summary > b {
   font-size: var(--vision-font-unit);
@@ -2013,7 +2017,7 @@ button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible,t
 .sidebarNav a {display:flex;align-items:center;min-height:45px;gap:11px;padding:10px 12px;border:1px solid transparent;border-radius:12px;color:var(--vision-muted);font-size:.9375rem;font-weight:500;transition:transform 260ms var(--motion-ease),background 200ms,box-shadow 220ms;}
 .appChrome .sidebarNav a>.navText {font-size:.9375rem;font-weight:500;color:inherit;text-align:left;}
 .sidebarNav a:hover {transform:translateX(2px);background:rgba(255,255,255,.3);color:var(--vision-text);}
-.sidebarNav a.active,.sidebarEpisodes a.active {border:1px solid rgba(143,130,195,.28);background:linear-gradient(125deg,rgba(213,210,246,.79),rgba(241,239,253,.72));color:var(--vision-text);box-shadow:0 4px 10px rgba(116,101,170,.13),inset 0 1px 0 rgba(255,255,255,.76);}
+.sidebarNav a.active,.sidebarEpisodes a.active {border:1px solid rgba(143,130,195,.24);background:linear-gradient(125deg,rgba(213,210,246,.4),rgba(241,239,253,.28));color:var(--vision-text);box-shadow:0 4px 10px rgba(116,101,170,.11),inset 0 1px 0 rgba(255,255,255,.42);}
 .sidebarNav a.active::before {display:none;}
 .sidebarNav a.active::after {content:"";width:4px;height:4px;flex-shrink:0;border-radius:50%;background:var(--vision-primary);box-shadow:0 0 8px rgba(139,115,210,.4);}
 .navIcon svg,.mobileNav summary svg {display:block;width:18px;height:18px;}
@@ -2031,13 +2035,13 @@ button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible,t
 .accountMenu button {min-height:36px;padding:4px;background:transparent;border:0;color:var(--vision-muted);}
 .accountAvatar {width:32px;height:32px;background:rgba(175,155,222,.19);color:var(--vision-primary);}
 .appChrome .appWorkspace,.episodeShell .appWorkspace {display:flex;flex-direction:column;margin-left:var(--vision-workspace-offset);height:100dvh;min-height:0;padding:20px 18px 22px 12px;overflow:hidden;mask-image:none;}
-.appChrome .appTopbar {position:relative;flex:0 0 auto;top:auto;margin:0 0 24px;min-height:96px;display:flex;flex-wrap:wrap;gap:16px;padding:19px 24px;border:1px solid rgba(255,255,255,.67);border-radius:22px;background:linear-gradient(120deg,rgba(233,239,255,.6),rgba(242,229,255,.58));box-shadow:var(--vision-shadow);backdrop-filter:blur(24px) saturate(115%);}
+.appChrome .appTopbar {position:relative;z-index:20;flex:0 0 auto;top:auto;margin:0;min-height:96px;display:flex;flex-wrap:wrap;gap:16px;padding:19px 24px;border:1px solid rgba(255,255,255,.54);border-bottom-color:rgba(255,255,255,.3);border-radius:22px;background:linear-gradient(120deg,rgba(233,239,255,.6),rgba(242,229,255,.58));box-shadow:0 10px 24px rgba(111,98,160,.08),inset 0 1px rgba(255,255,255,.35);backdrop-filter:blur(24px) saturate(115%);}
 .topbarIdentity {flex:1 1 20rem;gap:5px;}
 .topbarIdentity small {font-size:.8125rem;line-height:1.5;color:var(--vision-muted);font-weight:400;}
 .topbarIdentity .pageTitle,.topbarIdentity strong {display:block;margin:0;max-width:none;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;color:var(--vision-text);font-size:var(--vision-font-title);font-weight:650;line-height:1.35;letter-spacing:-.025em;}
 .topbarTools {display:flex;flex:0 1 auto;align-items:center;flex-wrap:wrap;justify-content:flex-end;gap:8px;}
 .topbarTools>* {max-width:100%;}
-.appChrome .appMain,.episodeShell .appMain {display:block;flex:1 1 auto;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;min-height:0;width:100%;padding:0 2px 22px;mask-image:linear-gradient(#000 calc(100% - 12px),transparent);scroll-padding-block:14px;}
+.appChrome .appMain,.episodeShell .appMain {display:block;flex:1 1 auto;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;min-height:0;width:100%;padding:24px 2px 22px;mask-image:linear-gradient(transparent,#000 24px,#000 calc(100% - 12px),transparent);scroll-padding-block:28px;}
 .projectDashboard,.episodeDashboard,.episodeShell .episodeDashboard {display:grid;height:auto;grid-template-columns:minmax(0,1fr);gap:24px;width:100%;max-width:var(--vision-content-max);margin:0 auto;}
 .workspaceGrid,.storyboardCanvas,.roleProgressRail,.episodeRoleDeck {min-width:0;max-width:100%;}
 .libraryTopbarMeta>span,.projectTopbarMeta>span,.episodeTopbarMeta>span {padding:3px 7px;border:0;border-radius:5px;background:rgba(228,225,246,.42);box-shadow:none;font-size:.8125rem;}
@@ -2082,7 +2086,7 @@ button[aria-busy=true]::before {content:"";width:14px;height:14px;flex:0 0 14px;
 .sectionIndex,.formSectionHeader>span {border-radius:10px;background:rgba(167,153,222,.16);color:var(--vision-primary);font-size:.875rem;}
 .cardHeader {min-height:66px;gap:12px;flex-wrap:wrap;padding:16px 20px;border-bottom:1px solid var(--vision-line);background:rgba(246,244,254,.25);}
 .bibleLineValue,.bibleLineValue b,.bibleFactList li {font-size:1rem;line-height:1.75;}
-.appChrome .bibleLine,.contractConfirmedItem,.contractScopeEditor {background:rgba(246,244,254,.24);border-color:var(--vision-line);}
+.appChrome .bibleLine {background:rgba(246,244,254,.24);border-color:var(--vision-line);}
 .bibleFactList li {padding:7px 0;}
 /* Keep category controls visible when the adjacent bible card collapses. */
 .appChrome .assetTabBar {flex:0 0 auto;max-width:100%;overflow-x:auto;}
@@ -2142,9 +2146,9 @@ dialog.infoPanelBackdrop::backdrop {background:rgba(70,65,107,.2);backdrop-filte
   .mobileNav {display:block;}.mobileNav summary {display:grid;min-width:40px;min-height:40px;place-items:center;border-radius:12px;background:rgba(237,233,252,.55);}
   .mobileNav nav {width:min(22rem,calc(100vw - 32px));max-height:calc(100dvh - 130px);overflow:auto;border:1px solid rgba(255,255,255,.75);border-radius:18px;background:var(--vision-solid);box-shadow:var(--vision-shadow-float);}
   .mobileNav nav a {min-height:44px;font-size:.875rem;}
-  .appChrome .appTopbar {margin:0 0 20px;padding:18px;border-radius:18px;}
+  .appChrome .appTopbar {margin:0;padding:18px;border-radius:18px;}
   .topbarIdentity {flex:1 1 0;}.topbarTools {flex-basis:100%;gap:8px;}
-  .appChrome .appMain {padding:0 0 20px;}.runnerHero.studioCard {grid-template-columns:1fr;}
+  .appChrome .appMain {padding:24px 0 20px;}.runnerHero.studioCard {grid-template-columns:1fr;}
   .projectDashboard>.studioSection {padding:18px;}.foundationRail {grid-template-columns:repeat(2,minmax(0,1fr));}
   .basicConfigGrid,.runnerChoiceGrid {grid-template-columns:1fr;}.createFormFooter {position:static;align-items:stretch;flex-direction:column;}
   .infoPanelArea {inset:0;width:100%;border-radius:0;}.loginCard {padding:28px 24px;}

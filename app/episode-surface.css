@@ -234,7 +234,7 @@
   background: transparent !important;
   color: var(--episode-ink) !important;
   font-family: var(--studio-font, system-ui, "Microsoft YaHei", sans-serif);
-  font-size: 0.9375rem;
+  font-size: 0.875rem;
   font-weight: 400;
   line-height: 1.55;
   letter-spacing: 0;
@@ -249,7 +249,7 @@
 .episodeShell .episodeSurface .unitInternals dt,
 .episodeShell .episodeSurface .unitInternals dd { font-size: 0.875rem; line-height: 1.65; overflow-wrap: anywhere; }
 .episodeSurface .promptVersionRestore { flex-wrap: wrap; border-color: var(--episode-line); background: rgba(249, 237, 216, .35); color: var(--episode-muted); line-height: 1.6; }
-.episodeShell .episodeSurface .promptManualEdit textarea { min-height: 320px; padding: 12px; color: var(--episode-ink) !important; background: rgba(255, 255, 255, .5) !important; font-size: 1rem; line-height: 1.65; resize: vertical; }
+.episodeShell .episodeSurface .promptManualEdit textarea { min-height: 320px; padding: 12px; color: var(--episode-ink) !important; background: rgba(244,240,255,.36) !important; font-size: .875rem; line-height: 1.55; resize: vertical; }
 .episodeSurface .promptManualEditFoot { flex-wrap: wrap; }
 .episodeSurface .promptManualEditFoot small { flex-basis: 100%; line-height: 1.6; }
 .episodeSurface .episodeUnitDocument > .unitGuide { min-width: 0; }
@@ -280,7 +280,7 @@
   padding: 0;
   color: var(--episode-ink);
   font-family: var(--studio-font, system-ui, "Microsoft YaHei", sans-serif);
-  font-size: 0.9375rem;
+  font-size: 0.875rem;
   font-weight: 400;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -289,13 +289,13 @@
 }
 .episodeSurface .promptDocument > * { max-width: none; margin: 0; padding: 0; }
 .episodeSurface .promptDocument .promptDocumentSpace { display: block; height: 6px; font-size: 0; line-height: 0; }
-.episodeShell .episodeSurface .promptDocument .promptDocumentTitle { margin-bottom: 2px; color: var(--episode-ink); font-size: 1rem; font-weight: 600; line-height: 1.5; }
-.episodeShell .episodeSurface .promptDocument .promptDocumentSectionTitle { color: var(--episode-accent); font-size: 0.875rem; font-weight: 600; line-height: 1.6; }
-.episodeSurface .promptDocument .promptDocumentShot { padding: 5px 0 2px; border-top: 1px solid var(--episode-line); color: var(--episode-ink); font-size: 0.9375rem; font-weight: 500; line-height: 1.55; }
+.episodeShell .episodeSurface .promptDocument .promptDocumentTitle { margin-bottom: 2px; color: var(--episode-ink); font-size: .9375rem; font-weight: 600; line-height: 1.5; }
+.episodeShell .episodeSurface .promptDocument .promptDocumentSectionTitle { color: var(--episode-accent); font-size: .8125rem; font-weight: 600; line-height: 1.6; }
+.episodeSurface .promptDocument .promptDocumentShot { padding: 5px 0 2px; border-top: 1px solid var(--episode-line); color: var(--episode-ink); font-size: .875rem; font-weight: 500; line-height: 1.55; }
 .episodeSurface .promptDocumentShotNumber { color: var(--episode-accent); font-weight: 600; }
-.episodeSurface .promptDocumentShotTiming { color: var(--episode-muted); font-size: 0.875rem; font-weight: 400; }
+.episodeSurface .promptDocumentShotTiming { color: var(--episode-muted); font-size: .75rem; font-weight: 400; }
 .episodeSurface .promptDocument .promptDocumentField { margin-block: 1px; }
-.episodeSurface .promptDocumentLabel { color: var(--episode-muted); font-size: 0.875rem; font-weight: 600; }
+.episodeSurface .promptDocumentLabel { color: var(--episode-muted); font-size: .8125rem; font-weight: 500; }
 .episodeSurface .promptDocumentSyntax { color: var(--episode-muted); font-size: 0.75rem; font-weight: 400; }
 .episodeSurface .promptDocument .promptDocumentLine { color: inherit; font-size: inherit; line-height: inherit; }
 
