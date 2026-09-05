@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { WorkbenchEmpty } from "@/app/ui/workbench-empty";
 import { notFound } from "next/navigation";
 import { prepareEpisodeAction, repairOpenIssuesAction, runSingleStageAction, resetEpisodeShotsAction, stopPipelineAction, acknowledgeIssueAction, acknowledgeRepairRegressionAction, acknowledgeAllSuggestionsAction } from "@/app/actions";
 import { getEpisodeStudio } from "@/lib/studio";
@@ -183,7 +184,7 @@ export default async function EpisodeStudioPage({
                     </tr>
                   )))}
                   {!studio.scenes.some((scene) => scene.shots.length) ? (
-                    <tr><td colSpan={9} className="largeEmpty"><span>分镜表尚未生成</span><p>E0 先切出 Beat 骨架；E1 按 Beat 建立小镜号和时长，E2–E4 只补充各自负责的列。</p></td></tr>
+                    <tr><td colSpan={9} className="emptyTableCell"><WorkbenchEmpty kind="shots" title={studio.pipelineActive ? "分镜正在制作中" : "从本集的第一个镜头开始"} description={studio.pipelineActive ? "镜号、画面和声音会随制作进度逐步呈现。" : "在右上角开始本集制作，镜号、画面与声画安排将在这里逐步呈现。"} steps={["梳理节奏", "完成分镜", "审阅画面"]} /></td></tr>
                   ) : null}
                 </tbody>
               </table>
@@ -241,22 +242,17 @@ export default async function EpisodeStudioPage({
                 );
               })}
               {!studio.units.length ? (
-                <div className="unitGuide">
-                  <span className="unitGuideIcon" aria-hidden="true">▶</span>
-                  <h3>分镜脚本暂未生成</h3>
-                  <p>点击右上角「生成本集分镜」开始 E0–E5 流水线：E0 叙事节奏导演先切出 Beat 骨架与时长预算，E1 按 Beat 拆镜，E2 表演调度，E3 单元视听，E4 摄影光影，E5 审查总控；每轮岗位跑完都会由 Python 自动编译最新提示词草稿。</p>
-                  <p className="unitGuideHint">测试阶段也可直接点击上方 E0–E5 岗位卡，单独执行某一个岗位。</p>
-                </div>
+                <WorkbenchEmpty kind="units" title={studio.pipelineActive ? "单元提示词正在制作中" : "让这一集进入画面"} description={studio.pipelineActive ? "完成的单元会陆续显示在这里，可随时查看制作进度。" : "在右上角开始本集制作。完成后，即可在这里审阅、编辑和复制单元提示词。"} steps={["完成分镜", "生成单元", "审阅与复制"]} />
               ) : null}
             </div>
           ) : null}
 
           {view === "logs" ? (
             <div className="logView">
-              <section><div className="cardHeader"><div><span>PIPELINE RUNS</span><h3>完整执行日志</h3></div><em>{studio.runs.length}条</em></div>
-                <div className="logEntries">{studio.runs.length ? studio.runs.map((run) => <article className="logRow" key={run.id}><b>{run.stageCode}</b><div><strong>{run.roleName}</strong><small>{run.provider} · {run.model} · {run.duration}</small></div><span>{run.status}</span><details><summary>查看输入、输出与执行日志</summary><h4>输入摘要</h4><pre>{run.inputSummary ?? "暂无"}</pre><h4>岗位输出</h4><pre>{run.outputSummary ?? "暂无"}</pre><h4>用户提示</h4><pre>{run.error ?? "无错误"}</pre><h4>技术执行日志</h4><pre>{run.log ?? "暂无"}</pre></details></article>) : <div className="largeEmpty"><span>暂无岗位执行日志</span></div>}</div>
+              <section><div className="cardHeader"><div><span>PIPELINE RUNS</span><h3>执行记录</h3></div><em>{studio.runs.length}条</em></div>
+                <div className="logEntries">{studio.runs.length ? studio.runs.map((run) => <article className="logRow" key={run.id}><b>{run.stageCode}</b><div><strong>{run.roleName}</strong><small>{run.provider} · {run.model} · {run.duration}</small></div><span>{run.status}</span><details><summary>查看输入、输出与执行日志</summary><h4>输入摘要</h4><pre>{run.inputSummary ?? "暂无"}</pre><h4>岗位输出</h4><pre>{run.outputSummary ?? "暂无"}</pre><h4>用户提示</h4><pre>{run.error ?? "无错误"}</pre><h4>技术执行日志</h4><pre>{run.log ?? "暂无"}</pre></details></article>) : <WorkbenchEmpty kind="logs" title="还没有执行记录" description="开始制作后，这里会记录各阶段的进度、耗时与结果。" />}</div>
               </section>
-              <section><div className="cardHeader"><div><span>ISSUES</span><h3>坐标化问题与返修</h3></div><em>全部 {studio.issues.length} · 未解决 {studio.issues.filter((issue) => issue.status === "OPEN").length}</em></div>
+              <section><div className="cardHeader"><div><span>ISSUES</span><h3>问题与修订</h3></div><em>全部 {studio.issues.length} · 未解决 {studio.issues.filter((issue) => issue.status === "OPEN").length}</em></div>
                 <div className="issueEntries">{studio.issues.length ? (
                   <>
                     <div className="issueFilters">
@@ -332,18 +328,19 @@ export default async function EpisodeStudioPage({
                               {suggestions.map(renderRow)}
                             </section>
                           ) : null}
-                          {visible.length === 0 ? <div className="largeEmpty"><span>暂无未解决问题</span></div> : null}
+                          {visible.length === 0 ? <WorkbenchEmpty kind="issues" title="当前没有待处理问题" description="可切换到全部，查看此前的问题与处理记录。" /> : null}
                         </>
                       );
                     })()}
                   </>
-                ) : <div className="largeEmpty"><span>暂无开放问题</span><p>E5只记录能定位到单元格的真实问题。</p></div>}
-                {studio.issues.some((issue) => issue.status === "OPEN") ? <p className="issueRepairHint">批量阶段不会自动返修。这里每次点击只执行一轮定向返修：修复严重问题只处理 BLOCKER；连建议一起修会把 MAJOR 也交给对应岗位，最后由 E5 复审。完成后请先查看问题数量和具体卡片，再决定是否进行下一轮；不需要修的建议用「确认保留」豁免。</p> : <p className="issueRepairHint">全部问题已清理：当前表格通过 Python 硬校验与 E5 审查，单元提示词为已放行状态。</p>}</div>
+                ) : <WorkbenchEmpty kind="issues" title={studio.runs.length ? "暂无问题记录" : "问题记录等待制作开始"} description={studio.runs.length ? "后续审查发现的问题会集中在这里，方便逐项定位与处理。" : "制作与审查产生的问题会集中在这里，尚未开始审查。"} />}
+                {studio.issues.some((issue) => issue.status === "OPEN") ? <p className="issueRepairHint">批量阶段不会自动返修。这里每次点击只执行一轮定向返修：修复严重问题只处理 BLOCKER；连建议一起修会把 MAJOR 也交给对应岗位，最后由 E5 复审。完成后请先查看问题数量和具体卡片，再决定是否进行下一轮；不需要修的建议用「确认保留」豁免。</p> : studio.units.length > 0 && studio.units.every((unit) => unit.versions[0]?.syncStatus === "RELEASE_COMPILED") ? <p className="issueRepairHint">当前单元已通过审查并放行。</p> : null}</div>
               </section>
             </div>
           ) : null}
         </section>
         )}
+        episodeLabel={`${studio.project.title} / 第 ${studio.episode.number} 集`}
         content={studio.episode.content}
         scenes={studio.scenes.map((scene) => ({
           sceneKey: scene.sceneKey,

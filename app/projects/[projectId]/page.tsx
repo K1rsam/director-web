@@ -154,31 +154,13 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
       </button>
     </form>
   ) : null;
-  const guidedEpisodeNumber = guidance.episodeId
-    ? studio.episodes.find((episode) => episode.id === guidance.episodeId)?.number
-    : null;
-  const topbarNextStep = guidance.kind === "continue" && guidedEpisodeNumber
-    ? `下一步：第${guidedEpisodeNumber}集`
-    : null;
-  const topbarStatusLabel = topbarNextStep
-    ?? (guidance.kind === "batch-paused" ? guidance.batchPauseReason === "quota" ? "额度不足：批量已暂停" : "批量已暂停" : null)
-    ?? (guidance.kind === "batch-running" ? "自动推进中" : null)
-    ?? (guidance.kind === "repair" && guidedEpisodeNumber ? `需处理：第${guidedEpisodeNumber}集` : null)
-    ?? (guidance.kind === "running" && guidedEpisodeNumber ? `进行中：第${guidedEpisodeNumber}集` : null)
-    ?? (guidance.kind === "contracts" ? `待确认：${contracts.length}项规范` : null)
-    ?? (guidance.kind === "foundation" ? "下一步：全剧基础工程" : null)
-    ?? (guidance.kind === "complete" ? "全剧初稿已完成" : null);
-  const topbarNeedsAttention = guidance.kind === "repair" || guidance.kind === "contracts" || guidance.kind === "batch-paused";
-  const batchMonitorActive = studio.batchMonitor?.status === "QUEUED" || studio.batchMonitor?.status === "RUNNING";
+  const topbarNeedsAttention = !foundationActive && (foundationRuns.some((run) => run.status === "失败") || contracts.length > 0);
   const topbarStatusText = foundationActive
     ? foundationStatusLabel
-    : batchMonitorActive
-      ? "自动推进中"
-      : guidance.kind === "batch-paused"
-        ? guidance.batchPauseReason === "quota" ? "额度不足，已暂停" : "批量已暂停"
-        : guidance.kind === "repair" ? "有待处理项"
-          : guidance.kind === "contracts" ? "待确认"
-            : "工作台已就绪";
+    : foundationRuns.some((run) => run.status === "失败")
+      ? "基础工程需处理"
+      : contracts.length > 0 ? "表现规范待确认"
+        : foundationReady ? "工作台已就绪" : "基础工程待制作";
 
   return (
     <AppChrome
@@ -187,10 +169,7 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
       projectId={projectId}
       activeSection="project"
       episodes={episodeStates.map(({ id, number, title, state }) => ({ id, number, title, state }))}
-      primaryAction={topbarStatusLabel ? (
-        <span className="topbarNextStep" aria-label={topbarStatusLabel}>{topbarStatusLabel}</span>
-      ) : null}
-      utility={<><div className="projectTopbarMeta" aria-label={`视觉风格 ${studio.project.style}，画幅 ${studio.project.aspectRatio}，${productionEpisodes.length} 集`}><span>{studio.project.style}</span><span>{studio.project.aspectRatio}</span><span>{productionEpisodes.length} 集</span></div><ModeSwitch projectId={studio.project.id} current={studio.project.executionMode} compact /><span className="topbarStatus"><i className={foundationActive || batchMonitorActive ? "live" : topbarNeedsAttention ? "attention" : ""} />{topbarStatusText}</span><form action={stopProjectFoundationAction} className="topbarStopForm"><input name="projectId" type="hidden" value={projectId} /><StopFoundationButton active={foundationActive} /></form></>}
+      utility={<><div className="projectTopbarMeta" aria-label={`视觉风格 ${studio.project.style}，画幅 ${studio.project.aspectRatio}，${productionEpisodes.length} 集`}><span>{studio.project.style}</span><span>{studio.project.aspectRatio}</span><span>{productionEpisodes.length} 集</span></div><ModeSwitch projectId={studio.project.id} current={studio.project.executionMode} compact /><span className="topbarStatus"><i className={foundationActive ? "live" : topbarNeedsAttention ? "attention" : ""} />{topbarStatusText}</span><form action={stopProjectFoundationAction} className="topbarStopForm"><input name="projectId" type="hidden" value={projectId} /><StopFoundationButton active={foundationActive} /></form></>}
     >
       <div className="projectDashboard pageSurface workbenchSurface workbenchRefinement">
         <WorkflowGuidance

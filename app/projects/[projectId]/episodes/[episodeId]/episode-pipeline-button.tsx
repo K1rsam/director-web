@@ -69,7 +69,6 @@ function SubmitButton({ active, hasContent, activeLabel, submitting }: { active:
     >
       {!busy ? <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M7 4.7c0-.6.7-1 1.2-.7l11.3 7.3a.8.8 0 0 1 0 1.4L8.2 20c-.5.3-1.2-.1-1.2-.7Z" /></svg> : null}
       <strong>{busy ? activeLabel ?? "正在执行 E0–E5…" : hasContent ? "重新执行本集 E0–E5" : "开始本集 E0–E5"}</strong>
-      {!busy && !hasContent ? <small>自动运行 E0–E5</small> : null}
     </button>
   );
 }
