@@ -113,6 +113,12 @@
     "vite.config.ts"
   ],
   "local_only_patterns": [
+    ".nvmrc",
+    "examples/3180/**",
+    "docs/LOCAL-SETUP-MAC.md",
+    "docs/HANDOFF-2026-09-05.md",
+    "scripts/backup-local-database.ts",
+    "scripts/repair-dialogue-data.ts",
     ".agents/**",
     "AGENTS.md",
     "CLAUDE.md",

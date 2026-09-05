@@ -1,73 +1,90 @@
-# Seedance 分镜导演工作台
+# 分镜导演工作台
 
-把剧本转换为结构化分镜表与 Seedance 单元提示词的导演生产线。当前流程为：
+把剧本转换为项目策划、资产索引、结构化分镜表和 Seedance 单元提示词。仓库包含完整本地版、岗位规则、数据库迁移与用户确认的 3180 设计案例。
 
-`P1 全剧策划 → P2 资产拆解 → E0 叙事节奏 → E1 结构 → E2 表演 → E3 单元视听 → E4 摄影光影 → E5 审查`
+**换电脑接着做：先读本页，再看 [Mac 安装与数据迁移](docs/LOCAL-SETUP-MAC.md) 和 [2026-09-05 交接说明](docs/HANDOFF-2026-09-05.md)。**
 
-## 当前发布形态
+## 代码与版本
 
-当前版本是本地优先应用：数据库使用 SQLite，Codex CLI 模式会调用用户电脑上的 Codex，API 模式调用 DeepSeek。仓库内已包含 P1–P2、E0–E5 岗位 Skill。
+| 入口 | 内容 |
+| --- | --- |
+| [`main`](https://github.com/K1rsam/director-web/tree/main) | 本地应用稳定基线；已同步本轮正式界面更新 |
+| [`sites-online`](https://github.com/K1rsam/director-web/tree/sites-online) | Sites 平台适配代码；使用云端存储与本地 Runner，不直接照本页启动 |
+| [`handoff/windows-local-20260905`](https://github.com/K1rsam/director-web/tree/handoff/windows-local-20260905) | 额外保存的本机开发快照：对白、时长与流水线改动；继续这部分开发时使用，未合入稳定基线 |
+| [3180 案例](examples/3180/README.md) | 已核对的“柔光鸢尾·浅”第五轮 HTML；完整离线交互 |
+| [设计规范](DESIGN.md) | 当前字体、玻璃材质、布局、按钮、过渡与阅读密度要求 |
 
-完整云端产品需要把网页控制面、云数据库与用户电脑上的本地执行器拆开，详见 [发布架构与选项](docs/release-options.md)。
+线上访问：[Director Studio](https://director-studio-edy.qq8197772.chatgpt.site)。2026-09-05 本轮 UI 发布为 v9。后续版本以部署平台实际记录为准；推送 GitHub 不等于自动发布 Sites。
 
-## 本地启动
+## 在 Mac 启动本地版
 
-要求：Node.js 22+、npm；使用 CLI 模式时还需安装并登录 Codex CLI。
+使用 Node.js 24.x（仓库有 `.nvmrc`）、npm、Git。CLI 模式另需本机可用的 Codex CLI；Python 3 用于仓库内 Python 工具和相关验证。
 
 ```bash
+git clone https://github.com/K1rsam/director-web.git
+cd director-web
 npm ci
 cp .env.example .env
-npx prisma generate
+```
+
+首次新建数据时，编辑 `.env`：
+
+- 保持 `DATABASE_URL="file:./dev.db"`，实际文件是 **`prisma/dev.db`**。
+- 设置 `DIRECTOR_CREDENTIAL_KEY` 为随机的 32 字符以上密钥。可运行 `node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))'` 生成，再复制到本机 `.env`。
+- 设置 `TEST_ACCOUNT_INITIAL_PASSWORD` 为你自己保存的初始密码。
+
+```bash
+npm run prisma:generate
+npm run database:migrate
+npm run accounts:seed
+npm run dev
+```
+
+打开 [本地工作台](http://localhost:3000)，用 `tester01` 和刚设置的密码登录。初始化共创建 `tester01`–`tester05` 五个私有测试账号；已有账号不会被重复创建。CLI 与 API 入口位于“所有项目”。
+
+若要继承原电脑的剧本、生成结果和账号，**不要按新库流程重新初始化**，请走 [已有数据迁移](docs/LOCAL-SETUP-MAC.md#迁移原电脑的项目数据)。克隆 GitHub 会得到程序，不会自动得到私人数据库、API Key 或 Codex 登录状态。
+
+## 单独看 3180 案例
+
+无需安装项目依赖，也无需数据库：
+
+```bash
+node examples/3180/serve.mjs
+```
+
+打开 [3180 案例](http://127.0.0.1:3180/index.html)。或直接下载并打开 [`examples/3180/index.html`](examples/3180/index.html)；本地服务方式支持更完整的复制体验。GitHub 文件页本身显示 HTML 源码。
+
+## 后续更新
+
+先保存自己的修改（提交到开发分支），再拉取；不要覆盖正在做的工作。
+
+```bash
+git pull --ff-only
+npm ci
+npm run prisma:generate
 npm run database:migrate
 npm run dev
 ```
 
-默认地址：`http://localhost:3000`。
+更新数据库前先停止网站和正在执行的任务。迁移命令会为已有 SQLite 自动建立一致性备份；遇到不完整旧结构会停止并报错。
 
-升级已有数据库前先停止正在运行的网站。迁移命令会自动建立带时间戳的 SQLite 备份，并识别早期由 `prisma db push` 写入的旧结构；若检测到结构只完成了一部分，会停止升级而不继续改库。
-
-## 私有测试账号
-
-当前版本不开放注册。首次运行时，在本机设置临时密码并初始化账号：
-
-```bash
-TEST_ACCOUNT_INITIAL_PASSWORD='<仅在本机填写>' npm run accounts:seed
-```
-
-系统会建立 `tester01`、`tester02`、`tester03`、`tester04`、`tester05` 五个账号；命令可重复运行，不会重复创建。无归属的历史项目会自动分配给 `tester01`，每个账号之后只能看到和操作自己的项目。
-
-登录会话默认保持 30 天。需要更换某个账号的密码时运行：
-
-```bash
-TEST_ACCOUNT_INITIAL_PASSWORD='<新密码>' npm run accounts:seed -- --rotate tester01
-```
-
-换密会同时退出该账号的现有会话。临时弱密码只适合私有测试，公开访问前必须更换；密码不要写入源码、README 或提交到 Git。
-
-## 执行方式
-
-- CLI：用户在本机登录 Codex；应用通过 `codex exec` 运行岗位，并按岗位保存可续接会话。
-- API：登录后打开“API 与 CLI”，输入自己的 DeepSeek Key，系统先调用 `/models` 验证，再按当前账号加密保存。项目选择 API 后，流水线读取项目管理员账号的凭证；Key 不写入浏览器 `localStorage`。保留 `.env` 中的 `DEEPSEEK_API_KEY` 作为本机兼容回退。
-- CLI：在“API 与 CLI”点击本机检测，系统读取 `codex --version` 和本机 app-server 的登录/额度摘要，不调用模型；如果尚未登录，请在本机终端运行 `codex` 并按提示完成登录。
-
-账号级 API 凭证使用 `DIRECTOR_CREDENTIAL_KEY` 加密后写入 SQLite。复制 `.env.example` 后，请在本机设置一个随机的 32+ 字符值；该值不能提交到 Git，也不能在更换后忘记备份，否则已保存的凭证无法解密。
-
-## 验证
+## 验证与开发入口
 
 ```bash
 npm run typecheck
-npm run verify:provider-credentials
-npm run verify:all
+npm run verify:ui
+npm run verify:database-migration
 npm run build
 ```
 
-真实服务验证会产生调用费用，不包含在 `verify:all`：
+更多离线检查见 `package.json` 的 `verify:*`。`verify:codex-cli:live` 与 `verify:deepseek-api` 会调用真实服务，不是日常 UI 检查步骤。页面开发先看 `AGENTS.md`，下一位开发者的具体接手提示见交接说明。
 
-```bash
-npm run verify:codex-cli:live
-npm run verify:deepseek-api
-```
+## 数据与凭证
 
-## 数据与密钥
+- 本地 SQLite 与 Sites 云端数据库独立，不自动双向同步。
+- `npm run database:backup` 将本地库保存到忽略提交的 `local-backups/`；私下携带备份及原来的 `DIRECTOR_CREDENTIAL_KEY`。
+- Mac 必须重新安装依赖和生成 Prisma Client，不复制 Windows 的 `node_modules`、`.next` 或启动脚本。
+- 仓库内已包含 `knowledge/director`、`.agents/skills` 等规则，无需从旧电脑额外拷贝全局 Skill。
+- `.env`、数据库、API Key、Codex 登录文件和实际剧本数据不应提交到 GitHub。
 
-`.env`、本地 SQLite、测试输出、剧本数据和会话交接文件均被 Git 忽略。不要提交 Codex 登录文件或任何 API Key。
+旧 `PROJECT_HANDOFF.md` 和 `docs/release-options.md` 保留为历史记录；当前入口、部署地址与接手顺序以本页及 2026-09-05 交接说明为准。

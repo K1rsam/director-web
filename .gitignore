@@ -11,6 +11,7 @@ coverage/
 prisma/dev.db*
 *.tsbuildinfo
 .DS_Store
+local-backups/
 
 # 本机调试、项目数据与会话交接，不进入源码仓库
 .planning/

@@ -4,11 +4,13 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "preview:3180": "node examples/3180/serve.mjs",
     "build": "next build",
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "database:migrate": "tsx --env-file=.env scripts/migrate-database.ts",
+    "database:backup": "tsx --env-file=.env scripts/backup-local-database.ts",
     "accounts:seed": "tsx --env-file=.env scripts/seed-test-accounts.ts",
     "verify:import": "tsx scripts/verify-import.ts",
     "verify:task-package": "tsx scripts/verify-task-package.ts",

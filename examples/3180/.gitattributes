@@ -1,0 +1,2 @@
+# Preserve the archived bytes and SHA-256 across Windows/macOS checkouts.
+*.html -text
