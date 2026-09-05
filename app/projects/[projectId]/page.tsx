@@ -17,6 +17,7 @@ import { requireSessionUser } from "@/lib/auth";
 import { resolvePresentationContractScope } from "@/lib/presentation-contracts";
 import { FoundationReferenceGrid } from "./foundation-reference-grid";
 import "@/app/page-surfaces.css";
+import "@/app/workbench-refinement.css";
 
 export const dynamic = "force-dynamic";
 
@@ -139,7 +140,7 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
       )}
       utility={<><div className="projectTopbarMeta" aria-label={`视觉风格 ${studio.project.style}，画幅 ${studio.project.aspectRatio}，${productionEpisodes.length} 集`}><span>{studio.project.style}</span><span>{studio.project.aspectRatio}</span><span>{productionEpisodes.length} 集</span></div><ModeSwitch projectId={studio.project.id} current={studio.project.executionMode} compact /><span className="topbarStatus"><i className={foundationActive ? "live" : ""} />{foundationActive ? foundationStatusLabel : "工作台已就绪"}</span></>}
     >
-      <div className="projectDashboard pageSurface workbenchSurface">
+      <div className="projectDashboard pageSurface workbenchSurface workbenchRefinement">
         <WorkflowGuidance
           eyebrow={guidance.eyebrow}
           title={guidance.title}
@@ -149,11 +150,6 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
           action={guidanceAction}
           meta={<><span>{productionEpisodes.filter((episode) => episode.shotCount > 0).length}/{productionEpisodes.length} 集已开始</span><span>{studio.assets.length} 项资产</span></>}
         />
-
-        <nav className="workbenchSectionNav" aria-label="全剧工作台内容">
-          <a href="#phase-one"><span>01</span>全剧基础工程</a>
-          <a href="#phase-two"><span>02</span>单集分镜生产</a>
-        </nav>
 
       <section className="studioSection workbenchFoundation" id="phase-one" aria-labelledby="foundation-section-title">
         <div className="sectionHeading">

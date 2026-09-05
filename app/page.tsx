@@ -31,7 +31,7 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
 
   return (
     <AppChrome
-      title="我的剧本项目"
+      title="所有项目"
       eyebrow="项目库"
       activeSection="projects"
       projectId={activeProject?.id}
@@ -42,7 +42,12 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
           <span>{archivedProjects.length} 个归档</span>
         </div>
       )}
-      primaryAction={<Link href={activeProject ? `/projects/new?projectId=${encodeURIComponent(activeProject.id)}` : "/projects/new"} className="topbarPrimary">新建项目 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14" /></svg></Link>}
+      primaryAction={(
+        <>
+          <Link href={activeProject ? `/runner?projectId=${encodeURIComponent(activeProject.id)}` : "/runner"} prefetch={false} className="secondaryAction">CLI 与 API</Link>
+          <Link href={activeProject ? `/projects/new?projectId=${encodeURIComponent(activeProject.id)}` : "/projects/new"} className="topbarPrimary">新建项目 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14" /></svg></Link>
+        </>
+      )}
     >
       <section className="projectLibrary pageSurface librarySurface" aria-label="项目列表">
         <div className="surfaceIntro libraryIntro">

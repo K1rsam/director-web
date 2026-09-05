@@ -26,7 +26,7 @@ function NavigationIcon({ name }: { name: NavigationSection | "menu" }) {
 
 function NavigationLinks({ items, activeSection }: { items: NavigationItem[]; activeSection?: NavigationSection | "episode" }) {
   return items.map((item) => (
-    <Link key={item.section} href={item.href} className={activeSection === item.section ? "active" : ""} aria-current={activeSection === item.section ? "page" : undefined}>
+    <Link key={item.section} href={item.href} prefetch={item.section === "runner" ? false : undefined} className={activeSection === item.section ? "active" : ""} aria-current={activeSection === item.section ? "page" : undefined}>
       <span className="navIcon" aria-hidden="true"><NavigationIcon name={item.section} /></span>
       <span className={`navText${item.section === "project" ? " navContext" : ""}`}>{item.label}</span>
     </Link>
@@ -65,9 +65,12 @@ export function AppChrome({
   const navigationItems: NavigationItem[] = [
     { section: "projects", href: projectLibraryHref, label: "所有项目" },
     ...(projectWorkbenchHref ? [{ section: "project" as const, href: projectWorkbenchHref, label: "全剧工作台" }] : []),
-    ...(projectId && episodeEntryId ? [{ section: "episode" as const, href: `/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeEntryId)}`, label: "分集制作" }] : []),
+    ...(projectId && episodeEntryId ? [{ section: "episode" as const, href: `/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeEntryId)}`, label: "分集制作" }] : [])
+  ];
+  const mobileNavigationItems: NavigationItem[] = [
+    ...navigationItems,
     { section: "new", href: newProjectHref, label: "新建项目" },
-    { section: "runner", href: runnerHref, label: "执行设置" }
+    { section: "runner", href: runnerHref, label: "CLI 与 API" }
   ];
   // 全剧工作台的正文已有 h1，顶部只保留页面标识，避免重复一级标题。
   const TitleTag = activeSection === "project" ? "p" : "h1";
@@ -76,7 +79,7 @@ export function AppChrome({
   return (
     <div className={`appChrome ${activeSection === "episode" ? "episodeShell" : ""}`} data-section={activeSection}>
       <a className="skipLink" href="#main-content">跳到主要内容</a>
-      <aside className="appSidebar" aria-label="工作台导航">
+      <aside className="appSidebar" aria-label={projectLabel ? `${projectLabel} · 工作台导航` : "工作台导航"}>
         <Link href="/" className="chromeBrand" aria-label="分镜工作台首页">
           <span aria-hidden="true">L</span>
           <div><strong>分镜工作台</strong><small>Director Studio</small></div>
@@ -91,7 +94,6 @@ export function AppChrome({
         ) : null}
 
         <div className="sidebarFooter">
-          <div className="sidebarWorkflow"><span>{projectLabel ?? "导演工作空间"}</span><strong>P1 · P2 · E0–E5</strong></div>
           <AccountMenu />
         </div>
       </aside>
@@ -101,7 +103,7 @@ export function AppChrome({
           <details className="mobileNav">
             <summary aria-label="切换导航"><NavigationIcon name="menu" /></summary>
             <nav aria-label="主要导航">
-              <NavigationLinks items={navigationItems} activeSection={activeSection} />
+              <NavigationLinks items={mobileNavigationItems} activeSection={activeSection} />
               {projectId && productionEpisodes.length ? <details className="mobileEpisodeList"><summary>切换分集 · {productionEpisodes.length} 集</summary><div>{productionEpisodes.map(episode => <Link key={episode.id} href={`/projects/${projectId}/episodes/${episode.id}`} aria-current={episode.id === activeEpisodeId ? "page" : undefined}>{String(episode.number).padStart(2,"0")} · {episode.title}</Link>)}</div></details> : null}
               <div className="mobileAccountMenu"><AccountMenu /></div>
             </nav>
