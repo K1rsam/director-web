@@ -184,6 +184,117 @@ assert.deepEqual(
   "原文证据存在时应自动修正错位的源节点引用"
 );
 
+// 引号回归：多句证据以“第一句。”“第二句！”书写时，切分不得产生
+// 空分句或把引号残片误绑定到前后无关的源节点。
+const quotedEvidenceContext = {
+  ...evidenceContext,
+  episodes: [{ number: 2 }],
+  episodeScenes: new Map([
+    [2, {
+      number: 2,
+      title: "第二集",
+      scenes: [{
+        scene_id: "2-1",
+        heading: "收容所走廊 夜 内",
+        location: "收容所走廊",
+        interior_exterior: "内",
+        time_of_day: "夜",
+        weather: null,
+        time_layer: "现实",
+        source_nodes: [
+          { source_node_id: "N0001", speaker: null, text: "陆沉在前面奔跑，气喘吁吁。" },
+          { source_node_id: "N0017", speaker: null, text: "【闪回】" },
+          { source_node_id: "N0027", speaker: null, text: "气刃打在陆沉身上，剧烈的冲击力将他推向身后的墙壁。" },
+          { source_node_id: "N0028", speaker: null, text: "轰隆！墙壁坍塌，陆沉倒在地上，嘴角溢出鲜血。" },
+          { source_node_id: "N0034", speaker: null, text: "陆沉身前，亮起蓝色的系统面板。" },
+          { source_node_id: "N0035", speaker: "系统", text: "神兽图鉴已激活，请宿主抽卡！" }
+        ]
+      }]
+    }]
+  ]),
+  episodeNodeIds: new Map([[2, new Set(["N0001", "N0017", "N0027", "N0028", "N0034", "N0035"])]]),
+  existingAssets: [],
+  contracts: [],
+  scriptContainsQVersion: false
+} as unknown as FoundationContext;
+const quotedEvidenceOutput = {
+  ...multiNodeEvidence,
+  episodes: [{ ...fakeP1.episodes[1], number: 2, source_node_refs: ["N0001"] }],
+  presentation_decisions_needed: [{
+    category: "system",
+    question: "系统如何呈现？",
+    options: ["A", "B"],
+    evidence: "“陆沉身前，亮起蓝色的系统面板。”“神兽图鉴已激活，请宿主抽卡！”",
+    episode_number: 2,
+    episode_numbers: [2],
+    source_node_refs: ["N0034", "N0035", "N0001"]
+  }]
+};
+const anchoredQuotedEvidence = reanchorP1PresentationDecisions(quotedEvidenceOutput, quotedEvidenceContext);
+assert.deepEqual(
+  anchoredQuotedEvidence.presentation_decisions_needed?.[0]?.source_node_refs,
+  ["N0034", "N0035"],
+  "带引号的多句证据应只绑定真实承载证据的节点"
+);
+assert.equal(
+  validateFoundationP1(anchoredQuotedEvidence, quotedEvidenceContext).length,
+  0,
+  "带引号的多句系统证据应通过 P1 原文锚定门禁"
+);
+const quotedBloodEvidence = {
+  ...quotedEvidenceOutput,
+  presentation_decisions_needed: [{
+    category: "blood",
+    question: "受伤效果如何呈现？",
+    options: ["A", "B"],
+    evidence: "“气刃打在陆沉身上，剧烈的冲击力将他推向身后的墙壁。”“陆沉倒在地上，嘴角溢出鲜血。”",
+    episode_number: 2,
+    episode_numbers: [2],
+    source_node_refs: ["N0027", "N0028", "N0001"]
+  }]
+};
+const anchoredQuotedBloodEvidence = reanchorP1PresentationDecisions(quotedBloodEvidence, quotedEvidenceContext);
+assert.deepEqual(
+  anchoredQuotedBloodEvidence.presentation_decisions_needed?.[0]?.source_node_refs,
+  ["N0027", "N0028"],
+  "带引号的多句受伤证据应只绑定真实承载证据的节点"
+);
+assert.equal(
+  validateFoundationP1(anchoredQuotedBloodEvidence, quotedEvidenceContext).length,
+  0,
+  "带引号的多句受伤证据应通过 P1 原文锚定门禁"
+);
+const markerEvidence = {
+  ...quotedEvidenceOutput,
+  presentation_decisions_needed: [{
+    category: "flashback",
+    question: "闪回如何呈现？",
+    options: ["A", "B"],
+    evidence: "【闪回】",
+    episode_number: 2,
+    episode_numbers: [2],
+    source_node_refs: ["N0017"]
+  }]
+};
+const anchoredMarkerEvidence = reanchorP1PresentationDecisions(markerEvidence, quotedEvidenceContext);
+assert.deepEqual(
+  anchoredMarkerEvidence.presentation_decisions_needed?.[0]?.source_node_refs,
+  ["N0017"],
+  "完整场记标记应绑定真实源节点"
+);
+assert.equal(
+  validateFoundationP1(anchoredMarkerEvidence, quotedEvidenceContext).length,
+  0,
+  "可逐字定位的完整场记标记应通过 P1 原文锚定门禁"
+);
+assert.ok(
+  validateFoundationP1({
+    ...markerEvidence,
+    presentation_decisions_needed: [{ ...markerEvidence.presentation_decisions_needed![0], evidence: "闪回" }]
+  }, quotedEvidenceContext).some((issue) => issue.code === "PRESENTATION_DECISION_UNGROUNDED"),
+  "脱离场记括号的普通短词仍应被 P1 原文锚定门禁拦截"
+);
+
 // 系统语义回归：已确认的系统面板只能是 PROP；原文明确行动的系统伪人
 // 是 BEAST，不能被模型误写成 CH，也不能因为“系统”关键词被粗暴删除。
 const systemSemanticsContext = {

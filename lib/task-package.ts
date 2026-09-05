@@ -150,7 +150,7 @@ export async function buildTaskSchemaV4Payload(input: BuildTaskPackageInput): Pr
     "本集上下文快照": parseSnapshotBlock(input.episodeContext, "EPISODE_CONTEXT_SNAPSHOT_V1"),
     "时长和台词容量": {
       "常规单元": "13-15秒优先",
-      "短单元": "8-9秒仅用于语义边界、动作结果、声音/视角打断或避免漂移/超载",
+      "短单元": "低于10秒默认退回；只有规范例外且未超过每集稀有上限才可使用，格式为SHORT_EXCEPTION/<CODE>|<具体不可合并事实>",
       "普通对白": "4-5字/秒估算，目标不超过4.5字/秒，最终不得超过5.0字/秒",
       "情绪台词": "3-4字/秒估算，并预留听者反应、道具变化或空间压力",
       "长句": "22字以上先按语义节点拆，再写正文",

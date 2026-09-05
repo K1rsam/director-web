@@ -124,7 +124,8 @@ void (async () => {
         unit_dominant_goal: null,
         unit_start_premise: "待补充",
         unit_end_state: "待补充",
-        short_unit_reason: part.duration < 12 ? "本场分镜时长组合余数不足12秒" : null,
+        // 低于10秒不再自动生成泛化理由；后续 E3/E5 必须重排或提供规范例外。
+        short_unit_reason: null,
         subject_bindings: [],
         crowd: false
       };

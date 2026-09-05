@@ -3,7 +3,7 @@ import { WorkbenchEmpty } from "@/app/ui/workbench-empty";
 import { notFound } from "next/navigation";
 import { prepareEpisodeAction, repairOpenIssuesAction, runSingleStageAction, resetEpisodeShotsAction, stopPipelineAction, acknowledgeIssueAction, acknowledgeRepairRegressionAction, acknowledgeAllSuggestionsAction } from "@/app/actions";
 import { getEpisodeStudio } from "@/lib/studio";
-import { formatDialogueEntry } from "@/lib/shot-cells";
+import { formatDialogueEntries } from "@/lib/shot-cells";
 import { AppChrome } from "@/app/ui/app-chrome";
 import { MotionSelection } from "@/app/ui/motion-selection";
 import { EpisodePipelineButton } from "./episode-pipeline-button";
@@ -178,7 +178,7 @@ export default async function EpisodeStudioPage({
                       <td className="cellClamp" title={shot.cameraMotion}><div className="cellText">{shot.cameraMotion || "—"}</div></td>
                       <td className="cellClamp" title={shot.lighting ?? ""}><div className="cellText">{shot.lighting ?? "—"}</div></td>
                       <td className="cellClamp" title={shot.sound}><div className="cellText">{shot.sound || "—"}</div></td>
-                      <td className="cellClamp" title={shot.dialogue.length ? shot.dialogue.map(formatDialogueEntry).join("；") : "—"}><div className="cellText">{shot.dialogue.length ? shot.dialogue.map(formatDialogueEntry).join("；") : "—"}</div></td>
+                      <td className="cellClamp" title={shot.dialogue.length ? formatDialogueEntries(shot.dialogue) : "—"}><div className="cellText dialogueCellText">{shot.dialogue.length ? formatDialogueEntries(shot.dialogue) : "—"}</div></td>
                       <td className="cellClamp" title={shot.transition}><div className="cellText">{shot.transition || "—"}</div></td>
                       <td><span className="revisionTag" title={shot.revision}>{shot.revision.split("_")[0]}</span></td>
                     </tr>

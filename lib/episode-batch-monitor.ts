@@ -11,11 +11,12 @@ export const BATCH_MONITOR_STAGE = "BATCH_MONITOR";
 export const MAX_EPISODE_BATCH_CONCURRENCY = 3;
 
 /**
- * CLI 与 API 的默认并发不同：CLI 每次调用都会启动一个本地 Codex 进程并读取一整套上下文，
- * 同时开多个集会制造额度窗口/进程竞争；API 才适合保持小窗口并发。
+ * CLI 与 API 都按最多三集并发调度；每一集内部的 E0→E5 仍然严格串行。
+ * 单集 worker 会自己处理 SQLite busy 退避，监控器只负责维持三集窗口。
  */
 export function defaultEpisodeBatchConcurrency(executionMode: string | null | undefined) {
-  return String(executionMode ?? "").toUpperCase() === "API" ? MAX_EPISODE_BATCH_CONCURRENCY : 1;
+  void executionMode;
+  return MAX_EPISODE_BATCH_CONCURRENCY;
 }
 
 const ACTIVE_STATUSES = ["QUEUED", "RUNNING"] as const;
@@ -255,7 +256,7 @@ export async function setEpisodeBatchMonitorStatus(
         }
       : {}),
     ...(outputSummary !== undefined ? { outputSummary } : {}),
-    ...(details.error !== undefined ? { error: details.error } : {})
+    ...(details.error !== undefined ? { error: details.error } : status === "RUNNING" ? { error: null } : {})
   };
   await prisma.pipelineRun.update({ where: { id: run.id }, data });
 }

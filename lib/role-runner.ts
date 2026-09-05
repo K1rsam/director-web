@@ -42,13 +42,26 @@ const MAX_SESSION_INPUT_CHARS = 260_000;
 const CLI_SESSION_STALE_MS = 30 * 60_000;
 const DEFAULT_REASONER_STAGES: string[] = [];
 
+/**
+ * 生产流水线允许的 CLI 模型。gpt-5.6-luna 等快速/轻量模型只用于显式冒烟测试，
+ * 不能通过 CLI_MODEL 或 CLI_MODEL_<岗位> 覆盖生产 E0–E5/P1–P2。
+ */
+export const PRODUCTION_CLI_MODELS = ["gpt-5.6-terra", "gpt-5.6-sol"] as const;
+const PRODUCTION_CLI_MODEL_SET = new Set<string>(PRODUCTION_CLI_MODELS);
+
+export function isProductionCliModel(model: string) {
+  return PRODUCTION_CLI_MODEL_SET.has(model.trim());
+}
+
 /** 按项目 executionMode 解析执行方式；任何非 "API" 值都回退到 CLI。 */
 export function resolveProvider(executionMode: string | null | undefined): PipelineProvider {
   return String(executionMode ?? "").toUpperCase() === "API" ? "API" : "CLI";
 }
 
 export function resolveCliModel(roleCode: string, fallback: string): string {
-  return process.env[`CLI_MODEL_${roleCode}`] ?? process.env.CLI_MODEL ?? fallback;
+  const safeFallback = isProductionCliModel(fallback) ? fallback.trim() : "gpt-5.6-terra";
+  const configured = (process.env[`CLI_MODEL_${roleCode}`] ?? process.env.CLI_MODEL)?.trim();
+  return configured && isProductionCliModel(configured) ? configured : safeFallback;
 }
 
 const CLI_REASONING_OPTIONS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);

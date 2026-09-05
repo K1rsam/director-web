@@ -8,6 +8,8 @@
  *   e4 = 摄影光影（camera_motion/lighting 定稿）
  */
 
+import { splitInlineSourceLine, type SourceNode } from "@/lib/episode-pipeline-contracts";
+
 type CellRecord = Record<string, unknown>;
 
 function firstText(record: CellRecord | undefined, keys: string[]): string | null {
@@ -49,7 +51,7 @@ export function composeTransition(e1: CellRecord, e3: CellRecord): string {
 /** 说话人显示清洗：去尾部（情绪/备注）、去"内心"口头标记（OS 承载者）。 */
 export function cleanSpeakerLabel(speaker: string): string {
   return String(speaker ?? "")
-    .replace(/（[^）]*）$/, "")
+    .replace(/[（(][^）)]*[）)]$/, "")
     .replace(/内心$/, "")
     .trim();
 }
@@ -71,6 +73,126 @@ export function formatDialogueEntry(entry: CellRecord): string {
   if (type === "VO") return `${speaker}（画外）：${text}`;
   if (type === "旁白") return `旁白：${text}`;
   return `${speaker}：${text}`;
+}
+
+/** 表格展示台词时逐条换行，避免多个人物挤成一条难以辨认的长句。 */
+export function formatDialogueEntries(entries: ReadonlyArray<CellRecord>): string {
+  return entries.map(formatDialogueEntry).filter(Boolean).join("\n");
+}
+
+const DIALOGUE_SOURCE_TYPES = new Set(["DIALOGUE", "OS", "VO", "NARRATION", "SYSTEM"]);
+
+function knownSpeakersOf(sourceNodes: readonly SourceNode[]): string[] {
+  return [...new Set(sourceNodes.map((node) => String(node.speaker ?? "").trim()).filter(Boolean))]
+    .sort((a, b) => b.length - a.length);
+}
+
+function sourceTypeToDialogueType(type: SourceNode["type"]): string {
+  return type === "DIALOGUE" ? "对白" : type;
+}
+
+function sourceNodeForText(text: string, sourceNodes: readonly SourceNode[]): SourceNode | null {
+  const clean = text.trim();
+  if (!clean) return null;
+  let best: { node: SourceNode; score: number } | null = null;
+  for (const [index, node] of sourceNodes.entries()) {
+    const nodeText = node.text.trim();
+    if (!nodeText) continue;
+    const score = nodeText === clean
+      ? 1000 - index
+      : nodeText.includes(clean)
+        ? 700 - index
+        : clean.includes(nodeText)
+          ? 500 - index
+          : -1;
+    if (score >= 0 && (!best || score > best.score)) best = { node, score };
+  }
+  return best?.node ?? null;
+}
+
+function looksLikeUnlabelledAction(text: string): boolean {
+  return !/[！？!?“”"「」]/.test(text) && /(?:低头|抬头|沉思|站在|坐在|看向|看着|走向|转身|点头|摇头|皱眉|笑着|哭着|喊道|开口|闭嘴|拿出|掏出|指向|盯着|望向|倚在|轻声|冷声)/.test(text);
+}
+
+/** 说话人只在源节点前文出现、动作本身没有“：”时，按 ACTION 源节点后缀切开。 */
+function splitByActionSourceNodes(text: string, sourceNodes: readonly SourceNode[]): string[] {
+  let current = text.trim();
+  const result: string[] = [];
+  const actions = sourceNodes
+    .filter((node) => node.type === "ACTION" && node.text.trim())
+    .sort((a, b) => b.text.trim().length - a.text.trim().length);
+  while (current) {
+    const action = actions.find((node) => {
+      const actionText = node.text.trim();
+      const index = current.lastIndexOf(actionText);
+      return index > 0 && index + actionText.length === current.length && /[。！？；!?]/.test(current[index - 1]);
+    });
+    if (!action) {
+      result.push(current);
+      break;
+    }
+    const actionText = action.text.trim();
+    const index = current.lastIndexOf(actionText);
+    const prefix = current.slice(0, index).trim();
+    if (prefix) result.push(prefix);
+    result.push(actionText);
+    current = "";
+  }
+  return result.length ? result : [text];
+}
+
+function parseInlineDialoguePiece(piece: string, knownSpeakers: readonly string[]) {
+  const match = piece.match(/^([^：:]{1,60})[:：]\s*([\s\S]*)$/);
+  if (!match) return null;
+  const rawLabel = match[1].trim();
+  const voice = rawLabel.match(/^(.*?)\s*(?:[（(]\s*(OS|VO)\s*[）)]|(OS|VO))\s*$/i);
+  const label = (voice?.[1] ?? rawLabel).trim();
+  const speaker = knownSpeakers.find((name) => label.startsWith(name));
+  // 普通内容里的“任务：/地点：”等冒号不是人物台词标签，必须保留原文，
+  // 否则兼容层会把任务说明误删成只有冒号后半句。
+  if (!speaker) return null;
+  return {
+    speaker,
+    type: (voice?.[2] ?? voice?.[3])?.toUpperCase() ?? "对白",
+    text: match[2].trim()
+  };
+}
+
+/**
+ * 旧版本已经把多个人物台词写进同一条 dialogue 时，页面/编译层做一次零 Token 纠正。
+ * 优先用当前场次重新解析出的源节点认领说话人，因此不会继续沿用错误的首个 speaker。
+ */
+export function normalizeDialogueEntriesForSource(
+  entries: ReadonlyArray<CellRecord>,
+  sourceNodes: readonly SourceNode[]
+): Array<Record<string, unknown>> {
+  if (!sourceNodes.length) return entries.map((entry) => ({ ...entry }));
+  const knownSpeakers = knownSpeakersOf(sourceNodes);
+  return entries.flatMap((entry) => {
+    const rawText = String(entry.text ?? "").trim();
+    if (!rawText) return [{ ...entry }];
+    const pieces = splitInlineSourceLine(rawText, knownSpeakers)
+      .flatMap((piece) => splitByActionSourceNodes(piece, sourceNodes));
+    return pieces.flatMap((piece) => {
+      const parsed = parseInlineDialoguePiece(piece, knownSpeakers);
+      const text = parsed?.text ?? piece.trim();
+      const matched = sourceNodeForText(text, sourceNodes);
+      // 行内拆分产生的前缀可能只是动作（如“姜恋低头沉思。”），不应塞进台词格。
+      if (matched?.type === "ACTION") return [];
+      if (!matched && !parsed && looksLikeUnlabelledAction(text)) return [];
+      if (matched && DIALOGUE_SOURCE_TYPES.has(matched.type)) {
+        return [{
+          ...entry,
+          source_node_id: matched.source_node_id,
+          speaker: matched.speaker ?? parsed?.speaker ?? entry.speaker ?? "",
+          type: sourceTypeToDialogueType(matched.type),
+          text
+        }];
+      }
+      if (parsed) return [{ ...entry, speaker: parsed.speaker, type: parsed.type, text }];
+      return [{ ...entry, text }];
+    });
+  });
 }
 
 export interface ShotCellInput {

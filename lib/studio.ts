@@ -1,8 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import type { PrismaClient } from "@prisma/client";
 import { assetSceneRefsOf } from "@/lib/assets";
-import { composeShotCells } from "@/lib/shot-cells";
-import { PIPELINE_STAGE_CONFIGS } from "@/lib/episode-pipeline-contracts";
+import { composeShotCells, normalizeDialogueEntriesForSource } from "@/lib/shot-cells";
+import { buildSourcePackage, PIPELINE_STAGE_CONFIGS } from "@/lib/episode-pipeline-contracts";
 import { cleanEpisodeTitle } from "@/lib/import-script";
 import { summarizeFoundationRuns } from "@/lib/project-foundation-status";
 import { executionErrorSource, formatExecutionErrorForUser } from "@/lib/execution-errors";
@@ -438,6 +438,16 @@ export async function getEpisodeStudio(projectId: string, episodeId: string, use
   // 第0集/前置资料只服务全剧分析，不允许进入 E0–E5 单集生产页。
   if (episode.number < 1) return null;
 
+  const knownCharacterNames = episode.project.assets
+    .filter((asset) => ["CH", "GROUP", "BEAST"].includes(asset.type))
+    .flatMap((asset) => {
+      const metadata = parseJsonRecord(asset.metadata);
+      const aliases = Array.isArray(metadata.aliases) ? metadata.aliases.map(String) : [];
+      return [asset.name, ...aliases];
+    });
+  const sourcePackage = buildSourcePackage(episode.scriptScenes, { knownCharacterNames });
+  const sourceNodesByScene = new Map(sourcePackage.scenes.map((scene) => [scene.scene_id, scene.source_nodes]));
+
   return {
     project: {
       id: episode.project.id,
@@ -491,7 +501,10 @@ export async function getEpisodeStudio(projectId: string, episodeId: string, use
           shotKey: shot.shotKey,
           duration: shot.duration,
           sourceNodeRefs: shot.sourceNodeRefs,
-          dialogue: parseJsonRecordList(shot.dialogue),
+          dialogue: normalizeDialogueEntriesForSource(
+            parseJsonRecordList(shot.dialogue),
+            sourceNodesByScene.get(scene.sceneKey) ?? []
+          ),
           e1,
           e2,
           e3,

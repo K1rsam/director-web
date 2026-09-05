@@ -23,6 +23,7 @@ import {
   PIPELINE_STAGE_CONFIGS,
   readStageModel,
   roundTenth,
+  splitInlineSourceLine,
   type PipelineStageCode,
   type SourceNode,
   type WorkingShot
@@ -30,7 +31,7 @@ import {
 import { prisma } from "@/lib/prisma";
 import { DEFAULT_NEGATIVE_PROMPT, resolveStylePrompt } from "@/lib/style-prompts";
 import { assetAliasesOf, assetSceneRefsOf } from "@/lib/assets";
-import { composeShotCells, composeSound, composeTransition, formatDialogueEntry } from "@/lib/shot-cells";
+import { composeShotCells, composeSound, composeTransition, formatDialogueEntry, normalizeDialogueEntriesForSource } from "@/lib/shot-cells";
 import { contractAppliesToEpisode } from "@/lib/presentation-contracts";
 import {
   buildTickRanges,
@@ -40,6 +41,12 @@ import {
   mentionIsExplicitlyOffscreen,
   renderVisibleTextNegative,
   resolveE1VisibleTextDeclarations,
+  maxShortUnitExceptions,
+  parseShortUnitException,
+  SEEDANCE_UNIT_ABSOLUTE_MIN_SECONDS,
+  SEEDANCE_UNIT_MAX_SECONDS,
+  SEEDANCE_UNIT_SHORT_MIN_SECONDS,
+  SHORT_UNIT_POLICY,
   validateVisibleTextDeclaration,
   unitStartPreactionReason,
   type VisibleTextDeclaration
@@ -54,20 +61,22 @@ const STRUCTURAL_E1_ISSUE_CODES = new Set([
   // ACTION_PHASE_OVERLOAD 是可在现有镜头 picture 单元格内收敛的建议，
   // 不得因为「连建议一起修」把整集升级成全量重拆。
   "SOURCE_NODE_UNCOVERED", "MULTI_SPEAKER_SHOT",
+  "DIALOGUE_EMBEDDED_SPEAKER",
   "CONTINUITY_GROUP_OVER_LIMIT", "SEQUENCE_BOUNDARY", "BEAT_BOUNDARY",
   // 镜内/镜间顺序问题都可以按命中镜做 E1 patch；把它们升级为全量重拆
   // 会清空下游 E2/E3/E4，随后制造大量与原问题无关的级联误报。
   "NODE_MIXED_IN_SHOT",
-  "DIALOGUE_TIMING_CAPACITY", "SPEECH_RATE_OVER_LIMIT", "DURATION_OVER_LIMIT"
+  "DIALOGUE_TIMING_CAPACITY", "SPEECH_RATE_OVER_LIMIT", "DURATION_OVER_LIMIT",
+  "SHORT_UNIT_BELOW_ABSOLUTE_MIN", "SHORT_UNIT_EXCEPTION_REQUIRED", "SHORT_UNIT_EXCEPTION_INVALID", "SHORT_UNIT_EXCEPTION_LIMIT"
 ]);
 
 /** 只能整链恢复的回归类型；普通字段/单镜结构问题改为局部回退，保留同批次其它成果。 */
 const FULL_REPAIR_ROLLBACK_CODES = new Set([
-  "SOURCE_NODE_UNCOVERED", "SOURCE_ORDER_MONOTONIC", "DIALOGUE_SLICE_INCOMPLETE"
+  "SOURCE_NODE_UNCOVERED", "SOURCE_ORDER_MONOTONIC", "DIALOGUE_SLICE_INCOMPLETE", "DIALOGUE_EMBEDDED_SPEAKER"
 ]);
 
 const SHOT_REPAIR_ROLLBACK_CODES = new Set([
-  "MULTI_SPEAKER_SHOT", "CONTINUITY_GROUP_OVER_LIMIT", "SEQUENCE_BOUNDARY", "BEAT_BOUNDARY",
+  "MULTI_SPEAKER_SHOT", "DIALOGUE_EMBEDDED_SPEAKER", "CONTINUITY_GROUP_OVER_LIMIT", "SEQUENCE_BOUNDARY", "BEAT_BOUNDARY",
   "INTRA_SHOT_SOURCE_ORDER", "NODE_MIXED_IN_SHOT", "DIALOGUE_TIMING_CAPACITY", "SPEECH_RATE_OVER_LIMIT",
   "SHOT_UNIT_LINK_INVALID"
 ]);
@@ -80,10 +89,11 @@ type RepairPlanIssue = { ownerRole: string; severity: string; code: string };
 const MANUAL_REVIEW_ISSUE_CODES = new Set(["ASSET_PREPARATION", "E2_CANNOT_RESOLVE_E1_CONTINUITY"]);
 
 const E1_REPAIR_CODES = new Set([
-  "SOURCE_NODE_UNCOVERED", "MULTI_SPEAKER_SHOT", "CONTINUITY_GROUP_OVER_LIMIT",
+  "SOURCE_NODE_UNCOVERED", "MULTI_SPEAKER_SHOT", "DIALOGUE_EMBEDDED_SPEAKER", "CONTINUITY_GROUP_OVER_LIMIT",
   "SEQUENCE_BOUNDARY", "BEAT_BOUNDARY", "INTRA_SHOT_SOURCE_ORDER", "NODE_MIXED_IN_SHOT",
   "SOURCE_ORDER_MONOTONIC", "DIALOGUE_TIMING_CAPACITY", "SPEECH_RATE_OVER_LIMIT",
-  "DURATION_OVER_LIMIT", "VISIBLE_TEXT_OMITTED", "ACTION_PHASE_OVERLOAD", "SOURCE_NODE_DUPLICATED"
+  "DURATION_OVER_LIMIT", "VISIBLE_TEXT_OMITTED", "ACTION_PHASE_OVERLOAD", "SOURCE_NODE_DUPLICATED",
+  "SHORT_UNIT_BELOW_ABSOLUTE_MIN", "SHORT_UNIT_EXCEPTION_REQUIRED", "SHORT_UNIT_EXCEPTION_INVALID", "SHORT_UNIT_EXCEPTION_LIMIT"
 ]);
 
 /**
@@ -1194,6 +1204,10 @@ export async function executeEpisodePipeline(
               "UNIT_DURATION_MISMATCH",
               "UNIT_FIELDS_INCOMPLETE",
               "SHORT_UNIT_REASON_INVALID",
+              "SHORT_UNIT_BELOW_ABSOLUTE_MIN",
+              "SHORT_UNIT_EXCEPTION_REQUIRED",
+              "SHORT_UNIT_EXCEPTION_INVALID",
+              "SHORT_UNIT_EXCEPTION_LIMIT",
               "UNIT_OVERLAP",
               "SHOT_OVERLAP",
               "UNIT_GAP",
@@ -2232,12 +2246,16 @@ async function refreshDraftPromptsAfterSelectiveRestore(projectId: string, episo
   await refreshEpisodePrompts(projectId, episodeId);
 }
 
-/** 对已做零 Token 机械修正的剧集刷新草稿提示词；不调用模型、不创建岗位运行记录。 */
-export async function refreshEpisodePrompts(projectId: string, episodeId: string) {
+/** 对已做零 Token 机械修正的剧集刷新提示词；不调用模型、不创建岗位运行记录。 */
+export async function refreshEpisodePrompts(
+  projectId: string,
+  episodeId: string,
+  options: { release?: boolean } = {}
+) {
   const context = await loadPipelineContext(projectId, episodeId);
   const shots = await hydrateWorkingShots(context);
   const units = await hydrateUnitOutput(context);
-  await compileAndPersistPrompts(context, shots, units.units, { release: false });
+  await compileAndPersistPrompts(context, shots, units.units, { release: options.release === true });
 }
 
 export async function failActiveBatch(projectId: string, episodeId: string, batchToken: string, reason: string) {
@@ -2598,6 +2616,7 @@ function buildStageInput(
       ...(context.sequences.length ? { sequences: context.sequences } : {}),
       project: { style: context.project.style, aspect_ratio: context.project.aspectRatio },
       asset_index: context.project.assets.map((asset) => ({ id: asset.code, type: asset.type, name: asset.name, status: asset.status })),
+      unit_duration_policy: SHORT_UNIT_POLICY,
       ...(presentationContracts.length ? { presentation_contracts: presentationContracts } : {}),
       episode_context: compactFirstPhaseContext(context.taskPayload, context.episode.number),
       ...(revisionIssues.length ? { revision_issues: revisionIssues } : {})
@@ -2692,6 +2711,7 @@ function buildStageInput(
     return {
       ...base,
       project: { style: context.project.style, aspect_ratio: context.project.aspectRatio },
+      unit_duration_policy: SHORT_UNIT_POLICY,
       scene_cards: sceneCards(context),
       unit_windows: partition.map((part) => ({
         unit_id: part.unitKey,
@@ -2723,6 +2743,7 @@ function buildStageInput(
     const existing = new Map((e5.units ?? []).map((unit) => [String(unit.unit_id ?? ""), unit]));
     return {
       ...base,
+      unit_duration_policy: SHORT_UNIT_POLICY,
       scene_cards: sceneCards(context),
       assets: assetRows(context, ["CH", "LOOK", "GROUP", "BEAST", "PROP", "LOC"]),
       asset_scope_rule: "scene_refs 非空的资产只能绑定到列出的场次；scene_refs 为空才是全场可用。",
@@ -2829,6 +2850,7 @@ function buildStageInput(
     units: e5.units,
     python_hard_checks: hardIssues.map((item) => ({ coordinate: item.coordinate, code: item.code, evidence: item.evidence.slice(0, 120) })),
     approved_exceptions: approvedExceptions,
+    unit_duration_policy: SHORT_UNIT_POLICY,
     rules: loadStageRules("E5", { crowd: shots.some(isCrowdShot) }),
     ...(presentationContracts.length ? { presentation_contracts: presentationContracts } : {}),
     ...(revisionIssues.length ? { open_issues: revisionIssues } : {})
@@ -2874,6 +2896,9 @@ function buildStagePrompt(stageCode: PipelineStageCode, input: unknown) {
     "只处理INPUT_JSON，不修改任何本地文件，不输出分析过程、Markdown或自评分。",
     "严格遵守该Skill的字段所有权和Output Contract，只返回一个合法JSON对象。",
     "遇到真实问题按契约开票或输出issue；不得为了过审谎报完成。",
+    ...(["E1", "E3", "E4", "E5"] as PipelineStageCode[]).includes(stageCode)
+      ? ["本项目单元时长规则优先于通用Skill的默认描述：常规13–15秒；低于10秒默认按BLOCKER退回；只有INPUT_JSON.unit_duration_policy列出的规范例外、且未超过本集稀有上限时才可放行。不得用“余数不足12秒”这类泛化理由代替例外事实。"]
+      : [],
     ...(stageCode === "E3"
       ? ["这是全量首轮 E3：必须为 INPUT_JSON.unit_windows 中的每个 unit_id 返回一个对应的 units 项；即使发现 E1/E2 问题，也要保留 issues 并完成每个单元的字段，禁止返回 units=[]。"]
       : []),
@@ -2923,6 +2948,7 @@ function buildE3RevisionPrompt(input: unknown) {
   return [
     "使用 $e3-unit-audiovisual-director 完成当前E3岗位任务（返修轮）。",
     "镜号归属与单元时长已由 Python 确定性确定（见 INPUT_JSON.unit_windows），**禁止输出或修改 shot_ids/unit_duration**。",
+    "低于10秒不是靠补写一句泛化理由来过审：这类问题默认由 E1 重新拆镜/重排；只有 INPUT_JSON.unit_duration_policy 规定的规范例外才可保留，且必须使用 SHORT_EXCEPTION/<CODE>|<具体不可合并事实> 格式。",
     "**只重写 revision_issues 命中单元的创作字段**（unit_dominant_goal / unit_start_premise / unit_end_state / short_unit_reason / subject_bindings），按 fix_hint 修复；其余单元原样保留，不要输出。未命中的 needs_fields 不能顺手补写，也不能为了让文字更顺而重写整集单元。",
     "**字段归属必须严格执行**：`.premise` / `.unit_start_premise` 只改 `unit_start_premise`；`.end_state` / `.unit_end_state` 只改 `unit_end_state`；`.bindings` / `.subject_bindings` 只改 `subject_bindings`；`.goal` / `.dominant_goal` 只改 `unit_dominant_goal`；`.fields` 才同时输出 goal/premise/end_state 三者。除 `.fields` 外，不能用补写其它字段的方式“顺便修复”。只输出未命中的字段 = 没修，卡不会被销。",
     "`units` 是本轮单元字段修复的主要输出；`patches` 只允许 sound/transition。若 revision_issues 直接出现 `1-1-S029.sound` 或 `1-1-S029-p0.sound` 这类镜号坐标，必须在 patches 中修对应 shot_id 的 sound，不能因为它不是 unit 坐标而忽略；只修命中镜号，不要改动无关格子。",
@@ -4345,6 +4371,9 @@ function buildUnitFixHint(item: { code: string; requestedEffect: string }): stri
   if (item.code === "UNIT_DURATION_OVER_LIMIT") {
     return "优先微调：把本单元最拖的一镜减0.5秒；仍超则把某一镜拆到相邻单元，或与相邻单元合并重组（单元≤15秒是唯一硬上限）";
   }
+  if (["SHORT_UNIT_BELOW_ABSOLUTE_MIN", "SHORT_UNIT_EXCEPTION_REQUIRED", "SHORT_UNIT_EXCEPTION_INVALID", "SHORT_UNIT_EXCEPTION_LIMIT"].includes(item.code)) {
+    return "由 E1 重新调整镜头时长/镜头归属，优先让单元达到10秒；只有无法合并且符合规范例外时，才保留 SHORT_EXCEPTION/<CODE>|<具体不可合并事实>，每集例外不得超过稀有上限";
+  }
   if (item.code === "UNIT_CROSSES_SCENE") return "把跨场次的镜号拆到各自场次的单元里";
   if (item.code === "UNIT_CROSSES_TIME_LAYER") return "把跨时空层的镜号拆到各自时空层的单元里";
   if (item.code === "UNIT_DURATION_MISMATCH") return "让 unit_duration 精确等于所含镜号时长之和";
@@ -4715,7 +4744,7 @@ async function unitPartitionNeedsRefresh(projectId: string, episodeId: string) {
   return JSON.stringify(actual) !== JSON.stringify(expected);
 }
 
-/** 确定性单元分组（零 Token）：按场次+时空层连续打包，目标 12–15 秒、硬上限 15 秒。 */
+/** 确定性单元分组（零 Token）：按场次+时空层连续打包，常规目标 13–15 秒，硬上限 15 秒；低于10秒交给硬校验判定例外。 */
 export function computeUnitPartition(
   context: PipelineContext,
   shots: WorkingShot[]
@@ -4750,7 +4779,7 @@ export function computeUnitPartition(
         const shot = run.shots[0];
         const duration = run.duration;
         const runShotIds = run.shots.map((item) => item.shot_id);
-        if (current.length && currentDuration + duration > 15.0001) {
+        if (current.length && currentDuration + duration > SEEDANCE_UNIT_MAX_SECONDS + 0.0001) {
           units.push({ shotIds: current, duration: roundTenth(currentDuration) });
           current = runShotIds;
           currentDuration = duration;
@@ -4776,8 +4805,8 @@ export function computeUnitPartition(
         currentDuration += duration;
       }
       if (current.length) units.push({ shotIds: current, duration: roundTenth(currentDuration) });
-      // 尾单元 <12 秒：若并给前一个单元仍 ≤15 则合并，否则保留并登记原因（场次/时长余数边界）
-      while (units.length >= 2 && units[units.length - 1].duration < 12 && units[units.length - 2].duration + units[units.length - 1].duration <= 15.0001) {
+      // 尾单元 <12 秒：若并给前一个单元仍 ≤15 则合并，否则保留，最终由低于10秒硬规则判定是否为明确例外。
+      while (units.length >= 2 && units[units.length - 1].duration < 12 && units[units.length - 2].duration + units[units.length - 1].duration <= SEEDANCE_UNIT_MAX_SECONDS + 0.0001) {
         const tail = units.pop()!;
         const head = units[units.length - 1];
         head.shotIds = [...head.shotIds, ...tail.shotIds];
@@ -4791,7 +4820,7 @@ export function computeUnitPartition(
           timeLayer: layer,
           shotIds: unit.shotIds,
           duration: unit.duration,
-          needsReason: unit.duration < 12
+          needsReason: unit.duration < SEEDANCE_UNIT_SHORT_MIN_SECONDS
         });
       }
       }
@@ -4995,8 +5024,8 @@ async function applyUnitPartition(
       ?? null;
     const previousData = previousUnit ? safeParseJson(previousUnit.data) : {};
     const previousBindings = Array.isArray(previousData.subject_bindings) ? previousData.subject_bindings.map(String) : [];
-    const autoReason = part.needsReason ? "本场分镜时长组合余数不足12秒" : null;
-    const shortReason = part.needsReason ? (optionalString(fields.short_unit_reason) ?? previousUnit?.shortUnitReason ?? autoReason) : null;
+    // 不再自动生成“余数不足12秒”这类理由；低于10秒必须由明确例外事实证明，否则由硬校验阻断。
+    const shortReason = part.needsReason ? (optionalString(fields.short_unit_reason) ?? previousUnit?.shortUnitReason ?? null) : null;
     // 群像单元标记：出场 ≥3 人或含 GROUP 资产或含群像镜 → crowd，供 E5 审查与编译层按群像约束处理
     const unitShots = part.shotIds.map((id) => shots.find((shot) => shot.shot_id === id)).filter(Boolean) as WorkingShot[];
     const requestedBindings = Array.isArray(fields.subject_bindings) ? fields.subject_bindings.map(String) : previousBindings;
@@ -5247,6 +5276,22 @@ export function validatePipeline(context: PipelineContext, shots: WorkingShot[],
   }
   // 轻量执行容量门：一镜只允许一个可见说话主体；至少三段明确连续动作必须拆镜。
   for (const shot of shots) {
+    const sceneSpeakers = [...context.sourceNodes.values()]
+      .filter((node) => node.scene_id === String(shot.scene_id) && node.speaker)
+      .map((node) => String(node.speaker));
+    for (const entry of shot.dialogue as Array<Record<string, unknown>>) {
+      const text = String(entry.text ?? "").trim();
+      if (!text || splitInlineSourceLine(text, sceneSpeakers).length <= 1) continue;
+      issues.push(issue(
+        `${shot.shot_id}.dialogue`,
+        "DIALOGUE_EMBEDDED_SPEAKER",
+        "BLOCKER",
+        "E1",
+        "同一条 dialogue 文本中嵌入了多个说话人标签，导致台词归属与显示混乱",
+        "按源节点把每个说话人拆成独立 dialogue 条目；台词文本中不得再出现“人物：”标签"
+      ));
+      break;
+    }
     const speakers = new Set((shot.dialogue as Array<Record<string, unknown>>)
       .filter((entry) => !/(^|_)(OS|VO|NARRATION|SYSTEM)$|旁白|系统/i.test(String(entry.type ?? "")))
       .map((entry) => String(entry.speaker ?? "").replace(/（.*）$/, "").trim()).filter(Boolean));
@@ -5629,6 +5674,7 @@ export function validatePipeline(context: PipelineContext, shots: WorkingShot[],
   }
 
   const unitShotCount = new Map<string, number>();
+  const validShortExceptions: Array<{ unitId: string; duration: number }> = [];
   for (const unit of units) {
     const unitId = String(unit.unit_id ?? "unknown-unit");
     const ids = stringArray(unit.shot_ids);
@@ -5637,8 +5683,43 @@ export function validatePipeline(context: PipelineContext, shots: WorkingShot[],
     const duration = roundTenth(included.reduce((sum, shot) => sum + Number(shot.duration), 0));
     const declared = roundTenth(Number(unit.unit_duration ?? duration));
     if (duration !== declared) issues.push(issue(unitId, "UNIT_DURATION_MISMATCH", "BLOCKER", "E3", `镜号合计${duration}秒，单元声明${declared}秒`, "让单元时长等于镜号时长之和"));
-    if (duration > 15) issues.push(issue(`${unitId}.shot_ids`, "UNIT_DURATION_OVER_LIMIT", "BLOCKER", "E3", `单元总时长${duration}秒，超过15秒上限（Python已自动微调过仍超限，说明本单元余量不足）`, "把最拖的一镜减0.5秒；仍超则把某一镜拆到相邻单元，或与相邻单元合并重组；单元≤15秒是唯一硬上限"));
-    if (duration < 12 && !optionalString(unit.short_unit_reason)) issues.push(issue(`${unitId}.short_unit_reason`, "SHORT_REASON_MISSING", "MAJOR", "E3", `${duration}秒但未说明必要原因`, "填写场界、动作阶段、强转折、多人降载或稳定性原因"));
+    if (duration > SEEDANCE_UNIT_MAX_SECONDS) issues.push(issue(`${unitId}.shot_ids`, "UNIT_DURATION_OVER_LIMIT", "BLOCKER", "E3", `单元总时长${duration}秒，超过${SEEDANCE_UNIT_MAX_SECONDS}秒上限（Python已自动微调过仍超限，说明本单元余量不足）`, `把最拖的一镜减0.5秒；仍超则把某一镜拆到相邻单元，或与相邻单元合并重组；单元≤${SEEDANCE_UNIT_MAX_SECONDS}秒`));
+    if (duration < SEEDANCE_UNIT_SHORT_MIN_SECONDS) {
+      const reason = optionalString(unit.short_unit_reason);
+      if (duration < SEEDANCE_UNIT_ABSOLUTE_MIN_SECONDS) {
+        issues.push(issue(
+          `${unitId}.duration`,
+          "SHORT_UNIT_BELOW_ABSOLUTE_MIN",
+          "BLOCKER",
+          "E1",
+          `单元总时长${duration}秒，低于${SEEDANCE_UNIT_ABSOLUTE_MIN_SECONDS}秒技术下限`,
+          `由E1重新拆镜或合并；单元默认至少${SEEDANCE_UNIT_SHORT_MIN_SECONDS}秒，且不得低于${SEEDANCE_UNIT_ABSOLUTE_MIN_SECONDS}秒`
+        ));
+      } else {
+        const exception = parseShortUnitException(reason);
+        if (!reason) {
+          issues.push(issue(
+            `${unitId}.short_unit_reason`,
+            "SHORT_UNIT_EXCEPTION_REQUIRED",
+            "BLOCKER",
+            "E1",
+            `单元总时长${duration}秒，低于${SEEDANCE_UNIT_SHORT_MIN_SECONDS}秒且没有规范例外`,
+            `由E1优先重排至≥${SEEDANCE_UNIT_SHORT_MIN_SECONDS}秒；确需保留时使用 SHORT_EXCEPTION/<CODE>|<具体不可合并事实>`
+          ));
+        } else if (!exception) {
+          issues.push(issue(
+            `${unitId}.short_unit_reason`,
+            "SHORT_UNIT_EXCEPTION_INVALID",
+            "BLOCKER",
+            "E1",
+            `单元总时长${duration}秒的理由不是规范例外格式，不能仅凭“余数不足”放行`,
+            `由E1优先重排至≥${SEEDANCE_UNIT_SHORT_MIN_SECONDS}秒；若确需保留，必须使用 SHORT_EXCEPTION/<CODE>|<具体不可合并事实>`
+          ));
+        } else {
+          validShortExceptions.push({ unitId, duration });
+        }
+      }
+    }
     const scenes = new Set(included.map((shot) => String(shot.scene_id)));
     const layers = new Set(included.map((shot) => String(shot.time_layer)));
     if (scenes.size > 1) issues.push(issue(`${unitId}.shot_ids`, "UNIT_CROSSES_SCENE", "BLOCKER", "E3", `包含场次：${[...scenes].join("、")}`, "拆到单一场次内"));
@@ -5652,6 +5733,18 @@ export function validatePipeline(context: PipelineContext, shots: WorkingShot[],
         `站位前提/结束状态/主导目标含待补充（premise=${premise || "空"}）`,
         "按剧本内容写清单元开场各人物/道具站位、结束状态与一句话剧情结果，禁止占位"));
     }
+  }
+  const maxShortExceptions = maxShortUnitExceptions(units.length);
+  for (const [index, item] of validShortExceptions.entries()) {
+    if (index < maxShortExceptions) continue;
+    issues.push(issue(
+      `${item.unitId}.short_unit_reason`,
+      "SHORT_UNIT_EXCEPTION_LIMIT",
+      "BLOCKER",
+      "E1",
+      `本集已有${index + 1}个低于${SEEDANCE_UNIT_SHORT_MIN_SECONDS}秒的规范例外，超过最多${maxShortExceptions}个的稀有上限`,
+      `由E1重排该单元或相邻单元；每集低于${SEEDANCE_UNIT_SHORT_MIN_SECONDS}秒的例外最多${maxShortExceptions}个`
+    ));
   }
   for (const shot of shots) {
     const count = unitShotCount.get(shot.shot_id) ?? 0;
@@ -6706,6 +6799,10 @@ export function compileSeedancePrompts(context: PipelineContext, shots: WorkingS
     unitIndex += 1;
     const sceneId = String(included[0].scene_id);
     const scene = sceneByKey.get(sceneId);
+    const dialogueEntriesOf = (shot: WorkingShot) => normalizeDialogueEntriesForSource(
+      shot.dialogue as Array<Record<string, unknown>>,
+      context.sourcePackage?.scenes.find((item) => item.scene_id === String(shot.scene_id))?.source_nodes ?? []
+    );
 
     // 本集命中资产：按各资产 scene_refs 与本场次求交集（与页面同一口径），杜绝跨集资产串场
     const hitAssets = context.project.assets.filter((asset) => {
@@ -6718,7 +6815,7 @@ export function compileSeedancePrompts(context: PipelineContext, shots: WorkingS
     const configuredBindings = bindingStrings(unit.subject_bindings);
     const rawBindings = configuredBindings.length
       ? configuredBindings
-      : [...new Set(included.flatMap((shot) => (shot.dialogue as Array<Record<string, unknown>>)
+      : [...new Set(included.flatMap((shot) => dialogueEntriesOf(shot)
         .filter((entry) => ["对白", "DIALOGUE"].includes(String(entry.type ?? "对白")))
         .map((entry) => String(entry.speaker ?? ""))
         .filter(Boolean)))];
@@ -6782,7 +6879,7 @@ export function compileSeedancePrompts(context: PipelineContext, shots: WorkingS
         e3: shot.e3 as Record<string, unknown>,
         e4: shot.e4 as Record<string, unknown>
       }).picture,
-      ...(shot.dialogue as Array<Record<string, unknown>>).map((entry) => String(entry.text ?? ""))
+      ...dialogueEntriesOf(shot).map((entry) => String(entry.text ?? ""))
     ]).join("；");
     const propsInUnit = hitAssets
       .filter((asset) => asset.type === "PROP" && asset.name && assetMentionedIn(unitText, { name: asset.name, type: asset.type, aliases: mentionNames(asset) }))
@@ -6829,7 +6926,7 @@ export function compileSeedancePrompts(context: PipelineContext, shots: WorkingS
     const visibleCharacterFamilies = new Set(people
       .map((item) => hitAssets.find((asset) => asset.code === item.code)?.name.split("｜")[0].trim() ?? "")
       .filter(Boolean));
-    const speakerNames = [...new Set(included.flatMap((shot) => (shot.dialogue as Array<Record<string, unknown>>).map((entry) => String(entry.speaker ?? ""))).filter(Boolean))];
+    const speakerNames = [...new Set(included.flatMap((shot) => dialogueEntriesOf(shot).map((entry) => String(entry.speaker ?? ""))).filter(Boolean))];
     const voiceOnlyEntries: string[] = [];
     const voiceOnlyKeys = new Set<string>();
     for (const rawSpeaker of speakerNames) {
@@ -6884,7 +6981,7 @@ export function compileSeedancePrompts(context: PipelineContext, shots: WorkingS
           seenLightingInUnit.add(lighting);
         }
       }
-      const dialogueText = (shot.dialogue as Array<Record<string, unknown>>)
+      const dialogueText = dialogueEntriesOf(shot)
         .map(formatDialogueEntry)
         .join("；");
       const range = shotRanges[index];

@@ -47,6 +47,8 @@ type SceneSource = {
 export type SourcePackageBuildOptions = {
   /** P2 资产名/别名等已知人物名；旧调用不传时仍按场次「人物」栏解析。 */
   knownCharacterNames?: readonly string[];
+  /** 仅供历史数据迁移：保留旧版“一行一个源节点”的切分方式。 */
+  splitInlineDialogue?: boolean;
 };
 
 export function readStageModel(code: PipelineStageCode): StageModelConfig {
@@ -97,6 +99,93 @@ function stripInlineSceneHeader(line: string, sceneKey: string): string {
   return bodyIndex >= 0 ? rest.slice(bodyIndex + 1).trim() : "";
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * 把 Word/富文本扁平化后落在同一行的多个人物台词拆回独立源节点。
+ * 只认已知人物和系统说话人标签，避免把普通叙述里的冒号误判成对白。
+ */
+export function splitInlineSourceLine(raw: string, knownCharacterNames: readonly string[] = []): string[] {
+  const labels = normalizeKnownCharacterNames([
+    ...knownCharacterNames,
+    "旁白",
+    "画外音",
+    "字幕",
+    "系统音",
+    "系统提示",
+    "男声",
+    "女声",
+    "广播",
+    "电话那头",
+    "众人",
+    "人群",
+    "服务生",
+    "老人",
+    "男人",
+    "女人",
+    "小孩",
+    "孩子"
+  ]);
+  if (!labels.length) return [raw];
+  const labelPattern = labels.map(escapeRegExp).join("|");
+  const marker = new RegExp(
+    `(?:${labelPattern})(?:声(?:音)?)?(?:\\s*(?:[（(][^）)]{1,24}[）)]|OS|VO))*\\s*[:：]`,
+    "giu"
+  );
+  const matches = [...raw.matchAll(marker)];
+  if (!matches.length) return [raw];
+
+  const pieces: string[] = [];
+  let cursor = 0;
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index];
+    const start = match.index ?? 0;
+    if (start > cursor) {
+      const prefix = raw.slice(cursor, start).trim();
+      if (prefix) pieces.push(prefix);
+    }
+    const nextStart = matches[index + 1]?.index ?? raw.length;
+    // 当前说话人标签归入当前对白，直到下一个说话人标签为止。
+    const piece = raw.slice(start, nextStart).trim();
+    if (piece) pieces.push(piece);
+    cursor = nextStart;
+  }
+  if (cursor < raw.length) {
+    const tail = raw.slice(cursor).trim();
+    if (tail) pieces.push(tail);
+  }
+  return (pieces.length ? pieces : [raw]).flatMap((piece) => splitTrailingAction(piece, labels));
+}
+
+/**
+ * 某些富文本导出会把“角色台词 + 下一句无冒号动作”压成一行，例如：
+ * “宋雨：老人都死了，我们怎么办？姜恋低头沉思。”
+ * 这里把动作重新还原成 ACTION 节点，避免动作被误算为上一人的台词。
+ */
+function splitTrailingAction(piece: string, knownCharacterNames: readonly string[]): string[] {
+  const colonIndex = piece.search(/[:：]/);
+  const textStart = colonIndex >= 0 ? colonIndex + 1 : 0;
+  const text = piece.slice(textStart);
+  if (!text.trim()) return [piece];
+
+  const labels = knownCharacterNames.map(escapeRegExp).sort((a, b) => b.length - a.length);
+  if (!labels.length) return [piece];
+  const actionCue = "低头|抬头|沉思|站在|坐在|看向|看着|走向|转身|点头|摇头|皱眉|笑着|哭着|喊道|开口|闭嘴|拿出|掏出|指向|盯着|望向|倚在|轻声|冷声|猛回头|猛转身|猛抬头|突然回头|忽然回头|猛地|猛然|回头|沉默|愣住|愕然|环顾|握紧|咬牙|深吸|叹气|捂住|靠近|退后|后退|起身|抬眼|垂眸|低声|急声|怒声";
+  const boundary = new RegExp(
+    `(?<=[。！？；])(?=(?:${labels.join("|")})(?:\\s*[（(][^）)]{1,24}[）)])?(?:${actionCue}))`,
+    "giu"
+  );
+  const match = boundary.exec(text);
+  if (!match || match.index <= 0) return [piece];
+
+  const dialogueText = text.slice(0, match.index).trimEnd();
+  const actionText = text.slice(match.index).trim();
+  if (!dialogueText || !actionText) return [piece];
+  return [`${piece.slice(0, textStart)}${dialogueText}`.trim(), actionText];
+}
+
 export function buildSourcePackage(scenes: readonly SceneSource[], options: SourcePackageBuildOptions = {}) {
   let nodeNumber = 0;
   const projectCharacterNames = normalizeKnownCharacterNames(options.knownCharacterNames ?? []);
@@ -106,7 +195,11 @@ export function buildSourcePackage(scenes: readonly SceneSource[], options: Sour
         ...projectCharacterNames,
         ...extractSceneCharacterNames(scene.sourceText)
       ]);
-      const sourceNodes = normalizeSourceLines(scene.sourceText, scene.sceneKey, scene.heading)
+      const normalizedLines = normalizeSourceLines(scene.sourceText, scene.sceneKey, scene.heading);
+      const sourceLines = options.splitInlineDialogue === false
+        ? normalizedLines
+        : normalizedLines.flatMap((line) => splitInlineSourceLine(line, knownCharacterNames));
+      const sourceNodes = sourceLines
         .map((line) => {
           nodeNumber += 1;
           return parseSourceNode(line, scene.sceneKey, `N${String(nodeNumber).padStart(4, "0")}`, knownCharacterNames);
@@ -150,7 +243,8 @@ function normalizeSpeakerLabel(label: string, knownCharacterNames: readonly stri
   const clean = label.trim();
   const speaker = knownCharacterNames.find((name) => clean.startsWith(name));
   if (!speaker) return { speaker: clean, performanceCue: "" };
-  return { speaker, performanceCue: clean.slice(speaker.length).trim() };
+  const performanceCue = clean.slice(speaker.length).trim().replace(/^声(?:音)?$/, "");
+  return { speaker, performanceCue };
 }
 
 function splitVoiceMarker(label: string): { label: string; type: "OS" | "VO" } | null {
@@ -166,7 +260,13 @@ function parseSourceNode(raw: string, sceneId: string, id: string, knownCharacte
   if (dialogueMatch) {
     const rawLabel = dialogueMatch[1].trim();
     const voice = splitVoiceMarker(rawLabel);
-    const normalized = normalizeSpeakerLabel(voice?.label ?? rawLabel, knownCharacterNames);
+    const label = (voice?.label ?? rawLabel).trim();
+    if (!isRecognizedSpeakerLabel(label, knownCharacterNames) && !voice) {
+      // 动作句里也可能出现冒号（如“她展开纸团，上面写着：……”），
+      // 未命中人物/系统标签时必须保留为 ACTION，不能伪造一个说话人。
+      return { source_node_id: id, scene_id: sceneId, type: "ACTION", speaker: null, text: raw, raw };
+    }
+    const normalized = normalizeSpeakerLabel(label, knownCharacterNames);
     const type = voice?.type ?? (/旁白|画外音/.test(normalized.speaker)
       ? "NARRATION"
       : /字幕/.test(normalized.speaker)
@@ -185,6 +285,12 @@ function parseSourceNode(raw: string, sceneId: string, id: string, knownCharacte
     };
   }
   return { source_node_id: id, scene_id: sceneId, type: "ACTION", speaker: null, text: raw, raw };
+}
+
+function isRecognizedSpeakerLabel(label: string, knownCharacterNames: readonly string[]): boolean {
+  const clean = label.trim().replace(/\s*[（(][^）)]{1,24}[）)]\s*$/, "");
+  if (knownCharacterNames.some((name) => clean.startsWith(name))) return true;
+  return /^(?:旁白|画外音|字幕|系统音|系统提示|男声|女声|广播|电话那头|众人|人群|服务生|老人|男人|女人|小孩|孩子)$/.test(clean);
 }
 
 export type WorkingShot = {

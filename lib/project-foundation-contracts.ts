@@ -641,6 +641,7 @@ export function validateFoundationP1(output: P1Output, context: FoundationContex
     const sourceNodes = sourceEpisode?.scenes.flatMap((scene) => scene.source_nodes) ?? [];
     const referencedNodes = sourceNodes.filter((node) => refs.includes(node.source_node_id));
     const evidence = normalizePresentationEvidence(decision.evidence ?? "");
+    const markerEvidence = isExplicitPresentationMarker(decision.evidence ?? "");
     const evidenceInOneNode = referencedNodes.some((node) => {
       const source = normalizePresentationEvidence(`${node.speaker ?? ""}：${node.text}`);
       return source.includes(evidence);
@@ -660,7 +661,8 @@ export function validateFoundationP1(output: P1Output, context: FoundationContex
         return source.includes(normalizedClause);
       });
     });
-    const evidenceGrounded = evidence.length >= 4 && (evidenceInOneNode || evidenceInReferencedNodes || evidenceClausesGrounded);
+    const evidenceGrounded = (evidence.length >= 4 || markerEvidence) &&
+      (evidenceInOneNode || evidenceInReferencedNodes || evidenceClausesGrounded);
     const unknownEpisodeNumbers = episodeNumbers.filter((number) => !context.episodeScenes.has(number));
     if (!decision.category || !decision.question || !Array.isArray(decision.options) || decision.options.length < 2 ||
       !Number.isInteger(episodeNumber) || !sourceEpisode || !episodeNumbers.length || unknownEpisodeNumbers.length ||
@@ -702,10 +704,24 @@ function normalizePresentationEvidence(value: string) {
     .trim();
 }
 
+function isExplicitPresentationMarker(value: string) {
+  const marker = value.trim();
+  // 场记标记（如“【闪回】”）去掉括号后可能不足 4 个字，
+  // 但只要它本身是完整标记且能在真实源节点中定位，就属于有效证据。
+  return /^(?:【[^【】\r\n]{2,24}】|\[[^\[\]\r\n]{2,24}\])$/u.test(marker);
+}
+
 function splitPresentationEvidence(value: string) {
   return value
     .split(/[。！？!?；;]+/)
-    .map((part) => part.trim())
+    .map((part) => part
+      .trim()
+      // 证据常写成“第一句。”“第二句！”；按句末标点切分后，
+      // 引号会落在相邻分句的边缘。先去掉边缘引号，避免把引号残片
+      // 当成独立证据，再被 reanchor 误匹配到无关节点。
+      .replace(/^[\s"'“”‘’「」『』【】]+/u, "")
+      .replace(/[\s"'“”‘’「」『』【】]+$/u, "")
+      .trim())
     .filter(Boolean);
 }
 

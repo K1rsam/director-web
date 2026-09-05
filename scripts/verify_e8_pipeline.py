@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 from e8_pipeline import compile_unit_prompt, validate_episode_payload
 
 
@@ -58,6 +60,43 @@ def sample_payload():
 
 payload = sample_payload()
 assert validate_episode_payload(payload) == []
+
+short = deepcopy(payload)
+short["units"][0]["shots"][1]["duration"] = 4.0
+short["units"][0]["duration"] = 9.0
+short["units"][0]["short_unit_reason"] = "SHORT_EXCEPTION/QUICK_ACTION_CUT|动作结果必须在本镜完成，不能跨场景合并"
+assert validate_episode_payload(short) == [], "规范且单个的短单元例外应通过"
+
+invalid_reason = deepcopy(short)
+invalid_reason["units"][0]["short_unit_reason"] = "本场分镜时长组合余数不足12秒"
+assert any(error["code"] == "SHORT_UNIT_EXCEPTION_INVALID" for error in validate_episode_payload(invalid_reason))
+
+too_short = deepcopy(short)
+too_short["units"][0]["shots"][0]["duration"] = 0.5
+too_short["units"][0]["shots"][1]["duration"] = 3.0
+too_short["units"][0]["duration"] = 3.5
+assert any(error["code"] == "SHORT_UNIT_BELOW_ABSOLUTE_MIN" for error in validate_episode_payload(too_short))
+
+overflow = deepcopy(short)
+overflow["units"].append({
+    "unit_id": "1-1-U02",
+    "scene_id": "SC1",
+    "time_layer": "现实",
+    "duration": 9.0,
+    "short_unit_reason": "SHORT_EXCEPTION/SHORT_REACTION|人物的即时反应必须在场次边界独立完成",
+    "shots": [{
+        "shot_id": "1-1-S03",
+        "scene_id": "SC1",
+        "time_layer": "现实",
+        "duration": 9.0,
+        "story": "人物短促回头。",
+        "performance": "人物只完成一次快速回头。",
+        "blocking": "人物保持原站位。",
+        "camera": "近景固定。",
+        "dialogue": [],
+    }],
+})
+assert any(error["code"] == "SHORT_UNIT_EXCEPTION_LIMIT" for error in validate_episode_payload(overflow))
 
 prompt = compile_unit_prompt(payload, "1-1-U01")
 expected_order = [

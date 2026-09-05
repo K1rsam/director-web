@@ -87,7 +87,7 @@ async function main() {
 
   console.log(`[批量监控] 项目：${project.title}（${project.id}）`);
   const provider = String(project.executionMode).toUpperCase() === "API" ? "API" : "CLI";
-  const concurrencyDescription = provider === "CLI" ? "CLI 单集串行" : `API 最多 ${options.concurrency} 集并发`;
+  const concurrencyDescription = `${provider} 最多 ${options.concurrency} 集并发`;
   if (options.monitorToken) {
     await setEpisodeBatchMonitorStatus(options.monitorToken, "RUNNING", {
       state: "RUNNING",
@@ -423,8 +423,8 @@ function printChanges(episodes: readonly EpisodeSnapshot[], printed: Map<string,
 
 function parseArgs(args: string[]): MonitorOptions {
   let projectId = "";
-  // 独立命令默认按 CLI 的安全策略串行；页面启动时会按项目执行方式传入 API 的并发值。
-  let concurrency = 1;
+  // 独立命令与页面启动统一默认最多 3 集并发；每集内部 E0→E5 仍按顺序执行。
+  let concurrency = 3;
   let from = 1;
   let to: number | null = null;
   let intervalMs = 5_000;
@@ -494,7 +494,7 @@ function printUsage() {
   console.log(`用法：npm.cmd run episodes:run -- <projectId> [选项]
 
 选项：
-  --concurrency 1       同时执行的剧集数，最大 3（CLI 默认串行）
+  --concurrency 3       同时执行的剧集数，最大 3（CLI/API 默认均为 3）
   --from 1              起始集数，默认 1
   --to 80               结束集数，默认项目最后一集
   --interval 5          状态轮询间隔（秒）

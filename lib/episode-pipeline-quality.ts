@@ -6,6 +6,68 @@ const ACTION_WORD_SOURCE = "(?:走上|进入|走入|取出|拿出|拿起|抽出|
 const ACTION_WORD = new RegExp(ACTION_WORD_SOURCE, "u");
 const EXECUTED_PREACTION = /(?:走上|进入|走入|按下|拿起|取出|拿出|抽出|放下|递出|递给|交给|弹出|汇聚|踏出|现身|走出|跑出|起身|坐下|站起|推开|拉开|打开|关闭)/u;
 
+/**
+ * Seedance 单元时长政策（项目级覆盖通用 Skill 的宽松 4–15 秒技术范围）：
+ * 常规优先 13–15 秒；低于 10 秒默认退回，只允许极少数、可机械识别的例外。
+ */
+export const SEEDANCE_UNIT_ABSOLUTE_MIN_SECONDS = 4;
+export const SEEDANCE_UNIT_SHORT_MIN_SECONDS = 10;
+export const SEEDANCE_UNIT_MAX_SECONDS = 15;
+export const SHORT_UNIT_MAX_EXCEPTION_RATIO = 0.1;
+export const SHORT_UNIT_MAX_EXCEPTION_COUNT = 2;
+
+export const SHORT_UNIT_EXCEPTION_CODES = [
+  "SCENE_BOUNDARY",
+  "SHORT_REACTION",
+  "PROP_LANDING",
+  "QUICK_ACTION_CUT",
+  "SOUND_VIEW_BREAK",
+  "DRIFT_PREVENTION",
+  "OVERLOAD_AVOIDANCE"
+] as const;
+
+export type ShortUnitExceptionCode = typeof SHORT_UNIT_EXCEPTION_CODES[number];
+
+export type ShortUnitException = {
+  code: ShortUnitExceptionCode;
+  detail: string;
+};
+
+const SHORT_UNIT_EXCEPTION_PATTERN = /^SHORT_EXCEPTION\/([A-Z_]+)\s*[|｜:：]\s*(.+)$/u;
+const SHORT_UNIT_GENERIC_REASON = /^(?:本场)?(?:分镜)?时长组合余数不足\s*\d+(?:\.\d+)?秒?$|^场次边界余数$|^余数不足\s*\d+(?:\.\d+)?秒?$/u;
+
+/** 低于 10 秒必须使用规范前缀 + 具体不可合并事实，泛化“余数不足”不算例外。 */
+export function parseShortUnitException(value: unknown): ShortUnitException | null {
+  const text = String(value ?? "").trim();
+  const match = SHORT_UNIT_EXCEPTION_PATTERN.exec(text);
+  if (!match) return null;
+  const code = match[1] as ShortUnitExceptionCode;
+  const detail = match[2].trim();
+  if (!(SHORT_UNIT_EXCEPTION_CODES as readonly string[]).includes(code)) return null;
+  if (detail.length < 8 || SHORT_UNIT_GENERIC_REASON.test(detail)) return null;
+  return { code, detail };
+}
+
+/** 每集短例外上限：最多 2 个，且不超过该集单元数的 10%（短集至少保留 1 个名额）。 */
+export function maxShortUnitExceptions(totalUnits: number): number {
+  const total = Number.isFinite(Number(totalUnits)) ? Math.max(0, Math.floor(Number(totalUnits))) : 0;
+  if (total === 0) return 0;
+  return Math.min(SHORT_UNIT_MAX_EXCEPTION_COUNT, Math.max(1, Math.floor(total * SHORT_UNIT_MAX_EXCEPTION_RATIO)));
+}
+
+export const SHORT_UNIT_POLICY = {
+  standard_range: "13-15秒优先",
+  accepted_range: "10-15秒",
+  default_min_seconds: SEEDANCE_UNIT_SHORT_MIN_SECONDS,
+  absolute_min_seconds: SEEDANCE_UNIT_ABSOLUTE_MIN_SECONDS,
+  hard_max_seconds: SEEDANCE_UNIT_MAX_SECONDS,
+  exception_rule: "低于10秒默认BLOCKER；只有规范例外且未超过本集稀有上限才可放行",
+  exception_format: "SHORT_EXCEPTION/<CODE>|<具体不可合并事实>",
+  exception_codes: SHORT_UNIT_EXCEPTION_CODES,
+  max_exceptions_per_episode: "min(2, max(1, floor(单元数×10%)))",
+  generic_reason_forbidden: "本场分镜时长组合余数不足12秒/场次边界余数等泛化理由不得放行"
+} as const;
+
 export type VisibleTextDeclaration = {
   kind: "DIEGETIC_PROP" | "DIEGETIC_UI";
   carrier: string;
