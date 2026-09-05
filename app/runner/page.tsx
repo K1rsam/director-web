@@ -51,8 +51,8 @@ export default async function RunnerPage({ searchParams }: { searchParams: Promi
         <header className="runnerHero studioCard">
           <span className="runnerHeroIcon" aria-hidden="true">↗</span>
           <div>
-            <p className="sectionEyebrow">PERSONAL EXECUTION</p>
-            <h1>使用你自己的执行额度</h1>
+            <p className="sectionEyebrow">执行连接</p>
+            <h2>连接你的生产工具</h2>
             <p>API Key 只留在当前浏览器；每台电脑使用自己的 Codex CLI、账号和额度。网站只保存线上项目数据与任务结果，不会读取任何设备的本机项目数据库。</p>
           </div>
           <div className="runnerHeroAssurance"><span>账号隔离</span><strong>每位用户独立连接</strong></div>
@@ -67,18 +67,18 @@ export default async function RunnerPage({ searchParams }: { searchParams: Promi
 
         <section className="runnerChoiceGuide studioCard">
           <header className="runnerSectionHeader">
-            <div><p className="sectionEyebrow">QUICK GUIDE</p><h2>怎么选择</h2></div>
+            <div><p className="sectionEyebrow">使用指引</p><h2>怎么选择</h2></div>
             <p>两种方式都使用用户自己的额度；CLI 模式还需要本机执行代码目录。</p>
           </header>
           <div className="runnerChoiceGrid">
             <article><span>01</span><div><strong>直接使用 API</strong><p>粘贴自己的 DeepSeek Key，测试成功后即可关闭本页；只在这台设备生效。</p></div></article>
-            <article><span>02</span><div><strong>使用 Codex CLI</strong><p>生成启动器并保持窗口运行；网站从 D1 下发任务快照，本机代码调用本机 Codex，完成后只把本次结果写回线上。</p></div></article>
+            <article><span>02</span><div><strong>使用 Codex CLI</strong><p>生成启动器并保持窗口运行；网站下发本次任务，由这台电脑的 Codex 执行，完成后将结果同步回网站。</p></div></article>
           </div>
         </section>
 
         <section className="runnerDeviceCard studioCard">
           <header className="runnerSectionHeader">
-            <div><p className="sectionEyebrow">CLI DEVICES</p><h2>我的 CLI 设备</h2></div>
+            <div><p className="sectionEyebrow">已连接设备</p><h2>我的 CLI 设备</h2></div>
             <p>{tokens.filter((token) => !token.revokedAt).length} 台可用设备</p>
           </header>
           <div className="runnerDeviceList">

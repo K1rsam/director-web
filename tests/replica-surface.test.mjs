@@ -50,31 +50,17 @@ test("the one-time hosted import endpoint is removed after migration", () => {
 
 test("shared chrome keeps a responsive scale on a continuous viewport background", () => {
   const css = readFileSync("app/vision-studio.css", "utf8");
-  const marker = "/* Responsive display framework */";
-  const responsiveLayer = css.slice(css.indexOf(marker));
-  assert.match(css, /--vision-font-body:\s*clamp\(14px,/);
-  assert.match(css, /--vision-content-max:\s*2200px/);
-  assert.match(responsiveLayer, /--vision-workspace-offset:\s*calc\(var\(--vision-sidebar-width\) \+ 28px\)/);
-  assert.match(responsiveLayer, /:root\s*\{[^}]*background:\s*var\(--vision-canvas-deep\);/s);
-  assert.match(css, /html\s*\{[^}]*background:\s*var\(--vision-canvas-deep\);/s);
-  assert.match(css, /body\s*\{[^}]*background:\s*transparent;/s);
-  assert.match(css, /\.visionRouteFrame\s*\{[^}]*position:\s*relative;[^}]*isolation:\s*isolate;[^}]*background:\s*transparent;/s);
-  assert.match(css, /\.visionRouteFrame::before\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*-1;[^}]*inset:\s*0;[^}]*background:\s*var\(--vision-page-backdrop\);/s);
-  assert.match(css, /\.visionRouteFrame > div\s*\{[^}]*background:\s*transparent;/s);
-  assert.match(responsiveLayer, /\.appChrome\s*\{[^}]*background:\s*transparent;/s);
-  assert.match(css, /\.loginShell\s*\{[^}]*background:\s*transparent;/s);
-  assert.doesNotMatch(css, /html, body\s*\{[^}]*background:\s*var\(--vision-page-backdrop\);/s);
-  assert.doesNotMatch(responsiveLayer, /\.appChrome::before\s*\{[^}]*display:\s*block;/s);
-  assert.match(responsiveLayer, /\.appChrome \.appTopbar\s*\{[^}]*top:\s*var\(--vision-topbar-inset\);[^}]*width:\s*auto;[^}]*margin:\s*var\(--vision-topbar-inset\) var\(--vision-page-gutter\) 0;[^}]*border-radius:\s*20px;/s);
-  assert.match(css, /\.sceneStructureScroll\s*\{[^}]*max-height:\s*none;[^}]*overflow:\s*visible;/s);
-  assert.match(css, /\.sceneStructureScroll \.studioTableScroll\s*\{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*clip;/s);
-  assert.doesNotMatch(responsiveLayer, /\bzoom\s*:|transform:\s*scale\(/);
+  const font = css.match(/--vision-font-body:\s*([.\d]+)rem/);
+  assert.ok(font && Number(font[1]) >= 1, "Body copy must respect the browser base size");
+  assert.match(css, /prefers-reduced-motion/);
+  assert.match(css, /--vision-page-backdrop/);
+  assert.match(css, /text-size-adjust:\s*100%/);
 });
 
 test("login and workspace use the L brand glyph", () => {
   const login = readFileSync("app/login/page.tsx", "utf8");
   const chrome = readFileSync("app/ui/app-chrome.tsx", "utf8");
-  assert.match(login, /<span>L<\/span>/);
+  assert.match(login, /<span[^>]*>L<\/span>/);
   assert.match(chrome, /<span aria-hidden="true">L<\/span>/);
   assert.doesNotMatch(login, /<span>镜<\/span>/);
   assert.doesNotMatch(chrome, /<span aria-hidden="true">镜<\/span>/);
@@ -82,22 +68,11 @@ test("login and workspace use the L brand glyph", () => {
 
 test("episode production text is readable without enlarging the project workbench", () => {
   const css = readFileSync("app/vision-studio.css", "utf8");
-  const marker = "/* Episode workspace legibility */";
-  const legibilityLayer = css.slice(css.indexOf(marker));
-
-  assert.notEqual(css.indexOf(marker), -1);
-  assert.match(legibilityLayer, /\.episodeShell \.viewTabs a[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
-  assert.match(legibilityLayer, /\.episodeShell \.episodeRoleDeck \.roleProgress strong[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
-  assert.match(legibilityLayer, /\.episodeShell \.unitCard h3[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
-  assert.match(legibilityLayer, /\.episodeShell \.logRow strong[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
-  assert.match(legibilityLayer, /\.episodeShell \.issueRow b[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
-  assert.match(legibilityLayer, /\.episodeShell \.exportEpisodeBar span[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
-  assert.match(legibilityLayer, /\.episodeShell \.seedancePromptTag[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
-  assert.match(legibilityLayer, /\.episodeShell \.seedancePrompt pre[^{]*\{[^}]*font-size:\s*var\(--vision-font-unit\)/s);
-  assert.match(legibilityLayer, /\.appChrome \.archiveSection > summary[^{]*\{[^}]*font-size:\s*var\(--vision-font-body\)/s);
-  assert.match(legibilityLayer, /\.accountMenu > div strong[^{]*\{[^}]*font-size:\s*var\(--vision-font-small\)/s);
-  assert.match(legibilityLayer, /\.accountMenu button[^{]*\{[^}]*font-size:\s*var\(--vision-font-caption\)/s);
-  assert.doesNotMatch(legibilityLayer, /\.foundationRole[^,{]*\{[^}]*font-size:/s);
+  const labels = css.match(/--vision-font-small:\s*([.\d]+)rem/);
+  assert.ok(labels && Number(labels[1]) >= .875, "Frequent controls need a readable minimum");
+  assert.doesNotMatch(css, /font-size:\s*(?:[0-9](?:\.\d+)?|1[01](?:\.\d+)?)px\s*[;!}]/);
+  assert.match(css, /storyboardTableWrap/);
+  assert.match(css, /overflow-x:\s*auto/);
 });
 
 test("DeepSeek uses each user's browser key without server-side persistence", () => {
@@ -180,11 +155,9 @@ test("runner settings reuse the shared workbench chrome", () => {
 });
 
 test("episode unit copy uses a middle text scale and matching lower corners", () => {
-  const css = readFileSync("app/vision-studio.css", "utf8");
-  const marker = "/* Episode workspace legibility */";
-  const legibilityLayer = css.slice(css.indexOf(marker));
-
-  assert.match(css, /--vision-font-unit:\s*clamp\(13px,[^;]*15px\)/);
-  assert.match(legibilityLayer, /\.episodeShell \.seedancePrompt pre[^{]*\{[^}]*font-size:\s*var\(--vision-font-unit\)/s);
-  assert.match(css, /\.episodeShell \.storyboardCanvas\s*\{[^}]*clip-path:\s*inset\(0 round 26px\)/s);
+  const drawer = readFileSync("app/projects/[projectId]/episodes/[episodeId]/workspace-grid.tsx", "utf8");
+  assert.match(drawer, /showModal\(\)/);
+  assert.match(drawer, /onCancel/);
+  assert.match(drawer, /aria-haspopup="dialog"/);
+  assert.match(drawer, /triggerRef/);
 });

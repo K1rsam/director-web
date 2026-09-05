@@ -16,6 +16,15 @@
 | `sites_only` | `sites-online` | D1、线上 Runner、Sites hosting 等专属代码 |
 | `local_only` | `main` | Prisma、本地服务、本地 CLI、线下工具等 |
 
+### 诊断日志的改动范围
+
+- `lib/diagnostic-log.ts`、`public/runner/diagnostic-log.mjs`、公共 Runner 里的记录协议：`common_once`，只改 `main`，Sites 生成时自动继承。
+- `lib/local-diagnostic-log.ts`、线下角色调用和本地任务脚本：`local_only`，只改 `main`，负责把详细日志保存到用户电脑。
+- `app/api/runner/diagnostics/**`、`lib/runner-diagnostics.ts`、`app/runner/diagnostic-log-panel.tsx`、Sites 下载器：`sites_only`，只改 `sites-online`，负责接收、授权上传和查看日志。
+- 仍标记为 `dual_until_split` 的样式文件：两边都要检查；公共业务逻辑不需要重复维护。
+
+日志策略固定为：Runner 对启动、连接、任务失败自动上传脱敏的最小日志；详细堆栈、标准输出和标准错误只在用户从 Sites 点击“上传详细诊断”并且 Runner 在线响应后上传。线下版本只保留本地详细 JSONL，不自动把详细内容上传到服务器。
+
 先用变更判定工具：
 
 ```text

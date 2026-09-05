@@ -1,50 +1,12 @@
 /* Vision Studio — final product design layer. Imported after legacy styles. */
 :root {
-  --vision-canvas: #f1f5fd;
-  --vision-canvas-deep: #eaf0fb;
-  --vision-page-backdrop:
-    radial-gradient(circle at 14% 7%, rgba(122, 176, 255, .20), transparent 29rem),
-    radial-gradient(circle at 82% 2%, rgba(160, 126, 255, .16), transparent 33rem),
-    linear-gradient(145deg, var(--vision-canvas-deep), #f6f4ff 56%, #edf7fd);
-  --vision-glass: rgba(250, 252, 255, 0.66);
-  --vision-glass-strong: rgba(255, 255, 255, 0.80);
-  --vision-reading: rgba(255, 255, 255, 0.94);
-  --vision-solid: #ffffff;
-  --vision-line: rgba(101, 112, 154, 0.16);
-  --vision-line-strong: rgba(108, 96, 224, 0.30);
-  --vision-text: #17203b;
-  --vision-muted: #6f7b97;
-  --vision-faint: #9aa5bc;
-  --vision-primary: #675ee4;
-  --vision-primary-2: #7653eb;
-  --vision-good: #249a7c;
-  --vision-warn: #bd8128;
-  --vision-bad: #d9586e;
-  --vision-radius-sm: 12px;
-  --vision-radius-md: 18px;
-  --vision-radius-lg: 24px;
-  --vision-radius-xl: 30px;
-  --vision-shadow-sm: 0 8px 24px rgba(56, 66, 112, 0.07), inset 0 1px rgba(255, 255, 255, 0.86);
-  --vision-shadow: 0 18px 55px rgba(62, 72, 126, 0.11), inset 0 1px rgba(255, 255, 255, 0.88);
-  --vision-shadow-float: 0 22px 65px rgba(76, 72, 154, 0.16), inset 0 1px rgba(255, 255, 255, 0.92);
-  --vision-sidebar-width: 212px;
-  --vision-sidebar-edge: 226px;
-  --vision-workspace-offset: 240px;
   --vision-topbar-inset: 14px;
-  --vision-section-gap: 28px;
-  --vision-panel-padding: 24px;
-  --vision-module-gap: 14px;
-  --motion-fast: 200ms;
-  --motion-panel: 320ms;
-  --motion-expand: 340ms;
-  --motion-route: 460ms;
   --motion-ease: cubic-bezier(.22, .8, .28, 1);
 }
 
 html {
   min-height: 100%;
   color-scheme: light;
-  background: var(--vision-canvas-deep);
 }
 /* Keep all scrollbars on the browser's normal light/default appearance. */
 *, *::before, *::after {
@@ -53,7 +15,6 @@ html {
 }
 body {
   min-height: 100vh;
-  background: transparent;
   color: var(--vision-text);
 }
 .visionRouteFrame {
@@ -77,7 +38,6 @@ body {
 
 .appChrome {
   isolation: isolate;
-  background: transparent;
   color: var(--vision-text);
 }
 .appChrome::after {
@@ -94,13 +54,6 @@ body {
 
 /* Chrome */
 .appSidebar {
-  inset: 14px auto 14px 14px;
-  width: var(--vision-sidebar-width);
-  border: 1px solid rgba(255, 255, 255, .88);
-  border-radius: 24px;
-  background: linear-gradient(155deg, rgba(255,255,255,.77), rgba(247,249,255,.55));
-  box-shadow: 0 24px 70px rgba(64,78,139,.14), inset 0 1px rgba(255,255,255,.96);
-  backdrop-filter: blur(30px) saturate(155%);
   -webkit-backdrop-filter: blur(30px) saturate(155%);
 }
 .appSidebar::before {
@@ -112,7 +65,7 @@ body {
   background: linear-gradient(180deg, rgba(255,255,255,.48), transparent);
   content: "";
 }
-.chromeBrand { position: relative; z-index: 1; gap: 9px; padding: 18px 15px 15px; }
+.chromeBrand { position: relative; z-index: 1; }
 .chromeBrand > span {
   width: 36px;
   height: 36px;
@@ -120,44 +73,29 @@ body {
   background: linear-gradient(145deg, #7e91ff, #7550e8);
   box-shadow: 0 10px 24px rgba(95,80,222,.32), inset 0 1px rgba(255,255,255,.58);
 }
-.chromeBrand strong { color: var(--vision-text); font-size: 13px; letter-spacing: -.02em; }
-.chromeBrand small { color: #939fba; font-size: 8px; letter-spacing: .14em; }
-.sidebarNav { gap: 5px; padding: 7px 10px 14px; }
+.chromeBrand strong { color: var(--vision-text); letter-spacing: -.02em; }
+.chromeBrand small { color: #939fba; font-size: var(--vision-font-small); letter-spacing: .14em; }
 .sidebarNav a {
   position: relative;
-  min-height: 38px;
-  gap: 9px;
-  border-radius: 11px;
   padding: 0 10px;
-  color: #67738e;
-  font-size: 11px;
-  font-weight: 620;
   transition: transform var(--motion-fast) var(--motion-ease), background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast), box-shadow var(--motion-fast);
 }
-.sidebarNav a:hover { transform: translateX(2px); background: rgba(255,255,255,.64); color: var(--vision-text); }
+.sidebarNav a:hover { color: var(--vision-text); }
 .sidebarNav a.active {
   border-color: transparent;
-  background: linear-gradient(135deg, rgba(255,255,255,.67), rgba(244,241,255,.66));
-  box-shadow: inset 0 1px rgba(255,255,255,.9), 0 7px 20px rgba(83,87,176,.07);
-  color: #5453cc;
 }
 .sidebarNav a.active::before {
   position: absolute;
   top: 50%;
-  left: 1px;
   width: 3px;
-  height: 17px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, #7181f2, #7656e8);
-  box-shadow: 0 3px 10px rgba(103,94,228,.28);
   transform: translateY(-50%);
   content: "";
 }
-.sidebarNav a > .navIcon { width: 16px; color: #8792aa; font-size: 12px; text-align: center; }
+.sidebarNav a > .navIcon { font-size: var(--vision-font-small); text-align: center; }
 .sidebarNav a > .navText { width: auto; min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebarEpisodes { border-top: 1px solid rgba(117,129,167,.10); padding-top: 15px; }
-.sidebarEpisodes a { min-height: 38px; border: 1px solid transparent; border-radius: 12px; transition: background var(--motion-fast), border-color var(--motion-fast), transform var(--motion-fast); }
-.sidebarEpisodes a:hover { transform: translateX(2px); border-color: rgba(255,255,255,.75); background: rgba(255,255,255,.61); }
+.sidebarEpisodes a { border: 1px solid transparent; transition: background var(--motion-fast), border-color var(--motion-fast), transform var(--motion-fast); }
+.sidebarEpisodes a:hover { border-color: rgba(255,255,255,.75); background: rgba(255,255,255,.61); }
 .sidebarEpisodes a.active { border-color: rgba(105,94,222,.18); background: rgba(245,242,255,.78); }
 .sidebarFooter { border-color: var(--vision-line); }
 
@@ -172,24 +110,11 @@ body {
   backdrop-filter: blur(28px) saturate(150%);
   -webkit-backdrop-filter: blur(28px) saturate(150%);
 }
-.appWorkspace { margin-left: var(--vision-workspace-offset); }
 .appChrome .appTopbar {
-  top: var(--vision-topbar-inset);
-  width: calc(100% - 28px);
-  min-height: 64px;
-  margin: var(--vision-topbar-inset) 14px 0;
-  border: 1px solid rgba(255,255,255,.82);
-  border-radius: 20px;
-  background: linear-gradient(120deg, rgba(255,255,255,.72), rgba(247,247,255,.55));
-  box-shadow: 0 14px 38px rgba(60,70,122,.10), inset 0 1px rgba(255,255,255,.92);
-  padding: 9px 14px 9px 18px;
-  backdrop-filter: blur(26px) saturate(150%);
   -webkit-backdrop-filter: blur(26px) saturate(150%);
 }
 .topbarIdentity { gap: 3px; }
-.topbarIdentity small { color: #909cb5; font-size: 9px; }
-.topbarIdentity strong { color: var(--vision-text); font-size: 15px; letter-spacing: -.015em; }
-.topbarTools { gap: 9px; }
+.topbarIdentity strong { color: var(--vision-text); letter-spacing: -.015em; }
 .topbarStatus {
   min-height: 32px;
   border: 1px solid rgba(255,255,255,.72);
@@ -200,7 +125,6 @@ body {
 }
 .topbarStatus i { background: var(--vision-good); box-shadow: 0 0 0 4px rgba(36,154,124,.10); }
 .topbarStatus i.live { background: #6b72ee; box-shadow: 0 0 0 4px rgba(107,114,238,.12); }
-.appMain { padding: 18px 30px 72px 16px; }
 
 .libraryTopbarMeta,
 .projectTopbarMeta {
@@ -208,7 +132,7 @@ body {
   align-items: center;
   gap: 5px;
   color: var(--vision-muted);
-  font-size: 8px;
+  font-size: var(--vision-font-small);
   white-space: nowrap;
 }
 .libraryTopbarMeta > span,
@@ -242,26 +166,19 @@ body {
 .quietButton:hover, .secondaryAction:hover, .episodeToolButton:hover, .copyPromptButton:hover, .archiveAction:hover { transform: translateY(-1px); border-color: rgba(104,91,218,.31) !important; background: rgba(255,255,255,.94) !important; color: #5c55cc !important; }
 .dangerQuietButton, .foundationStopButton, .archiveDanger, .resetEpisodeButton {
   border: 1px solid rgba(220,84,108,.28) !important;
-  border-radius: 12px !important;
   background: rgba(255,243,246,.86) !important;
-  box-shadow: inset 0 1px rgba(255,255,255,.92), 0 7px 20px rgba(170,65,84,.07) !important;
   color: #c34f64 !important;
 }
-.foundationStopButton { min-height: 34px; padding: 0 12px; font-size: 9px; font-weight: 800; cursor: pointer; }
+.foundationStopButton { min-height: 34px; padding: 0 12px; font-size: var(--vision-font-small); font-weight: 800; cursor: pointer; }
 .foundationStopButton:hover { background: #fff0f3 !important; }
 button:disabled, .appChrome button:disabled { cursor: not-allowed; filter: saturate(.55); opacity: .52; transform: none !important; box-shadow: none !important; }
 button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid rgba(103,94,228,.60); outline-offset: 3px; }
 
 .executionModeSwitch {
-  border: 1px solid rgba(255,255,255,.82);
-  border-radius: 15px;
-  background: rgba(255,255,255,.49);
-  box-shadow: var(--vision-shadow-sm);
   backdrop-filter: blur(18px) saturate(145%);
   -webkit-backdrop-filter: blur(18px) saturate(145%);
 }
-.executionModeSwitch .modeButton { min-height: 31px; border: 0 !important; border-radius: 10px !important; background: transparent !important; box-shadow: none !important; }
-.executionModeSwitch .modeButton.active { background: linear-gradient(135deg, rgba(240,242,255,.96), rgba(246,239,255,.92)) !important; box-shadow: inset 0 1px white, 0 6px 16px rgba(84,76,170,.10) !important; color: #5953cf !important; }
+.executionModeSwitch .modeButton { border: 0 !important; border-radius: 10px !important; background: transparent !important; box-shadow: none !important; }
 
 /* Project library */
 .projectLibrary, .projectDashboard, .episodeDashboard { width: min(100%, 1500px); margin: 0 auto; }
@@ -301,11 +218,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .appChrome .projectCard {
   position: relative;
   isolation: isolate;
-  overflow: hidden;
-  border: 1px solid rgba(255,255,255,.88);
-  border-radius: 24px;
-  background: rgba(255,255,255,.84);
-  box-shadow: var(--vision-shadow);
   transition: transform var(--motion-panel) var(--motion-ease), box-shadow var(--motion-panel), border-color var(--motion-panel);
 }
 .appChrome .projectCard:hover { transform: translateY(-7px); border-color: rgba(255,255,255,.98); box-shadow: var(--vision-shadow-float); }
@@ -342,7 +254,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .projectTitleRow h2 { color: var(--vision-text); }
 .projectTitleRow p, .projectCardFooter > span { color: var(--vision-muted); }
 .projectProgress > div span { color: var(--vision-muted); }
-.projectProgress > i { background: #e9edf6; }
 .projectProgress > i span { background: linear-gradient(90deg, #7185f6, #7a5bec); box-shadow: 0 0 16px rgba(112,99,228,.22); }
 .continueLink, .primaryLink { border-radius: 12px; background: rgba(241,240,255,.82); color: #5d56cf; transition: transform var(--motion-fast), background var(--motion-fast), box-shadow var(--motion-fast); }
 .continueLink:hover, .primaryLink:hover { transform: translateX(2px); background: #efedff; box-shadow: 0 8px 20px rgba(88,76,185,.11); }
@@ -361,15 +272,13 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 }
 .guidanceSignal { border-radius: 18px; background: linear-gradient(145deg, rgba(241,244,255,.92), rgba(246,239,255,.88)); box-shadow: inset 0 1px white, 0 10px 25px rgba(89,83,177,.10); }
 .guidanceCopy h1 { color: var(--vision-text); }
-.guidanceCopy h1 { font-size: clamp(18px, 1.9vw, 25px); letter-spacing: -.035em; }
+.guidanceCopy h1 { letter-spacing: -.035em; }
 .guidanceCopy > span, .guidanceMeta { color: var(--vision-muted); }
 .projectDashboard > .studioSection {
   margin: 0;
   border: 1px solid rgba(255,255,255,.82);
-  border-radius: 28px;
   background: linear-gradient(145deg, rgba(255,255,255,.55), rgba(247,248,255,.39));
   box-shadow: var(--vision-shadow);
-  padding: var(--vision-panel-padding);
   backdrop-filter: blur(22px) saturate(140%);
   -webkit-backdrop-filter: blur(22px) saturate(140%);
 }
@@ -390,16 +299,14 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 }
 .foundationControlHeader { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: var(--vision-module-gap); border-bottom: 1px solid rgba(220,224,241,.72); padding: 2px 2px 12px; }
 .foundationControlHeader > div { display: grid; gap: 3px; min-width: 0; }
-.foundationControlHeader strong { color: var(--vision-text); font-size: 12px; letter-spacing: -.01em; }
-.foundationControlHeader span, .foundationRunnerNote { color: var(--vision-muted); font-size: 9px; line-height: 1.55; }
-.foundationRunAllButton { min-height: 34px; border: 1px solid rgba(103,94,228,.22); border-radius: 999px; background: linear-gradient(135deg, #7167e7, #8469e9); box-shadow: 0 8px 18px rgba(100,88,208,.16); padding: 0 16px; color: #fff; font-size: 10px; font-weight: 800; white-space: nowrap; cursor: pointer; }
+.foundationControlHeader strong { color: var(--vision-text); font-size: var(--vision-font-small); letter-spacing: -.01em; }
+.foundationControlHeader span, .foundationRunnerNote { color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.55; }
+.foundationRunAllButton { min-height: 34px; border: 1px solid rgba(103,94,228,.22); border-radius: 999px; background: linear-gradient(135deg, #7167e7, #8469e9); box-shadow: 0 8px 18px rgba(100,88,208,.16); padding: 0 16px; color: #fff; font-size: var(--vision-font-small); font-weight: 800; white-space: nowrap; cursor: pointer; }
 .foundationRunAllButton:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 11px 22px rgba(100,88,208,.22); }
 .foundationRunAllButton:disabled { cursor: not-allowed; opacity: .58; }
 .foundationRunnerNote { margin: -4px 2px 12px; }
 .foundationRail {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--vision-module-gap);
   border: 0 !important;
   background: transparent !important;
   padding: 0 !important;
@@ -408,8 +315,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .foundationRole {
   position: relative;
   display: grid;
-  min-height: 76px;
-  height: 76px;
   grid-template-columns: 28px minmax(0, 1fr) auto;
   grid-template-rows: 1fr 1fr;
   align-content: start;
@@ -419,7 +324,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
   border-radius: 17px !important;
   background: linear-gradient(140deg, rgba(255,255,255,.78), rgba(243,247,255,.52)) !important;
   box-shadow: 0 10px 28px rgba(57,68,117,.07), inset 0 1px rgba(255,255,255,.94) !important;
-  padding: 9px 10px !important;
   backdrop-filter: blur(18px) saturate(140%);
   -webkit-backdrop-filter: blur(18px) saturate(140%);
   transition: transform var(--motion-panel) var(--motion-ease), border-color var(--motion-panel), box-shadow var(--motion-panel), background var(--motion-panel);
@@ -434,9 +338,9 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
   background: rgba(126,137,166,.30);
   content: "";
 }
-.foundationRole > span:first-child { display: grid; width: 28px; height: 28px; grid-column: 1; grid-row: 1 / 3; place-items: center; align-self: center; border-radius: 9px; background: rgba(242,241,255,.86); color: #655ad7; font-size: 9px; font-weight: 850; }
+.foundationRole > span:first-child { display: grid; width: 28px; height: 28px; grid-column: 1; grid-row: 1 / 3; place-items: center; align-self: center; border-radius: 9px; background: rgba(242,241,255,.86); color: #655ad7; font-size: var(--vision-font-small); font-weight: 850; }
 .foundationRole > div { grid-column: 2; grid-row: 1 / 3; align-self: center; min-width: 0; }
-.foundationRole strong { color: var(--vision-text) !important; font-size: 11px; }
+.foundationRole strong { color: var(--vision-text) !important; font-size: var(--vision-font-small); }
 .foundationRole small { color: var(--vision-muted) !important; }
 .foundationRole em { grid-column: 3; grid-row: 1; align-self: end; justify-self: end; color: var(--vision-faint) !important; }
 .foundationRole .foundationCardAction { position: static; grid-column: 3; grid-row: 2; align-self: start; justify-self: end; right: auto; bottom: auto; }
@@ -455,18 +359,81 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .foundationRole.automatic { cursor: default; }
 .foundationCardHitArea { position: absolute; z-index: 3; inset: 0; width: 100%; height: 100%; border: 0; border-radius: 19px; background: transparent; cursor: pointer; }
 .foundationStageForm:hover .foundationRole, .foundationStageForm:focus-within .foundationRole { transform: translateY(-4px); border-color: rgba(104,91,218,.37) !important; background: rgba(255,255,255,.88) !important; box-shadow: var(--vision-shadow-float) !important; }
-.foundationCardAction { position: absolute; right: 13px; bottom: 11px; color: #8a92a8; font-size: 8px; font-weight: 800; transition: color var(--motion-fast), transform var(--motion-fast), opacity var(--motion-fast); }
+.foundationCardAction { position: absolute; right: 13px; bottom: 11px; color: #8a92a8; font-size: var(--vision-font-small); font-weight: 800; transition: color var(--motion-fast), transform var(--motion-fast), opacity var(--motion-fast); }
 .foundationStageForm:hover .foundationCardAction { transform: translateX(2px); color: #5f56d1; }
-.foundationRole .roleRunError { position: absolute; right: 12px; bottom: 27px; left: 13px; overflow: hidden; color: var(--vision-bad); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.foundationRole .roleRunError { position: absolute; right: 12px; bottom: 27px; left: 13px; overflow: hidden; color: var(--vision-bad); font-size: var(--vision-font-small); text-overflow: ellipsis; white-space: nowrap; }
+.foundationFailureDetails { margin-top: 10px; border: 1px solid rgba(217,88,110,.18); border-radius: 12px; background: rgba(255,244,247,.42); color: var(--vision-muted); font-size: var(--vision-font-small); }
+.foundationFailureDetails summary { cursor: pointer; padding: 8px 11px; color: var(--vision-bad); font-weight: 750; }
+.foundationFailureDetails > div { display: grid; gap: 5px; padding: 0 11px 10px; line-height: 1.55; }
+.foundationFailureDetails p { margin: 0; color: var(--vision-text); }
+.foundationFailureDetails ul { display: grid; gap: 3px; margin: 0; padding-left: 17px; }
+.foundationFailureDetails li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maintenancePanel { margin-top: 11px; border: 1px solid rgba(255,255,255,.70); border-radius: 15px; background: rgba(255,255,255,.38); color: var(--vision-muted); }
-.maintenancePanel > summary { display: flex; min-height: 42px; align-items: center; justify-content: space-between; padding: 0 14px; color: #707b93; font-size: 9px; font-weight: 750; cursor: pointer; list-style: none; }
+.maintenancePanel > summary { display: flex; min-height: 42px; align-items: center; justify-content: space-between; padding: 0 14px; color: #707b93; font-size: var(--vision-font-small); font-weight: 750; cursor: pointer; list-style: none; }
 .maintenancePanel > summary::-webkit-details-marker { display: none; }
-.maintenancePanel > summary::after { color: #7167df; content: "＋"; font-size: 13px; }
+.maintenancePanel > summary::after { color: #7167df; content: "＋"; font-size: var(--vision-font-small); }
 .maintenancePanel[open] > summary::after { content: "−"; }
 .maintenancePanel > summary span { color: var(--vision-faint); font-weight: 600; }
 .maintenancePanel > div { display: flex; align-items: center; justify-content: space-between; gap: 18px; border-top: 1px solid var(--vision-line); padding: 13px 14px; }
-.maintenancePanel p { margin: 0; color: var(--vision-muted); font-size: 9px; }
+.maintenancePanel p { margin: 0; color: var(--vision-muted); font-size: var(--vision-font-small); }
 .maintenancePanel .foundationRunAll { margin: 0; }
+
+/* Page-owned episode batch monitor: visible control for the detached worker. */
+.batchMonitorCard {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 22px;
+  overflow: hidden;
+  margin: 0 0 var(--vision-section-gap);
+  border: 1px solid rgba(255,255,255,.84);
+  border-radius: 22px;
+  background: linear-gradient(135deg, rgba(247,248,255,.84), rgba(244,240,255,.72));
+  box-shadow: inset 0 1px rgba(255,255,255,.92), 0 14px 34px rgba(59,69,116,.07);
+  padding: var(--vision-panel-padding);
+  backdrop-filter: blur(22px) saturate(140%);
+  -webkit-backdrop-filter: blur(22px) saturate(140%);
+}
+.batchMonitorCard::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 4px;
+  background: linear-gradient(180deg, #7887f5, #9a72e9);
+  content: "";
+}
+.batchMonitorCopy { min-width: 0; }
+.batchMonitorEyebrow { display: block; margin-bottom: 5px; color: #7567df; font-size: var(--vision-font-caption); font-weight: 850; letter-spacing: .16em; }
+.batchMonitorCopy h2 { margin: 0 0 7px; color: var(--vision-text); font-size: var(--vision-font-heading); letter-spacing: -.025em; }
+.batchMonitorCopy > p { max-width: 920px; margin: 0; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.7; }
+.batchMonitorMeta { display: flex; flex-wrap: wrap; gap: 7px 16px; margin-top: 12px; color: var(--vision-faint); font-size: var(--vision-font-caption); }
+.batchMonitorMeta span { display: inline-flex; align-items: center; gap: 5px; }
+.batchMonitorMeta span::before { width: 5px; height: 5px; border-radius: 50%; background: #7b70e7; content: ""; }
+.batchMonitorMessage { margin-top: 10px !important; color: var(--vision-primary) !important; font-size: var(--vision-font-caption) !important; }
+.batchMonitorMessage.blocked, .batchMonitorMessage.bad { color: var(--vision-bad) !important; }
+.batchMonitorSkippedNotice { color: #6a5bc8 !important; }
+.batchMonitorLegacyNotice { color: #6a5bc8 !important; }
+.batchMonitorLegacyDetails { margin-top: 8px; color: var(--vision-faint); font-size: var(--vision-font-caption); }
+.batchMonitorLegacyDetails summary { color: var(--vision-faint); cursor: pointer; }
+.batchMonitorLegacyDetails p { margin: 6px 0 0; color: var(--vision-faint); }
+.batchMonitorActions { display: grid; min-width: 164px; justify-items: stretch; gap: 10px; }
+.batchMonitorActions form { margin: 0; }
+.batchMonitorStatus { display: inline-flex; align-items: center; justify-content: center; gap: 7px; color: var(--vision-faint); font-size: var(--vision-font-caption); font-weight: 750; white-space: nowrap; }
+.batchMonitorStatus i { width: 7px; height: 7px; border-radius: 50%; background: #aab2c4; box-shadow: 0 0 0 4px rgba(170,178,196,.12); }
+.batchMonitorStatus.active { color: #6259d5; }
+.batchMonitorStatus.active i { background: #6d70e8; box-shadow: 0 0 0 4px rgba(109,112,232,.12); animation: uiPulse 1.5s ease-in-out infinite; }
+.batchMonitorStatus.success { color: var(--vision-good); }
+.batchMonitorStatus.success i { background: var(--vision-good); box-shadow: 0 0 0 4px rgba(36,154,124,.11); }
+.batchMonitorStatus.blocked { color: var(--vision-bad); }
+.batchMonitorStatus.blocked i { background: var(--vision-bad); box-shadow: 0 0 0 4px rgba(217,88,110,.11); }
+.batchMonitorButton { display: inline-flex; width: 100%; min-height: 38px; align-items: center; justify-content: center; gap: 8px; border: 1px solid rgba(103,94,228,.22); border-radius: 12px; padding: 0 14px; font: inherit; font-size: var(--vision-font-small); font-weight: 800; cursor: pointer; transition: transform var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast), opacity var(--motion-fast); }
+.batchMonitorButton.primary { background: linear-gradient(135deg, #7167e7, #8469e9); box-shadow: 0 10px 22px rgba(100,88,208,.18), inset 0 1px rgba(255,255,255,.4); color: #fff; }
+.batchMonitorButton.stop { border-color: rgba(217,88,110,.22); background: rgba(255,244,247,.82); color: var(--vision-bad); }
+.batchMonitorButton:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 13px 26px rgba(82,78,205,.20), inset 0 1px rgba(255,255,255,.5); }
+.batchMonitorButton.stop:hover:not(:disabled) { box-shadow: 0 10px 22px rgba(217,88,110,.13); }
+.batchMonitorButton:disabled { cursor: not-allowed; opacity: .55; }
 
 /* Reading surfaces */
 .phaseStep, .studioCard, .sceneStructureCard, .episodeStudioList > article, .storyboardCanvas, .unitCard, .logView > section, .createFormSection, .createFormFooter, .projectEmptyState {
@@ -481,6 +448,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .cardHeader { border-color: var(--vision-line) !important; background: linear-gradient(135deg, rgba(249,250,255,.96), rgba(247,245,255,.88)) !important; }
 .cardHeader h3, .bibleSectionHead, .studioTable td, .sceneStructureHead h3 { color: var(--vision-text) !important; }
 .cardHeader > div > span, .cardHeader em { color: #6a60d9 !important; }
+.cardHeaderActions { flex-wrap: wrap; justify-content: flex-end; }
 .bibleSectionHead, .bibleEpisode, .assetTabBar, .studioTable th { border-color: var(--vision-line) !important; background: transparent !important; }
 .bibleEpisode, .studioTable tbody tr { transition: background var(--motion-fast); }
 .bibleEpisode:hover, .studioTable tbody tr:hover { background: #fbfaff !important; }
@@ -499,18 +467,11 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
   border-radius: var(--vision-radius-lg);
   background: linear-gradient(130deg, rgba(255,255,255,.59), rgba(247,247,255,.42));
   box-shadow: var(--vision-shadow-sm);
-  padding: 20px var(--vision-panel-padding) !important;
   backdrop-filter: blur(20px) saturate(140%);
   -webkit-backdrop-filter: blur(20px) saturate(140%);
 }
 .episodeRoleDeck > .roleProgressRail {
-  gap: var(--vision-module-gap);
   margin: 0;
-  border: 1px solid rgba(255,255,255,.82);
-  border-radius: 26px;
-  background: linear-gradient(145deg, rgba(255,255,255,.55), rgba(246,248,255,.38));
-  box-shadow: var(--vision-shadow);
-  padding: 16px !important;
   backdrop-filter: blur(22px) saturate(140%);
   -webkit-backdrop-filter: blur(22px) saturate(140%);
 }
@@ -525,12 +486,12 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 /* New project */
 .createPage, .newProjectPage { width: min(100%, 1180px); margin: 0 auto; }
 .createFormSection, .createFormFooter { border-radius: 24px !important; }
-.sourceTabs { border-radius: 15px; background: rgba(235,239,248,.72) !important; }
-.sourceTabs button { border-radius: 11px; transition: background var(--motion-fast), color var(--motion-fast), box-shadow var(--motion-fast); }
+.sourceTabs { background: rgba(235,239,248,.72) !important; }
+.sourceTabs button { transition: background var(--motion-fast), color var(--motion-fast), box-shadow var(--motion-fast); }
 .sourceTabs button.active { background: rgba(255,255,255,.92) !important; box-shadow: var(--vision-shadow-sm) !important; }
 .scriptDropzone, .scriptPasteField textarea, .basicConfigGrid input, .basicConfigGrid select, .executionModeFooter select { border-color: var(--vision-line) !important; border-radius: 14px !important; background: rgba(249,250,255,.86) !important; }
-.styleOption { border-radius: 18px !important; transition: transform var(--motion-fast), border-color var(--motion-fast), box-shadow var(--motion-fast), background var(--motion-fast); }
-.styleOption:hover { transform: translateY(-2px); box-shadow: var(--vision-shadow-sm); }
+.styleOption { transition: transform var(--motion-fast), border-color var(--motion-fast), box-shadow var(--motion-fast), background var(--motion-fast); }
+.styleOption:hover { box-shadow: var(--vision-shadow-sm); }
 
 /* Episode control room */
 .episodePageHeading { padding: 20px var(--vision-panel-padding) !important; }
@@ -564,28 +525,31 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .roleProgress.running::before { background: rgba(103,94,228,.78); }
 .roleProgress.failed { border-color: rgba(217,88,110,.25) !important; background: linear-gradient(140deg, rgba(255,255,255,.82), rgba(255,241,245,.54)) !important; }
 .roleProgress.failed::before { background: rgba(217,88,110,.75); }
-.roleStageForm:hover .roleProgress, .roleStageForm:focus-within .roleProgress { transform: translateY(-4px) !important; border-color: rgba(104,91,218,.38) !important; background: rgba(255,255,255,.89) !important; box-shadow: var(--vision-shadow-float) !important; }
+.roleStageForm:hover .roleProgress, .roleStageForm:focus-within .roleProgress { border-color: rgba(104,91,218,.38) !important; background: rgba(255,255,255,.89) !important; }
 .roleCardAction { right: 13px !important; bottom: 11px !important; }
 .parallelRunningHint { border-radius: 14px; box-shadow: var(--vision-shadow-sm); }
 
 .storyboardCanvas { overflow: hidden; border-radius: 22px !important; }
-.canvasToolbar { min-height: 62px; border-color: var(--vision-line) !important; background: rgba(252,253,255,.88) !important; backdrop-filter: blur(18px); }
+.canvasToolbar { border-color: var(--vision-line) !important; backdrop-filter: blur(18px); }
 .viewTabs a { position: relative; padding: 0 2px; color: var(--vision-muted) !important; transition: color var(--motion-fast); }
 .viewTabs a::after { position: absolute; right: 0; bottom: 0; left: 0; height: 2px; border-radius: 2px; background: linear-gradient(90deg,#6b74ef,#7857e9); content: ""; opacity: 0; transform: scaleX(.4); transition: opacity var(--motion-fast), transform var(--motion-fast); }
 .viewTabs a.active { border-bottom: 0 !important; color: #554ec8 !important; }
 .viewTabs a.active::after { opacity: 1; transform: scaleX(1); }
 .viewTabs b { border-radius: 999px; background: #eef0f7 !important; color: #77829a !important; }
 .storyboardTableWrap { background: #fff; }
-.storyboardTable th { background: #f1f4fa !important; color: #657087 !important; }
-.storyboardTable td { background: rgba(255,255,255,.98); color: #59667e !important; }
+.storyboardTable th { background: #f1f4fa !important; }
+.storyboardTable td { background: rgba(255,255,255,.98); }
 .storyboardTable td:first-child { background: #fcfdff !important; }
 .storyboardTable tbody tr:hover td { background: #fbfaff !important; }
 .cellText { line-height: 1.68; }
 
 .unitList, .logView { padding: 16px !important; }
-.exportEpisodeBar { border-radius: 16px !important; background: rgba(249,250,255,.88) !important; }
-.unitCard, .logView > section { border-radius: 20px !important; background: rgba(255,255,255,.97) !important; box-shadow: 0 12px 34px rgba(48,58,100,.06), inset 0 1px white !important; transition: transform var(--motion-panel), border-color var(--motion-panel), box-shadow var(--motion-panel); }
-.unitCard:hover { transform: translateY(-2px); border-color: rgba(105,94,224,.20) !important; box-shadow: 0 18px 42px rgba(65,59,139,.085), inset 0 1px white !important; }
+.exportEpisodeBar { background: rgba(249,250,255,.88) !important; }
+.unitCard, .logView > section { background: rgba(255,255,255,.97) !important; transition: transform var(--motion-panel), border-color var(--motion-panel), box-shadow var(--motion-panel); }
+.appChrome .logView > section { display: flex; min-height: 0; flex-direction: column; }
+.appChrome .logEntries,
+.appChrome .issueEntries { min-height: 0; overflow: auto; }
+.unitCard:hover { border-color: rgba(105,94,224,.20) !important; }
 .promptPreview, .seedancePrompt pre, .logRow details, .promptManualEdit textarea { border-color: #e8ebf3 !important; border-radius: 14px !important; background: #fcfdff !important; color: #56637b !important; }
 .promptVersionChip { border-radius: 999px !important; background: rgba(255,255,255,.86) !important; }
 .promptVersionChip.active { border-color: rgba(47,159,128,.25) !important; background: #effaf6 !important; }
@@ -604,7 +568,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
   align-items: center;
   gap: 5px;
   color: var(--vision-muted);
-  font-size: 8px;
+  font-size: var(--vision-font-small);
   white-space: nowrap;
 }
 .episodeTopbarMeta span { border: 1px solid var(--vision-line); border-radius: 999px; background: rgba(255,255,255,.54); padding: 5px 7px; }
@@ -614,43 +578,31 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
   min-height: 30px !important;
   border-radius: 10px !important;
   padding: 0 9px !important;
-  font-size: 8px !important;
+  font-size: var(--vision-font-small) !important;
 }
 .episodeRoleDeck {
   flex: 0 0 auto;
   overflow: hidden;
-  border: 1px solid rgba(255,255,255,.82);
-  border-radius: 22px;
-  background: linear-gradient(145deg, rgba(255,255,255,.55), rgba(246,248,255,.38));
-  box-shadow: var(--vision-shadow-sm);
-  backdrop-filter: blur(20px) saturate(140%);
   -webkit-backdrop-filter: blur(20px) saturate(140%);
 }
 .episodeRoleDeck > summary {
   display: flex;
-  min-height: 34px;
   align-items: center;
   gap: 10px;
-  padding: 0 14px;
   color: #65708a;
-  font-size: 9px;
-  font-weight: 800;
+  font-size: var(--vision-font-small);
   cursor: pointer;
   list-style: none;
 }
 .episodeRoleDeck > summary::-webkit-details-marker { display: none; }
-.episodeRoleDeck > summary b { margin-left: auto; color: #7b84a0; font-size: 8px; }
-.episodeRoleDeck > summary::after { color: #675bd8; content: "＋"; font-size: 13px; }
+.episodeRoleDeck > summary b { margin-left: auto; color: #7b84a0; font-size: var(--vision-font-small); }
+.episodeRoleDeck > summary::after { color: #675bd8; content: "＋"; font-size: var(--vision-font-small); }
 .episodeRoleDeck[open] > summary { border-bottom: 1px solid var(--vision-line); }
 .episodeRoleDeck[open] > summary::after { content: "−"; }
-.episodeRoleDeck > .roleProgressRail { border: 0; border-radius: 0; background: transparent; box-shadow: none; padding: 10px 12px !important; }
+.episodeRoleDeck > .roleProgressRail { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
 .episodeShell .episodeRoleDeck .roleProgress {
-  height: 68px;
-  min-height: 68px !important;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
   grid-template-rows: 1fr 1fr;
   gap: 2px 8px;
-  padding: 8px 10px !important;
 }
 .episodeShell .episodeRoleDeck .roleProgress > span:first-child { grid-column: 1; grid-row: 1 / 3; align-self: center; }
 .episodeShell .episodeRoleDeck .roleProgress > div { grid-column: 2; grid-row: 1 / 3; align-self: center; min-width: 0; }
@@ -667,11 +619,13 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
   .episodeShell .episodeDashboard { display: flex; height: 100%; min-height: 0; flex-direction: column; gap: 14px; }
   .episodeShell .parallelRunningHint, .episodeShell .episodeRoleDeck { flex: 0 0 auto; margin: 0; }
   .episodeShell .workspaceGrid.no-rail { display: block; flex: 1 1 auto; height: auto; min-height: 0; overflow: hidden; }
-  .episodeShell .storyboardCanvas { display: flex; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; isolation: isolate; border-radius: 26px !important; clip-path: inset(0 round 26px); }
+  .episodeShell .storyboardCanvas { display: flex; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; isolation: isolate; border-radius: 22px !important; clip-path: inset(0 round 22px); }
   .episodeShell .canvasToolbar { position: sticky; z-index: 6; top: 0; flex: 0 0 auto; }
   .episodeShell .storyboardTableWrap,
-  .episodeShell .unitList,
-  .episodeShell .logView { flex: 1 1 auto; height: auto; min-height: 0; max-height: none; overflow: auto; }
+  .episodeShell .unitList { flex: 1 1 auto; height: auto; min-height: 0; max-height: none; overflow: auto; }
+  .episodeShell .logView { flex: 1 1 auto; height: auto; min-height: 0; max-height: none; overflow: hidden; }
+  .episodeShell .logEntries,
+  .episodeShell .issueEntries { flex: 1 1 auto; min-height: 0; overflow: auto; scrollbar-gutter: stable; }
   .episodeShell .unitList { align-content: start; grid-auto-rows: max-content; }
   .episodeShell .unitCard { height: max-content; }
   .episodeShell .seedancePrompt pre { max-height: none; overflow: visible; }
@@ -716,7 +670,6 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
 
 @media (max-width: 980px) {
   .appChrome::before { left: 0; }
-  .appWorkspace { margin-left: 0; }
   .appTopbar { padding-left: 18px; }
   .appMain { width: 100%; padding-left: 22px; }
 }
@@ -724,15 +677,13 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
 @media (max-width: 760px) {
   .appWorkspace { margin-left: 0; }
   .appTopbar { padding: 10px 14px; }
-  .appMain { padding: 18px 14px 56px; }
   .appChrome::before { height: 66px; }
   .projectCardGrid, .foundationRail { grid-template-columns: 1fr; }
   .libraryHeading, .projectDashboard > .studioSection { padding: 18px; }
   .projectLibrary .projectCardGrid { border-radius: 22px; padding: 10px; }
   .projectLibrary .projectCardGrid.singleProject { width: 100%; grid-template-columns: 1fr; }
-  .projectLibrary .projectCardGrid.singleProject .projectPoster { min-height: 200px; }
   .episodeRoleDeck > .roleProgressRail { overflow-x: auto; padding: 12px !important; }
-  .workflowGuidance { grid-template-columns: 48px minmax(0,1fr); padding: 18px; }
+  .workflowGuidance { padding: 18px; }
   .workflowGuidance .guidanceMeta, .workflowGuidance .glassPrimary, .workflowGuidance form { grid-column: 1 / -1; }
   .maintenancePanel > div { align-items: flex-start; flex-direction: column; }
   .topbarStatus { display: none; }
@@ -770,13 +721,6 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
 .loginCard {
   position: relative;
   z-index: 1;
-  width: min(100%, 420px);
-  border: 1px solid rgba(255,255,255,.88);
-  border-radius: var(--vision-radius-xl);
-  background: linear-gradient(145deg, rgba(255,255,255,.82), rgba(247,248,255,.61));
-  box-shadow: var(--vision-shadow-float);
-  padding: 34px;
-  backdrop-filter: blur(30px) saturate(155%);
   -webkit-backdrop-filter: blur(30px) saturate(155%);
 }
 .loginBrand { display: flex; align-items: center; gap: 10px; }
@@ -793,15 +737,15 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
   font-weight: 760;
 }
 .loginBrand div { display: grid; gap: 2px; }
-.loginBrand strong { color: var(--vision-text); font-size: 14px; }
-.loginBrand small { color: var(--vision-faint); font-size: 8px; letter-spacing: .14em; text-transform: uppercase; }
+.loginBrand strong { color: var(--vision-text); font-size: var(--vision-font-small); }
+.loginBrand small { color: var(--vision-faint); font-size: var(--vision-font-small); letter-spacing: .14em; text-transform: uppercase; }
 .loginHeading { margin: 34px 0 25px; }
-.loginHeading p { margin: 0 0 8px; color: var(--vision-primary); font-size: 9px; font-weight: 780; letter-spacing: .18em; }
-.loginHeading h1 { margin: 0; color: var(--vision-text); font-size: 27px; letter-spacing: -.045em; }
-.loginHeading span { display: block; margin-top: 10px; color: var(--vision-muted); font-size: 12px; line-height: 1.7; }
+.loginHeading p { margin: 0 0 8px; color: var(--vision-primary); font-size: var(--vision-font-small); font-weight: 780; letter-spacing: .18em; }
+.loginHeading h1 { margin: 0; color: var(--vision-text); font-size: var(--vision-font-title); letter-spacing: -.045em; }
+.loginHeading span { display: block; margin-top: 10px; color: var(--vision-muted); line-height: 1.7; }
 .loginForm { display: grid; gap: 15px; }
 .loginForm label { display: grid; gap: 7px; }
-.loginForm label > span { color: #59657e; font-size: 11px; font-weight: 720; }
+.loginForm label > span { color: #59657e; }
 .loginForm input {
   width: 100%;
   min-height: 46px;
@@ -813,7 +757,7 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
   padding: 0 14px;
   color: var(--vision-text);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--vision-font-small);
   transition: border-color var(--motion-fast), box-shadow var(--motion-fast), background var(--motion-fast);
 }
 .loginForm input::placeholder { color: #aab3c6; }
@@ -827,23 +771,23 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
   box-shadow: 0 14px 32px rgba(82,78,205,.27), inset 0 1px rgba(255,255,255,.48);
   color: white;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--vision-font-small);
   font-weight: 760;
   cursor: pointer;
   transition: transform var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast);
 }
 .loginForm > button:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 18px 38px rgba(78,72,199,.32), inset 0 1px rgba(255,255,255,.56); }
 .loginForm > button:focus-visible { outline: 2px solid rgba(103,94,228,.60); outline-offset: 3px; }
-.loginError { margin: -3px 0 0; border-radius: 10px; background: rgba(255,239,243,.74); padding: 9px 11px; color: var(--vision-bad); font-size: 11px; }
-.loginFootnote { margin: 22px 0 0; color: var(--vision-faint); font-size: 9px; line-height: 1.6; text-align: center; }
+.loginError { margin: -3px 0 0; border-radius: 10px; background: rgba(255,239,243,.74); padding: 9px 11px; font-size: var(--vision-font-small); }
+.loginFootnote { margin: 22px 0 0; color: var(--vision-faint); font-size: var(--vision-font-small); line-height: 1.6; text-align: center; }
 
-.sidebarWorkflow { display: grid; gap: 3px; }
-.accountMenu { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto auto; align-items: center; gap: 8px; border-top: 1px solid var(--vision-line); padding-top: 12px; }
-.accountAvatar { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 10px; background: linear-gradient(145deg, #eef1ff, #f3edff); color: #675bd8 !important; font-size: 11px !important; font-weight: 800; }
+.sidebarWorkflow { display: grid; }
+.accountMenu { display: grid; align-items: center; border-top: 1px solid var(--vision-line); padding-top: 12px; }
+.accountAvatar { display: grid; place-items: center; border-radius: 10px; background: linear-gradient(145deg, #eef1ff, #f3edff); color: #675bd8 !important; font-weight: 800; }
 .accountMenu > div { display: grid; min-width: 0; gap: 1px; }
-.accountMenu > div strong { overflow: hidden; color: var(--vision-text); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-.accountMenu > div small { overflow: hidden; color: var(--vision-faint); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
-.accountMenu button, .accountMenu > a { border: 0; background: transparent; padding: 4px; color: var(--vision-muted); font-size: 8px; cursor: pointer; text-decoration: none; }
+.accountMenu > div strong { overflow: hidden; color: var(--vision-text); text-overflow: ellipsis; white-space: nowrap; }
+.accountMenu > div small { overflow: hidden; color: var(--vision-faint); text-overflow: ellipsis; white-space: nowrap; }
+.accountMenu button, .accountMenu > a { border: 0; background: transparent; padding: 4px; color: var(--vision-muted); cursor: pointer; text-decoration: none; }
 .accountMenu button:hover, .accountMenu > a:hover { color: var(--vision-primary); }
 .mobileAccountMenu { margin-top: 4px; border-top: 1px solid var(--vision-line); padding: 10px 4px 2px; }
 .mobileAccountMenu .accountMenu { border-top: 0; padding-top: 0; }
@@ -855,18 +799,6 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
 
 /* Responsive display framework */
 :root {
-  --vision-font-caption: clamp(11px, calc(9.75px + .08vw), 13px);
-  --vision-font-small: clamp(12px, calc(10.5px + .10vw), 14px);
-  --vision-font-unit: clamp(13px, calc(11.75px + .08vw), 15px);
-  --vision-font-body: clamp(14px, calc(12.5px + .12vw), 16px);
-  --vision-font-heading: clamp(18px, calc(16px + .25vw), 26px);
-  --vision-sidebar-width: clamp(220px, 12.5vw, 252px);
-  --vision-workspace-offset: calc(var(--vision-sidebar-width) + 28px);
-  --vision-content-max: 2200px;
-  --vision-page-gutter: clamp(16px, 1.5vw, 32px);
-  --vision-section-gap: clamp(24px, 1.6vw, 36px);
-  --vision-panel-padding: clamp(20px, 1.5vw, 32px);
-  --vision-module-gap: clamp(12px, .9vw, 20px);
   color-scheme: light;
   background: var(--vision-canvas-deep);
 }
@@ -874,27 +806,23 @@ details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) va
 html, body {
   min-width: 320px;
   margin: 0;
+  background: var(--vision-page-backdrop);
 }
 
-html { background: var(--vision-canvas-deep); }
-body { background: transparent; font-size: var(--vision-font-body); }
+html { background: var(--vision-page-backdrop); }
+body { background: var(--vision-page-backdrop); font-size: var(--vision-font-body); }
 .appChrome { min-height: 100dvh; background: transparent; font-size: var(--vision-font-body); }
 .appSidebar { width: var(--vision-sidebar-width); }
 .appWorkspace { min-width: 0; margin-left: var(--vision-workspace-offset); }
 .appChrome .appTopbar {
   top: var(--vision-topbar-inset);
   width: auto;
-  min-height: clamp(68px, 4.3vw, 76px);
   margin: var(--vision-topbar-inset) var(--vision-page-gutter) 0;
-  border-radius: 20px;
-  padding: 10px var(--vision-page-gutter);
 }
 .appMain { width: 100%; padding: var(--vision-page-gutter) var(--vision-page-gutter) clamp(56px, 5vw, 88px); }
 .projectLibrary, .projectDashboard, .episodeDashboard,
 .appChrome .projectLibrary { width: 100%; max-width: var(--vision-content-max); }
 .createPage, .newProjectPage, .appChrome .createProjectPage { width: 100%; max-width: 1600px; }
-
-.chromeBrand strong { font-size: var(--vision-font-body); }
 .chromeBrand small, .topbarIdentity small,
 .libraryTopbarMeta, .projectTopbarMeta,
 .sectionEyebrow, .projectHeroMeta p,
@@ -909,7 +837,6 @@ body { background: transparent; font-size: var(--vision-font-body); }
 .styleOptionCopy small, .createFormFooter p,
 .episodeSummary p, .episodeCounts span { font-size: var(--vision-font-small); }
 .topbarIdentity strong { font-size: clamp(16px, calc(14px + .18vw), 19px); }
-.sidebarNav a { min-height: clamp(42px, 2.7vw, 48px); }
 
 .libraryHeading h1, .createPageHeading h1,
 .projectHeroMeta h2 { font-size: clamp(28px, calc(22px + .65vw), 40px); }
@@ -923,15 +850,13 @@ body { background: transparent; font-size: var(--vision-font-body); }
 .styleFieldset > p, .biblePlaceholder p { font-size: var(--vision-font-body); }
 
 .workflowGuidance { grid-template-columns: clamp(48px, 3vw, 60px) minmax(320px, 1fr) auto auto; gap: var(--vision-module-gap); padding: var(--vision-panel-padding); }
-.foundationRail { grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: var(--vision-module-gap); }
+.foundationRail { gap: var(--vision-module-gap); }
 .foundationRole { min-height: clamp(82px, 5vw, 96px); height: auto; padding: 12px 14px !important; }
 .foundationRole strong, .phaseStep strong,
 .styleOptionCopy strong, .scriptDropzone strong,
 .basicConfigGrid label, .styleFieldset legend { font-size: var(--vision-font-body); }
 .foundationCardAction, .maintenancePanel > summary,
 .maintenancePanel p { font-size: var(--vision-font-small); }
-
-.cardHeader { min-height: 72px; padding: 18px var(--vision-panel-padding); }
 .appChrome .studioCard, .appChrome .sceneStructureCard,
 .appChrome .contractSection { padding: var(--vision-panel-padding); }
 .appChrome .studioCard:has(> .cardHeader),
@@ -949,8 +874,6 @@ body { background: transparent; font-size: var(--vision-font-body); }
 .bibleEpisode small, .assetTabBar button b { font-size: var(--vision-font-caption); }
 
 .appChrome .studioTableScroll table { font-size: var(--vision-font-body); }
-.appChrome .studioTableScroll th { font-size: var(--vision-font-small); }
-.appChrome .studioTableScroll td { font-size: var(--vision-font-small); line-height: 1.7; }
 .appChrome .studioTableScroll th,
 .appChrome .studioTableScroll td { padding: clamp(11px, .8vw, 16px); }
 .appChrome .studioGrid.twoColumns { align-items: start; }
@@ -979,35 +902,19 @@ body { background: transparent; font-size: var(--vision-font-body); }
 .episodeStudioList > article { min-height: 108px; gap: var(--vision-module-gap); padding: 18px var(--vision-panel-padding); }
 .episodeNumber { font-size: clamp(28px, 2vw, 36px); }
 .episodeCounts b { font-size: var(--vision-font-heading); }
-.appChrome .episodeStudioList > article {
-  min-height: 88px;
-  grid-template-columns: 52px minmax(220px, 1fr) auto auto;
-  gap: 16px;
-  padding: 13px 16px;
-  border-radius: 15px;
-}
 .appChrome .episodeStudioList .episodeNumber {
   display: grid;
-  width: 40px;
-  height: 40px;
   place-items: center;
   border-radius: 12px;
   background: #f1efff;
-  color: #6860d9;
-  font-size: 22px;
   line-height: 1;
 }
 .appChrome .episodeStudioList .episodeSummary > div { gap: 8px; margin-bottom: 4px; }
-.appChrome .episodeStudioList .episodeSummary h3 { max-width: 42vw; font-size: 14px; font-weight: 780; line-height: 1.35; }
-.appChrome .episodeStudioList .episodeSummary p { margin: 0; color: #7a849a; font-size: 11px; line-height: 1.45; }
-.appChrome .episodeStudioList .episodeCounts { gap: 0; align-items: center; }
-.appChrome .episodeStudioList .episodeCounts span { min-width: 56px; padding: 0 9px; line-height: 1.35; }
-.appChrome .episodeStudioList .episodeCounts b { font-size: 16px; line-height: 1; }
-.appChrome .episodeStudioList .primaryLink { min-height: 32px; gap: 8px; padding: 0 12px; font-size: 10px; white-space: nowrap; }
+.appChrome .episodeStudioList .episodeSummary h3 { font-weight: 780; line-height: 1.35; }
+.appChrome .episodeStudioList .episodeSummary p { margin: 0; color: #7a849a; font-size: var(--vision-font-small); line-height: 1.45; }
 
 @media (max-width: 760px) {
   .appChrome .assetIndexTabs .compactTable { height: 320px; min-height: 320px; }
-  .appChrome .episodeStudioList > article { grid-template-columns: 44px minmax(0, 1fr); gap: 10px 12px; }
   .appChrome .episodeStudioList .episodeCounts,
   .appChrome .episodeStudioList .primaryLink { grid-column: 2; }
   .appChrome .episodeStudioList .episodeCounts { justify-content: flex-start; }
@@ -1022,407 +929,21 @@ body { background: transparent; font-size: var(--vision-font-body); }
 }
 
 @media (max-width: 980px) {
-  .appWorkspace { margin-left: 0; }
   .appChrome .appTopbar { border-radius: 16px; }
 }
 
 @media (max-width: 760px) {
   .workflowGuidance { grid-template-columns: 1fr; }
-  .foundationRail { grid-template-columns: 1fr; }
   .sectionHeading { align-items: flex-start; flex-direction: column; }
   .sectionHeading p { max-width: none; text-align: left; }
-}
-
-/* 同步本地工作台的可读密度：分集导航独立滚动，账号栏不再遮住最后一集。 */
-.appChrome .appSidebar { height: calc(100dvh - 28px); min-height: 0; }
-.appChrome .sidebarEpisodes { flex: 1 1 auto; min-height: 0; overflow: hidden; }
-.appChrome .sidebarEpisodeScroller {
-  min-height: 0;
-  max-height: none;
-  flex: 1 1 auto;
-  overflow-y: auto;
-  overflow-x: hidden;
-  overscroll-behavior: contain;
-  padding-bottom: 12px;
-}
-.appChrome .sidebarFooter { flex: 0 0 auto; margin-top: 0; }
-.appChrome .sidebarEpisodes > p,
-.appChrome .sidebarEpisodes a,
-.appChrome .sidebarWorkflow span,
-.appChrome .sidebarWorkflow strong { font-size: var(--vision-font-small); }
-.appChrome .sidebarEpisodes a b { font-size: var(--vision-font-small); }
-.appChrome .sidebarEpisodes a i { font-size: var(--vision-font-caption); }
-.appChrome .projectTopbarMeta { font-size: var(--vision-font-small); }
-
-/* 80 集按十集收起，避免页面首屏被长列表推走。 */
-.episodeStudioGroups { display: grid; gap: 10px; }
-.episodeStudioGroup {
-  overflow: hidden;
-  border: 1px solid rgba(220,224,241,.84);
-  border-radius: 16px;
-  background: rgba(255,255,255,.38);
-}
-.episodeStudioGroup > summary {
-  display: flex;
-  min-height: 46px;
-  align-items: center;
-  gap: 10px;
-  padding: 0 15px;
-  color: var(--vision-text);
-  cursor: pointer;
-  list-style: none;
-}
-.episodeStudioGroup > summary::-webkit-details-marker { display: none; }
-.episodeStudioGroup > summary::before {
-  width: 16px;
-  color: #7567df;
-  content: "＋";
-  font-size: 13px;
-  font-weight: 700;
-  text-align: center;
-}
-.episodeStudioGroup[open] > summary::before { content: "−"; }
-.episodeStudioGroup > summary > span { font-size: var(--vision-font-unit); font-weight: 800; }
-.episodeStudioGroup > summary > em {
-  margin-left: auto;
-  color: var(--vision-muted);
-  font-size: var(--vision-font-small);
-  font-style: normal;
-  white-space: nowrap;
-}
-.episodeStudioGroup > .episodeStudioList {
-  border-top: 1px solid var(--vision-line);
-  padding: 10px;
-}
-
-/* 项目策划和资产索引同高；超出内容只在资产表内部滚动。 */
-.foundationReferenceGrid { align-items: stretch; }
-@media (min-width: 1321px) {
-  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard {
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-  }
-  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .cardHeader {
-    flex: 0 0 auto;
-  }
-  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .bibleViewer,
-  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .assetIndexTabs {
-    min-height: 0;
-    flex: 1 1 auto;
-  }
-  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .bibleViewer,
-  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .biblePlaceholder {
-    flex: 0 0 auto;
-  }
-  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid > .studioCard > .assetIndexTabs {
-    display: flex;
-    flex-direction: column;
-  }
-  .projectDashboard > .studioSection#phase-one > .foundationReferenceGrid .assetIndexTabs .compactTable {
-    height: auto;
-    min-height: 0;
-    max-height: none;
-    flex: 1 1 auto;
-    overflow: auto;
-  }
-}
-
-/* 表现规范沿用全局字号，并将已锁定内容压缩成可展开条，不抢主工作区。 */
-.appChrome .projectDashboard .contractSectionCompact {
-  margin: 0 0 10px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-}
-.appChrome .projectDashboard .contractCompactDetails,
-.appChrome .projectDashboard .contractConfirmed {
-  border: 1px solid rgba(210,216,239,.84);
-  border-radius: 12px;
-  background: rgba(255,255,255,.48);
-}
-.appChrome .projectDashboard .contractCompactDetails > summary,
-.appChrome .projectDashboard .contractConfirmed > summary {
-  display: flex;
-  min-height: 46px;
-  align-items: center;
-  gap: 9px;
-  padding: 0 14px;
-  color: var(--vision-text);
-  cursor: pointer;
-  font-size: var(--vision-font-unit);
-  font-weight: 800;
-  list-style: none;
-}
-.appChrome .projectDashboard .contractCompactDetails > summary::-webkit-details-marker,
-.appChrome .projectDashboard .contractConfirmed > summary::-webkit-details-marker { display: none; }
-.appChrome .projectDashboard .contractCompactDetails > summary::after,
-.appChrome .projectDashboard .contractConfirmed > summary::after {
-  margin-left: auto;
-  color: var(--vision-primary);
-  content: "＋";
-}
-.appChrome .projectDashboard .contractCompactDetails[open] > summary::after,
-.appChrome .projectDashboard .contractConfirmed[open] > summary::after { content: "−"; }
-.appChrome .projectDashboard .contractCompactDetails > summary > span {
-  color: var(--vision-primary);
-  font-size: var(--vision-font-caption);
-  letter-spacing: .12em;
-}
-.appChrome .projectDashboard .contractCompactDetails > summary > b,
-.appChrome .projectDashboard .contractConfirmed > summary > span {
-  font-size: var(--vision-font-small);
-}
-.appChrome .projectDashboard .contractCompactDetails > summary > em,
-.appChrome .projectDashboard .contractCompactDetails > summary > i {
-  color: var(--vision-good);
-  font-size: var(--vision-font-small);
-  font-style: normal;
-  white-space: nowrap;
-}
-.appChrome .projectDashboard .contractCompactDetails > summary > i { color: var(--vision-muted); }
-.appChrome .projectDashboard .contractCompactBody,
-.appChrome .projectDashboard .contractConfirmedList {
-  border-top: 1px solid var(--vision-line);
-  padding: 10px 12px 12px;
-}
-.appChrome .projectDashboard .contractCompactBody .contractConfirmedList {
-  border-top: 0;
-  padding: 0;
-}
-.appChrome .projectDashboard .contractHint {
-  margin: 8px 0 14px;
-  color: var(--vision-muted);
-  font-size: var(--vision-font-body);
-  line-height: 1.6;
-}
-.appChrome .projectDashboard .contractCard {
-  position: relative;
-  margin: 0 0 12px;
-  border: 1px solid rgba(210,216,239,.92);
-  border-radius: 16px;
-  background: rgba(255,255,255,.62);
-  box-shadow: var(--vision-shadow-sm);
-  padding: 20px 22px;
-}
-.appChrome .projectDashboard .contractHead {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 10px;
-}
-.appChrome .projectDashboard .contractHead > span,
-.appChrome .projectDashboard .contractCategoryBadge {
-  border: 1px solid rgba(189,129,40,.34);
-  border-radius: 999px;
-  background: rgba(255,249,231,.72);
-  padding: 3px 9px;
-  color: var(--vision-warn);
-  font-size: var(--vision-font-small);
-  line-height: 1.2;
-}
-.appChrome .projectDashboard .contractHead > b {
-  min-width: 0;
-  color: var(--vision-text);
-  font-size: var(--vision-font-body);
-  line-height: 1.5;
-}
-.appChrome .projectDashboard .contractHead > em {
-  color: var(--vision-muted);
-  font-size: var(--vision-font-unit);
-  font-style: normal;
-  line-height: 1.45;
-  text-align: right;
-  white-space: nowrap;
-}
-.appChrome .projectDashboard .contractEvidence,
-.appChrome .projectDashboard .contractConfirmedQuestion {
-  margin: 9px 0 0;
-  color: var(--vision-muted);
-  font-size: var(--vision-font-unit);
-  line-height: 1.6;
-}
-.appChrome .projectDashboard .contractDecisionForm {
-  display: grid;
-  gap: 11px;
-  margin-top: 14px;
-  border-top: 1px solid var(--vision-line);
-  padding-top: 13px;
-}
-.appChrome .projectDashboard .contractScopeEditor {
-  display: grid;
-  grid-template-columns: minmax(180px, .55fr) minmax(360px, 1.45fr);
-  align-items: start;
-  gap: 10px 18px;
-}
-.appChrome .projectDashboard .contractScopeLabel { display: grid; gap: 3px; }
-.appChrome .projectDashboard .contractScopeLabel strong { font-size: var(--vision-font-body); line-height: 1.35; }
-.appChrome .projectDashboard .contractScopeLabel span,
-.appChrome .projectDashboard .contractScopeHelp,
-.appChrome .projectDashboard .contractOptionsLabel,
-.appChrome .projectDashboard .contractEditNote {
-  color: var(--vision-muted);
-  font-size: var(--vision-font-small);
-  line-height: 1.6;
-}
-.appChrome .projectDashboard .contractScopeControls {
-  display: grid;
-  grid-template-columns: minmax(250px, .9fr) minmax(220px, 1.1fr);
-  gap: 8px;
-}
-.appChrome .projectDashboard .contractScopeControls select,
-.appChrome .projectDashboard .contractScopeControls input,
-.appChrome .projectDashboard .contractCustom input {
-  min-width: 0;
-  min-height: 42px;
-  border: 1px solid rgba(199,207,233,.96);
-  border-radius: 10px;
-  background: rgba(255,255,255,.78);
-  color: var(--vision-text);
-  font: inherit;
-  font-size: var(--vision-font-unit);
-  outline: 0;
-  padding: 0 11px;
-}
-.appChrome .projectDashboard .contractScopeControls select:focus,
-.appChrome .projectDashboard .contractScopeControls input:focus,
-.appChrome .projectDashboard .contractCustom input:focus {
-  border-color: var(--vision-primary);
-  box-shadow: 0 0 0 3px rgba(103,94,228,.12);
-}
-.appChrome .projectDashboard .contractScopeHelp { grid-column: 2; margin: -3px 0 0; }
-.appChrome .projectDashboard .contractOptionsLabel { margin: 0; }
-.appChrome .projectDashboard .contractOptions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: stretch;
-  gap: 10px;
-}
-.appChrome .projectDashboard .contractOptions > button,
-.appChrome .projectDashboard .contractCustom > button,
-.appChrome .projectDashboard .contractSkip {
-  min-height: 60px;
-  border: 1px solid rgba(198,207,235,.98);
-  border-radius: 11px;
-  background: rgba(250,251,255,.90);
-  color: var(--vision-text);
-  cursor: pointer;
-  font: inherit;
-  font-size: var(--vision-font-unit);
-  line-height: 1.45;
-  padding: 10px 13px;
-  text-align: left;
-}
-.appChrome .projectDashboard .contractOptions > button { display: flex; align-items: flex-start; gap: 8px; }
-.appChrome .projectDashboard .contractOptions > button b { color: var(--vision-primary); font-size: var(--vision-font-body); }
-.appChrome .projectDashboard .contractOptions > button span { min-width: 0; overflow-wrap: anywhere; }
-.appChrome .projectDashboard .contractCustom {
-  display: grid;
-  grid-column: 1 / -1;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-}
-.appChrome .projectDashboard .contractCustom > button { color: var(--vision-primary); white-space: nowrap; }
-.appChrome .projectDashboard .contractSkipForm { margin-top: 1px; }
-.appChrome .projectDashboard .contractSkip {
-  min-height: 38px;
-  background: transparent;
-  color: var(--vision-muted);
-  font-size: var(--vision-font-small);
-}
-.appChrome .projectDashboard .contractEpisodeChoices {
-  grid-column: 2;
-  min-width: 0;
-  margin: 0;
-  border: 1px solid rgba(210,216,239,.84);
-  border-radius: 11px;
-  background: rgba(248,249,255,.62);
-  padding: 8px 10px 9px;
-}
-.appChrome .projectDashboard .contractEpisodeChoices legend {
-  padding: 0 4px;
-  color: var(--vision-muted);
-  font-size: var(--vision-font-small);
-}
-.appChrome .projectDashboard .contractEpisodeChoices > div {
-  display: flex;
-  max-height: 92px;
-  flex-wrap: wrap;
-  gap: 6px 8px;
-  overflow: auto;
-}
-.appChrome .projectDashboard .contractEpisodeChoices label {
-  display: inline-flex;
-  min-height: 32px;
-  align-items: center;
-  gap: 6px;
-  border: 1px solid rgba(206,214,239,.9);
-  border-radius: 9px;
-  background: rgba(255,255,255,.78);
-  padding: 0 9px;
-  color: var(--vision-text);
-  font-size: var(--vision-font-small);
-  cursor: pointer;
-}
-.appChrome .projectDashboard .contractEpisodeChoices input { width: 15px; height: 15px; accent-color: var(--vision-primary); }
-.appChrome .projectDashboard .contractConfirmedItem {
-  overflow: hidden;
-  border: 1px solid rgba(211,217,237,.90);
-  border-radius: 11px;
-  background: rgba(255,255,255,.68);
-}
-.appChrome .projectDashboard .contractConfirmedItem > summary {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 9px;
-  min-height: 42px;
-  padding: 0 11px;
-  cursor: pointer;
-  list-style: none;
-}
-.appChrome .projectDashboard .contractConfirmedItem > summary::-webkit-details-marker { display: none; }
-.appChrome .projectDashboard .contractConfirmedItem > summary > b {
-  overflow: hidden;
-  font-size: var(--vision-font-unit);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.appChrome .projectDashboard .contractConfirmedItem > summary > em,
-.appChrome .projectDashboard .contractConfirmedItem > summary > i {
-  color: var(--vision-good);
-  font-size: var(--vision-font-small);
-  font-style: normal;
-  white-space: nowrap;
-}
-.appChrome .projectDashboard .contractConfirmedItem > summary > i { color: var(--vision-primary); }
-.appChrome .projectDashboard .contractConfirmedItemBody { border-top: 1px solid var(--vision-line); padding: 12px; }
-.appChrome .projectDashboard .contractEditNote { margin: 0; }
-.appChrome .projectDashboard .contractConfirmedList { display: grid; gap: 7px; }
-.appChrome .projectDashboard .contractSection .cardHeader > em { font-size: var(--vision-font-unit); }
-
-@media (max-width: 900px) {
-  .appChrome .projectDashboard .contractScopeEditor { grid-template-columns: 1fr; }
-  .appChrome .projectDashboard .contractScopeHelp,
-  .appChrome .projectDashboard .contractEpisodeChoices { grid-column: auto; }
-}
-@media (max-width: 680px) {
-  .appChrome .projectDashboard .contractHead { grid-template-columns: 1fr; gap: 6px; }
-  .appChrome .projectDashboard .contractHead > em { text-align: left; }
-  .appChrome .projectDashboard .contractScopeControls,
-  .appChrome .projectDashboard .contractOptions { grid-template-columns: 1fr; }
-  .appChrome .projectDashboard .contractCustom { grid-column: auto; }
-  .appChrome .projectDashboard .contractConfirmedItem > summary { grid-template-columns: auto minmax(0, 1fr) auto; }
-  .appChrome .projectDashboard .contractConfirmedItem > summary > em { grid-column: 2; grid-row: 2; }
-  .appChrome .projectDashboard .contractConfirmedItem > summary > i { grid-column: 3; grid-row: 1 / span 2; }
+  .batchMonitorCard { grid-template-columns: 1fr; gap: 16px; }
+  .batchMonitorActions { min-width: 0; justify-items: stretch; }
 }
 
 /* Runner settings */
 .runnerSettingsPage {
   display: grid;
   width: 100%;
-  max-width: 1600px;
   margin: 0 auto;
   gap: var(--vision-section-gap);
 }
@@ -1437,14 +958,11 @@ body { background: transparent; font-size: var(--vision-font-body); }
 }
 .runnerHero.studioCard {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 20px;
   padding: var(--vision-panel-padding) !important;
   background: linear-gradient(130deg, rgba(255,255,255,.90), rgba(246,244,255,.78)) !important;
 }
 .runnerHeroIcon {
-  display: grid;
   width: 58px;
   height: 58px;
   place-items: center;
@@ -1478,8 +996,13 @@ body { background: transparent; font-size: var(--vision-font-body); }
   font-weight: 700;
 }
 .runnerConnectionStatus.connected { border-color: rgba(36,154,124,.20); background: rgba(237,250,246,.86); color: var(--vision-good); }
+.runnerConnectionStatus.attention { border-color: rgba(217,88,110,.22); background: rgba(255,244,246,.86); color: var(--vision-bad); }
 .runnerFieldGrid { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 12px; margin-top: 28px; }
 .runnerFieldGrid label, .runnerDeviceForm label { display: grid; min-width: 0; gap: 8px; color: var(--vision-text); font-size: var(--vision-font-small); font-weight: 700; }
+.runnerCredentialForm { display: flex; min-height: 0; flex: 1; flex-direction: column; }
+.runnerWideField { display: grid; min-width: 0; gap: 8px; margin-top: 12px; color: var(--vision-text); font-size: var(--vision-font-small); font-weight: 700; }
+.runnerCredentialMeta { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 12px; color: var(--vision-faint); font-size: var(--vision-font-caption); line-height: 1.5; }
+.runnerConnectionNote { margin: 12px 0 0; color: var(--vision-muted); font-size: var(--vision-font-caption); line-height: 1.55; }
 .runnerFieldGrid input, .runnerFieldGrid select, .runnerDeviceForm input {
   width: 100%;
   min-width: 0;
@@ -1494,17 +1017,55 @@ body { background: transparent; font-size: var(--vision-font-body); }
   font-size: var(--vision-font-small);
   transition: border-color var(--motion-fast), background var(--motion-fast), box-shadow var(--motion-fast);
 }
+.runnerWideField input {
+  width: 100%;
+  min-width: 0;
+  min-height: 46px;
+  border: 1px solid var(--vision-line);
+  border-radius: 13px;
+  outline: none;
+  background: rgba(249,250,255,.88);
+  padding: 0 13px;
+  color: var(--vision-text);
+  font: inherit;
+  font-size: var(--vision-font-small);
+  transition: border-color var(--motion-fast), background var(--motion-fast), box-shadow var(--motion-fast);
+}
 .runnerFieldGrid input:focus, .runnerFieldGrid select:focus, .runnerDeviceForm input:focus { border-color: rgba(103,94,228,.42); background: white; box-shadow: 0 0 0 4px rgba(103,94,228,.08); }
+.runnerWideField input:focus { border-color: rgba(103,94,228,.42); background: white; box-shadow: 0 0 0 4px rgba(103,94,228,.08); }
 .runnerActions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: auto; padding-top: 24px; }
 .runnerPrimaryButton, .runnerSecondaryButton { min-height: 42px; padding: 0 16px; font-size: var(--vision-font-small); font-weight: 750; cursor: pointer; }
 .runnerMessage { flex: 1 1 100%; margin: 0; font-size: var(--vision-font-small); line-height: 1.5; }
 .runnerMessage.success { color: var(--vision-good); }
 .runnerMessage.error { color: var(--vision-bad); }
 .runnerDeviceForm { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; margin-top: 28px; }
-.runnerLauncherPanel { margin-top: 18px; border: 1px solid rgba(103,94,228,.16); border-radius: 16px; background: linear-gradient(135deg, rgba(247,248,255,.96), rgba(244,240,255,.82)); padding: 15px; }
-.runnerLauncherPanel > strong { color: var(--vision-text); font-size: var(--vision-font-small); }
-.runnerLauncherPanel > p { margin: 6px 0 0; color: var(--vision-muted); font-size: var(--vision-font-caption); line-height: 1.65; }
-.runnerLauncherPanel .runnerActions { margin-top: 0; padding-top: 14px; }
+.runnerCliCheckResult { display: grid; grid-template-columns: 8px minmax(0, 1fr); align-items: start; gap: 10px; margin-top: 16px; border: 1px solid var(--vision-line); border-radius: 13px; background: rgba(249,250,255,.65); padding: 12px 13px; }
+.runnerCliCheckResult strong { color: var(--vision-text); font-size: var(--vision-font-small); }
+.runnerCliCheckResult p { margin: 4px 0 0; color: var(--vision-muted); font-size: var(--vision-font-caption); line-height: 1.5; }
+.runnerCliCheckDot { width: 8px; height: 8px; margin-top: 4px; border-radius: 50%; background: var(--vision-faint); box-shadow: 0 0 0 4px rgba(139,145,170,.10); }
+.runnerCliCheckResult.pending .runnerCliCheckDot { background: #7567df; box-shadow: 0 0 0 4px rgba(117,103,223,.11); }
+.runnerCliCheckResult.success { border-color: rgba(36,154,124,.20); background: rgba(237,250,246,.62); }
+.runnerCliCheckResult.success .runnerCliCheckDot { background: var(--vision-good); box-shadow: 0 0 0 4px rgba(36,154,124,.11); }
+.runnerCliCheckResult.error { border-color: rgba(217,88,110,.22); background: rgba(255,244,246,.62); }
+.runnerCliCheckResult.error .runnerCliCheckDot { background: var(--vision-bad); box-shadow: 0 0 0 4px rgba(217,88,110,.11); }
+.runnerCliCheckResult.error p { color: var(--vision-bad); }
+.runnerCliStatusPanel { margin-top: 12px; }
+.runnerCliStatusHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.runnerCliStatusHeader > div { display: grid; gap: 3px; min-width: 0; }
+.runnerCliStatusEyebrow { color: #7567df; font-size: var(--vision-font-small); font-weight: 850; letter-spacing: .14em; }
+.runnerCliStatusHeader strong { color: var(--vision-text); font-size: var(--vision-font-small); }
+.runnerCliStatusHeader time { color: var(--vision-faint); font-size: var(--vision-font-caption); white-space: nowrap; }
+.runnerCliStatusNote { margin: 8px 0 0; color: var(--vision-muted); font-size: var(--vision-font-caption); line-height: 1.5; }
+.runnerCliStatusGrid { display: grid; margin-top: 10px; }
+.runnerCliStatusGrid article { display: grid; gap: 3px; }
+.runnerCliStatusGrid article > span { color: var(--vision-faint); font-size: var(--vision-font-small); }
+.runnerCliStatusGrid article > strong { overflow: hidden; text-overflow: ellipsis; }
+.runnerCliStatusGrid article > small { overflow: hidden; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.runnerCliStatusFooter { display: flex; flex-wrap: wrap; gap: 5px 14px; margin-top: 9px; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.4; }
+.runnerCliStatusWarning { margin: 8px 0 0; color: #b47d25; font-size: var(--vision-font-small); line-height: 1.45; }
+.runnerCliCheckForm { display: grid; gap: 10px; margin-top: auto; padding-top: 16px; }
+.runnerCliCheckForm > .runnerPrimaryButton { width: 100%; }
+.runnerPrimaryButton:disabled { cursor: wait; opacity: .62; }
 
 .runnerChoiceGuide.studioCard, .runnerDeviceCard.studioCard { padding: var(--vision-panel-padding) !important; }
 .runnerSectionHeader { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
@@ -1515,7 +1076,7 @@ body { background: transparent; font-size: var(--vision-font-body); }
 .runnerChoiceGrid strong { font-size: var(--vision-font-body); }
 .runnerChoiceGrid p { margin: 6px 0 0; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.65; }
 .runnerDeviceList { display: grid; margin-top: 18px; border-top: 1px solid var(--vision-line); }
-.runnerDeviceRow { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 13px; min-height: 66px; border-bottom: 1px solid var(--vision-line); }
+.runnerDeviceRow { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; min-height: 66px; border-bottom: 1px solid var(--vision-line); }
 .runnerDeviceDot { width: 8px; height: 8px; border-radius: 50%; background: var(--vision-good); box-shadow: 0 0 0 4px rgba(36,154,124,.10); }
 .runnerDeviceDot.revoked { background: var(--vision-faint); box-shadow: none; }
 .runnerDeviceRow > div { display: grid; gap: 4px; }
@@ -1542,65 +1103,7 @@ body { background: transparent; font-size: var(--vision-font-body); }
 .runnerDiagnosticBadge.detailed { background: rgba(237,250,246,.9); color: var(--vision-good); }
 .runnerDiagnosticLogItem details { margin-top: 10px; border-top: 1px solid var(--vision-line); padding-top: 9px; }
 .runnerDiagnosticLogItem summary { color: var(--vision-primary); cursor: pointer; font-size: var(--vision-font-caption); font-weight: 750; }
-.runnerDiagnosticLogItem pre { max-height: 260px; margin: 8px 0 0; overflow: auto; border-radius: 9px; background: rgba(244,246,252,.86); padding: 10px; color: var(--vision-text); font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-
-.runnerStatusCard.studioCard { padding: var(--vision-panel-padding) !important; }
-.runnerStatusHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
-.runnerStatusHeader > div:first-child { min-width: 0; }
-.runnerStatusHeader h2 { margin: 5px 0 7px; font-size: var(--vision-font-heading); letter-spacing: -.025em; }
-.runnerStatusHeader p { max-width: 720px; margin: 0; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.7; }
-.runnerStatusActions { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; }
-.runnerStatusSyncState { border: 1px solid var(--vision-line); border-radius: 999px; background: rgba(241,244,250,.86); padding: 7px 11px; color: var(--vision-faint); font-size: var(--vision-font-caption); font-weight: 700; white-space: nowrap; }
-.runnerStatusSyncState.synced { border-color: rgba(36,154,124,.20); background: rgba(237,250,246,.86); color: var(--vision-good); }
-.runnerStatusRefresh { min-height: 38px; padding: 0 13px; color: var(--vision-primary); font-size: var(--vision-font-small); font-weight: 750; cursor: pointer; }
-.runnerStatusRefresh:disabled { cursor: wait; opacity: .65; }
-.runnerStatusDeviceGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; margin-top: 20px; }
-.runnerStatusDevice { min-width: 0; border: 1px solid rgba(103,94,228,.16); border-radius: 16px; background: linear-gradient(135deg, rgba(249,250,255,.88), rgba(244,240,255,.62)); padding: 15px; }
-.runnerStatusDevice > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
-.runnerStatusDevice > header > div { display: grid; min-width: 0; gap: 4px; }
-.runnerStatusDevice > header strong { overflow: hidden; color: var(--vision-text); font-size: var(--vision-font-small); text-overflow: ellipsis; white-space: nowrap; }
-.runnerStatusDevice > header small { color: var(--vision-muted); font-size: var(--vision-font-caption); }
-.runnerStatusDeviceReady { color: var(--vision-good); font-size: var(--vision-font-caption); font-weight: 750; white-space: nowrap; }
-.runnerStatusDevice.pending { display: flex; min-height: 92px; flex-direction: column; justify-content: center; }
-.runnerStatusDevice.pending > header { align-items: center; }
-.runnerStatusDevice.pending > header span { color: var(--vision-faint); font-size: var(--vision-font-caption); }
-.runnerStatusDevice.pending > p { margin: 7px 0 0; color: var(--vision-muted); font-size: var(--vision-font-small); }
-.runnerStatusIdentity { display: grid; gap: 4px; margin-top: 13px; border-top: 1px solid var(--vision-line); padding-top: 12px; }
-.runnerStatusIdentity strong { overflow: hidden; color: var(--vision-text); font-size: var(--vision-font-body); text-overflow: ellipsis; white-space: nowrap; }
-.runnerStatusIdentity span { color: var(--vision-muted); font-size: var(--vision-font-caption); }
-.runnerStatusMetricGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
-.runnerStatusMetric { display: grid; min-width: 0; gap: 4px; border: 1px solid rgba(103,94,228,.11); border-radius: 12px; background: rgba(255,255,255,.58); padding: 10px; }
-.runnerStatusMetric span { color: var(--vision-muted); font-size: var(--vision-font-caption); }
-.runnerStatusMetric strong { overflow: hidden; color: var(--vision-text); font-size: var(--vision-font-small); text-overflow: ellipsis; white-space: nowrap; }
-.runnerStatusMetric small { overflow: hidden; color: var(--vision-faint); font-size: var(--vision-font-caption); line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
-.runnerStatusWarning { margin: 11px 0 0; color: var(--vision-bad); font-size: var(--vision-font-caption); line-height: 1.55; }
-.runnerStatusEmpty { margin: 20px 0 0; border: 1px dashed rgba(103,94,228,.22); border-radius: 14px; background: rgba(249,250,255,.58); padding: 18px; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.7; text-align: center; }
-.runnerStatusPendingList { display: grid; gap: 10px; text-align: left; }
-.runnerStatusPendingDevice { display: flex; align-items: center; gap: 12px; }
-.runnerStatusPendingDevice > div { display: grid; gap: 3px; }
-.runnerStatusPendingDevice strong { color: var(--vision-text); font-size: var(--vision-font-small); }
-.runnerStatusPendingDevice small { color: var(--vision-muted); font-size: var(--vision-font-caption); }
-.runnerStatusPendingList > p { margin: 2px 0 0; border-top: 1px solid var(--vision-line); padding-top: 10px; color: var(--vision-faint); font-size: var(--vision-font-caption); }
-.runnerDiagnosticsCard { margin-top: 0; }
-.runnerDiagnosticDevices { display: grid; gap: 8px; margin-top: 18px; }
-.runnerDiagnosticDevice { display: flex; align-items: center; justify-content: space-between; gap: 14px; border: 1px solid var(--vision-line); border-radius: 13px; background: rgba(249,250,255,.72); padding: 10px 12px; }
-.runnerDiagnosticDevice > div { display: grid; min-width: 0; gap: 4px; }
-.runnerDiagnosticDevice strong { overflow: hidden; color: var(--vision-text); font-size: var(--vision-font-small); text-overflow: ellipsis; white-space: nowrap; }
-.runnerDiagnosticDevice small { color: var(--vision-muted); font-size: var(--vision-font-caption); }
-.runnerDiagnosticMessage { margin: 12px 0 0; color: var(--vision-primary); font-size: var(--vision-font-small); line-height: 1.55; }
-.runnerDiagnosticLogList { display: grid; gap: 9px; margin-top: 18px; border-top: 1px solid var(--vision-line); padding-top: 14px; }
-.runnerDiagnosticLogItem { min-width: 0; border: 1px solid rgba(103,94,228,.12); border-radius: 13px; background: rgba(255,255,255,.58); padding: 12px; }
-.runnerDiagnosticLogItem > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.runnerDiagnosticLogItem > header > div { display: grid; min-width: 0; gap: 4px; }
-.runnerDiagnosticLogItem strong { color: var(--vision-text); font-size: var(--vision-font-small); }
-.runnerDiagnosticLogItem header small, .runnerDiagnosticMeta { color: var(--vision-muted); font-size: var(--vision-font-caption); }
-.runnerDiagnosticLogItem > p { margin: 9px 0 6px; color: var(--vision-text); font-size: var(--vision-font-small); line-height: 1.55; overflow-wrap: anywhere; }
-.runnerDiagnosticBadge { border-radius: 999px; padding: 5px 8px; font-size: var(--vision-font-caption); font-weight: 750; white-space: nowrap; }
-.runnerDiagnosticBadge.minimal { background: rgba(241,244,250,.9); color: var(--vision-muted); }
-.runnerDiagnosticBadge.detailed { background: rgba(237,250,246,.9); color: var(--vision-good); }
-.runnerDiagnosticLogItem details { margin-top: 10px; border-top: 1px solid var(--vision-line); padding-top: 9px; }
-.runnerDiagnosticLogItem summary { color: var(--vision-primary); cursor: pointer; font-size: var(--vision-font-caption); font-weight: 750; }
-.runnerDiagnosticLogItem pre { max-height: 260px; margin: 8px 0 0; overflow: auto; border-radius: 9px; background: rgba(244,246,252,.86); padding: 10px; color: var(--vision-text); font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.runnerDiagnosticLogItem pre { max-height: 260px; margin: 8px 0 0; border-radius: 9px; background: rgba(244,246,252,.86); padding: 10px; color: var(--vision-text); font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 @media (max-width: 1180px) {
   .runnerConnectionGrid { grid-template-columns: 1fr; }
@@ -1611,16 +1114,12 @@ body { background: transparent; font-size: var(--vision-font-body); }
   .runnerHero.studioCard { grid-template-columns: 48px minmax(0, 1fr); }
   .runnerHeroIcon { width: 48px; height: 48px; border-radius: 16px; }
   .runnerHeroAssurance { grid-column: 1 / -1; border-top: 1px solid var(--vision-line); border-left: 0; padding-top: 14px; padding-left: 0; }
-  .runnerFieldGrid, .runnerDeviceForm, .runnerChoiceGrid, .runnerStatusMetricGrid { grid-template-columns: 1fr; }
+  .runnerFieldGrid, .runnerDeviceForm, .runnerChoiceGrid { grid-template-columns: 1fr; }
   .runnerSectionHeader { align-items: flex-start; flex-direction: column; }
   .runnerSectionHeader > p { text-align: left; }
-  .runnerStatusHeader { flex-direction: column; }
-  .runnerStatusActions { width: 100%; justify-content: space-between; }
-  .runnerStatusDeviceGrid { grid-template-columns: 1fr; }
 }
 
 /* Episode workspace legibility */
-.episodeShell .viewTabs a { font-size: var(--vision-font-body); }
 .episodeShell .viewTabs b { font-size: var(--vision-font-caption); }
 .episodeShell .canvasToolbar > span { font-size: var(--vision-font-small); }
 
@@ -1631,7 +1130,6 @@ body { background: transparent; font-size: var(--vision-font-body); }
 .episodeShell .episodeRoleDeck .roleProgress {
   height: 82px;
   min-height: 82px !important;
-  grid-template-columns: 30px minmax(0, 1fr) auto;
   padding: 10px 12px !important;
 }
 .episodeShell .episodeRoleDeck .roleProgress > span:first-child,
@@ -1688,10 +1186,9 @@ body { background: transparent; font-size: var(--vision-font-body); }
 
 .appChrome .archiveSection > summary { font-size: var(--vision-font-body); }
 
-.sidebarFooter { gap: 10px; padding: 12px; }
+.sidebarFooter { gap: 10px; }
 .sidebarWorkflow { padding: 0 6px; }
 .accountMenu {
-  grid-template-columns: 34px minmax(0, 1fr) auto;
   border: 1px solid rgba(255,255,255,.76);
   border-radius: 15px;
   background: rgba(255,255,255,.44);
@@ -1703,74 +1200,7 @@ body { background: transparent; font-size: var(--vision-font-body); }
 .accountMenu > div small { font-size: var(--vision-font-caption); }
 .accountMenu button { font-size: var(--vision-font-caption); }
 
-/* 全剧工作台：流程状态不抢执行入口，分集与统计信息保持清晰层级。 */
-.appChrome .sidebarEpisodes > p { font-size: 11px; }
-.appChrome .sidebarEpisodes a { font-size: 11px; }
-.appChrome .sidebarEpisodes a b { font-size: 10px; }
-.appChrome .sidebarEpisodes a i { font-size: 11px; }
-.appChrome .topbarNextStep {
-  display: inline-flex;
-  min-height: 32px;
-  align-items: center;
-  border: 1px solid rgba(105,94,221,.16);
-  border-radius: 999px;
-  background: rgba(247,246,255,.82);
-  box-shadow: inset 0 1px #fff;
-  color: #655bd6;
-  padding: 0 12px;
-  font-size: 11px;
-  font-weight: 750;
-  white-space: nowrap;
-}
-.appChrome .sceneStructureHead .cardHeader h3 { font-size: 20px; }
-.appChrome .sceneStructureHead .cardHeader em { font-size: 12px; font-weight: 750; }
-.appChrome .episodeStudioList .episodeNumber {
-  width: 44px;
-  height: 44px;
-  font-size: 24px;
-}
-.appChrome .episodeStudioList .episodeSummary h3 {
-  max-width: 42vw;
-  font-size: 15px;
-}
-.appChrome .episodeStudioList .stateDot { font-size: 12px; }
-.appChrome .episodeStudioList .episodeCounts {
-  gap: 0;
-  align-items: stretch;
-}
-.appChrome .episodeStudioList .episodeCounts span {
-  min-width: 64px;
-  gap: 4px;
-  padding: 0 11px;
-  line-height: 1.25;
-}
-.appChrome .episodeStudioList .episodeCounts b {
-  font-size: 18px;
-  line-height: 1;
-}
-.appChrome .episodeStudioList .episodeCounts small {
-  color: #7a849a;
-  font-size: 11px;
-  line-height: 1;
-}
-.appChrome .episodeStudioList .episodeCounts .countMuted {
-  font-size: 12px;
-  white-space: nowrap;
-}
-.appChrome .episodeStudioList .primaryLink {
-  min-height: 34px;
-  gap: 8px;
-  padding: 0 13px;
-  font-size: 11px;
-  font-weight: 750;
-  white-space: nowrap;
-}
-
-@media (max-width: 760px) {
-  .appChrome .episodeStudioList > article { grid-template-columns: 48px minmax(0, 1fr); }
-}
-
-/* Final page-level overrides kept last so legacy density rules cannot undo them. */
+/* 分集列表独立滚动，底部账号栏始终占据自己的空间，不遮住最后几集。 */
 .appChrome .appSidebar { height: calc(100dvh - 28px); min-height: 0; }
 .appChrome .sidebarEpisodes { flex: 1 1 auto; min-height: 0; overflow: hidden; }
 .appChrome .sidebarEpisodeScroller {
@@ -1783,13 +1213,1098 @@ body { background: transparent; font-size: var(--vision-font-body); }
   padding-bottom: 12px;
 }
 .appChrome .sidebarFooter { flex: 0 0 auto; margin-top: 0; }
-.appChrome .sidebarEpisodes > p,
-.appChrome .sidebarEpisodes a,
-.appChrome .sidebarEpisodes a b,
+
+/* 全剧工作台：流程状态不抢执行入口，分集与统计信息保持清晰层级。 */
+.appChrome .sidebarEpisodes > p { font-size: var(--vision-font-small); }
+.appChrome .sidebarEpisodes a { font-size: var(--vision-font-small); }
+.appChrome .sidebarEpisodes a b { font-size: var(--vision-font-small); }
+.appChrome .sidebarEpisodes a i { font-size: var(--vision-font-caption); }
 .appChrome .sidebarWorkflow span,
 .appChrome .sidebarWorkflow strong { font-size: var(--vision-font-small); }
-.appChrome .sidebarEpisodes a i { font-size: var(--vision-font-caption); }
-.assetExportButton { white-space: nowrap; }
-.appChrome .foundationReferenceGrid { align-items: stretch; }
-.appChrome .episodeStudioGroup > summary > span { font-size: var(--vision-font-unit); }
-.appChrome .episodeStudioGroup > summary > em { font-size: var(--vision-font-small); }
+.appChrome .projectTopbarMeta { font-size: var(--vision-font-small); }
+.appChrome .topbarNextStep {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  border: 1px solid rgba(105,94,221,.16);
+  border-radius: 999px;
+  background: rgba(247,246,255,.82);
+  box-shadow: inset 0 1px #fff;
+  color: #655bd6;
+  padding: 0 12px;
+  font-size: var(--vision-font-small);
+  font-weight: 750;
+  white-space: nowrap;
+}
+.appChrome .sceneStructureHead .cardHeader h3 { font-size: var(--vision-font-heading); }
+.appChrome .sceneStructureHead .cardHeader em { font-size: var(--vision-font-small); font-weight: 750; }
+.appChrome .episodeStudioList .episodeNumber {
+  width: 44px;
+  height: 44px;
+}
+.appChrome .episodeStudioList .stateDot { font-size: var(--vision-font-small); }
+.appChrome .episodeStudioList .episodeCounts {
+  gap: 0;
+  align-items: stretch;
+}
+.appChrome .episodeStudioList .episodeCounts span {
+  min-width: 64px;
+  gap: 4px;
+  padding: 0 11px;
+  line-height: 1.25;
+}
+.appChrome .episodeStudioList .episodeCounts b {
+  line-height: 1;
+}
+.appChrome .episodeStudioList .episodeCounts small {
+  color: #7a849a;
+  font-size: var(--vision-font-small);
+  line-height: 1;
+}
+.appChrome .episodeStudioList .episodeCounts .countMuted {
+  font-size: var(--vision-font-small);
+  white-space: nowrap;
+}
+.appChrome .episodeStudioList .primaryLink {
+  min-height: 34px;
+  gap: 8px;
+  padding: 0 13px;
+  font-size: var(--vision-font-small);
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+/* 全剧工作台密度：把流程状态压成一行，把规则和已锁定资料按需展开。 */
+.projectDashboard { gap: 16px; }
+.projectDashboard > .workflowGuidance {
+  grid-template-columns: 42px minmax(0, 1fr) auto auto;
+  gap: 12px;
+  min-height: 82px;
+}
+.projectDashboard > .workflowGuidance::after { width: 160px; height: 160px; top: -92px; right: 7%; }
+.projectDashboard > .workflowGuidance .guidanceSignal { width: 42px; height: 42px; border-radius: 13px; font-size: var(--vision-font-unit); }
+.projectDashboard > .workflowGuidance .guidanceCopy { min-width: 0; }
+.projectDashboard > .workflowGuidance .guidanceCopy p { margin-bottom: 2px; font-size: var(--vision-font-small); }
+.projectDashboard > .workflowGuidance .guidanceCopy h1 { margin-bottom: 3px; line-height: 1.2; }
+.projectDashboard > .workflowGuidance .guidanceCopy > span {
+  display: block;
+  overflow: hidden;
+  max-width: min(720px, 100%);
+  color: var(--vision-muted);
+  font-size: var(--vision-font-small);
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.projectDashboard > .workflowGuidance .guidanceMeta { gap: 10px; padding-right: 0; font-size: var(--vision-font-caption); }
+.projectDashboard > .workflowGuidance .glassPrimary,
+.projectDashboard > .workflowGuidance form .glassPrimary {
+  min-height: 36px;
+  padding: 0 13px;
+  border-radius: 10px;
+  font-size: var(--vision-font-small);
+  white-space: nowrap;
+}
+.appChrome .topbarStatus i.attention { background: var(--vision-bad); box-shadow: 0 0 0 4px rgba(217,88,110,.11); }
+
+.projectDashboard > .batchMonitorCard {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 22px;
+  min-height: 136px;
+  margin: 0;
+}
+.projectDashboard > .batchMonitorCard .batchMonitorHeading { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-width: 0; }
+.projectDashboard > .batchMonitorCard .batchMonitorHeading > div { min-width: 0; }
+ .projectDashboard > .batchMonitorCard .batchMonitorEyebrow { margin-bottom: 2px; font-size: var(--vision-font-caption); }
+ .projectDashboard > .batchMonitorCard .batchMonitorCopy h2 { margin: 0; line-height: 1.25; }
+.projectDashboard > .batchMonitorCard .batchMonitorSummary {
+  overflow: hidden;
+  margin-top: 6px;
+  color: var(--vision-muted);
+  font-size: var(--vision-font-small);
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: normal;
+}
+.projectDashboard > .batchMonitorCard .batchMonitorStatusInline { flex: 0 0 auto; font-size: var(--vision-font-small); }
+.projectDashboard > .batchMonitorCard .batchMonitorMessage { margin-top: 8px !important; font-size: var(--vision-font-small) !important; line-height: 1.5; }
+.projectDashboard > .batchMonitorCard .batchMonitorDetails {
+  margin-top: 9px;
+  border-top: 1px solid rgba(222,225,241,.72);
+  padding-top: 7px;
+}
+.projectDashboard > .batchMonitorCard .batchMonitorDetails > summary {
+  color: var(--vision-faint);
+  font-size: var(--vision-font-small);
+  cursor: pointer;
+  list-style: none;
+}
+.projectDashboard > .batchMonitorCard .batchMonitorDetails > summary::-webkit-details-marker { display: none; }
+.projectDashboard > .batchMonitorCard .batchMonitorDetails > summary::before { margin-right: 5px; color: #7567df; content: "＋"; font-size: var(--vision-font-small); }
+.projectDashboard > .batchMonitorCard .batchMonitorDetails[open] > summary::before { content: "−"; }
+.projectDashboard > .batchMonitorCard .batchMonitorDetailsBody { padding-top: 7px; }
+.projectDashboard > .batchMonitorCard .batchMonitorDetailsBody > p { margin: 0; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.55; }
+.projectDashboard > .batchMonitorCard .batchMonitorMeta { gap: 6px 14px; margin-top: 9px; font-size: var(--vision-font-small); }
+.projectDashboard > .batchMonitorCard .batchMonitorMeta span::before { width: 4px; height: 4px; }
+.projectDashboard > .batchMonitorCard .batchMonitorButton { min-height: 40px; border-radius: 11px; padding: 0 14px; font-size: var(--vision-font-small); }
+
+.projectDashboard > .studioSection { border-radius: 20px; }
+.projectDashboard > .studioSection > .sectionHeading { margin-bottom: 10px; padding-top: 2px; }
+.projectDashboard > .studioSection > .sectionHeading h2 { font-size: var(--vision-font-heading); }
+.projectDashboard > .studioSection > .sectionHeading p { font-size: var(--vision-font-small); }
+
+/* 工作台文字契约：功能性说明、状态和按钮统一使用可读的辅助字号。 */
+.projectDashboard > .studioSection .foundationControlHeader strong { font-size: var(--vision-font-unit); }
+.projectDashboard > .studioSection .foundationControlHeader span,
+.projectDashboard > .studioSection .foundationRunnerNote { font-size: var(--vision-font-small); }
+.projectDashboard > .studioSection .foundationRunAllButton { font-size: var(--vision-font-small); }
+.projectDashboard > .studioSection .foundationRole > span:first-child { font-size: var(--vision-font-caption); }
+.projectDashboard > .studioSection .foundationRole strong { font-size: var(--vision-font-body); }
+.projectDashboard > .studioSection .foundationRole small,
+.projectDashboard > .studioSection .foundationRole em,
+.projectDashboard > .studioSection .foundationCardAction { font-size: var(--vision-font-small); }
+.projectDashboard > .studioSection .maintenancePanel > summary,
+.projectDashboard > .studioSection .maintenancePanel p { font-size: var(--vision-font-small); }
+
+.projectDashboard > .studioSection > .contractSectionCompact {
+  margin: 0 0 10px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+.contractCompactDetails {
+  border: 1px solid rgba(220,224,241,.84);
+  border-radius: 12px;
+  background: rgba(255,255,255,.48);
+}
+.contractCompactDetails > summary {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 13px;
+  color: var(--vision-muted);
+  cursor: pointer;
+  list-style: none;
+}
+.contractCompactDetails > summary::-webkit-details-marker { display: none; }
+.contractCompactDetails > summary::after { margin-left: auto; color: #7567df; content: "＋"; font-size: var(--vision-font-small); }
+.contractCompactDetails[open] > summary::after { content: "−"; }
+.contractCompactDetails > summary > span { color: #7567df; font-size: var(--vision-font-caption); font-weight: 850; letter-spacing: .12em; }
+.contractCompactDetails > summary > b { color: var(--vision-text); font-size: var(--vision-font-small); }
+.contractCompactDetails > summary > em { color: var(--vision-good); font-size: var(--vision-font-caption); font-style: normal; white-space: nowrap; }
+.contractCompactDetails > summary > i { color: var(--vision-faint); font-size: var(--vision-font-caption); font-style: normal; }
+.contractCompactBody { border-top: 1px solid var(--vision-line); padding: 8px 13px 9px; }
+.contractCompactBody p { margin: 4px 0; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.45; }
+.contractCompactBody p b { color: var(--vision-good); }
+
+@media (max-width: 1320px) {
+  .projectDashboard > .workflowGuidance { grid-template-columns: 42px minmax(0, 1fr) auto; }
+}
+
+@media (max-width: 760px) {
+  .projectDashboard { gap: 12px; }
+  .projectDashboard > .workflowGuidance {
+    grid-template-columns: 40px minmax(0, 1fr);
+    min-height: 0;
+    gap: 10px;
+    padding: 12px;
+  }
+  .projectDashboard > .workflowGuidance .guidanceMeta,
+  .projectDashboard > .workflowGuidance .glassPrimary,
+  .projectDashboard > .workflowGuidance form { grid-column: 1 / -1; }
+  .projectDashboard > .workflowGuidance .guidanceCopy > span { white-space: normal; }
+  .projectDashboard > .batchMonitorCard {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 12px;
+    min-height: 0;
+  }
+  .projectDashboard > .batchMonitorCard .batchMonitorHeading { align-items: flex-start; }
+  .projectDashboard > .batchMonitorCard .batchMonitorSummary { white-space: normal; }
+  .projectDashboard > .batchMonitorCard .batchMonitorActions { min-width: 0; }
+  .contractCompactDetails > summary { min-height: 40px; gap: 6px; padding: 0 10px; }
+  .contractCompactDetails > summary > span { display: none; }
+}
+
+@media (max-width: 760px) {
+  .runnerCliStatusHeader { align-items: flex-start; flex-direction: column; }
+  .runnerCliStatusGrid article > strong, .runnerCliStatusGrid article > small { white-space: normal; }
+}
+
+/* 全剧工作台：完成态只保留轻量状态，重新生成归入低频维护操作。 */
+.projectDashboard > .studioSection .foundationControlHeader .foundationHeaderState {
+  color: var(--vision-good);
+  font-size: var(--vision-font-small);
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.projectDashboard > .studioSection .foundationControlHeader .foundationHeaderState.running { color: #6259d5; }
+
+/* 批量状态与操作按钮保持同一水平线，避免状态漂在卡片上方。 */
+.projectDashboard > .batchMonitorCard .batchMonitorActions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+}
+.projectDashboard > .batchMonitorCard .batchMonitorActions > form { flex: 0 0 auto; }
+.projectDashboard > .batchMonitorCard .batchMonitorActions > form .batchMonitorButton { width: auto; min-width: 198px; }
+
+/* 80 集按十集分组，默认只展开当前需要继续处理的分组。 */
+.episodeStudioGroups { display: grid; gap: 10px; }
+.episodeStudioGroup {
+  overflow: hidden;
+}
+.episodeStudioGroup > summary {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  color: var(--vision-text);
+  cursor: pointer;
+  list-style: none;
+}
+.episodeStudioGroup > summary::-webkit-details-marker { display: none; }
+.episodeStudioGroup > summary::before {
+  width: 16px;
+  color: #7567df;
+  content: "＋";
+  font-size: var(--vision-font-small);
+  font-weight: 700;
+  text-align: center;
+}
+.episodeStudioGroup[open] > summary::before { content: "−"; }
+.episodeStudioGroupMeta { margin-left: auto; color: var(--vision-muted); font-size: var(--vision-font-small); white-space: nowrap; }
+.episodeStudioGroup > .episodeStudioList {
+  border-top: 1px solid var(--vision-line);
+  padding: 10px;
+}
+
+/* 桌面双栏：两张资料卡由同一网格行拉齐，资产超出时只在表格内部滚动。 */
+@media (min-width: 1321px) {
+  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns { align-items: stretch; }
+  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns > .studioCard {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns > .studioCard > .cardHeader { flex: 0 0 auto; }
+  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns > .studioCard > .bibleViewer,
+  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns > .studioCard > .assetIndexTabs {
+    min-height: 0;
+    flex: 1 1 auto;
+  }
+  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns > .studioCard > .bibleViewer,
+  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns > .studioCard > .biblePlaceholder { flex: 0 0 auto; }
+  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns > .studioCard > .assetIndexTabs {
+    display: flex;
+    flex-direction: column;
+  }
+  .projectDashboard > .studioSection#phase-one > .studioGrid.twoColumns .assetIndexTabs .compactTable {
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    flex: 1 1 auto;
+    overflow: auto;
+  }
+}
+
+@media (max-width: 760px) {
+  .projectDashboard > .batchMonitorCard .batchMonitorActions {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .projectDashboard > .batchMonitorCard .batchMonitorActions > .batchMonitorStatus { justify-content: flex-start; }
+  .projectDashboard > .batchMonitorCard .batchMonitorActions > form,
+  .projectDashboard > .batchMonitorCard .batchMonitorActions > form .batchMonitorButton { width: 100%; }
+  .episodeStudioGroup > summary { min-height: 44px; padding: 0 11px; }
+  .episodeStudioGroupMeta { font-size: var(--vision-font-caption); }
+  .episodeStudioGroup > .episodeStudioList { padding: 8px; }
+}
+
+/* 表现规范：沿用全局四档字号，避免确认区出现一套更小的“孤岛字号”。 */
+.appChrome .projectDashboard .contractSection {
+  color: var(--vision-text);
+}
+.appChrome .projectDashboard .contractSectionCompact {
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.appChrome .projectDashboard .contractHint {
+  margin: 8px 0 14px;
+  color: var(--vision-muted);
+  font-size: var(--vision-font-small);
+  line-height: 1.55;
+}
+.appChrome .projectDashboard .contractCard {
+  position: relative;
+  margin: 0 0 12px;
+  border: 1px solid rgba(210,216,239,.92);
+  border-radius: 16px;
+  background: rgba(255,255,255,.62);
+  box-shadow: var(--vision-shadow-sm);
+  padding: 16px 18px;
+}
+.appChrome .projectDashboard .contractHead {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+}
+.appChrome .projectDashboard .contractHead > span,
+.appChrome .projectDashboard .contractCategoryBadge {
+  flex: 0 0 auto;
+  border: 1px solid rgba(189,129,40,.34);
+  border-radius: 999px;
+  background: rgba(255,249,231,.72);
+  padding: 3px 9px;
+  color: var(--vision-warn);
+  font-size: var(--vision-font-caption);
+  line-height: 1.2;
+}
+.appChrome .projectDashboard .contractHead > b {
+  min-width: 0;
+  color: var(--vision-text);
+  font-size: var(--vision-font-body);
+  line-height: 1.45;
+}
+.appChrome .projectDashboard .contractHead > em {
+  margin-left: 0;
+  color: var(--vision-muted);
+  font-size: var(--vision-font-small);
+  font-style: normal;
+  line-height: 1.45;
+  text-align: right;
+  white-space: nowrap;
+}
+.appChrome .projectDashboard .contractEvidence,
+.appChrome .projectDashboard .contractConfirmedQuestion {
+  margin: 9px 0 0;
+  color: var(--vision-muted);
+  font-size: var(--vision-font-small);
+  line-height: 1.55;
+}
+.appChrome .projectDashboard .contractDecisionForm {
+  display: grid;
+  gap: 11px;
+  margin-top: 14px;
+  border-top: 1px solid var(--vision-line);
+  padding-top: 13px;
+}
+.appChrome .projectDashboard .contractScopeEditor {
+  display: grid;
+  grid-template-columns: minmax(180px, .55fr) minmax(360px, 1.45fr);
+  align-items: start;
+  gap: 10px 18px;
+}
+.appChrome .projectDashboard .contractScopeLabel {
+  display: grid;
+  gap: 3px;
+}
+.appChrome .projectDashboard .contractScopeLabel strong {
+  color: var(--vision-text);
+  font-size: var(--vision-font-unit);
+  line-height: 1.35;
+}
+.appChrome .projectDashboard .contractScopeLabel span,
+.appChrome .projectDashboard .contractScopeHelp,
+.appChrome .projectDashboard .contractOptionsLabel,
+.appChrome .projectDashboard .contractEditNote {
+  color: var(--vision-muted);
+  font-size: var(--vision-font-small);
+  line-height: 1.5;
+}
+.appChrome .projectDashboard .contractScopeControls {
+  display: grid;
+  grid-template-columns: minmax(250px, .9fr) minmax(220px, 1.1fr);
+  gap: 8px;
+}
+.appChrome .projectDashboard .contractScopeControls select,
+.appChrome .projectDashboard .contractScopeControls input,
+.appChrome .projectDashboard .contractCustom input {
+  min-width: 0;
+  min-height: 38px;
+  border: 1px solid rgba(199,207,233,.96);
+  border-radius: 10px;
+  background: rgba(255,255,255,.78);
+  color: var(--vision-text);
+  font: inherit;
+  font-size: var(--vision-font-small);
+  outline: 0;
+  padding: 0 11px;
+}
+.appChrome .projectDashboard .contractScopeControls select:focus,
+.appChrome .projectDashboard .contractScopeControls input:focus,
+.appChrome .projectDashboard .contractCustom input:focus {
+  border-color: var(--vision-primary);
+  box-shadow: 0 0 0 3px rgba(103,94,228,.12);
+}
+.appChrome .projectDashboard .contractScopeHelp {
+  grid-column: 2;
+  margin: -3px 0 0;
+}
+.appChrome .projectDashboard .contractOptionsLabel {
+  margin: 0;
+}
+.appChrome .projectDashboard .contractOptions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  align-items: stretch;
+  gap: 8px;
+}
+.appChrome .projectDashboard .contractOptions > button,
+.appChrome .projectDashboard .contractCustom > button,
+.appChrome .projectDashboard .contractSkip {
+  min-height: 42px;
+  border: 1px solid rgba(198,207,235,.98);
+  border-radius: 11px;
+  background: rgba(250,251,255,.90);
+  color: var(--vision-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--vision-font-small);
+  line-height: 1.35;
+  padding: 8px 11px;
+  text-align: left;
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast), transform var(--motion-fast);
+}
+.appChrome .projectDashboard .contractOptions > button:hover,
+.appChrome .projectDashboard .contractCustom > button:hover,
+.appChrome .projectDashboard .contractSkip:hover {
+  border-color: var(--vision-primary);
+  box-shadow: 0 7px 18px rgba(88,79,189,.10);
+  transform: translateY(-1px);
+}
+.appChrome .projectDashboard .contractOptions > button {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.appChrome .projectDashboard .contractOptions > button b {
+  flex: 0 0 auto;
+  color: var(--vision-primary);
+  font-size: var(--vision-font-unit);
+}
+.appChrome .projectDashboard .contractOptions > button span {
+  min-width: 0;
+}
+.appChrome .projectDashboard .contractCustom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+.appChrome .projectDashboard .contractCustom > button {
+  border-color: rgba(103,94,228,.34);
+  background: linear-gradient(135deg, rgba(242,241,255,.96), rgba(249,242,255,.96));
+  color: var(--vision-primary);
+  white-space: nowrap;
+}
+.appChrome .projectDashboard .contractSkipForm {
+  margin-top: 1px;
+}
+.appChrome .projectDashboard .contractSkip {
+  min-height: 34px;
+  background: transparent;
+  color: var(--vision-muted);
+  font-size: var(--vision-font-small);
+  padding: 5px 10px;
+}
+.appChrome .projectDashboard .contractConfirmed {
+  margin-top: 12px;
+  border: 1px solid rgba(210,216,239,.88);
+  border-radius: 14px;
+  background: rgba(255,255,255,.43);
+}
+.appChrome .projectDashboard .contractConfirmed > summary,
+.appChrome .projectDashboard .contractCompactDetails > summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 14px;
+  color: var(--vision-text);
+  cursor: pointer;
+  font-weight: 800;
+  list-style: none;
+}
+.appChrome .projectDashboard .contractConfirmed > summary::-webkit-details-marker,
+.appChrome .projectDashboard .contractCompactDetails > summary::-webkit-details-marker,
+.appChrome .projectDashboard .contractConfirmedItem > summary::-webkit-details-marker { display: none; }
+.appChrome .projectDashboard .contractConfirmed > summary::after,
+.appChrome .projectDashboard .contractCompactDetails > summary::after {
+  margin-left: auto;
+  color: var(--vision-primary);
+  content: "＋";
+  font-size: var(--vision-font-unit);
+}
+.appChrome .projectDashboard .contractConfirmed[open] > summary::after,
+.appChrome .projectDashboard .contractCompactDetails[open] > summary::after { content: "−"; }
+.appChrome .projectDashboard .contractConfirmed > summary span {
+  color: var(--vision-muted);
+  font-weight: 500;
+}
+.appChrome .projectDashboard .contractConfirmedList {
+  display: grid;
+  gap: 7px;
+  border-top: 1px solid var(--vision-line);
+  padding: 10px 12px 12px;
+}
+.appChrome .projectDashboard .contractConfirmedItem {
+  overflow: hidden;
+  border: 1px solid rgba(211,217,237,.90);
+  border-radius: 11px;
+  background: rgba(255,255,255,.68);
+}
+.appChrome .projectDashboard .contractConfirmedItem > summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 42px;
+  padding: 0 11px;
+  cursor: pointer;
+  list-style: none;
+}
+.appChrome .projectDashboard .contractConfirmedItem > summary > b {
+  overflow: hidden;
+  color: var(--vision-text);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.appChrome .projectDashboard .contractConfirmedItem > summary > em {
+  color: var(--vision-good);
+  font-size: var(--vision-font-small);
+  font-style: normal;
+  white-space: nowrap;
+}
+.appChrome .projectDashboard .contractConfirmedItem > summary > i {
+  color: var(--vision-primary);
+  font-size: var(--vision-font-small);
+  font-style: normal;
+  white-space: nowrap;
+}
+.appChrome .projectDashboard .contractConfirmedItemBody {
+  border-top: 1px solid var(--vision-line);
+  padding: 12px;
+}
+.appChrome .projectDashboard .contractConfirmedItemBody .contractDecisionForm {
+  margin-top: 11px;
+}
+.appChrome .projectDashboard .contractEditNote {
+  margin: 0;
+}
+.appChrome .projectDashboard .contractCompactDetails {
+  border: 1px solid rgba(210,216,239,.84);
+  border-radius: 12px;
+  background: rgba(255,255,255,.48);
+}
+.appChrome .projectDashboard .contractCompactDetails > summary {
+  min-height: 44px;
+  color: var(--vision-muted);
+}
+.appChrome .projectDashboard .contractCompactDetails > summary > span:first-child {
+  color: var(--vision-primary);
+  font-size: var(--vision-font-caption);
+  letter-spacing: .12em;
+}
+.appChrome .projectDashboard .contractCompactDetails > summary > b {
+  color: var(--vision-text);
+}
+.appChrome .projectDashboard .contractCompactDetails > summary > em,
+.appChrome .projectDashboard .contractCompactDetails > summary > i {
+  color: var(--vision-good);
+  font-size: var(--vision-font-small);
+  font-style: normal;
+  white-space: nowrap;
+}
+.appChrome .projectDashboard .contractCompactDetails > summary > i { color: var(--vision-muted); }
+.appChrome .projectDashboard .contractCompactBody {
+  border-top: 1px solid var(--vision-line);
+  padding: 10px 12px 12px;
+}
+.appChrome .projectDashboard .contractCompactBody .contractConfirmedList {
+  border-top: 0;
+  padding: 0;
+}
+
+@media (max-width: 900px) {
+  .appChrome .projectDashboard .contractScopeEditor { grid-template-columns: 1fr; }
+  .appChrome .projectDashboard .contractScopeHelp { grid-column: auto; }
+}
+
+@media (max-width: 680px) {
+  .appChrome .projectDashboard .contractHead { grid-template-columns: 1fr; gap: 6px; }
+  .appChrome .projectDashboard .contractHead > em { text-align: left; }
+  .appChrome .projectDashboard .contractScopeControls { grid-template-columns: 1fr; }
+  .appChrome .projectDashboard .contractConfirmedItem > summary { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .appChrome .projectDashboard .contractConfirmedItem > summary > em { grid-column: 2; grid-row: 2; }
+  .appChrome .projectDashboard .contractConfirmedItem > summary > i { grid-column: 3; grid-row: 1 / span 2; }
+}
+
+/* 表现规范可读性：正文只使用 small/unit/body 三档，caption 仅保留给标签。 */
+.appChrome .projectDashboard .contractSection .cardHeader > em {
+  color: var(--vision-primary);
+  font-size: var(--vision-font-unit);
+  line-height: 1.4;
+}
+.appChrome .projectDashboard .contractSection .contractHint {
+  color: var(--vision-muted);
+  font-size: var(--vision-font-body);
+  line-height: 1.6;
+}
+.appChrome .projectDashboard .contractSection .contractCard {
+  padding: 20px 22px;
+}
+.appChrome .projectDashboard .contractSection .contractHead > span,
+.appChrome .projectDashboard .contractSection .contractCategoryBadge {
+  font-size: var(--vision-font-small);
+}
+.appChrome .projectDashboard .contractSection .contractHead > b {
+  font-size: var(--vision-font-body);
+  line-height: 1.5;
+}
+.appChrome .projectDashboard .contractSection .contractHead > em {
+  font-size: var(--vision-font-unit);
+}
+.appChrome .projectDashboard .contractSection .contractEvidence,
+.appChrome .projectDashboard .contractSection .contractConfirmedQuestion {
+  font-size: var(--vision-font-unit);
+  line-height: 1.6;
+}
+.appChrome .projectDashboard .contractSection .contractScopeLabel strong {
+  font-size: var(--vision-font-body);
+}
+.appChrome .projectDashboard .contractSection .contractScopeLabel span,
+.appChrome .projectDashboard .contractSection .contractScopeHelp,
+.appChrome .projectDashboard .contractSection .contractOptionsLabel,
+.appChrome .projectDashboard .contractSection .contractEditNote {
+  font-size: var(--vision-font-small);
+  line-height: 1.6;
+}
+.appChrome .projectDashboard .contractSection .contractScopeControls select,
+.appChrome .projectDashboard .contractSection .contractScopeControls input,
+.appChrome .projectDashboard .contractSection .contractCustom input {
+  min-height: 42px;
+  font-size: var(--vision-font-unit);
+}
+.appChrome .projectDashboard .contractSection .contractOptions {
+  /* 选项文案通常较长，桌面端固定为两列，避免 4 个方案和自定义输入被挤成一行。 */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.appChrome .projectDashboard .contractSection .contractOptions > button,
+.appChrome .projectDashboard .contractSection .contractCustom > button {
+  min-height: 60px;
+  font-size: var(--vision-font-unit);
+  line-height: 1.45;
+  padding: 10px 13px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.appChrome .projectDashboard .contractSection .contractOptions > button b {
+  font-size: var(--vision-font-body);
+}
+.appChrome .projectDashboard .contractSection .contractOptions > button span {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.appChrome .projectDashboard .contractSection .contractCustom {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+.appChrome .projectDashboard .contractSection .contractCustom > button {
+  white-space: nowrap;
+}
+.appChrome .projectDashboard .contractSection .contractSkip {
+  min-height: 38px;
+  font-size: var(--vision-font-small);
+}
+.appChrome .projectDashboard .contractEpisodeChoices {
+  grid-column: 2;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid rgba(210,216,239,.84);
+  border-radius: 11px;
+  background: rgba(248,249,255,.62);
+  padding: 8px 10px 9px;
+}
+.appChrome .projectDashboard .contractEpisodeChoices legend {
+  padding: 0 4px;
+  color: var(--vision-muted);
+  font-size: var(--vision-font-small);
+  line-height: 1.4;
+}
+.appChrome .projectDashboard .contractEpisodeChoices > div {
+  display: flex;
+  max-height: 92px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  overflow: auto;
+  padding-top: 2px;
+}
+.appChrome .projectDashboard .contractEpisodeChoices label {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(206,214,239,.9);
+  border-radius: 9px;
+  background: rgba(255,255,255,.78);
+  padding: 0 9px;
+  color: var(--vision-text);
+  font-size: var(--vision-font-small);
+  cursor: pointer;
+}
+.appChrome .projectDashboard .contractEpisodeChoices label:has(input:checked) {
+  border-color: rgba(103,94,228,.42);
+  background: rgba(241,240,255,.92);
+  color: var(--vision-primary);
+}
+.appChrome .projectDashboard .contractEpisodeChoices input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--vision-primary);
+}
+.appChrome .projectDashboard .contractConfirmed > summary,
+.appChrome .projectDashboard .contractCompactDetails > summary {
+  min-height: 48px;
+  font-size: var(--vision-font-unit);
+}
+.appChrome .projectDashboard .contractConfirmed > summary span {
+  font-size: var(--vision-font-small);
+}
+.appChrome .projectDashboard .contractConfirmedItem > summary > b {
+  font-size: var(--vision-font-unit);
+}
+.appChrome .projectDashboard .contractConfirmedItem > summary > em,
+.appChrome .projectDashboard .contractConfirmedItem > summary > i,
+.appChrome .projectDashboard .contractCompactDetails > summary > em,
+.appChrome .projectDashboard .contractCompactDetails > summary > i {
+  font-size: var(--vision-font-small);
+}
+.appChrome .projectDashboard .contractCompactDetails > summary > b {
+  font-size: var(--vision-font-unit);
+}
+@media (max-width: 900px) {
+  .appChrome .projectDashboard .contractEpisodeChoices { grid-column: auto; }
+  .appChrome .projectDashboard .contractSection .contractOptions { grid-template-columns: 1fr; }
+  .appChrome .projectDashboard .contractSection .contractCustom { grid-column: auto; }
+}
+/* Studio system: shared across local and Sites, sized in CSS pixels/rem, never device pixels. */
+dialog.infoPanelBackdrop { inset: 0; width: 100%; max-width: none; height: 100dvh; max-height: none; margin: 0; border: 0; padding: 0; color: var(--vision-text); background: transparent; }
+dialog.infoPanelBackdrop::backdrop { background: rgba(23,32,55,.26); backdrop-filter: blur(3px); }
+:root {
+  --studio-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --studio-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --vision-font-caption: .8125rem;
+  --vision-font-small: .875rem;
+  --vision-font-body: 1rem;
+  --vision-font-unit: 1.125rem;
+  --vision-font-heading: 1.25rem;
+  --vision-font-title: clamp(1.5rem, 1.25rem + .45vw, 2rem);
+  --vision-canvas: #f3f5f9;
+  --vision-canvas-deep: #edf1f7;
+  --vision-page-backdrop: linear-gradient(135deg, #edf1f8, #f5f6fa 55%, #eef2f8);
+  --vision-glass: rgba(255,255,255,.9);
+  --vision-glass-strong: #ffffff;
+  --vision-reading: #ffffff;
+  --vision-solid: #ffffff;
+  --vision-line: #dbe1eb;
+  --vision-line-strong: #a8a4d6;
+  --vision-text: #202a40;
+  --vision-muted: #546078;
+  --vision-faint: #626e84;
+  --vision-primary: #5849c8;
+  --vision-primary-2: #4c3db6;
+  --vision-good: #14745a;
+  --vision-warn: #936015;
+  --vision-bad: #b12e48;
+  --vision-radius-sm: 8px;
+  --vision-radius-md: 12px;
+  --vision-radius-lg: 16px;
+  --vision-radius-xl: 20px;
+  --vision-shadow-sm: 0 2px 8px rgba(27,39,70,.04);
+  --vision-shadow: 0 5px 20px rgba(27,39,70,.05);
+  --vision-shadow-float: 0 16px 48px rgba(27,39,70,.13);
+  --vision-sidebar-width: 15rem;
+  --vision-sidebar-edge: calc(var(--vision-sidebar-width) + 14px);
+  --vision-workspace-offset: calc(var(--vision-sidebar-width) + 28px);
+  --vision-content-max: 112rem;
+  --vision-page-gutter: clamp(16px, 1.5vw, 32px);
+  --vision-section-gap: 24px;
+  --vision-panel-padding: clamp(20px, 1.5vw, 28px);
+  --vision-module-gap: 16px;
+  --motion-fast: 160ms;
+  --motion-panel: 200ms;
+  --motion-expand: 220ms;
+  --motion-route: 220ms;
+  --text: var(--vision-text);
+  --text-muted: var(--vision-muted);
+  --text-subtle: var(--vision-faint);
+  --primary: var(--vision-primary);
+  --primary-hover: var(--vision-primary-2);
+  --primary-soft: #eeecfb;
+  --border: var(--vision-line);
+  --border-strong: var(--vision-line-strong);
+}
+html { font-family: var(--studio-font); font-size: 100%; text-size-adjust: 100%; -webkit-text-size-adjust: 100%; scroll-padding-top: 7rem; }
+body { font-family: var(--studio-font); line-height: 1.6; }
+button, input, textarea, select { font-family: inherit; }
+button, a, input, textarea, select, summary { -webkit-tap-highlight-color: transparent; }
+button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 3px solid var(--vision-primary); outline-offset: 3px; }
+input, textarea, select { accent-color: var(--vision-primary); }
+pre, code, .cellText, .seedancePrompt pre { tab-size: 2; }
+pre, code { font-family: var(--studio-mono); }
+.seedancePrompt pre, .promptManualEdit textarea, .scriptPasteField textarea { font-family: var(--studio-font); }
+.appChrome, .appMain, .appWorkspace, .topbarIdentity, .topbarTools, .studioCard, .studioSection, .createFormSection, .runnerSettingsPage { min-width: 0; }
+.appMain { outline: none; }
+.appChrome .sidebarNav a > .navText { text-align: left; color: inherit; font-size: var(--vision-font-small); font-weight: 550; }
+.topbarIdentity .pageTitle, .topbarIdentity strong { max-width: none; white-space: normal; overflow: visible; text-overflow: clip; }
+.projectDashboard, .episodeDashboard { grid-template-columns: minmax(0,1fr); }
+.workspaceGrid, .storyboardCanvas, .roleProgressRail, .episodeRoleDeck { min-width: 0; max-width: 100%; }
+.createPageHeading { margin: 0 0 24px; padding: 0; }
+.runnerConnectionGrid { gap: 24px; }
+.appChrome .projectCard .projectTitleRow p, .appChrome .projectCard .projectCardFooter > span { color: var(--vision-muted); }
+.appChrome .assetTabBar { max-width: 100%; overflow-x: auto; }
+.appChrome .foundationRole.done .foundationCardAction, .appChrome .roleProgress.done .roleCardAction { color: var(--vision-good); }
+.skipLink { position: fixed; left: 20px; top: -100px; z-index: 200; border-radius: 8px; background: var(--vision-primary); padding: 12px 20px; color: white; }
+.skipLink:focus { top: 16px; }
+/* Navigation: one persistent rail, one title, a wrapping action group. */
+.appSidebar { inset: 14px auto 14px 14px; border: 1px solid var(--vision-line); border-radius: 16px; background: rgba(249,250,253,.96); box-shadow: var(--vision-shadow-sm); backdrop-filter: none; }
+.appSidebar::before { display: none; }
+.chromeBrand { padding: 24px 18px; gap: 12px; }
+.chromeBrand > span, .loginBrand > span { flex-shrink: 0; width: 2.5rem; height: 2.5rem; border: 0; border-radius: 10px; background: #5849c8; box-shadow: none; color: white; font-size: 1.125rem; line-height: 1; }
+.chromeBrand strong { font-size: var(--vision-font-body); font-weight: 650; }
+.chromeBrand small, .loginBrand small { color: var(--vision-muted); font-size: var(--vision-font-caption); letter-spacing: .02em; text-transform: none; }
+.sidebarNav { gap: 6px; padding: 0 12px 20px; }
+.sidebarNav a { min-height: 44px; gap: 12px; border-radius: 8px; font-size: var(--vision-font-small); font-weight: 550; color: var(--vision-muted); }
+.sidebarNav a:hover { transform: none; background: #eceff6; }
+.sidebarNav a.active { background: #eae7fa; color: #493bac; box-shadow: none; }
+.sidebarNav a.active::before { height: 20px; left: 0; border-radius: 0 3px 3px 0; background: var(--vision-primary); box-shadow: none; }
+.navIcon svg, .mobileNav summary svg { display: block; width: 20px; height: 20px; }
+.sidebarNav a > .navIcon { display: grid; width: 20px; flex: 0 0 20px; place-items: center; color: currentColor; }
+.sidebarEpisodes { padding: 16px 12px 0; }
+.sidebarEpisodes a { min-height: 44px; border-radius: 8px; }
+.sidebarEpisodes a:hover { transform: none; }
+.sidebarFooter { padding: 16px; }
+.sidebarWorkflow { gap: 2px; padding-bottom: 8px; }
+.accountMenu { grid-template-columns: 32px minmax(0,1fr) auto; gap: 8px; }
+.accountMenu > a { grid-column: 2; }
+.accountMenu button, .accountMenu > a { min-height: 36px; font-size: var(--vision-font-caption); }
+.appChrome .appTopbar { min-height: 88px; flex-wrap: wrap; gap: 16px; border: 1px solid var(--vision-line); border-radius: 14px; background: rgba(255,255,255,.94); box-shadow: var(--vision-shadow-sm); padding: 16px 24px; backdrop-filter: blur(12px); }
+.topbarIdentity { flex: 1 1 16rem; }
+.topbarIdentity .pageTitle, .topbarIdentity strong { display: block; margin: 0; color: var(--vision-text); font-size: var(--vision-font-title); font-weight: 650; line-height: 1.3; letter-spacing: -.025em; overflow-wrap: anywhere; }
+.topbarIdentity small { font-size: var(--vision-font-caption); line-height: 1.5; color: var(--vision-muted); }
+.topbarTools { display: flex; flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.topbarTools > * { max-width: 100%; }
+.topbarNextStep, .topbarStatus { font-size: var(--vision-font-small); }
+.topbarPrimary, .glassPrimary, .primaryAction, .episodePipelineButton, .runnerPrimaryButton, .loginForm > button {
+  min-height: 44px; border: 1px solid #5849c8 !important; border-radius: 9px !important; background: #5849c8 !important; box-shadow: 0 2px 3px rgba(58,42,130,.1) !important; padding: 10px 16px; color: #fff !important; font-size: var(--vision-font-small); font-weight: 600; line-height: 1.5;
+}
+.topbarPrimary:hover, .glassPrimary:hover, .primaryAction:hover, .episodePipelineButton:hover:not(:disabled), .runnerPrimaryButton:hover, .loginForm > button:hover:not(:disabled) { transform: none; background: #4c3db6 !important; box-shadow: none !important; }
+.quietButton, .secondaryAction, .episodeToolButton, .copyPromptButton, .modeButton, .archiveAction, .runnerSecondaryButton { min-height: 40px; border-radius: 8px !important; background: #fff !important; box-shadow: none !important; color: var(--vision-muted) !important; font-size: var(--vision-font-small); line-height: 1.5; }
+.dangerQuietButton, .foundationStopButton, .archiveDanger, .resetEpisodeButton { min-height: 40px; border-radius: 8px !important; box-shadow: none !important; font-size: var(--vision-font-small); }
+.executionModeSwitch { border: 1px solid var(--vision-line); border-radius: 10px; background: #f0f2f7; padding: 3px; box-shadow: none; }
+.executionModeSwitch .modeButton { min-height: 34px; }
+.executionModeSwitch .modeButton.active { background: #fff !important; color: var(--vision-primary) !important; box-shadow: var(--vision-shadow-sm) !important; }
+.appTopbar .topbarTools > form > .episodePipelineButton { min-height: 44px; }
+.appTopbar .episodePipelineButton strong { font-size: var(--vision-font-small); font-weight: 600; }
+.appTopbar .episodePipelineButton small { font-size: var(--vision-font-caption); color: #fff; }
+.episodeTopbarAction .episodeToolButton, .episodeTopbarAction .resetEpisodeButton, .episodeShell .episodeTopbarAction .resetEpisodeButton { min-height: 40px !important; font-size: var(--vision-font-small) !important; padding: 8px 12px !important; }
+.libraryTopbarMeta > span, .projectTopbarMeta > span, .episodeTopbarMeta > span { border: 0; border-radius: 4px; background: #f1f3f8; box-shadow: none; padding: 4px 8px; font-size: var(--vision-font-caption); }
+/* Panels use one border and a deliberate reading hierarchy. */
+.appChrome .studioCard, .appChrome .studioSection, .createFormSection, .createFormFooter, .runnerHero.studioCard, .runnerProviderCard, .runnerDeviceCard, .runnerChoiceGuide, .contractSection { border: 1px solid var(--vision-line) !important; border-radius: 14px !important; background: #fff !important; box-shadow: var(--vision-shadow-sm) !important; backdrop-filter: none; }
+.projectDashboard > .studioSection { padding: var(--vision-panel-padding); }
+.sectionHeading h2, .formSectionHeader h2, .runnerSectionHeader h2, .runnerProviderHeader h2, .projectDashboard > .studioSection > .sectionHeading h2 { font-size: var(--vision-font-heading); font-weight: 650; line-height: 1.4; letter-spacing: -.015em; }
+.projectTitleRow h2, .episodeSummary h3, .cardHeader h3, .appChrome .sceneStructureHead .cardHeader h3 { font-size: var(--vision-font-unit); font-weight: 650; line-height: 1.5; }
+.sectionIndex, .formSectionHeader > span { border-radius: 8px; background: #efedfa; color: var(--vision-primary); font-size: var(--vision-font-small); }
+.cardHeader { min-height: 76px; border-bottom: 1px solid var(--vision-line); background: #fafbfe; padding: 16px 20px; gap: 12px; flex-wrap: wrap; }
+.cardHeader span, .sectionEyebrow, .projectHeroMeta p, .episodePageHeading p { letter-spacing: .04em; color: var(--vision-muted) !important; font-size: var(--vision-font-caption); }
+.sectionHeading p, .formSectionHeader p, .createPageHeading p, .runnerSectionHeader > p { font-size: var(--vision-font-small); line-height: 1.7; color: var(--vision-muted); }
+.cardHeader em, .foundationHeaderState, .stateDot, .phaseStep small, .foundationRole small, .roleProgress small, .roleProgress em { font-size: var(--vision-font-small); }
+.projectDashboard > .workflowGuidance { border: 1px solid var(--vision-line); border-left: 3px solid var(--vision-primary); border-radius: 12px; background: #fff; box-shadow: none; padding: 16px 20px; }
+.projectDashboard > .workflowGuidance .guidanceCopy h1 { font-size: var(--vision-font-heading); }
+.studioGrid.twoColumns { gap: 20px; }
+.appChrome .studioTableScroll th { font-size: var(--vision-font-small); color: var(--vision-muted); background: #f4f6fa; }
+.appChrome .studioTableScroll td { font-size: var(--vision-font-small); color: var(--vision-text); line-height: 1.7; }
+.appChrome .studioTableScroll td, .appChrome .studioTableScroll th { border-color: #e2e6ee; padding: 12px; }
+.studioTableScroll, .storyboardTableWrap { overscroll-behavior-inline: contain; }
+.bibleLine span, .bibleKeyValue b, .bibleFactList li, .bibleEpisodeStates { font-size: var(--vision-font-body); line-height: 1.75; }
+.appChrome .bibleLine { border-color: #e3e7ef; background: #f9fafc; }
+.appChrome .foundationRole, .episodeShell .episodeRoleDeck .roleProgress { height: auto; min-height: 86px !important; border: 1px solid var(--vision-line) !important; border-radius: 10px !important; background: #fafbfe !important; box-shadow: none !important; padding: 12px 14px !important; }
+.foundationRole strong, .roleProgress strong, .episodeShell .episodeRoleDeck .roleProgress strong { font-size: var(--vision-font-body); font-weight: 650; }
+.foundationRole small, .episodeShell .episodeRoleDeck .roleProgress small { white-space: normal; }
+.roleStageForm:hover .roleProgress, .roleStageForm:focus-within .roleProgress { transform: none !important; box-shadow: none !important; }
+.foundationRail { grid-template-columns: repeat(auto-fit,minmax(min(100%, 15rem),1fr)); }
+.episodeStudioGroup { border: 1px solid var(--vision-line); border-radius: 10px; background: #fff; box-shadow: none; }
+.episodeStudioGroup > summary { gap: 12px; padding: 16px; flex-wrap: wrap; background: #f6f7fb; }
+.episodeStudioGroupTitle { font-size: var(--vision-font-body); font-weight: 650; }
+.appChrome .episodeStudioList > article { grid-template-columns: 44px minmax(0,1fr) auto auto; min-height: 94px; border-radius: 8px; gap: 18px; background: #fff; box-shadow: none; padding: 16px; }
+.appChrome .episodeStudioList .episodeSummary h3 { font-size: var(--vision-font-unit); max-width: none; }
+.appChrome .episodeStudioList .episodeNumber { font-size: 1.5rem; color: var(--vision-muted); font-variant-numeric: tabular-nums; }
+.appChrome .episodeStudioList .episodeCounts b { font-size: var(--vision-font-unit); }
+.appChrome .episodeStudioList .episodeCounts small, .appChrome .episodeStudioList .stateDot { font-size: var(--vision-font-small); }
+.projectDashboard > .batchMonitorCard { border: 1px solid var(--vision-line); border-radius: 12px; background: #fff; box-shadow: var(--vision-shadow-sm); padding: 20px; }
+.projectDashboard > .batchMonitorCard .batchMonitorCopy h2 { font-size: var(--vision-font-heading); }
+.projectDashboard > .batchMonitorCard .batchMonitorDetailsBody { min-width: 0; overflow-wrap: anywhere; }
+/* Library: consistent poster cards; a single project does not become an oversized banner. */
+.projectLibrary .projectCardGrid, .projectLibrary .projectCardGrid.singleProject { display: grid; width: 100%; grid-template-columns: repeat(auto-fill,minmax(min(100%, 22rem),1fr)); justify-content: start; gap: 24px; border: 0; border-radius: 0; padding: 0; background: transparent; box-shadow: none; backdrop-filter: none; }
+.appChrome .projectCard { overflow: hidden; border: 1px solid var(--vision-line); border-radius: 14px; background: #fff; box-shadow: var(--vision-shadow-sm); }
+.projectCard:hover { transform: translateY(-2px); border-color: #b5b1d5; box-shadow: var(--vision-shadow); }
+.projectPoster, .projectLibrary .projectCardGrid.singleProject .projectPoster { min-height: 0; height: auto; aspect-ratio: 16/8; }
+.projectPoster strong { font-size: var(--vision-font-small); }
+.projectCardBody { padding: 22px; }
+.projectTitleRow { align-items: flex-start; }
+.projectTitleRow h2 { margin: 0 0 8px; }
+.projectTitleRow p { font-size: var(--vision-font-small); line-height: 1.7; }
+.projectCardFooter { gap: 10px; flex-wrap: wrap; align-items: center; }
+.projectCardFooter > span { flex: 1 1 100%; color: var(--vision-muted); font-size: var(--vision-font-caption); }
+.projectProgress { margin-block: 20px; }
+.projectProgress > i { height: 5px; border-radius: 4px; background: #e8ebf3; }
+.projectProgress > i > span { background: var(--vision-primary); }
+.continueLink { min-height: 40px; display: inline-flex; align-items: center; color: var(--vision-primary); font-size: var(--vision-font-small); }
+.projectCardMenu { margin-left: auto; }
+.projectCardMenu summary { min-width: 40px; min-height: 40px; }
+.projectEmptyState { border: 1px dashed #bfc7d7; border-radius: 16px; background: #fafbfe; padding: 64px 24px; }
+.projectEmptyState p { font-size: var(--vision-font-body); }
+/* Creation and account entry share the same controls and reading scale. */
+.appChrome .createProjectPage, .createPage, .newProjectPage { max-width: 86rem; margin-inline: auto; }
+.createPageHeading h1, .loginHeading h1 { font-size: var(--vision-font-title); font-weight: 650; line-height: 1.35; }
+.createFormSection { padding: var(--vision-panel-padding); }
+.scriptDropzone { min-height: 13rem; border: 1px dashed #aeb8cb !important; border-radius: 10px !important; background: #f8f9fc !important; }
+.scriptDropzone:focus-within { outline: 3px solid var(--vision-primary); outline-offset: 3px; }
+.scriptDropzone strong, .styleOptionCopy strong, .basicConfigGrid label > span { font-size: var(--vision-font-body); }
+.basicConfigGrid input, .basicConfigGrid select, .scriptPasteField textarea, .executionModeFooter select, .loginForm input { min-height: 46px; border: 1px solid #bcc5d6 !important; border-radius: 8px !important; background: #fff !important; color: var(--vision-text); box-shadow: none; font-size: var(--vision-font-body); }
+.scriptPasteField textarea { min-height: 18rem; padding: 16px; line-height: 1.8; }
+.styleOption { border-radius: 10px !important; }
+.styleOption:has(input:focus-visible) { outline: 3px solid var(--vision-primary); outline-offset: 3px; }
+.styleOption:hover { transform: none; }
+.sourceTabs { border-radius: 9px; }
+.sourceTabs button { min-height: 44px; border-radius: 7px; font-size: var(--vision-font-small); }
+.createFormFooter { gap: 20px; padding: 20px 24px; }
+.createFormFooter p, .createFooterInfo p { font-size: var(--vision-font-small); }
+.loginShell::before, .loginShell::after { display: none; }
+.loginCard { width: min(100%, 29rem); border: 1px solid var(--vision-line); border-radius: 18px; background: #fff; box-shadow: var(--vision-shadow-float); padding: 40px; backdrop-filter: none; }
+.loginHeading span { font-size: var(--vision-font-body); }
+.loginForm label > span { font-size: var(--vision-font-small); font-weight: 600; }
+.loginFootnote, .loginError { font-size: var(--vision-font-small); color: var(--vision-muted); }
+.loginError { color: var(--vision-bad); }
+/* Execution settings: local credentials and cloud device pairing retain their own controls. */
+.runnerSettingsPage { max-width: 100rem; }
+.runnerHero.studioCard { grid-template-columns: minmax(0,1fr) auto; gap: 24px; }
+.runnerHeroIcon { display: none; }
+.runnerHero h1, .runnerHero h2 { margin: 0 0 8px; font-size: var(--vision-font-heading); font-weight: 650; }
+.runnerHero p { max-width: 70ch; font-size: var(--vision-font-body); line-height: 1.7; }
+.runnerProviderGrid { gap: 24px; align-items: start; }
+.runnerProviderHeader { align-items: flex-start; gap: 16px; }
+.runnerProviderHeader > div { min-width: 0; }
+.runnerCredentialField input, .runnerTokenForm input, .runnerTokenForm select { min-height: 46px; font-size: var(--vision-font-body); }
+.runnerCliStatusPanel { border: 1px solid var(--vision-line); border-radius: 10px; background: #f8f9fc; padding: 16px; }
+.runnerCliStatusEyebrow, .runnerCliStatusHeader time { font-size: var(--vision-font-caption); color: var(--vision-muted); letter-spacing: .02em; }
+.runnerCliStatusGrid { grid-template-columns: repeat(auto-fit,minmax(min(100%, 11rem),1fr)); gap: 12px; }
+.runnerCliStatusGrid article { min-width: 0; border: 1px solid var(--vision-line); border-radius: 8px; background: #fff; padding: 14px; }
+.runnerCliStatusGrid article > span, .runnerCliStatusGrid article > small { font-size: var(--vision-font-small); line-height: 1.6; color: var(--vision-muted); white-space: normal; overflow-wrap: anywhere; }
+.runnerCliStatusGrid article > strong { font-size: var(--vision-font-body); line-height: 1.6; color: var(--vision-text); white-space: normal; overflow-wrap: anywhere; }
+.runnerCliStatusFooter, .runnerCliStatusWarning, .runnerCliStatusNote { font-size: var(--vision-font-small); line-height: 1.7; }
+.runnerDeviceRow { flex-wrap: wrap; gap: 12px; }
+.runnerDeviceRow > div { min-width: 0; overflow-wrap: anywhere; }
+.runnerDiagnosticLogItem, .runnerDiagnosticLogItem pre { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.runnerDiagnosticLogItem pre { overflow: auto; font-size: var(--vision-font-small); }
+/* Episode results keep a single scrolling canvas on wide screens. */
+.episodeRoleDeck { border: 1px solid var(--vision-line); border-radius: 12px; background: #fff; box-shadow: none; backdrop-filter: none; }
+.episodeRoleDeck > summary { min-height: 44px; padding: 10px 16px; flex-wrap: wrap; font-weight: 600; }
+.episodeRoleDeck > .roleProgressRail { grid-template-columns: repeat(auto-fit,minmax(min(100%,15rem),1fr)); gap: 12px; padding: 12px !important; }
+.episodeShell .episodeRoleDeck .roleProgress { grid-template-columns: 2rem minmax(0,1fr) auto; }
+.episodeShell .storyboardCanvas { border: 1px solid var(--vision-line); border-radius: 12px !important; clip-path: inset(0 round 12px); background: #fff; box-shadow: var(--vision-shadow-sm) !important; }
+.canvasToolbar { min-height: 60px; gap: 16px; padding: 0 20px; background: #fff !important; }
+.viewTabs { min-width: 0; gap: 24px; overflow-x: auto; }
+.viewTabs a { min-height: 56px; flex-shrink: 0; font-size: var(--vision-font-small); font-weight: 600; }
+.episodeShell .viewTabs a { font-size: var(--vision-font-small); }
+.storyboardTable th { color: var(--vision-muted) !important; }
+.storyboardTable td { color: var(--vision-text) !important; }
+.episodeShell .unitList, .unitList, .logView { padding: 20px !important; }
+.unitCard, .logView > section { border: 1px solid var(--vision-line) !important; border-radius: 12px !important; box-shadow: none !important; }
+.unitCard:hover { transform: none; box-shadow: none !important; }
+.unitCardHead { min-height: 60px; gap: 12px; flex-wrap: wrap; padding: 16px 20px; background: #f8f9fc; }
+.unitCardHead strong, .unitCard h3 { font-size: var(--vision-font-unit); }
+.unitCardHead em, .unitCardHead span { font-size: var(--vision-font-small); }
+.seedancePrompt pre, .episodeShell .seedancePrompt pre { font-size: var(--vision-font-body); line-height: 1.85; color: var(--vision-text) !important; padding: 20px; background: #fff !important; }
+.promptPreview p { font-size: var(--vision-font-body); line-height: 1.8; color: var(--vision-text); }
+.exportEpisodeBar { gap: 12px; flex-wrap: wrap; border-radius: 8px !important; box-shadow: none !important; }
+.infoPanelToggleBtn { min-height: 44px; border-radius: 8px; box-shadow: var(--vision-shadow-sm); font-size: var(--vision-font-small); }
+.infoPanelArea { width: min(48rem,100vw); border-radius: 14px 0 0 14px; background: #fff !important; backdrop-filter: none; }
+.infoPanelHead { padding: 20px; }
+.infoPanelBody { padding: 20px; }
+.largeEmpty, .unitGuide { padding: 28px; }
+.largeEmpty p, .unitGuide p { font-size: var(--vision-font-body); line-height: 1.8; }
+@media (min-width: 761px) and (min-height: 651px) {
+  /* Allow enlarged text to increase the page height without collapsing the results. */
+  .episodeShell .appMain { overflow: auto; }
+  .episodeShell .workspaceGrid.no-rail { min-height: min(24rem,50dvh); }
+}
+@media (max-width: 1440px) {
+  :root { --vision-sidebar-width: 13.5rem; }
+  .appChrome .appTopbar { flex-wrap: wrap; padding: 16px 20px; }
+  .topbarIdentity { flex-basis: 16rem; }
+  .topbarTools { flex: 1 1 100%; justify-content: flex-start; }
+  .episodeTopbarMeta { flex-wrap: wrap; }
+  .studioGrid.twoColumns { grid-template-columns: 1fr; }
+  .runnerProviderGrid { grid-template-columns: 1fr; }
+  .runnerConnectionGrid { grid-template-columns: 1fr; }
+}
+@media (max-width: 980px) {
+  .appSidebar { display: none; }
+  .appWorkspace { margin-left: 0; }
+  .mobileNav { display: block; }
+  .mobileNav summary { display: grid; min-width: 44px; min-height: 44px; place-items: center; border-radius: 8px; background: #f0f2f7; }
+  .mobileNav nav { width: min(22rem,calc(100vw - 32px)); max-height: calc(100dvh - 120px); overflow: auto; border: 1px solid var(--vision-line); border-radius: 12px; background: #fff; box-shadow: var(--vision-shadow-float); }
+  .mobileNav nav a { min-height: 44px; font-size: var(--vision-font-small); }
+  .topbarIdentity { flex: 1 1 0; }
+  .appChrome .appTopbar { margin-inline: 16px; }
+  .runnerHero.studioCard { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px), (max-height: 650px) {
+  .episodeShell { height: auto; min-height: 100dvh; overflow: visible; }
+  .episodeShell .appWorkspace { height: auto; min-height: 100dvh; overflow: visible; }
+  .episodeShell .appMain { overflow: visible; }
+  .episodeShell .episodeDashboard { height: auto; }
+  .episodeShell .workspaceGrid.no-rail { height: auto; min-height: 24rem; overflow: visible; }
+  .episodeShell .storyboardCanvas { height: auto; min-height: 24rem; clip-path: none; }
+  .episodeShell .unitList { overflow: visible; }
+  .episodeShell .storyboardTableWrap { max-height: 70dvh; overflow: auto; }
+}
+@media (max-width: 760px) {
+  .appChrome .appTopbar { top: 0; position: relative; margin: 12px 12px 0; padding: 16px; gap: 12px; }
+  .appMain { padding: 16px 12px 40px; }
+  .topbarTools { gap: 8px; }
+  .topbarTools > form { min-width: 0; }
+  .topbarIdentity .pageTitle, .topbarIdentity strong { font-size: 1.5rem; }
+  .projectLibrary .projectCardGrid, .projectLibrary .projectCardGrid.singleProject { grid-template-columns: 1fr; gap: 16px; }
+  .projectLibrary .projectCardGrid.singleProject .projectPoster { min-height: 0; }
+  .projectDashboard > .studioSection { padding: 16px; }
+  .foundationRail { grid-template-columns: 1fr; }
+  .episodeRoleDeck > .roleProgressRail { grid-template-columns: 1fr; overflow: visible; }
+  .appChrome .episodeStudioList > article { grid-template-columns: 32px minmax(0,1fr); gap: 10px; padding: 14px; }
+  .appChrome .episodeStudioList .episodeCounts, .appChrome .episodeStudioList .primaryLink { grid-column: 2; justify-content: flex-start; }
+  .episodeStudioGroupMeta { margin-left: 0; white-space: normal; }
+  .basicConfigGrid, .runnerChoiceGrid { grid-template-columns: 1fr; }
+  .createFormFooter { position: static; align-items: stretch; flex-direction: column; padding: 20px; }
+  .canvasToolbar { align-items: stretch; flex-direction: column; gap: 0; padding: 0 14px; }
+  .viewTabs { gap: 20px; width: 100%; }
+  .canvasToolbar > span { padding-bottom: 10px; }
+  .episodeShell .unitList, .unitList, .logView { padding: 12px !important; }
+  .seedancePrompt pre, .episodeShell .seedancePrompt pre { padding: 14px; }
+  .infoPanelArea { inset: 0; width: 100%; border-radius: 0; }
+  .loginCard { padding: 28px 24px; }
+  .runnerCliStatusGrid { grid-template-columns: 1fr; }
+  .runnerTopbarMeta { flex-wrap: wrap; }
+}

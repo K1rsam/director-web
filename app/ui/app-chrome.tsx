@@ -4,6 +4,33 @@ import { AccountMenu } from "./account-menu";
 import { EpisodeSidebar } from "./episode-sidebar";
 
 type EpisodeLink = { id: string; number: number; title: string; state?: string };
+type NavigationSection = "projects" | "project" | "new" | "runner";
+type NavigationItem = { section: NavigationSection; href: string; label: string };
+
+function NavigationIcon({ name }: { name: NavigationSection | "menu" }) {
+  const paths = {
+    projects: <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>,
+    project: <><path d="M3 7h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><path d="M3 7V5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2" /></>,
+    new: <path d="M12 5v14M5 12h14" />,
+    runner: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m7 9 3 3-3 3m6 0h4" /></>,
+    menu: <path d="M4 6h16M4 12h16M4 18h16" />
+  };
+
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      {paths[name]}
+    </svg>
+  );
+}
+
+function NavigationLinks({ items, activeSection }: { items: NavigationItem[]; activeSection?: NavigationSection | "episode" }) {
+  return items.map((item) => (
+    <Link key={item.section} href={item.href} className={activeSection === item.section ? "active" : ""} aria-current={activeSection === item.section ? "page" : undefined}>
+      <span className="navIcon" aria-hidden="true"><NavigationIcon name={item.section} /></span>
+      <span className={`navText${item.section === "project" ? " navContext" : ""}`}>{item.label}</span>
+    </Link>
+  ));
+}
 
 export function AppChrome({
   title,
@@ -27,29 +54,37 @@ export function AppChrome({
   primaryAction?: ReactNode;
   utility?: ReactNode;
   children: ReactNode;
-  }) {
+}) {
   const productionEpisodes = episodes.filter((episode) => episode.number >= 1);
   const projectLibraryHref = projectId ? `/?projectId=${encodeURIComponent(projectId)}` : "/";
   const projectWorkbenchHref = projectId ? `/projects/${encodeURIComponent(projectId)}` : null;
   const newProjectHref = projectId ? `/projects/new?projectId=${encodeURIComponent(projectId)}` : "/projects/new";
   const runnerHref = projectId ? `/runner?projectId=${encodeURIComponent(projectId)}` : "/runner";
+  const navigationItems: NavigationItem[] = [
+    { section: "projects", href: projectLibraryHref, label: "所有项目" },
+    ...(projectWorkbenchHref ? [{ section: "project" as const, href: projectWorkbenchHref, label: projectLabel ?? "全剧工作台" }] : []),
+    { section: "new", href: newProjectHref, label: "新建项目" },
+    { section: "runner", href: runnerHref, label: "API 与 CLI" }
+  ];
+  // 全剧工作台的正文已有 h1，顶部只保留页面标识，避免重复一级标题。
+  const TitleTag = activeSection === "project" ? "p" : "h1";
 
   return (
     <div className={`appChrome ${activeSection === "episode" ? "episodeShell" : ""}`}>
+      <a className="skipLink" href="#main-content">跳到主要内容</a>
       <aside className="appSidebar" aria-label="工作台导航">
-        <Link href="/" className="chromeBrand">
+        <Link href="/" className="chromeBrand" aria-label="分镜工作台首页">
           <span aria-hidden="true">L</span>
           <div><strong>分镜工作台</strong><small>Director Studio</small></div>
         </Link>
 
-        <nav className="sidebarNav">
-          <Link href={projectLibraryHref} className={activeSection === "projects" ? "active" : ""}><span className="navIcon" aria-hidden="true">⌂</span><span className="navText">所有项目</span></Link>
-          {projectWorkbenchHref ? <Link href={projectWorkbenchHref} className={activeSection === "project" ? "active" : ""}><span className="navIcon" aria-hidden="true">◇</span><span className="navText navContext">{projectLabel ?? "全剧工作台"}</span></Link> : null}
-          <Link href={newProjectHref} className={activeSection === "new" ? "active" : ""}><span className="navIcon" aria-hidden="true">＋</span><span className="navText">新建项目</span></Link>
-          <Link href={runnerHref} className={activeSection === "runner" ? "active" : ""}><span className="navIcon" aria-hidden="true">↯</span><span className="navText">API 与 CLI</span></Link>
+        <nav className="sidebarNav" aria-label="主要导航">
+          <NavigationLinks items={navigationItems} activeSection={activeSection} />
         </nav>
 
-        {activeSection !== "projects" && projectId && productionEpisodes.length ? <EpisodeSidebar projectId={projectId} episodes={productionEpisodes} activeEpisodeId={activeEpisodeId} /> : null}
+        {activeSection !== "projects" && projectId && productionEpisodes.length ? (
+          <EpisodeSidebar projectId={projectId} episodes={productionEpisodes} activeEpisodeId={activeEpisodeId} />
+        ) : null}
 
         <div className="sidebarFooter">
           <div className="sidebarWorkflow"><span>工作流</span><strong>P1 · P2 · E0–E5</strong></div>
@@ -60,19 +95,16 @@ export function AppChrome({
       <div className="appWorkspace">
         <header className="appTopbar">
           <details className="mobileNav">
-            <summary aria-label="打开导航">☰</summary>
-            <nav>
-              <Link href={projectLibraryHref}>所有项目</Link>
-              {projectWorkbenchHref ? <Link href={projectWorkbenchHref}>{projectLabel ?? "全剧工作台"}</Link> : null}
-              <Link href={newProjectHref}>新建项目</Link>
-              <Link href={runnerHref}>API 与 CLI</Link>
+            <summary aria-label="切换导航"><NavigationIcon name="menu" /></summary>
+            <nav aria-label="主要导航">
+              <NavigationLinks items={navigationItems} activeSection={activeSection} />
               <div className="mobileAccountMenu"><AccountMenu /></div>
             </nav>
           </details>
-          <div className="topbarIdentity" data-route-label><small>{eyebrow}</small><strong>{title}</strong></div>
+          <div className="topbarIdentity" data-route-label><small>{eyebrow}</small><TitleTag id="page-title" className="pageTitle">{title}</TitleTag></div>
           <div className="topbarTools">{utility}{primaryAction}</div>
         </header>
-        <main className="appMain">{children}</main>
+        <main id="main-content" className="appMain" tabIndex={-1} aria-labelledby="page-title">{children}</main>
       </div>
     </div>
   );

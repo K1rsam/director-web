@@ -62,6 +62,20 @@ function overlayChanges(cwd) {
   return changes;
 }
 
+function blobAt(cwd, ref, file) {
+  try {
+    return execFileSync("git", ["rev-parse", `${ref}:${file}`], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function sameBlob(file) {
+  const mainBlob = blobAt(mainDir, mainRef, file);
+  const overlayBlob = blobAt(overlayDir, overlayRef, file);
+  return Boolean(mainBlob && overlayBlob && mainBlob === overlayBlob);
+}
+
 async function copyBlob(sourceRoot, sourceRef, targetRoot, file) {
   const target = path.join(targetRoot, ...file.split("/"));
   await fs.mkdir(path.dirname(target), { recursive: true });
@@ -96,6 +110,9 @@ for (const change of overlayChanges(overlayDir)) {
   }
   if (classification.category === "local_only" || classification.category === "common_once" || classification.category === "platform_tooling") {
     if (classification.category === "platform_tooling") continue;
+    // overlay rebase 会把 main 新增/修改的公共文件带进自身历史；只要两边
+    // 的 Git blob 完全相同，它仍然由 main 负责，不能被误当作 overlay 代码。
+    if ((classification.category === "common_once" || classification.category === "local_only") && change.status !== "D" && sameBlob(change.file)) continue;
     if (change.status !== "D") {
       throw new Error(`overlay 不应拥有 ${classification.category} 文件：${change.file}`);
     }

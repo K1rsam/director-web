@@ -36,6 +36,13 @@
       "when": 1788093726134,
       "tag": "0004_runner_diagnostic_logs",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1788591599466,
+      "tag": "0005_studio_test_accounts",
+      "breakpoints": true
     }
   ]
 }

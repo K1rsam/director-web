@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import "./vision-studio.css";
+import "./runner/sites-status.css";
 import { PageTransition } from "./ui/page-transition";
 
 export const metadata: Metadata = {

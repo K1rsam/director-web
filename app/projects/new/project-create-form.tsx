@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState, type CSSProperties } from "react";
+import { useActionState, useId, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { importProjectAction, type ProjectCreationState } from "@/app/actions";
 import type { ProjectStyleOption, ProjectSubmissionMode } from "@/lib/project-entry";
 
@@ -11,19 +11,41 @@ export function ProjectCreateForm({ styles }: { styles: ProjectStyleOption[] }) 
   const [mode, setMode] = useState<ProjectSubmissionMode>("upload");
   const [executionMode, setExecutionMode] = useState<"CLI" | "API">("CLI");
   const [fileName, setFileName] = useState("");
+  const sourceTabRefs = useRef<Record<ProjectSubmissionMode, HTMLButtonElement | null>>({ upload: null, paste: null });
   const recommended = styles.filter((style) => style.recommended);
   const moreStyles = styles.filter((style) => !style.recommended);
+
+  function handleSourceTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    let nextMode: ProjectSubmissionMode;
+    switch (event.key) {
+      case "ArrowLeft":
+      case "ArrowRight":
+        nextMode = mode === "upload" ? "paste" : "upload";
+        break;
+      case "Home":
+        nextMode = "upload";
+        break;
+      case "End":
+        nextMode = "paste";
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    setMode(nextMode);
+    sourceTabRefs.current[nextMode]?.focus();
+  }
 
   return (
     <form action={formAction} className="createProjectForm">
       <input name="mode" type="hidden" value={mode} />
 
-      <section className="createFormSection scriptSourceSection">
+      <section className="createFormSection scriptSourceSection" aria-labelledby="script-source-title">
         <div className="formSectionHeader">
-          <span>01</span>
+          <span aria-hidden="true">01</span>
           <div>
-            <h2>提供剧本</h2>
-            <p>支持 TXT、MD、DOCX；建议直接导入已经规范化的完整剧本。</p>
+            <h2 id="script-source-title">提供剧本</h2>
+            <p id="script-source-help">支持 TXT、MD、DOCX；建议直接导入已经规范化的完整剧本。</p>
           </div>
         </div>
 
@@ -31,7 +53,12 @@ export function ProjectCreateForm({ styles }: { styles: ProjectStyleOption[] }) 
           <button
             type="button"
             role="tab"
+            id="script-upload-tab"
+            aria-controls="script-upload-panel"
             aria-selected={mode === "upload"}
+            tabIndex={mode === "upload" ? 0 : -1}
+            ref={(element) => { sourceTabRefs.current.upload = element; }}
+            onKeyDown={handleSourceTabKeyDown}
             className={mode === "upload" ? "active" : ""}
             onClick={() => setMode("upload")}
           >
@@ -40,7 +67,12 @@ export function ProjectCreateForm({ styles }: { styles: ProjectStyleOption[] }) 
           <button
             type="button"
             role="tab"
+            id="script-paste-tab"
+            aria-controls="script-paste-panel"
             aria-selected={mode === "paste"}
+            tabIndex={mode === "paste" ? 0 : -1}
+            ref={(element) => { sourceTabRefs.current.paste = element; }}
+            onKeyDown={handleSourceTabKeyDown}
             className={mode === "paste" ? "active" : ""}
             onClick={() => setMode("paste")}
           >
@@ -48,39 +80,49 @@ export function ProjectCreateForm({ styles }: { styles: ProjectStyleOption[] }) 
           </button>
         </div>
 
-        {mode === "upload" ? (
-          <label className="scriptDropzone" htmlFor="script-upload">
-            <span className="uploadIcon" aria-hidden="true">↑</span>
-            <strong>{fileName || "选择剧本文件"}</strong>
-            <small>{fileName ? "点击可重新选择" : "或将文件拖入此处"}</small>
-            <em>TXT · MD · DOCX</em>
-            <input
-              id="script-upload"
-              name="script"
-              type="file"
-              accept=".txt,.md,.docx"
-              required
-              onChange={(event) => setFileName(event.target.files?.[0]?.name ?? "")}
-            />
-          </label>
-        ) : (
-          <label className="scriptPasteField">
-            <span>剧本正文</span>
-            <textarea
-              name="scriptText"
-              required
-              placeholder="在此粘贴完整剧本。系统只读取你提供的内容，不会在导入阶段改写正文。"
-            />
-          </label>
-        )}
+        <div id="script-upload-panel" role="tabpanel" aria-labelledby="script-upload-tab" hidden={mode !== "upload"}>
+          {mode === "upload" ? (
+            <label className="scriptDropzone" htmlFor="script-upload">
+              <span className="uploadIcon" aria-hidden="true">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" focusable="false"><path d="M12 16V4m-5 5 5-5 5 5M4 16v4h16v-4" /></svg>
+              </span>
+              <strong role="status">{fileName || "选择剧本文件"}</strong>
+              <small>{fileName ? "点击可重新选择" : "或将文件拖入此处"}</small>
+              <em>TXT · MD · DOCX</em>
+              <input
+                id="script-upload"
+                name="script"
+                type="file"
+                accept=".txt,.md,.docx"
+                aria-label="选择剧本文件"
+                aria-describedby="script-source-help"
+                required
+                onChange={(event) => setFileName(event.target.files?.[0]?.name ?? "")}
+              />
+            </label>
+          ) : null}
+        </div>
+        <div id="script-paste-panel" role="tabpanel" aria-labelledby="script-paste-tab" hidden={mode !== "paste"}>
+          {mode === "paste" ? (
+            <label className="scriptPasteField">
+              <span>剧本正文</span>
+              <textarea
+                name="scriptText"
+                aria-describedby="script-source-help"
+                required
+                placeholder="在此粘贴完整剧本。系统只读取你提供的内容，不会在导入阶段改写正文。"
+              />
+            </label>
+          ) : null}
+        </div>
       </section>
 
-      <section className="createFormSection projectConfigSection">
+      <section className="createFormSection projectConfigSection" aria-labelledby="project-config-title">
         <div className="formSectionHeader">
-          <span>02</span>
+          <span aria-hidden="true">02</span>
           <div>
-            <h2>项目配置</h2>
-            <p>风格模板会在最终编译时自动加入每个独立 Seedance 分镜单元。</p>
+            <h2 id="project-config-title">项目配置</h2>
+            <p id="project-style-help">风格模板会在最终编译时自动加入每个独立 Seedance 分镜单元。</p>
           </div>
         </div>
 
@@ -101,7 +143,7 @@ export function ProjectCreateForm({ styles }: { styles: ProjectStyleOption[] }) 
           </label>
         </div>
 
-        <fieldset className="styleFieldset">
+        <fieldset className="styleFieldset" aria-describedby="project-style-help">
           <legend>画面风格</legend>
           <p>推荐风格</p>
           <div className="styleOptionGrid recommendedStyles">
@@ -124,6 +166,7 @@ export function ProjectCreateForm({ styles }: { styles: ProjectStyleOption[] }) 
             <span>执行方式</span>
             <select
               name="executionMode"
+              aria-describedby="execution-mode-help"
               value={executionMode}
               onChange={(event) => setExecutionMode(event.target.value === "API" ? "API" : "CLI")}
             >
@@ -131,15 +174,15 @@ export function ProjectCreateForm({ styles }: { styles: ProjectStyleOption[] }) 
               <option value="API">API（DeepSeek）</option>
             </select>
           </label>
-          <p>
-            <span aria-hidden="true">●</span>
+          <p id="execution-mode-help">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v6m0-10h.01" /></svg>
             {executionMode === "API"
               ? "创建后自动进入全剧资料整理；API（DeepSeek）使用与 CLI 同一套 E0–E5 岗位 Skill。"
               : "创建后自动进入全剧资料整理；CLI 模式使用本机 Codex 执行 E0–E5 岗位。"}
           </p>
         </div>
-        <button className="primaryAction createSubmit" type="submit" disabled={pending}>
-          {pending ? "正在创建项目…" : "创建项目并开始解析"}<span aria-hidden="true">→</span>
+        <button className="primaryAction createSubmit" type="submit" disabled={pending} aria-busy={pending}>
+          {pending ? "正在创建项目…" : "创建项目并开始解析"}<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M4 12h16m-6-6 6 6-6 6" /></svg>
         </button>
       </footer>
     </form>
@@ -153,9 +196,10 @@ function StyleOption({
   style: ProjectStyleOption;
   defaultChecked?: boolean;
 }) {
+  const optionId = useId();
   return (
     <label className="styleOption">
-      <input name="styleId" type="radio" value={style.id} defaultChecked={defaultChecked} />
+      <input name="styleId" type="radio" value={style.id} defaultChecked={defaultChecked} aria-labelledby={`${optionId}-label`} aria-describedby={`${optionId}-description`} />
       <span
         className="stylePreview"
         style={{ "--style-cover": `url("${style.coverImage}")` } as CSSProperties}
@@ -164,10 +208,10 @@ function StyleOption({
         <b>{style.category}</b>
       </span>
       <span className="styleOptionCopy">
-        <strong>{style.label}</strong>
-        <small>{style.description}</small>
+        <strong id={`${optionId}-label`}>{style.label}</strong>
+        <small id={`${optionId}-description`}>{style.description}</small>
       </span>
-      <em aria-hidden="true">✓</em>
+      <em aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" focusable="false"><path d="m5 12 4 4L19 6" /></svg></em>
     </label>
   );
 }
