@@ -599,27 +599,9 @@ body {
 .infoPanel { border-color: rgba(255,255,255,.92) !important; border-radius: 24px !important; background: rgba(255,255,255,.88) !important; box-shadow: -24px 0 70px rgba(42,50,88,.18), inset 0 1px white !important; backdrop-filter: blur(26px) saturate(145%); }
 .infoPanelHead { background: rgba(250,251,255,.70) !important; }
 
-/* Shared-axis route and micro motion */
-.visionRouteForward .appMain { animation: visionRouteForward var(--motion-route) var(--motion-ease) both; }
-.visionRouteBack .appMain { animation: visionRouteBack var(--motion-route) var(--motion-ease) both; }
-.visionRouteForward [data-route-label], .visionRouteForward .navContext { animation: visionLabelForward var(--motion-route) var(--motion-ease) both; }
-.visionRouteBack [data-route-label], .visionRouteBack .navContext { animation: visionLabelBack var(--motion-route) var(--motion-ease) both; }
+/* Expand/collapse motion; route and shared selection motion live in the UI controller. */
 details[open] > :not(summary) { animation: visionPanelIn var(--motion-expand) var(--motion-ease) both; }
-.visionRouteForward .projectDashboard > *,
-.visionRouteForward .episodeDashboard > *,
-.visionRouteForward .projectLibrary > * { animation: visionPanelRise var(--motion-expand) var(--motion-ease) both; }
-.visionRouteForward .projectDashboard > :nth-child(2),
-.visionRouteForward .episodeDashboard > :nth-child(2),
-.visionRouteForward .projectLibrary > :nth-child(2) { animation-delay: 50ms; }
-.visionRouteForward .projectDashboard > :nth-child(n+3),
-.visionRouteForward .episodeDashboard > :nth-child(n+3),
-.visionRouteForward .projectLibrary > :nth-child(n+3) { animation-delay: 100ms; }
-@keyframes visionRouteForward { from { opacity: 0; transform: translateX(28px); } to { opacity: 1; transform: translateX(0); } }
-@keyframes visionRouteBack { from { opacity: 0; transform: translateX(-24px); } to { opacity: 1; transform: translateX(0); } }
-@keyframes visionLabelForward { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: translateX(0); } }
-@keyframes visionLabelBack { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: translateX(0); } }
 @keyframes visionPanelIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes visionPanelRise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
 @media (max-width: 1120px) {
   .projectTopbarMeta { display: none; }
@@ -2016,7 +1998,7 @@ button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible,t
 .sidebarNav {flex:0 0 auto;gap:5px;padding:0 14px 23px;}
 .sidebarNav a {display:flex;align-items:center;min-height:45px;gap:11px;padding:10px 12px;border:1px solid transparent;border-radius:12px;color:var(--vision-muted);font-size:.9375rem;font-weight:500;transition:transform 260ms var(--motion-ease),background 200ms,box-shadow 220ms;}
 .appChrome .sidebarNav a>.navText {font-size:.9375rem;font-weight:500;color:inherit;text-align:left;}
-.sidebarNav a:hover {transform:translateX(2px);background:rgba(255,255,255,.3);color:var(--vision-text);}
+.sidebarNav a:hover {background:rgba(255,255,255,.22);color:var(--vision-text);}
 .sidebarNav a.active,.sidebarEpisodes a.active {border:1px solid rgba(143,130,195,.24);background:linear-gradient(125deg,rgba(213,210,246,.4),rgba(241,239,253,.28));color:var(--vision-text);box-shadow:0 4px 10px rgba(116,101,170,.11),inset 0 1px 0 rgba(255,255,255,.42);}
 .sidebarNav a.active::before {display:none;}
 .sidebarNav a.active::after {content:"";width:4px;height:4px;flex-shrink:0;border-radius:50%;background:var(--vision-primary);box-shadow:0 0 8px rgba(139,115,210,.4);}
@@ -2072,9 +2054,34 @@ button[aria-busy=true]::before {content:"";width:14px;height:14px;flex:0 0 14px;
 .appTopbar .topbarTools>form>.episodePipelineButton {min-height:44px;flex-direction:row;flex-wrap:wrap;gap:6px;}
 .appTopbar .episodePipelineButton strong {font-size:.875rem;font-weight:500;}
 .appTopbar .episodePipelineButton small {font-size:.8125rem;color:inherit;}
-.executionModeSwitch {padding:4px;border:1px solid var(--vision-line);border-radius:13px;background:rgba(210,209,237,.2);box-shadow:none;}
-.executionModeSwitch .modeButton {min-height:34px;border:0!important;border-radius:9px!important;background:transparent!important;color:var(--vision-muted)!important;box-shadow:none!important;font-size:.875rem;font-weight:500;}
-.executionModeSwitch .modeButton.active {background:rgba(252,251,255,.65)!important;box-shadow:0 3px 7px rgba(106,94,161,.1),inset 0 1px 0 rgba(255,255,255,.8)!important;color:var(--vision-primary)!important;}
+.appChrome .executionModeSwitch {padding:4px;gap:6px;border:1px solid rgba(150,139,191,.2);border-top-color:rgba(255,255,255,.65);border-radius:14px;background:linear-gradient(125deg,rgba(232,235,255,.26),rgba(220,213,244,.22));box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 3px 10px rgba(113,99,161,.06);-webkit-backdrop-filter:blur(18px) saturate(135%);backdrop-filter:blur(18px) saturate(135%);}
+.modeOptions {display:inline-flex;align-items:stretch;gap:3px;flex-shrink:0;}
+.modeOptions form {display:flex;margin:0;}
+.executionModeSwitch .modeButton {display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:34px;padding:0 9px;border:0!important;border-radius:10px!important;background:transparent!important;color:var(--vision-muted)!important;box-shadow:none!important;font-size:.875rem;font-weight:500;white-space:nowrap;transition:color 180ms,background 180ms;}
+.executionModeSwitch .modeButton.active {background:rgba(248,246,255,.38)!important;color:var(--vision-primary)!important;}
+.modeDot {width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:currentColor;opacity:0;transition:opacity 180ms;}
+.modeButton[aria-pressed=true] .modeDot {opacity:1;}
+.modeButton[aria-busy=true]::before {display:none;}
+.modeButton[aria-busy=true] .modeDot {background:transparent;border:1px solid currentColor;border-right-color:transparent;animation:studioSpin 800ms linear infinite;}
+
+/* Shared moving glass for navigation, view tabs and execution choices. */
+.motionSelection {position:relative;isolation:isolate;}
+.motionSelection > .selectionGlass {position:absolute;z-index:0;top:0;left:0;display:block;pointer-events:none;opacity:0;transform-origin:0 0;border:1px solid rgba(143,130,195,.24);border-top-color:rgba(255,255,255,.62);border-radius:12px;background:linear-gradient(125deg,rgba(220,218,251,.38),rgba(245,243,255,.26));box-shadow:0 4px 10px rgba(116,101,170,.1),inset 0 1px 0 rgba(255,255,255,.4);-webkit-backdrop-filter:blur(14px) saturate(130%);backdrop-filter:blur(14px) saturate(130%);}
+.motionSelection > :not(.selectionGlass) {position:relative;z-index:1;}
+.appChrome .motionSelection[data-selection-ready] > a.active,
+.appChrome .modeOptions[data-selection-ready] .modeButton.active {background:transparent!important;border-color:transparent!important;box-shadow:none!important;}
+.appChrome .sidebarNav.motionSelection a,.appChrome .sidebarEpisodeScroller.motionSelection a {transform:none;}
+.appChrome .sidebarNav a > .navContext {max-width:12em;}
+.modeOptions > .selectionGlass,.viewTabs > .selectionGlass {border-radius:10px;background:linear-gradient(135deg,rgba(252,251,255,.5),rgba(214,207,244,.3));box-shadow:0 3px 9px rgba(103,89,157,.12),inset 0 1px 0 rgba(255,255,255,.58),inset 0 -1px 0 rgba(164,148,208,.08);}
+.appChrome .motionSelection a:hover:not(.active),.modeOptions .modeButton:hover:not(:disabled):not(.active) {background:rgba(242,239,255,.22)!important;}
+.appChrome .motionSelection a:active,.modeOptions .modeButton:active:not(:disabled) {background:rgba(223,216,248,.3)!important;}
+
+/* Consistent light response and press feedback for the existing button variants. */
+.appChrome :is(.topbarPrimary,.glassPrimary,.primaryAction,.episodePipelineButton,.runnerPrimaryButton,.foundationRunAllButton,.batchMonitorButton.primary) {background-size:160% 160%!important;background-position:0% 50%!important;transition:transform 260ms var(--motion-ease),box-shadow 240ms,background-position 380ms var(--motion-ease),border-color 180ms;}
+.appChrome :is(.topbarPrimary,.glassPrimary,.primaryAction,.episodePipelineButton,.runnerPrimaryButton,.foundationRunAllButton,.batchMonitorButton.primary):hover:not(:disabled) {background-position:100% 50%!important;}
+.appChrome :is(.topbarPrimary,.secondaryAction,.quietButton,.copyPromptButton,.continueLink,.episodeToolButton) > svg {transition:transform 260ms var(--motion-ease);}
+.appChrome :is(.topbarPrimary,.secondaryAction,.quietButton,.copyPromptButton,.continueLink,.episodeToolButton):hover:not(:disabled) > svg {transform:translateY(-1px);}
+.appChrome :is(.quietButton,.secondaryAction,.copyPromptButton,.episodeToolButton,.continueLink,.archiveAction) {-webkit-backdrop-filter:blur(12px) saturate(115%);backdrop-filter:blur(12px) saturate(115%);}
 
 /* Tinted reading planes separate dense content from the lighter controls. */
 .appChrome :is(.studioCard,.studioSection,.createFormSection,.createFormFooter,.runnerProviderCard,.runnerDeviceCard,.runnerChoiceGuide,.contractSection) {border:1px solid rgba(255,255,255,.65)!important;border-bottom-color:var(--vision-line)!important;border-radius:22px!important;background:var(--vision-reading)!important;box-shadow:var(--vision-shadow)!important;backdrop-filter:blur(24px) saturate(115%);}
@@ -2135,7 +2142,7 @@ dialog.infoPanelBackdrop::backdrop {background:rgba(70,65,107,.2);backdrop-filte
 :is(.appMain,.appWorkspace,.sidebarEpisodeScroller,.unitList,.studioTableScroll,.storyboardTableWrap,.infoPanelBody)::-webkit-scrollbar-track {background:transparent;margin-block:16px;}
 :is(.appMain,.appWorkspace,.sidebarEpisodeScroller,.unitList,.studioTableScroll,.storyboardTableWrap,.infoPanelBody)::-webkit-scrollbar-thumb {background:rgba(119,108,166,.3);border-radius:20px;}
 .visionRouteFrame[data-navigating=true]::after {content:"";position:fixed;z-index:100;top:0;left:var(--vision-workspace-offset);right:20px;height:2px;transform-origin:left;background:linear-gradient(90deg,#7c8ad7,#b398d9);animation:studioRouteProgress 1.4s var(--motion-ease) infinite;}
-[data-route-pending] {background:rgba(224,219,246,.72)!important;}
+[data-route-pending] {color:var(--vision-primary)!important;}
 @keyframes studioRouteProgress {0%{transform:scaleX(.03);opacity:.5}85%{transform:scaleX(.9);opacity:.85}100%{transform:scaleX(.94);opacity:0}}
 @keyframes studioSpin {to{transform:rotate(360deg)}}
 @media(max-width:1440px) {.appChrome .appTopbar {padding:18px 22px;} .topbarTools {justify-content:flex-start;} .runnerProviderGrid {grid-template-columns:1fr;} .studioGrid.twoColumns {grid-template-columns:1fr;}}

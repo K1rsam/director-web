@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef } from "react";
+import { MotionSelection } from "./motion-selection";
 
 type EpisodeSidebarItem = {
   id: string;
@@ -86,7 +87,7 @@ export function EpisodeSidebar({
   return (
     <nav className="sidebarEpisodes" aria-label="分集制作">
       <p>分集制作 <span>{episodes.length}</span></p>
-      <div ref={scrollRef} className="sidebarEpisodeScroller" aria-label="分集列表">
+      <MotionSelection as="div" containerRef={scrollRef} className="sidebarEpisodeScroller" label="分集列表" group={`episodes:${projectId}`} activeKey={activeEpisodeId ?? ""}>
         {episodes.map((episode) => (
           <Link
             href={`/projects/${projectId}/episodes/${episode.id}`}
@@ -108,7 +109,7 @@ export function EpisodeSidebar({
             </i>
           </Link>
         ))}
-      </div>
+      </MotionSelection>
     </nav>
   );
 }

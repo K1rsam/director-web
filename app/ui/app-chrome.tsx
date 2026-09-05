@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { AccountMenu } from "./account-menu";
 import { EpisodeSidebar } from "./episode-sidebar";
+import { MotionSelection } from "./motion-selection";
 
 type EpisodeLink = { id: string; number: number; title: string; state?: string };
 type NavigationSection = "projects" | "project" | "episode" | "new" | "runner";
@@ -26,7 +27,7 @@ function NavigationIcon({ name }: { name: NavigationSection | "menu" }) {
 
 function NavigationLinks({ items, activeSection }: { items: NavigationItem[]; activeSection?: NavigationSection | "episode" }) {
   return items.map((item) => (
-    <Link key={item.section} href={item.href} prefetch={item.section === "runner" ? false : undefined} className={activeSection === item.section ? "active" : ""} aria-current={activeSection === item.section ? "page" : undefined}>
+    <Link key={item.section} href={item.href} title={item.section === "project" ? item.label : undefined} prefetch={item.section === "runner" ? false : undefined} className={activeSection === item.section ? "active" : ""} aria-current={activeSection === item.section ? "page" : undefined}>
       <span className="navIcon" aria-hidden="true"><NavigationIcon name={item.section} /></span>
       <span className={`navText${item.section === "project" ? " navContext" : ""}`}>{item.label}</span>
     </Link>
@@ -64,7 +65,7 @@ export function AppChrome({
   const episodeEntryId = activeEpisodeId ?? productionEpisodes[0]?.id;
   const navigationItems: NavigationItem[] = [
     { section: "projects", href: projectLibraryHref, label: "所有项目" },
-    ...(projectWorkbenchHref ? [{ section: "project" as const, href: projectWorkbenchHref, label: "全剧工作台" }] : []),
+    ...(projectWorkbenchHref ? [{ section: "project" as const, href: projectWorkbenchHref, label: activeSection === "project" ? "全剧工作台" : projectLabel?.trim() || "全剧工作台" }] : []),
     ...(projectId && episodeEntryId ? [{ section: "episode" as const, href: `/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeEntryId)}`, label: "分集制作" }] : [])
   ];
   const mobileNavigationItems: NavigationItem[] = [
@@ -85,9 +86,9 @@ export function AppChrome({
           <div><strong>分镜工作台</strong><small>Director Studio</small></div>
         </Link>
 
-        <nav className="sidebarNav" aria-label="主要导航">
+        <MotionSelection className="sidebarNav" label="主要导航" group="primary" activeKey={activeSection ?? "projects"}>
           <NavigationLinks items={navigationItems} activeSection={activeSection} />
-        </nav>
+        </MotionSelection>
 
         {activeSection !== "projects" && projectId && productionEpisodes.length ? (
           <EpisodeSidebar projectId={projectId} episodes={productionEpisodes} activeEpisodeId={activeEpisodeId} />

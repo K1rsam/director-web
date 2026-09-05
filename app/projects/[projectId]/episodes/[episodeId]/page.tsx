@@ -4,6 +4,7 @@ import { resetEpisodeShotsAction, acknowledgeIssueAction, acknowledgeAllSuggesti
 import { getEpisodeStudio } from "@/lib/studio";
 import { formatDialogueEntry } from "@/lib/shot-cells";
 import { AppChrome } from "@/app/ui/app-chrome";
+import { MotionSelection } from "@/app/ui/motion-selection";
 import { EpisodePipelineButton } from "./episode-pipeline-button";
 import { ResetEpisodeButton } from "./reset-episode-button";
 import { ModeSwitch } from "../../../../mode-switch";
@@ -33,6 +34,7 @@ export default async function EpisodeStudioPage({
       title={`第${studio.episode.number}集 · ${studio.episode.title.replace(/^\s*第\s*(\d+)\s*集[\s·・:：—-]*/u, (prefix, number: string) => Number(number) === studio.episode.number ? "" : prefix)}`}
       eyebrow={studio.project.title}
       projectId={projectId}
+      projectLabel={studio.project.title}
       activeSection="episode"
       activeEpisodeId={episodeId}
       episodes={studio.episodeNav.map((episode) => ({ id: episode.id, number: episode.number, title: episode.title, state: episode.status }))}
@@ -134,11 +136,11 @@ export default async function EpisodeStudioPage({
         canvas={(
           <section className={`storyboardCanvas episodeReadingCanvas ${view === "units" ? "is-units" : ""}`} aria-label="本集制作内容">
           <div className="canvasToolbar">
-            <nav className="viewTabs" aria-label="分集视图">
+            <MotionSelection className="viewTabs" label="分集视图" group="episode-views" activeKey={view}>
               <Link className={view === "shots" ? "active" : ""} aria-current={view === "shots" ? "page" : undefined} href={`?view=shots`}>分镜表 <b>{shotCount}</b></Link>
               <Link className={view === "units" ? "active" : ""} aria-current={view === "units" ? "page" : undefined} href={`?view=units`}>Seedance单元 <b>{studio.units.length}</b></Link>
               <Link className={view === "logs" ? "active" : ""} aria-current={view === "logs" ? "page" : undefined} href={`?view=logs`}>执行与问题 <b>{studio.issues.filter((issue) => issue.status === "OPEN").length}</b></Link>
-            </nav>
+            </MotionSelection>
           </div>
 
           {view === "shots" ? (
