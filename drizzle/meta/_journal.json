@@ -43,6 +43,13 @@
       "when": 1788591599466,
       "tag": "0005_studio_test_accounts",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1788614430489,
+      "tag": "0006_presentation_contract_scope",
+      "breakpoints": true
     }
   ]
 }

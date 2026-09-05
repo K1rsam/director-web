@@ -88,26 +88,6 @@ type ContractRow = {
   targetEpisodeNumbers: string | null;
 };
 
-let presentationContractSchemaReady: Promise<void> | null = null;
-
-/** 为旧站点安全补齐表现规范范围字段，不改写已有业务数据。 */
-function ensurePresentationContractSchema(db: D1Database): Promise<void> {
-  presentationContractSchemaReady ??= (async () => {
-    if (typeof (db as D1Database & { batch?: unknown }).batch !== "function") return;
-    const columns = await db.prepare('PRAGMA table_info("PresentationContract")').all<{ name: string }>();
-    const names = new Set(columns.results.map((column) => column.name));
-    const statements: D1PreparedStatement[] = [];
-    if (!names.has("scopeMode")) {
-      statements.push(db.prepare('ALTER TABLE "PresentationContract" ADD COLUMN "scopeMode" TEXT NOT NULL DEFAULT \'SOURCE_EPISODES\''));
-    }
-    if (!names.has("targetEpisodeNumbers")) {
-      statements.push(db.prepare('ALTER TABLE "PresentationContract" ADD COLUMN "targetEpisodeNumbers" TEXT NOT NULL DEFAULT \'[]\''));
-    }
-    if (statements.length) await db.batch(statements);
-  })();
-  return presentationContractSchemaReady;
-}
-
 export async function getProjectStudio(projectId: string, userId: string, db: D1Database) {
   const project = await db
     .prepare(
@@ -217,7 +197,6 @@ export async function getProjectStudio(projectId: string, userId: string, db: D1
 }
 
 export async function listPresentationContracts(db: D1Database, projectId: string) {
-  await ensurePresentationContractSchema(db);
   const [result, episodeResult] = await Promise.all([
     db
       .prepare(
@@ -273,7 +252,6 @@ export async function decidePresentationContract(
   scope: { scopeMode?: string; targetEpisodeNumbers?: readonly number[] } = {},
   now = new Date(),
 ): Promise<void> {
-  await ensurePresentationContractSchema(db);
   const scopeMode = scope.scopeMode === "ALL_EPISODES" || scope.scopeMode === "SELECTED_EPISODES"
     ? scope.scopeMode
     : "SOURCE_EPISODES";
