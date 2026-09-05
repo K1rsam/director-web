@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, type ComponentProps } from "react";
+import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { startProjectFoundationAction } from "@/app/actions";
 
@@ -45,9 +46,9 @@ export function FoundationActions({
         </div>
         <form action={startProjectFoundationAction}>
           <input name="projectId" type="hidden" value={projectId} />
-          <button type="submit" className="foundationRunAllButton" disabled={active}>
+          <FoundationSubmitButton type="submit" className={`studioButton ${foundationReady ? "quietButton" : "foundationRunAllButton"}`} data-variant={foundationReady ? "secondary" : "primary"} disabled={active}>
             {active ? "P1/P2 已排队或执行中…" : foundationReady ? "重新执行 P1 + P2" : "开始 P1 + P2"}
-          </button>
+          </FoundationSubmitButton>
         </form>
       </div>
       <p className="foundationRunnerNote">项目资料以线上数据库为准；Runner 只取本次任务快照执行，完成后把结果写回线上。</p>
@@ -69,7 +70,7 @@ export function FoundationActions({
             <form action={startProjectFoundationAction}>
               <input name="projectId" type="hidden" value={projectId} />
               <input name="stageCode" type="hidden" value={code} />
-              <button type="submit" className="foundationCardHitArea" disabled={active || run?.status === "排队中" || run?.status === "进行中"} aria-label={`${actionLabel} ${code}`} />
+              <FoundationSubmitButton type="submit" className="foundationCardHitArea" disabled={active || run?.status === "排队中" || run?.status === "进行中"} aria-label={`${actionLabel} ${code}`} />
             </form>
               <article className={`foundationRole ${className}`}>
                 <span>{code}</span>
@@ -98,11 +99,16 @@ export function FoundationActions({
           <div className="foundationRunAll">
             <form action={startProjectFoundationAction}>
               <input name="projectId" type="hidden" value={projectId} />
-              <button type="submit" className="dangerQuietButton" disabled={active}>重跑全剧基础工程</button>
+              <FoundationSubmitButton type="submit" className="studioButton quietButton" data-variant="secondary" disabled={active}>重跑全剧基础工程</FoundationSubmitButton>
             </form>
           </div>
         </div>
       </details>
     </div>
   );
+}
+
+function FoundationSubmitButton({disabled,children,...props}:ComponentProps<"button">){
+ const {pending}=useFormStatus();
+ return <button {...props} disabled={disabled || pending} aria-busy={pending}>{children}</button>;
 }

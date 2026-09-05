@@ -9,6 +9,8 @@ const initialState: RunnerTokenState = { token: null, error: null };
 export function RunnerTokenForm({ siteBypassToken }: { siteBypassToken: string | null }) {
   const [state, action, pending] = useActionState(createRunnerTokenAction, initialState);
   const [copyState, setCopyState] = useState("");
+  const [copyError, setCopyError] = useState(false);
+  const [copying, setCopying] = useState(false);
   const [projectDir, setProjectDir] = useState("E:\\codex-data\\director-web");
 
   function downloadWindowsLauncher() {
@@ -24,10 +26,17 @@ export function RunnerTokenForm({ siteBypassToken }: { siteBypassToken: string |
   }
 
   async function copyMacCommand() {
-    if (!state.token) return;
-    const siteUrl = window.location.origin;
-    await navigator.clipboard.writeText(macCommand(siteUrl, state.token, projectDir, siteBypassToken));
-    setCopyState("已复制：打开终端粘贴并回车");
+    if (!state.token || copying) return;
+    setCopying(true);
+    setCopyError(false);
+    try {
+      const siteUrl = window.location.origin;
+      await navigator.clipboard.writeText(macCommand(siteUrl, state.token, projectDir, siteBypassToken));
+      setCopyState("已复制：打开终端粘贴并回车");
+    } catch {
+      setCopyError(true);
+      setCopyState("复制失败，请允许剪贴板访问后重试。");
+    } finally { setCopying(false); }
   }
 
   return (
@@ -42,9 +51,9 @@ export function RunnerTokenForm({ siteBypassToken }: { siteBypassToken: string |
       </div>
       <form action={action} className="runnerDeviceForm">
         <label><span>设备名称</span><input name="name" placeholder="例如：Mac Studio" maxLength={60} required /></label>
-        <button className="glassPrimary runnerPrimaryButton" disabled={pending} type="submit">{pending ? "生成中" : "生成设备启动器"}</button>
+        <button className="studioButton glassPrimary runnerPrimaryButton" data-variant="primary" disabled={pending} aria-busy={pending} type="submit">{pending ? "生成中…" : "生成设备启动器"}</button>
       </form>
-      {state.error ? <p className="runnerMessage error">{state.error}</p> : null}
+      {state.error ? <p className="runnerMessage error" role="alert">{state.error}</p> : null}
       {state.token ? (
         <div className="runnerLauncherPanel">
           <strong>选择这台电脑的系统</strong>
@@ -52,9 +61,9 @@ export function RunnerTokenForm({ siteBypassToken }: { siteBypassToken: string |
           <label className="runnerProjectDirField"><span>本地执行代码目录</span><input value={projectDir} onChange={(event) => setProjectDir(event.target.value)} placeholder="例如：E:\\codex-data\\director-web" /></label>
           <div className="runnerActions">
             <button className="glassPrimary runnerPrimaryButton" onClick={downloadWindowsLauncher} type="button">下载 Windows 启动器</button>
-            <button className="quietButton runnerSecondaryButton" onClick={copyMacCommand} type="button">复制 Mac 启动命令</button>
+            <button className="studioButton quietButton runnerSecondaryButton" data-variant="secondary" onClick={copyMacCommand} disabled={copying} aria-busy={copying} type="button">{copying ? "正在复制…" : copyError ? "重试复制 Mac 命令" : "复制 Mac 启动命令"}</button>
           </div>
-          {copyState ? <p className="runnerMessage success">{copyState}</p> : null}
+          {copyState ? <p className={`runnerMessage ${copyError ? "error" : "success"}`} role={copyError ? "alert" : "status"}>{copyState}</p> : null}
         </div>
       ) : null}
     </section>

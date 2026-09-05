@@ -41,7 +41,7 @@ export function CodexStatusPanel({ devices }: { devices: RunnerStatusDevice[] })
           <span className={`runnerStatusSyncState ${syncedDevices.length ? "synced" : ""}`}>
             {syncedDevices.length ? `${syncedDevices.length} 台已同步` : "等待本机状态"}
           </span>
-          <button className="quietButton runnerStatusRefresh" type="button" onClick={refreshStatus} disabled={refreshing}>
+          <button className="studioButton quietButton runnerStatusRefresh" data-variant="secondary" type="button" onClick={refreshStatus} disabled={refreshing} aria-busy={refreshing}>
             {refreshing ? "刷新中…" : "刷新线上状态"}
           </button>
         </div>

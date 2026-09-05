@@ -144,42 +144,6 @@ body {
   padding: 5px 8px;
 }
 
-/* Unified controls */
-.topbarPrimary, .glassPrimary, .primaryAction, .episodePipelineButton {
-  border: 1px solid rgba(255,255,255,.74) !important;
-  border-radius: 14px !important;
-  background: linear-gradient(135deg, rgba(99,115,246,.97), rgba(119,79,235,.97)) !important;
-  box-shadow: 0 14px 32px rgba(82,78,205,.27), inset 0 1px rgba(255,255,255,.48) !important;
-  color: white !important;
-  transition: transform var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast), filter var(--motion-fast) !important;
-}
-.topbarPrimary:hover, .glassPrimary:hover, .primaryAction:hover, .episodePipelineButton:hover:not(:disabled) { transform: translateY(-2px); filter: saturate(1.05); box-shadow: 0 18px 38px rgba(78,72,199,.32), inset 0 1px rgba(255,255,255,.56) !important; }
-.topbarPrimary:active, .glassPrimary:active, .primaryAction:active, .episodePipelineButton:active:not(:disabled) { transform: translateY(0) scale(.985); }
-.quietButton, .secondaryAction, .episodeToolButton, .copyPromptButton, .modeButton, .archiveAction {
-  border: 1px solid var(--vision-line) !important;
-  border-radius: 12px !important;
-  background: rgba(255,255,255,.76) !important;
-  box-shadow: var(--vision-shadow-sm) !important;
-  color: #606b84 !important;
-  transition: transform var(--motion-fast) var(--motion-ease), border-color var(--motion-fast), background var(--motion-fast), box-shadow var(--motion-fast), color var(--motion-fast) !important;
-}
-.quietButton:hover, .secondaryAction:hover, .episodeToolButton:hover, .copyPromptButton:hover, .archiveAction:hover { transform: translateY(-1px); border-color: rgba(104,91,218,.31) !important; background: rgba(255,255,255,.94) !important; color: #5c55cc !important; }
-.dangerQuietButton, .foundationStopButton, .archiveDanger, .resetEpisodeButton {
-  border: 1px solid rgba(220,84,108,.28) !important;
-  background: rgba(255,243,246,.86) !important;
-  color: #c34f64 !important;
-}
-.foundationStopButton { min-height: 34px; padding: 0 12px; font-size: var(--vision-font-small); font-weight: 800; cursor: pointer; }
-.foundationStopButton:hover { background: #fff0f3 !important; }
-button:disabled, .appChrome button:disabled { cursor: not-allowed; filter: saturate(.55); opacity: .52; transform: none !important; box-shadow: none !important; }
-button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid rgba(103,94,228,.60); outline-offset: 3px; }
-
-.executionModeSwitch {
-  backdrop-filter: blur(18px) saturate(145%);
-  -webkit-backdrop-filter: blur(18px) saturate(145%);
-}
-.executionModeSwitch .modeButton { border: 0 !important; border-radius: 10px !important; background: transparent !important; box-shadow: none !important; }
-
 /* Project library */
 .projectLibrary, .projectDashboard, .episodeDashboard { width: min(100%, 1500px); margin: 0 auto; }
 .projectDashboard, .episodeDashboard { display: grid; gap: var(--vision-section-gap); }
@@ -1999,312 +1963,212 @@ body { background: var(--vision-page-backdrop); font-size: var(--vision-font-bod
   .appChrome .projectDashboard .contractSection .contractOptions { grid-template-columns: 1fr; }
   .appChrome .projectDashboard .contractSection .contractCustom { grid-column: auto; }
 }
-/* Studio system: shared across local and Sites, sized in CSS pixels/rem, never device pixels. */
-dialog.infoPanelBackdrop { inset: 0; width: 100%; max-width: none; height: 100dvh; max-height: none; margin: 0; border: 0; padding: 0; color: var(--vision-text); background: transparent; }
-dialog.infoPanelBackdrop::backdrop { background: rgba(23,32,55,.26); backdrop-filter: blur(3px); }
+/* Studio system: approved Soft Iris, shared by local and Sites. */
 :root {
-  --studio-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
-  --studio-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  --vision-font-caption: .8125rem;
-  --vision-font-small: .875rem;
-  --vision-font-body: 1rem;
-  --vision-font-unit: 1.125rem;
-  --vision-font-heading: 1.25rem;
-  --vision-font-title: clamp(1.5rem, 1.25rem + .45vw, 2rem);
-  --vision-canvas: #f3f5f9;
-  --vision-canvas-deep: #edf1f7;
-  --vision-page-backdrop: linear-gradient(135deg, #edf1f8, #f5f6fa 55%, #eef2f8);
-  --vision-glass: rgba(255,255,255,.9);
-  --vision-glass-strong: #ffffff;
-  --vision-reading: #ffffff;
-  --vision-solid: #ffffff;
-  --vision-line: #dbe1eb;
-  --vision-line-strong: #a8a4d6;
-  --vision-text: #202a40;
-  --vision-muted: #546078;
-  --vision-faint: #626e84;
-  --vision-primary: #5849c8;
-  --vision-primary-2: #4c3db6;
-  --vision-good: #14745a;
-  --vision-warn: #936015;
-  --vision-bad: #b12e48;
-  --vision-radius-sm: 8px;
-  --vision-radius-md: 12px;
-  --vision-radius-lg: 16px;
-  --vision-radius-xl: 20px;
-  --vision-shadow-sm: 0 2px 8px rgba(27,39,70,.04);
-  --vision-shadow: 0 5px 20px rgba(27,39,70,.05);
-  --vision-shadow-float: 0 16px 48px rgba(27,39,70,.13);
-  --vision-sidebar-width: 15rem;
-  --vision-sidebar-edge: calc(var(--vision-sidebar-width) + 14px);
-  --vision-workspace-offset: calc(var(--vision-sidebar-width) + 28px);
-  --vision-content-max: 112rem;
-  --vision-page-gutter: clamp(16px, 1.5vw, 32px);
-  --vision-section-gap: 24px;
-  --vision-panel-padding: clamp(20px, 1.5vw, 28px);
-  --vision-module-gap: 16px;
-  --motion-fast: 160ms;
-  --motion-panel: 200ms;
-  --motion-expand: 220ms;
-  --motion-route: 220ms;
-  --text: var(--vision-text);
-  --text-muted: var(--vision-muted);
-  --text-subtle: var(--vision-faint);
-  --primary: var(--vision-primary);
-  --primary-hover: var(--vision-primary-2);
-  --primary-soft: #eeecfb;
-  --border: var(--vision-line);
-  --border-strong: var(--vision-line-strong);
+  --studio-font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  --studio-mono:"SFMono-Regular",Consolas,monospace;
+  --vision-font-caption:.8125rem; --vision-font-small:.875rem; --vision-font-body:1rem;
+  --vision-font-unit:1.125rem; --vision-font-heading:1.25rem; --vision-font-title:clamp(1.5rem,1.15rem + .55vw,1.875rem);
+  --vision-canvas:#eceaf9; --vision-canvas-deep:#e2e5f7;
+  --vision-page-backdrop:radial-gradient(ellipse at 12% 4%,rgba(146,171,246,.29),transparent 55%),radial-gradient(ellipse at 92% 8%,rgba(192,158,237,.26),transparent 52%),radial-gradient(ellipse at 20% 100%,rgba(247,218,216,.24),transparent 52%),linear-gradient(135deg,#e4e8fa,#eceaf9 55%,#eee6f5);
+  --vision-glass:rgba(245,242,255,.43); --vision-glass-strong:rgba(240,238,252,.72);
+  --vision-reading:rgba(233,232,246,.8); --vision-solid:rgba(247,246,253,.94);
+  --vision-line:rgba(139,127,186,.2); --vision-line-strong:rgba(131,112,187,.4);
+  --vision-text:#30324f; --vision-muted:#626785; --vision-faint:#737892;
+  --vision-primary:#7061bc; --vision-primary-2:#6254aa; --vision-good:#287c6c; --vision-warn:#986422; --vision-bad:#ad4560;
+  --vision-radius-sm:10px; --vision-radius-md:16px; --vision-radius-lg:22px; --vision-radius-xl:26px;
+  --vision-shadow-sm:0 4px 12px rgba(100,87,151,.075),inset 0 1px 0 rgba(255,255,255,.68);
+  --vision-shadow:0 12px 32px rgba(103,87,156,.11),inset 0 1px 0 rgba(255,255,255,.75);
+  --vision-shadow-float:0 22px 55px rgba(87,69,143,.19),inset 0 1px 0 rgba(255,255,255,.8);
+  --vision-sidebar-width:clamp(14.75rem,13.55vw,16.75rem); --vision-sidebar-edge:calc(var(--vision-sidebar-width) + 20px);
+  --vision-workspace-offset:calc(var(--vision-sidebar-width) + 38px); --vision-content-max:108rem;
+  --vision-page-gutter:clamp(16px,1.35vw,26px); --vision-section-gap:24px; --vision-panel-padding:24px; --vision-module-gap:16px;
+  --motion-fast:180ms; --motion-panel:320ms; --motion-expand:280ms; --motion-route:380ms;
+  --motion-ease:cubic-bezier(.22,.8,.28,1);
+  --text:var(--vision-text); --text-muted:var(--vision-muted); --text-subtle:var(--vision-faint);
+  --primary:var(--vision-primary); --primary-hover:var(--vision-primary-2); --primary-soft:rgba(167,153,222,.15);
+  --border:var(--vision-line); --border-strong:var(--vision-line-strong); --canvas:var(--vision-canvas);
+  --surface-1:var(--vision-reading); --surface-2:var(--vision-glass-strong); --surface-3:var(--vision-glass);
+  --studio-button:linear-gradient(125deg,#5d70ce,#8766b3);
 }
-html { font-family: var(--studio-font); font-size: 100%; text-size-adjust: 100%; -webkit-text-size-adjust: 100%; scroll-padding-top: 7rem; }
-body { font-family: var(--studio-font); line-height: 1.6; }
-button, input, textarea, select { font-family: inherit; }
-button, a, input, textarea, select, summary { -webkit-tap-highlight-color: transparent; }
-button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 3px solid var(--vision-primary); outline-offset: 3px; }
-input, textarea, select { accent-color: var(--vision-primary); }
-pre, code, .cellText, .seedancePrompt pre { tab-size: 2; }
-pre, code { font-family: var(--studio-mono); }
-.seedancePrompt pre, .promptManualEdit textarea, .scriptPasteField textarea { font-family: var(--studio-font); }
-.appChrome, .appMain, .appWorkspace, .topbarIdentity, .topbarTools, .studioCard, .studioSection, .createFormSection, .runnerSettingsPage { min-width: 0; }
-.appMain { outline: none; }
-.appChrome .sidebarNav a > .navText { text-align: left; color: inherit; font-size: var(--vision-font-small); font-weight: 550; }
-.topbarIdentity .pageTitle, .topbarIdentity strong { max-width: none; white-space: normal; overflow: visible; text-overflow: clip; }
-.projectDashboard, .episodeDashboard { grid-template-columns: minmax(0,1fr); }
-.workspaceGrid, .storyboardCanvas, .roleProgressRail, .episodeRoleDeck { min-width: 0; max-width: 100%; }
-.createPageHeading { margin: 0 0 24px; padding: 0; }
-.runnerConnectionGrid { gap: 24px; }
-.appChrome .projectCard .projectTitleRow p, .appChrome .projectCard .projectCardFooter > span { color: var(--vision-muted); }
-.appChrome .assetTabBar { max-width: 100%; overflow-x: auto; }
-.appChrome .foundationRole.done .foundationCardAction, .appChrome .roleProgress.done .roleCardAction { color: var(--vision-good); }
-.skipLink { position: fixed; left: 20px; top: -100px; z-index: 200; border-radius: 8px; background: var(--vision-primary); padding: 12px 20px; color: white; }
-.skipLink:focus { top: 16px; }
-/* Navigation: one persistent rail, one title, a wrapping action group. */
-.appSidebar { inset: 14px auto 14px 14px; border: 1px solid var(--vision-line); border-radius: 16px; background: rgba(249,250,253,.96); box-shadow: var(--vision-shadow-sm); backdrop-filter: none; }
-.appSidebar::before { display: none; }
-.chromeBrand { padding: 24px 18px; gap: 12px; }
-.chromeBrand > span, .loginBrand > span { flex-shrink: 0; width: 2.5rem; height: 2.5rem; border: 0; border-radius: 10px; background: #5849c8; box-shadow: none; color: white; font-size: 1.125rem; line-height: 1; }
-.chromeBrand strong { font-size: var(--vision-font-body); font-weight: 650; }
-.chromeBrand small, .loginBrand small { color: var(--vision-muted); font-size: var(--vision-font-caption); letter-spacing: .02em; text-transform: none; }
-.sidebarNav { gap: 6px; padding: 0 12px 20px; }
-.sidebarNav a { min-height: 44px; gap: 12px; border-radius: 8px; font-size: var(--vision-font-small); font-weight: 550; color: var(--vision-muted); }
-.sidebarNav a:hover { transform: none; background: #eceff6; }
-.sidebarNav a.active { background: #eae7fa; color: #493bac; box-shadow: none; }
-.sidebarNav a.active::before { height: 20px; left: 0; border-radius: 0 3px 3px 0; background: var(--vision-primary); box-shadow: none; }
-.navIcon svg, .mobileNav summary svg { display: block; width: 20px; height: 20px; }
-.sidebarNav a > .navIcon { display: grid; width: 20px; flex: 0 0 20px; place-items: center; color: currentColor; }
-.sidebarEpisodes { padding: 16px 12px 0; }
-.sidebarEpisodes a { min-height: 44px; border-radius: 8px; }
-.sidebarEpisodes a:hover { transform: none; }
-.sidebarFooter { padding: 16px; }
-.sidebarWorkflow { gap: 2px; padding-bottom: 8px; }
-.accountMenu { grid-template-columns: 32px minmax(0,1fr) auto; gap: 8px; }
-.accountMenu > a { grid-column: 2; }
-.accountMenu button, .accountMenu > a { min-height: 36px; font-size: var(--vision-font-caption); }
-.appChrome .appTopbar { min-height: 88px; flex-wrap: wrap; gap: 16px; border: 1px solid var(--vision-line); border-radius: 14px; background: rgba(255,255,255,.94); box-shadow: var(--vision-shadow-sm); padding: 16px 24px; backdrop-filter: blur(12px); }
-.topbarIdentity { flex: 1 1 16rem; }
-.topbarIdentity .pageTitle, .topbarIdentity strong { display: block; margin: 0; color: var(--vision-text); font-size: var(--vision-font-title); font-weight: 650; line-height: 1.3; letter-spacing: -.025em; overflow-wrap: anywhere; }
-.topbarIdentity small { font-size: var(--vision-font-caption); line-height: 1.5; color: var(--vision-muted); }
-.topbarTools { display: flex; flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.topbarTools > * { max-width: 100%; }
-.topbarNextStep, .topbarStatus { font-size: var(--vision-font-small); }
-.topbarPrimary, .glassPrimary, .primaryAction, .episodePipelineButton, .runnerPrimaryButton, .loginForm > button {
-  min-height: 44px; border: 1px solid #5849c8 !important; border-radius: 9px !important; background: #5849c8 !important; box-shadow: 0 2px 3px rgba(58,42,130,.1) !important; padding: 10px 16px; color: #fff !important; font-size: var(--vision-font-small); font-weight: 600; line-height: 1.5;
+html { font-family:var(--studio-font);font-size:100%;text-size-adjust:100%;-webkit-text-size-adjust:100%;background:var(--vision-canvas);color-scheme:light; }
+body { margin:0;font-family:var(--studio-font);color:var(--vision-text);line-height:1.6;background:var(--vision-page-backdrop); }
+button,input,textarea,select {font-family:inherit;}
+button,a,input,textarea,select,summary {-webkit-tap-highlight-color:transparent;}
+pre,code {font-family:var(--studio-mono);tab-size:2;}
+.seedancePrompt pre,.promptManualEdit textarea,.scriptPasteField textarea {font-family:var(--studio-font);}
+input,textarea,select {accent-color:var(--vision-primary);}
+button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible {outline:2px solid var(--vision-primary);outline-offset:3px;}
+.appChrome,.appMain,.appWorkspace,.topbarIdentity,.topbarTools,.studioCard,.studioSection,.createFormSection,.runnerSettingsPage {min-width:0;}
+.appMain {outline:none;}
+.skipLink {position:fixed;left:20px;top:-100px;z-index:200;border-radius:10px;background:var(--vision-primary);padding:12px 20px;color:white;}
+.skipLink:focus {top:16px;}
+
+/* One stationary navigation rail; the workspace owns vertical scrolling. */
+.visionRouteFrame,.visionRouteFrame>.appChrome {min-height:100dvh;}
+.appChrome,.episodeShell {height:100dvh;min-height:0;overflow:hidden;background:transparent;}
+.appChrome::before,.appChrome::after {display:none;}
+.appChrome .appSidebar {position:fixed;inset:20px auto 20px 20px;display:flex;flex-direction:column;width:var(--vision-sidebar-width);height:calc(100dvh - 40px);min-height:0;border:1px solid rgba(255,255,255,.67);border-radius:22px;background:linear-gradient(160deg,rgba(235,240,255,.58),rgba(248,237,250,.52));box-shadow:var(--vision-shadow);backdrop-filter:blur(28px) saturate(115%);}
+.appSidebar::before {display:none;}
+.chromeBrand {flex:0 0 auto;padding:25px 21px;gap:12px;}
+.chromeBrand>span,.loginBrand>span {flex-shrink:0;width:40px;height:40px;border:1px solid rgba(255,255,255,.88);border-radius:13px;background:linear-gradient(140deg,rgba(255,255,255,.68),rgba(194,203,240,.44));box-shadow:0 4px 10px rgba(96,87,151,.13),inset 0 1px 0 #fff;color:var(--vision-text);font-size:20px;font-weight:400;}
+.chromeBrand strong {font-size:1rem;font-weight:650;color:var(--vision-text);}
+.chromeBrand small,.loginBrand small {font-size:.75rem;letter-spacing:.065em;color:var(--vision-muted);}
+.sidebarNav {flex:0 0 auto;gap:5px;padding:0 14px 23px;}
+.sidebarNav a {display:flex;align-items:center;min-height:45px;gap:11px;padding:10px 12px;border:1px solid transparent;border-radius:12px;color:var(--vision-muted);font-size:.9375rem;font-weight:500;transition:transform 260ms var(--motion-ease),background 200ms,box-shadow 220ms;}
+.appChrome .sidebarNav a>.navText {font-size:.9375rem;font-weight:500;color:inherit;text-align:left;}
+.sidebarNav a:hover {transform:translateX(2px);background:rgba(255,255,255,.3);color:var(--vision-text);}
+.sidebarNav a.active,.sidebarEpisodes a.active {border:1px solid rgba(143,130,195,.28);background:linear-gradient(125deg,rgba(213,210,246,.79),rgba(241,239,253,.72));color:var(--vision-text);box-shadow:0 4px 10px rgba(116,101,170,.13),inset 0 1px 0 rgba(255,255,255,.76);}
+.sidebarNav a.active::before {display:none;}
+.sidebarNav a.active::after {content:"";width:4px;height:4px;flex-shrink:0;border-radius:50%;background:var(--vision-primary);box-shadow:0 0 8px rgba(139,115,210,.4);}
+.navIcon svg,.mobileNav summary svg {display:block;width:18px;height:18px;}
+.sidebarNav a>.navIcon {width:18px;flex:0 0 18px;}
+.appChrome .sidebarEpisodes {display:flex;flex:1 1 auto;flex-direction:column;min-height:0;overflow:hidden;padding:17px 13px 0;border-top:1px solid var(--vision-line);}
+.appChrome .sidebarEpisodes>p {flex:0 0 auto;padding:0 10px 10px;margin:0;font-size:.875rem;color:var(--vision-text);font-weight:600;}
+.appChrome .sidebarEpisodes>p span {font-size:.8125rem;font-weight:400;color:var(--vision-muted);}
+.appChrome .sidebarEpisodeScroller {flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;padding:3px 6px 9px 0;scrollbar-gutter:stable;}
+.appChrome .sidebarEpisodes a {min-height:44px;gap:10px;padding:10px;border-radius:11px;font-size:.875rem;font-weight:400;}
+.appChrome .sidebarEpisodes a b {font-size:.8125rem;color:var(--vision-primary);font-weight:500;}
+.appChrome .sidebarEpisodes a i {font-size:.75rem;color:var(--vision-good);}
+.appChrome .sidebarFooter {flex:0 0 auto;margin:auto 13px 0;padding:13px 0 8px;border-top:1px solid var(--vision-line);background:transparent;}
+.sidebarWorkflow {gap:2px;padding:0 9px 9px;}
+.appChrome .sidebarWorkflow span,.appChrome .sidebarWorkflow strong {font-size:.75rem;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.accountMenu {grid-template-columns:32px minmax(0,1fr) auto;gap:8px;padding:8px;border:0;background:rgba(255,255,255,.14);box-shadow:none;border-radius:13px;}
+.accountMenu strong,.accountMenu small,.accountMenu button {font-size:.8125rem;}
+.accountMenu button {min-height:36px;padding:4px;background:transparent;border:0;color:var(--vision-muted);}
+.accountAvatar {width:32px;height:32px;background:rgba(175,155,222,.19);color:var(--vision-primary);}
+.appChrome .appWorkspace,.episodeShell .appWorkspace {display:block;margin-left:var(--vision-workspace-offset);height:100dvh;min-height:0;padding:20px 18px 22px 12px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;mask-image:linear-gradient(#000 calc(100% - 10px),transparent);}
+.appChrome .appTopbar {position:relative;top:auto;margin:0 0 24px;min-height:96px;display:flex;flex-wrap:wrap;gap:16px;padding:19px 24px;border:1px solid rgba(255,255,255,.67);border-radius:22px;background:linear-gradient(120deg,rgba(233,239,255,.6),rgba(242,229,255,.58));box-shadow:var(--vision-shadow);backdrop-filter:blur(24px) saturate(115%);}
+.topbarIdentity {flex:1 1 20rem;gap:5px;}
+.topbarIdentity small {font-size:.8125rem;line-height:1.5;color:var(--vision-muted);font-weight:400;}
+.topbarIdentity .pageTitle,.topbarIdentity strong {display:block;margin:0;max-width:none;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;color:var(--vision-text);font-size:var(--vision-font-title);font-weight:650;line-height:1.35;letter-spacing:-.025em;}
+.topbarTools {display:flex;flex:0 1 auto;align-items:center;flex-wrap:wrap;justify-content:flex-end;gap:8px;}
+.topbarTools>* {max-width:100%;}
+.appChrome .appMain,.episodeShell .appMain {display:block;overflow:visible;min-height:0;width:100%;padding:0 2px 22px;}
+.projectDashboard,.episodeDashboard,.episodeShell .episodeDashboard {display:grid;height:auto;grid-template-columns:minmax(0,1fr);gap:24px;width:100%;max-width:var(--vision-content-max);margin:0 auto;}
+.workspaceGrid,.storyboardCanvas,.roleProgressRail,.episodeRoleDeck {min-width:0;max-width:100%;}
+.libraryTopbarMeta>span,.projectTopbarMeta>span,.episodeTopbarMeta>span {padding:3px 7px;border:0;border-radius:5px;background:rgba(228,225,246,.42);box-shadow:none;font-size:.8125rem;}
+.topbarNextStep,.topbarStatus {min-height:32px;font-size:.8125rem;background:rgba(248,245,255,.3);}
+
+/* Shared controls. Variants describe action importance, not the page containing them. */
+:is(.studioButton,.topbarPrimary,.glassPrimary,.primaryAction,.episodePipelineButton,.runnerPrimaryButton,.loginForm>button,.quietButton,.secondaryAction,.episodeToolButton,.copyPromptButton,.archiveAction,.runnerSecondaryButton,.primaryLink,.continueLink,.foundationRunAllButton,.batchMonitorButton,.archiveDanger,.foundationStopButton,.runnerRevokeButton) {display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:38px;padding:9px 13px;border:1px solid var(--vision-line);border-radius:11px;font-size:.875rem;font-weight:500;line-height:1.4;text-decoration:none;cursor:pointer;transition:transform 260ms var(--motion-ease),box-shadow 220ms,background 180ms,border-color 180ms;}
+:is(.topbarPrimary,.glassPrimary,.primaryAction,.episodePipelineButton:not(.rerun),.runnerPrimaryButton,.loginForm>button,.foundationRunAllButton,.batchMonitorButton.primary,.studioButton[data-variant=primary]) {min-height:44px;padding:11px 17px;border:1px solid rgba(255,255,255,.42)!important;border-top-color:rgba(255,255,255,.63)!important;border-radius:13px!important;background:var(--studio-button)!important;box-shadow:0 5px 13px rgba(95,78,156,.24),inset 0 1px 0 rgba(255,255,255,.34),inset 0 -1px 0 rgba(52,41,101,.13)!important;color:#fff!important;}
+:is(.topbarPrimary,.glassPrimary,.primaryAction,.episodePipelineButton:not(.rerun),.runnerPrimaryButton,.loginForm>button,.foundationRunAllButton,.batchMonitorButton.primary,.studioButton[data-variant=primary]):hover:not(:disabled) {transform:translateY(-2px);filter:none;box-shadow:0 8px 19px rgba(95,78,156,.29),inset 0 1px 0 rgba(255,255,255,.5)!important;}
+:is(.quietButton,.secondaryAction,.episodeToolButton,.copyPromptButton,.archiveAction,.runnerSecondaryButton,.primaryLink,.continueLink,.episodePipelineButton.rerun,.studioButton[data-variant=secondary]) {border:1px solid rgba(126,119,177,.24)!important;border-top-color:rgba(255,255,255,.8)!important;border-radius:11px!important;background:linear-gradient(140deg,rgba(255,255,255,.4),rgba(228,226,245,.26))!important;box-shadow:0 2px 5px rgba(97,87,151,.05),inset 0 1px 0 rgba(255,255,255,.36)!important;color:var(--vision-muted)!important;}
+:is(.quietButton,.secondaryAction,.episodeToolButton,.copyPromptButton,.archiveAction,.runnerSecondaryButton,.primaryLink,.continueLink,.episodePipelineButton.rerun,.studioButton[data-variant=secondary]):hover:not(:disabled) {transform:translateY(-1px);border-color:rgba(127,115,182,.35)!important;background:linear-gradient(140deg,rgba(255,255,255,.64),rgba(229,225,246,.44))!important;box-shadow:0 5px 11px rgba(102,90,157,.11)!important;color:var(--vision-text)!important;}
+:is(.studioButton[data-variant=ghost],.topbarBack,.quietButton.ghost) {border-color:transparent!important;background:transparent!important;box-shadow:none!important;color:var(--vision-muted)!important;}
+:is(.studioButton[data-variant=ghost],.topbarBack,.quietButton.ghost):hover {background:var(--primary-soft)!important;color:var(--vision-primary)!important;}
+:is(.dangerQuietButton,.archiveDanger,.resetEpisodeButton,.runnerRevokeButton,.studioButton[data-variant=danger]) {border-color:rgba(169,81,104,.26)!important;background:rgba(251,222,231,.3)!important;color:#a74761!important;box-shadow:none!important;}
+:is(.dangerQuietButton,.archiveDanger,.resetEpisodeButton,.runnerRevokeButton,.studioButton[data-variant=danger]):hover:not(:disabled) {background:rgba(250,218,228,.64)!important;}
+:is(.foundationStopButton,.batchMonitorButton.stop,.cautionButton,.studioButton[data-variant=caution]) {border-color:rgba(156,111,51,.24)!important;background:rgba(253,239,214,.35)!important;color:#855b2e!important;box-shadow:none!important;}
+:is(.foundationStopButton,.batchMonitorButton.stop,.cautionButton,.studioButton[data-variant=caution]):hover:not(:disabled) {background:rgba(250,231,196,.66)!important;}
+:is(.studioButton,.topbarPrimary,.glassPrimary,.primaryAction,.episodePipelineButton,.quietButton,.secondaryAction,.episodeToolButton,.copyPromptButton,.foundationRunAllButton,.runnerPrimaryButton,.loginForm>button):active:not(:disabled) {transform:translateY(0) scale(.975);}
+button:disabled,.appChrome button:disabled {cursor:not-allowed;opacity:.56;filter:none;transform:none!important;box-shadow:none!important;}
+button[aria-busy=true] {cursor:wait;opacity:.88;}
+.copyPromptAction {display:inline-flex;flex-direction:column;align-items:flex-end;gap:5px;min-width:0;}
+.actionFeedback {display:block;max-width:32rem;font-size:.8125rem;line-height:1.6;color:var(--vision-muted);white-space:normal;}
+.actionFeedback[data-state=error] {color:var(--vision-bad);}
+.actionFeedback[data-state=success] {color:var(--vision-good);}
+.runnerProviderCard .runnerPrimaryButton {justify-self:start;width:fit-content;}
+button[aria-busy=true]::before {content:"";width:14px;height:14px;flex:0 0 14px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:studioSpin 800ms linear infinite;}
+.episodeTopbarAction .episodeToolButton,.episodeShell .episodeTopbarAction .resetEpisodeButton {min-height:38px!important;padding:8px 12px!important;font-size:.875rem!important;}
+.appTopbar .topbarTools>form>.episodePipelineButton {min-height:44px;flex-direction:row;flex-wrap:wrap;gap:6px;}
+.appTopbar .episodePipelineButton strong {font-size:.875rem;font-weight:500;}
+.appTopbar .episodePipelineButton small {font-size:.8125rem;color:inherit;}
+.executionModeSwitch {padding:4px;border:1px solid var(--vision-line);border-radius:13px;background:rgba(210,209,237,.2);box-shadow:none;}
+.executionModeSwitch .modeButton {min-height:34px;border:0!important;border-radius:9px!important;background:transparent!important;color:var(--vision-muted)!important;box-shadow:none!important;font-size:.875rem;font-weight:500;}
+.executionModeSwitch .modeButton.active {background:rgba(252,251,255,.65)!important;box-shadow:0 3px 7px rgba(106,94,161,.1),inset 0 1px 0 rgba(255,255,255,.8)!important;color:var(--vision-primary)!important;}
+
+/* Tinted reading planes separate dense content from the lighter controls. */
+.appChrome :is(.studioCard,.studioSection,.createFormSection,.createFormFooter,.runnerProviderCard,.runnerDeviceCard,.runnerChoiceGuide,.contractSection) {border:1px solid rgba(255,255,255,.65)!important;border-bottom-color:var(--vision-line)!important;border-radius:22px!important;background:var(--vision-reading)!important;box-shadow:var(--vision-shadow)!important;backdrop-filter:blur(24px) saturate(115%);}
+.projectDashboard>.studioSection {padding:24px;}
+.sectionHeading h2,.formSectionHeader h2,.runnerSectionHeader h2,.runnerProviderHeader h2,.projectDashboard>.studioSection>.sectionHeading h2 {font-size:var(--vision-font-heading);font-weight:650;line-height:1.4;letter-spacing:-.015em;}
+.projectTitleRow h2,.episodeSummary h3,.cardHeader h3,.appChrome .sceneStructureHead .cardHeader h3 {font-size:var(--vision-font-unit);font-weight:650;line-height:1.5;}
+.sectionHeading p,.formSectionHeader p,.runnerSectionHeader>p {font-size:.875rem;line-height:1.7;color:var(--vision-muted);}
+.sectionEyebrow,.projectHeroMeta p,.cardHeader span {font-size:.8125rem;letter-spacing:.045em;color:var(--vision-muted)!important;}
+.sectionIndex,.formSectionHeader>span {border-radius:10px;background:rgba(167,153,222,.16);color:var(--vision-primary);font-size:.875rem;}
+.cardHeader {min-height:66px;gap:12px;flex-wrap:wrap;padding:16px 20px;border-bottom:1px solid var(--vision-line);background:rgba(246,244,254,.25);}
+.bibleLineValue,.bibleLineValue b,.bibleFactList li {font-size:1rem;line-height:1.75;}
+.appChrome .bibleLine,.contractConfirmedItem,.contractScopeEditor {background:rgba(246,244,254,.24);border-color:var(--vision-line);}
+.bibleFactList li {padding:7px 0;}
+.appChrome .assetTabBar {max-width:100%;overflow-x:auto;}
+.appChrome .studioTableScroll,.storyboardTableWrap {overflow-x:auto;scrollbar-gutter:stable;}
+.appChrome .compactTable,.appChrome .studioTableScroll table {font-size:.875rem;}
+.appChrome .compactTable th,.appChrome .compactTable td {padding:10px 12px;line-height:1.6;border-color:var(--vision-line);}
+.appChrome table th {background:rgba(213,216,239,.4);color:var(--vision-muted);font-size:.875rem;}
+.appChrome table td {color:var(--vision-text);}
+.appChrome table tbody tr:hover {background:rgba(250,248,255,.4);}
+.foundationRail {grid-template-columns:repeat(auto-fit,minmax(min(100%,14rem),1fr));}
+.appChrome .foundationRole {border:1px solid rgba(255,255,255,.7)!important;border-radius:16px!important;background:rgba(230,233,249,.4)!important;box-shadow:var(--vision-shadow-sm)!important;min-height:104px!important;height:auto;padding:16px!important;}
+.foundationRole strong {font-size:1rem;font-weight:600;}
+.foundationRole small {font-size:.8125rem;white-space:normal;}
+.appChrome .foundationRole.done .foundationCardAction {color:var(--vision-good);}
+.appChrome input:not([type=checkbox]):not([type=radio]):not([type=file]),.appChrome select,.appChrome textarea,.loginForm input {min-height:44px;border:1px solid rgba(143,134,183,.29)!important;border-top-color:rgba(255,255,255,.85)!important;border-radius:12px!important;background:rgba(247,246,254,.52)!important;color:var(--vision-text);box-shadow:inset 0 2px 5px rgba(111,99,164,.035);font-size:1rem;font-weight:400;}
+.scriptPasteField textarea {min-height:18rem;padding:16px;line-height:1.8;}
+.scriptDropzone {min-height:12rem;border:1px dashed rgba(136,118,187,.48)!important;border-radius:16px!important;background:rgba(230,233,249,.36)!important;}
+.scriptDropzone:focus-within,.styleOption:has(input:focus-visible) {outline:2px solid var(--vision-primary);outline-offset:3px;}
+.styleOption {border-radius:14px!important;}
+.sourceTabs {border-radius:12px;background:rgba(210,209,237,.2);}
+.sourceTabs button {min-height:40px;font-size:.875rem;border-radius:9px;}
+.runnerCliStatusPanel {border:1px solid var(--vision-line);border-radius:16px;background:rgba(228,228,246,.4);padding:18px;}
+.runnerCliStatusGrid {grid-template-columns:repeat(auto-fit,minmax(min(100%,11rem),1fr));gap:12px;}
+.runnerCliStatusGrid article {min-width:0;border:1px solid rgba(255,255,255,.6);border-radius:12px;background:rgba(244,242,253,.48);padding:14px;}
+.runnerCliStatusGrid article>span,.runnerCliStatusGrid article>small {font-size:.875rem;line-height:1.6;color:var(--vision-muted);white-space:normal;overflow-wrap:anywhere;}
+.runnerCliStatusGrid article>strong {font-size:1rem;line-height:1.6;color:var(--vision-text);white-space:normal;overflow-wrap:anywhere;}
+.runnerCliStatusFooter,.runnerCliStatusNote,.runnerCliStatusWarning {font-size:.875rem;line-height:1.7;}
+.runnerDeviceRow {flex-wrap:wrap;gap:12px;}
+.runnerDeviceRow>div,.runnerDiagnosticLogItem {min-width:0;overflow-wrap:anywhere;}
+.runnerDiagnosticLogItem pre {white-space:pre-wrap;overflow:auto;font-size:.875rem;}
+dialog.infoPanelBackdrop {inset:0;width:100%;max-width:none;height:100dvh;max-height:none;margin:0;border:0;padding:0;color:var(--vision-text);background:transparent;}
+dialog.infoPanelBackdrop::backdrop {background:rgba(70,65,107,.2);backdrop-filter:blur(7px);}
+.infoPanelArea {width:min(42rem,calc(100vw - 24px));border:1px solid rgba(255,255,255,.75);border-radius:22px 0 0 22px;background:var(--vision-solid)!important;box-shadow:var(--vision-shadow-float);backdrop-filter:blur(30px);}
+.infoPanelHead {padding:20px;background:rgba(239,236,252,.5)!important;}
+.infoPanelBody {padding:20px;overscroll-behavior:contain;}
+.infoPanelToggleBtn {min-height:38px;border-radius:11px;background:var(--vision-glass);font-size:.875rem;}
+.loginShell {background:var(--vision-page-backdrop);}
+.loginCard {width:min(100%,29rem);border:1px solid rgba(255,255,255,.72);border-radius:26px;background:var(--vision-reading);box-shadow:var(--vision-shadow-float);padding:40px;backdrop-filter:blur(28px);}
+.loginHeading h1 {font-size:var(--vision-font-title);font-weight:650;}
+.loginForm label>span,.loginFootnote,.loginError {font-size:.875rem;}
+
+/* Subtle edge fade and native scrolling, without detached square shadow bands. */
+:is(.appWorkspace,.sidebarEpisodeScroller,.unitList,.studioTableScroll,.storyboardTableWrap,.infoPanelBody)::-webkit-scrollbar {width:6px;height:6px;}
+:is(.appWorkspace,.sidebarEpisodeScroller,.unitList,.studioTableScroll,.storyboardTableWrap,.infoPanelBody)::-webkit-scrollbar-button {display:none;width:0;height:0;}
+:is(.appWorkspace,.sidebarEpisodeScroller,.unitList,.studioTableScroll,.storyboardTableWrap,.infoPanelBody)::-webkit-scrollbar-track {background:transparent;margin-block:16px;}
+:is(.appWorkspace,.sidebarEpisodeScroller,.unitList,.studioTableScroll,.storyboardTableWrap,.infoPanelBody)::-webkit-scrollbar-thumb {background:rgba(119,108,166,.3);border-radius:20px;}
+.visionRouteFrame[data-navigating=true]::after {content:"";position:fixed;z-index:100;top:0;left:var(--vision-workspace-offset);right:20px;height:2px;transform-origin:left;background:linear-gradient(90deg,#7c8ad7,#b398d9);animation:studioRouteProgress 1.4s var(--motion-ease) infinite;}
+[data-route-pending] {background:rgba(224,219,246,.72)!important;}
+@keyframes studioRouteProgress {0%{transform:scaleX(.03);opacity:.5}85%{transform:scaleX(.9);opacity:.85}100%{transform:scaleX(.94);opacity:0}}
+@keyframes studioSpin {to{transform:rotate(360deg)}}
+@media(max-width:1440px) {.appChrome .appTopbar {padding:18px 22px;} .topbarTools {justify-content:flex-start;} .runnerProviderGrid {grid-template-columns:1fr;} .studioGrid.twoColumns {grid-template-columns:1fr;}}
+@media(max-width:1100px) {:root {--vision-sidebar-width:13.75rem;} .chromeBrand {padding:22px 15px;} .appChrome .appWorkspace {padding-inline:10px;} .sidebarNav {padding-inline:10px;} .appChrome .appTopbar {gap:12px;}}
+@media(max-width:820px) {
+  :root {--vision-workspace-offset:0px;}
+  .appChrome .appSidebar {display:none;} .appChrome .appWorkspace {margin-left:0;padding:12px;height:100dvh;}
+  .mobileNav {display:block;}.mobileNav summary {display:grid;min-width:40px;min-height:40px;place-items:center;border-radius:12px;background:rgba(237,233,252,.55);}
+  .mobileNav nav {width:min(22rem,calc(100vw - 32px));max-height:calc(100dvh - 130px);overflow:auto;border:1px solid rgba(255,255,255,.75);border-radius:18px;background:var(--vision-solid);box-shadow:var(--vision-shadow-float);}
+  .mobileNav nav a {min-height:44px;font-size:.875rem;}
+  .appChrome .appTopbar {margin:0 0 20px;padding:18px;border-radius:18px;}
+  .topbarIdentity {flex:1 1 0;}.topbarTools {flex-basis:100%;gap:8px;}
+  .appChrome .appMain {padding:0 0 20px;}.runnerHero.studioCard {grid-template-columns:1fr;}
+  .projectDashboard>.studioSection {padding:18px;}.foundationRail {grid-template-columns:repeat(2,minmax(0,1fr));}
+  .basicConfigGrid,.runnerChoiceGrid {grid-template-columns:1fr;}.createFormFooter {position:static;align-items:stretch;flex-direction:column;}
+  .infoPanelArea {inset:0;width:100%;border-radius:0;}.loginCard {padding:28px 24px;}
 }
-.topbarPrimary:hover, .glassPrimary:hover, .primaryAction:hover, .episodePipelineButton:hover:not(:disabled), .runnerPrimaryButton:hover, .loginForm > button:hover:not(:disabled) { transform: none; background: #4c3db6 !important; box-shadow: none !important; }
-.quietButton, .secondaryAction, .episodeToolButton, .copyPromptButton, .modeButton, .archiveAction, .runnerSecondaryButton { min-height: 40px; border-radius: 8px !important; background: #fff !important; box-shadow: none !important; color: var(--vision-muted) !important; font-size: var(--vision-font-small); line-height: 1.5; }
-.dangerQuietButton, .foundationStopButton, .archiveDanger, .resetEpisodeButton { min-height: 40px; border-radius: 8px !important; box-shadow: none !important; font-size: var(--vision-font-small); }
-.executionModeSwitch { border: 1px solid var(--vision-line); border-radius: 10px; background: #f0f2f7; padding: 3px; box-shadow: none; }
-.executionModeSwitch .modeButton { min-height: 34px; }
-.executionModeSwitch .modeButton.active { background: #fff !important; color: var(--vision-primary) !important; box-shadow: var(--vision-shadow-sm) !important; }
-.appTopbar .topbarTools > form > .episodePipelineButton { min-height: 44px; }
-.appTopbar .episodePipelineButton strong { font-size: var(--vision-font-small); font-weight: 600; }
-.appTopbar .episodePipelineButton small { font-size: var(--vision-font-caption); color: #fff; }
-.episodeTopbarAction .episodeToolButton, .episodeTopbarAction .resetEpisodeButton, .episodeShell .episodeTopbarAction .resetEpisodeButton { min-height: 40px !important; font-size: var(--vision-font-small) !important; padding: 8px 12px !important; }
-.libraryTopbarMeta > span, .projectTopbarMeta > span, .episodeTopbarMeta > span { border: 0; border-radius: 4px; background: #f1f3f8; box-shadow: none; padding: 4px 8px; font-size: var(--vision-font-caption); }
-/* Panels use one border and a deliberate reading hierarchy. */
-.appChrome .studioCard, .appChrome .studioSection, .createFormSection, .createFormFooter, .runnerHero.studioCard, .runnerProviderCard, .runnerDeviceCard, .runnerChoiceGuide, .contractSection { border: 1px solid var(--vision-line) !important; border-radius: 14px !important; background: #fff !important; box-shadow: var(--vision-shadow-sm) !important; backdrop-filter: none; }
-.projectDashboard > .studioSection { padding: var(--vision-panel-padding); }
-.sectionHeading h2, .formSectionHeader h2, .runnerSectionHeader h2, .runnerProviderHeader h2, .projectDashboard > .studioSection > .sectionHeading h2 { font-size: var(--vision-font-heading); font-weight: 650; line-height: 1.4; letter-spacing: -.015em; }
-.projectTitleRow h2, .episodeSummary h3, .cardHeader h3, .appChrome .sceneStructureHead .cardHeader h3 { font-size: var(--vision-font-unit); font-weight: 650; line-height: 1.5; }
-.sectionIndex, .formSectionHeader > span { border-radius: 8px; background: #efedfa; color: var(--vision-primary); font-size: var(--vision-font-small); }
-.cardHeader { min-height: 76px; border-bottom: 1px solid var(--vision-line); background: #fafbfe; padding: 16px 20px; gap: 12px; flex-wrap: wrap; }
-.cardHeader span, .sectionEyebrow, .projectHeroMeta p, .episodePageHeading p { letter-spacing: .04em; color: var(--vision-muted) !important; font-size: var(--vision-font-caption); }
-.sectionHeading p, .formSectionHeader p, .createPageHeading p, .runnerSectionHeader > p { font-size: var(--vision-font-small); line-height: 1.7; color: var(--vision-muted); }
-.cardHeader em, .foundationHeaderState, .stateDot, .phaseStep small, .foundationRole small, .roleProgress small, .roleProgress em { font-size: var(--vision-font-small); }
-.projectDashboard > .workflowGuidance { border: 1px solid var(--vision-line); border-left: 3px solid var(--vision-primary); border-radius: 12px; background: #fff; box-shadow: none; padding: 16px 20px; }
-.projectDashboard > .workflowGuidance .guidanceCopy h1 { font-size: var(--vision-font-heading); }
-.studioGrid.twoColumns { gap: 20px; }
-.appChrome .studioTableScroll th { font-size: var(--vision-font-small); color: var(--vision-muted); background: #f4f6fa; }
-.appChrome .studioTableScroll td { font-size: var(--vision-font-small); color: var(--vision-text); line-height: 1.7; }
-.appChrome .studioTableScroll td, .appChrome .studioTableScroll th { border-color: #e2e6ee; padding: 12px; }
-.studioTableScroll, .storyboardTableWrap { overscroll-behavior-inline: contain; }
-.bibleLine span, .bibleKeyValue b, .bibleFactList li, .bibleEpisodeStates { font-size: var(--vision-font-body); line-height: 1.75; }
-.appChrome .bibleLine { border-color: #e3e7ef; background: #f9fafc; }
-.appChrome .foundationRole, .episodeShell .episodeRoleDeck .roleProgress { height: auto; min-height: 86px !important; border: 1px solid var(--vision-line) !important; border-radius: 10px !important; background: #fafbfe !important; box-shadow: none !important; padding: 12px 14px !important; }
-.foundationRole strong, .roleProgress strong, .episodeShell .episodeRoleDeck .roleProgress strong { font-size: var(--vision-font-body); font-weight: 650; }
-.foundationRole small, .episodeShell .episodeRoleDeck .roleProgress small { white-space: normal; }
-.roleStageForm:hover .roleProgress, .roleStageForm:focus-within .roleProgress { transform: none !important; box-shadow: none !important; }
-.foundationRail { grid-template-columns: repeat(auto-fit,minmax(min(100%, 15rem),1fr)); }
-.episodeStudioGroup { border: 1px solid var(--vision-line); border-radius: 10px; background: #fff; box-shadow: none; }
-.episodeStudioGroup > summary { gap: 12px; padding: 16px; flex-wrap: wrap; background: #f6f7fb; }
-.episodeStudioGroupTitle { font-size: var(--vision-font-body); font-weight: 650; }
-.appChrome .episodeStudioList > article { grid-template-columns: 44px minmax(0,1fr) auto auto; min-height: 94px; border-radius: 8px; gap: 18px; background: #fff; box-shadow: none; padding: 16px; }
-.appChrome .episodeStudioList .episodeSummary h3 { font-size: var(--vision-font-unit); max-width: none; }
-.appChrome .episodeStudioList .episodeNumber { font-size: 1.5rem; color: var(--vision-muted); font-variant-numeric: tabular-nums; }
-.appChrome .episodeStudioList .episodeCounts b { font-size: var(--vision-font-unit); }
-.appChrome .episodeStudioList .episodeCounts small, .appChrome .episodeStudioList .stateDot { font-size: var(--vision-font-small); }
-.projectDashboard > .batchMonitorCard { border: 1px solid var(--vision-line); border-radius: 12px; background: #fff; box-shadow: var(--vision-shadow-sm); padding: 20px; }
-.projectDashboard > .batchMonitorCard .batchMonitorCopy h2 { font-size: var(--vision-font-heading); }
-.projectDashboard > .batchMonitorCard .batchMonitorDetailsBody { min-width: 0; overflow-wrap: anywhere; }
-/* Library: consistent poster cards; a single project does not become an oversized banner. */
-.projectLibrary .projectCardGrid, .projectLibrary .projectCardGrid.singleProject { display: grid; width: 100%; grid-template-columns: repeat(auto-fill,minmax(min(100%, 22rem),1fr)); justify-content: start; gap: 24px; border: 0; border-radius: 0; padding: 0; background: transparent; box-shadow: none; backdrop-filter: none; }
-.appChrome .projectCard { overflow: hidden; border: 1px solid var(--vision-line); border-radius: 14px; background: #fff; box-shadow: var(--vision-shadow-sm); }
-.projectCard:hover { transform: translateY(-2px); border-color: #b5b1d5; box-shadow: var(--vision-shadow); }
-.projectPoster, .projectLibrary .projectCardGrid.singleProject .projectPoster { min-height: 0; height: auto; aspect-ratio: 16/8; }
-.projectPoster strong { font-size: var(--vision-font-small); }
-.projectCardBody { padding: 22px; }
-.projectTitleRow { align-items: flex-start; }
-.projectTitleRow h2 { margin: 0 0 8px; }
-.projectTitleRow p { font-size: var(--vision-font-small); line-height: 1.7; }
-.projectCardFooter { gap: 10px; flex-wrap: wrap; align-items: center; }
-.projectCardFooter > span { flex: 1 1 100%; color: var(--vision-muted); font-size: var(--vision-font-caption); }
-.projectProgress { margin-block: 20px; }
-.projectProgress > i { height: 5px; border-radius: 4px; background: #e8ebf3; }
-.projectProgress > i > span { background: var(--vision-primary); }
-.continueLink { min-height: 40px; display: inline-flex; align-items: center; color: var(--vision-primary); font-size: var(--vision-font-small); }
-.projectCardMenu { margin-left: auto; }
-.projectCardMenu summary { min-width: 40px; min-height: 40px; }
-.projectEmptyState { border: 1px dashed #bfc7d7; border-radius: 16px; background: #fafbfe; padding: 64px 24px; }
-.projectEmptyState p { font-size: var(--vision-font-body); }
-/* Creation and account entry share the same controls and reading scale. */
-.appChrome .createProjectPage, .createPage, .newProjectPage { max-width: 86rem; margin-inline: auto; }
-.createPageHeading h1, .loginHeading h1 { font-size: var(--vision-font-title); font-weight: 650; line-height: 1.35; }
-.createFormSection { padding: var(--vision-panel-padding); }
-.scriptDropzone { min-height: 13rem; border: 1px dashed #aeb8cb !important; border-radius: 10px !important; background: #f8f9fc !important; }
-.scriptDropzone:focus-within { outline: 3px solid var(--vision-primary); outline-offset: 3px; }
-.scriptDropzone strong, .styleOptionCopy strong, .basicConfigGrid label > span { font-size: var(--vision-font-body); }
-.basicConfigGrid input, .basicConfigGrid select, .scriptPasteField textarea, .executionModeFooter select, .loginForm input { min-height: 46px; border: 1px solid #bcc5d6 !important; border-radius: 8px !important; background: #fff !important; color: var(--vision-text); box-shadow: none; font-size: var(--vision-font-body); }
-.scriptPasteField textarea { min-height: 18rem; padding: 16px; line-height: 1.8; }
-.styleOption { border-radius: 10px !important; }
-.styleOption:has(input:focus-visible) { outline: 3px solid var(--vision-primary); outline-offset: 3px; }
-.styleOption:hover { transform: none; }
-.sourceTabs { border-radius: 9px; }
-.sourceTabs button { min-height: 44px; border-radius: 7px; font-size: var(--vision-font-small); }
-.createFormFooter { gap: 20px; padding: 20px 24px; }
-.createFormFooter p, .createFooterInfo p { font-size: var(--vision-font-small); }
-.loginShell::before, .loginShell::after { display: none; }
-.loginCard { width: min(100%, 29rem); border: 1px solid var(--vision-line); border-radius: 18px; background: #fff; box-shadow: var(--vision-shadow-float); padding: 40px; backdrop-filter: none; }
-.loginHeading span { font-size: var(--vision-font-body); }
-.loginForm label > span { font-size: var(--vision-font-small); font-weight: 600; }
-.loginFootnote, .loginError { font-size: var(--vision-font-small); color: var(--vision-muted); }
-.loginError { color: var(--vision-bad); }
-/* Execution settings: local credentials and cloud device pairing retain their own controls. */
-.runnerSettingsPage { max-width: 100rem; }
-.runnerHero.studioCard { grid-template-columns: minmax(0,1fr) auto; gap: 24px; }
-.runnerHeroIcon { display: none; }
-.runnerHero h1, .runnerHero h2 { margin: 0 0 8px; font-size: var(--vision-font-heading); font-weight: 650; }
-.runnerHero p { max-width: 70ch; font-size: var(--vision-font-body); line-height: 1.7; }
-.runnerProviderGrid { gap: 24px; align-items: start; }
-.runnerProviderHeader { align-items: flex-start; gap: 16px; }
-.runnerProviderHeader > div { min-width: 0; }
-.runnerSettingsPage input:not([type="checkbox"]):not([type="radio"]), .runnerSettingsPage select { min-height: 46px; font-size: var(--vision-font-body); font-weight: 400; }
-.runnerCliStatusPanel { border: 1px solid var(--vision-line); border-radius: 10px; background: #f8f9fc; padding: 16px; }
-.runnerCliStatusEyebrow, .runnerCliStatusHeader time { font-size: var(--vision-font-caption); color: var(--vision-muted); letter-spacing: .02em; }
-.runnerCliStatusGrid { grid-template-columns: repeat(auto-fit,minmax(min(100%, 11rem),1fr)); gap: 12px; }
-.runnerCliStatusGrid article { min-width: 0; border: 1px solid var(--vision-line); border-radius: 8px; background: #fff; padding: 14px; }
-.runnerCliStatusGrid article > span, .runnerCliStatusGrid article > small { font-size: var(--vision-font-small); line-height: 1.6; color: var(--vision-muted); white-space: normal; overflow-wrap: anywhere; }
-.runnerCliStatusGrid article > strong { font-size: var(--vision-font-body); line-height: 1.6; color: var(--vision-text); white-space: normal; overflow-wrap: anywhere; }
-.runnerCliStatusFooter, .runnerCliStatusWarning, .runnerCliStatusNote { font-size: var(--vision-font-small); line-height: 1.7; }
-.runnerDeviceRow { flex-wrap: wrap; gap: 12px; }
-.runnerDeviceRow > div { min-width: 0; overflow-wrap: anywhere; }
-.runnerDiagnosticLogItem, .runnerDiagnosticLogItem pre { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
-.runnerDiagnosticLogItem pre { overflow: auto; font-size: var(--vision-font-small); }
-/* Episode results keep a single scrolling canvas on wide screens. */
-.episodeRoleDeck { border: 1px solid var(--vision-line); border-radius: 12px; background: #fff; box-shadow: none; backdrop-filter: none; }
-.episodeRoleDeck > summary { min-height: 44px; padding: 10px 16px; flex-wrap: wrap; font-weight: 600; }
-.episodeRoleDeck > .roleProgressRail { grid-template-columns: repeat(auto-fit,minmax(min(100%,15rem),1fr)); gap: 12px; padding: 12px !important; }
-.episodeShell .episodeRoleDeck .roleProgress { grid-template-columns: 2rem minmax(0,1fr) auto; }
-.episodeShell .storyboardCanvas { border: 1px solid var(--vision-line); border-radius: 12px !important; clip-path: inset(0 round 12px); background: #fff; box-shadow: var(--vision-shadow-sm) !important; }
-.canvasToolbar { min-height: 60px; gap: 16px; padding: 0 20px; background: #fff !important; }
-.viewTabs { min-width: 0; gap: 24px; overflow-x: auto; }
-.viewTabs a { min-height: 56px; flex-shrink: 0; font-size: var(--vision-font-small); font-weight: 600; }
-.episodeShell .viewTabs a { font-size: var(--vision-font-small); }
-.storyboardTable th { color: var(--vision-muted) !important; }
-.storyboardTable td { color: var(--vision-text) !important; }
-.episodeShell .unitList, .unitList, .logView { padding: 20px !important; }
-.unitCard, .logView > section { border: 1px solid var(--vision-line) !important; border-radius: 12px !important; box-shadow: none !important; }
-.unitCard:hover { transform: none; box-shadow: none !important; }
-.unitCardHead { min-height: 60px; gap: 12px; flex-wrap: wrap; padding: 16px 20px; background: #f8f9fc; }
-.unitCardHead strong, .unitCard h3 { font-size: var(--vision-font-unit); }
-.unitCardHead em, .unitCardHead span { font-size: var(--vision-font-small); }
-.seedancePrompt pre, .episodeShell .seedancePrompt pre { font-size: var(--vision-font-body); line-height: 1.85; color: var(--vision-text) !important; padding: 20px; background: #fff !important; }
-.promptPreview p { font-size: var(--vision-font-body); line-height: 1.8; color: var(--vision-text); }
-.exportEpisodeBar { gap: 12px; flex-wrap: wrap; border-radius: 8px !important; box-shadow: none !important; }
-.infoPanelToggleBtn { min-height: 44px; border-radius: 8px; box-shadow: var(--vision-shadow-sm); font-size: var(--vision-font-small); }
-.infoPanelArea { width: min(48rem,100vw); border-radius: 14px 0 0 14px; background: #fff !important; backdrop-filter: none; }
-.infoPanelHead { padding: 20px; }
-.infoPanelBody { padding: 20px; }
-.largeEmpty, .unitGuide { padding: 28px; }
-.largeEmpty p, .unitGuide p { font-size: var(--vision-font-body); line-height: 1.8; }
-@media (min-width: 761px) and (min-height: 651px) {
-  /* Allow enlarged text to increase the page height without collapsing the results. */
-  .episodeShell .appMain { overflow: auto; }
-  .episodeShell .workspaceGrid.no-rail { min-height: min(24rem,50dvh); }
+@media(max-width:480px) {.foundationRail {grid-template-columns:1fr;}.runnerCliStatusGrid {grid-template-columns:1fr;}.topbarIdentity .pageTitle {font-size:1.5rem;}.appChrome .appWorkspace {padding:10px 8px;}.appChrome .appTopbar {padding:17px 15px;}.topbarTools {gap:6px;}.episodeTopbarMeta {flex-wrap:wrap;}}
+@media(prefers-reduced-motion:reduce) {*,*::before,*::after {animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important;}.visionRouteFrame[data-navigating=true]::after {animation:none;opacity:.6;}}
+
+/* Short windows and enlarged type retain a reachable episode list and account. */
+.appChrome .appSidebar {container:studio-navigation / size;overflow:auto;overscroll-behavior:contain;}
+.appChrome .sidebarEpisodes {min-height:5rem;}
+@container studio-navigation (height < 44rem) {
+  .chromeBrand {padding-block:16px;}
+  .chromeBrand small,.sidebarWorkflow {display:none;}
+  .sidebarNav {padding-bottom:12px;gap:3px;}
+  .sidebarNav a {padding-block:6px;}
+  .appChrome .sidebarFooter {padding-block:8px;}
 }
-@media (max-width: 1440px) {
-  :root { --vision-sidebar-width: 13.5rem; }
-  .appChrome .appTopbar { flex-wrap: wrap; padding: 16px 20px; }
-  .topbarIdentity { flex-basis: 16rem; }
-  .topbarTools { flex: 1 1 100%; justify-content: flex-start; }
-  .episodeTopbarMeta { flex-wrap: wrap; }
-  .studioGrid.twoColumns { grid-template-columns: 1fr; }
-  .runnerProviderGrid { grid-template-columns: 1fr; }
-  .runnerConnectionGrid { grid-template-columns: 1fr; }
-}
-@media (max-width: 980px) {
-  .appSidebar { display: none; }
-  .appWorkspace { margin-left: 0; }
-  .mobileNav { display: block; }
-  .mobileNav summary { display: grid; min-width: 44px; min-height: 44px; place-items: center; border-radius: 8px; background: #f0f2f7; }
-  .mobileNav nav { width: min(22rem,calc(100vw - 32px)); max-height: calc(100dvh - 120px); overflow: auto; border: 1px solid var(--vision-line); border-radius: 12px; background: #fff; box-shadow: var(--vision-shadow-float); }
-  .mobileNav nav a { min-height: 44px; font-size: var(--vision-font-small); }
-  .topbarIdentity { flex: 1 1 0; }
-  .appChrome .appTopbar { margin-inline: 16px; }
-  .runnerHero.studioCard { grid-template-columns: 1fr; }
-}
-@media (max-width: 760px), (max-height: 650px) {
-  .episodeShell { height: auto; min-height: 100dvh; overflow: visible; }
-  .episodeShell .appWorkspace { height: auto; min-height: 100dvh; overflow: visible; }
-  .episodeShell .appMain { overflow: visible; }
-  .episodeShell .episodeDashboard { height: auto; }
-  .episodeShell .workspaceGrid.no-rail { height: auto; min-height: 24rem; overflow: visible; }
-  .episodeShell .storyboardCanvas { height: auto; min-height: 24rem; clip-path: none; }
-  .episodeShell .unitList { overflow: visible; }
-  .episodeShell .storyboardTableWrap { max-height: 70dvh; overflow: auto; }
-}
-@media (max-width: 760px) {
-  .appChrome .appTopbar { top: 0; position: relative; margin: 12px 12px 0; padding: 16px; gap: 12px; }
-  .appMain { padding: 16px 12px 40px; }
-  .topbarTools { gap: 8px; }
-  .topbarTools > form { min-width: 0; }
-  .topbarIdentity .pageTitle, .topbarIdentity strong { font-size: 1.5rem; }
-  .projectLibrary .projectCardGrid, .projectLibrary .projectCardGrid.singleProject { grid-template-columns: 1fr; gap: 16px; }
-  .projectLibrary .projectCardGrid.singleProject .projectPoster { min-height: 0; }
-  .projectDashboard > .studioSection { padding: 16px; }
-  .foundationRail { grid-template-columns: 1fr; }
-  .episodeRoleDeck > .roleProgressRail { grid-template-columns: 1fr; overflow: visible; }
-  .appChrome .episodeStudioList > article { grid-template-columns: 32px minmax(0,1fr); gap: 10px; padding: 14px; }
-  .appChrome .episodeStudioList .episodeCounts, .appChrome .episodeStudioList .primaryLink { grid-column: 2; justify-content: flex-start; }
-  .episodeStudioGroupMeta { margin-left: 0; white-space: normal; }
-  .basicConfigGrid, .runnerChoiceGrid { grid-template-columns: 1fr; }
-  .createFormFooter { position: static; align-items: stretch; flex-direction: column; padding: 20px; }
-  .canvasToolbar { align-items: stretch; flex-direction: column; gap: 0; padding: 0 14px; }
-  .viewTabs { gap: 20px; width: 100%; }
-  .canvasToolbar > span { padding-bottom: 10px; }
-  .episodeShell .unitList, .unitList, .logView { padding: 12px !important; }
-  .seedancePrompt pre, .episodeShell .seedancePrompt pre { padding: 14px; }
-  .infoPanelArea { inset: 0; width: 100%; border-radius: 0; }
-  .loginCard { padding: 28px 24px; }
-  .runnerCliStatusGrid { grid-template-columns: 1fr; }
-  .runnerTopbarMeta { flex-wrap: wrap; }
-}
+.mobileEpisodeList {border-top:1px solid var(--vision-line);margin-top:8px;padding:8px;}
+.mobileNav .mobileEpisodeList>summary {display:block;background:transparent;padding:8px;font-size:.875rem;cursor:pointer;}
+.mobileEpisodeList>div {max-height:35dvh;overflow:auto;overscroll-behavior:contain;}
+.mobileNav .mobileEpisodeList a {display:block;white-space:normal;line-height:1.5;}
+.mobileNav .mobileEpisodeList a[aria-current=page] {background:var(--primary-soft);color:var(--vision-primary);}

@@ -30,7 +30,7 @@ export default async function EpisodeStudioPage({
 
   return (
     <AppChrome
-      title={`第${studio.episode.number}集 · ${studio.episode.title}`}
+      title={`第${studio.episode.number}集 · ${studio.episode.title.replace(/^\s*第\s*(\d+)\s*集[\s·・:：—-]*/u, (prefix, number: string) => Number(number) === studio.episode.number ? "" : prefix)}`}
       eyebrow={studio.project.title}
       projectId={projectId}
       activeSection="episode"
@@ -58,7 +58,7 @@ export default async function EpisodeStudioPage({
         activeLabel={studio.activePipeline?.label}
       />}
     >
-      <div className="episodeWorkspace episodeDashboard">
+      <div className="episodeWorkspace episodeDashboard episodeSurface">
       {studio.otherEpisodesRunning.length > 0 ? (
         <p className="parallelRunningHint">
           ⚠ 第 {studio.otherEpisodesRunning.join("、")} 集正在并行执行流水线（不同集可并行是设计行为，本页按钮不受影响）。
@@ -67,7 +67,7 @@ export default async function EpisodeStudioPage({
       ) : null}
 
       <details className="episodeRoleDeck" open>
-        <summary><span>E0–E5 制作状态</span><b>{studio.roles.filter((role) => role.status === "已完成").length}/6 完成</b></summary>
+        <summary><span className="episodeDeckTitle">制作流程 <small>E0–E5</small></span><b>{studio.roles.filter((role) => role.status === "已完成").length}/6 完成</b></summary>
       <section className="roleProgressRail" aria-label="岗位进度">
         {studio.roles.map((role) => {
           const errorText = studio.runs.find((run) => run.stageCode === role.code && run.error)?.error;
@@ -83,15 +83,48 @@ export default async function EpisodeStudioPage({
                   className="roleCardHitArea"
                   disabled={studio.pipelineActive || role.status === "排队中" || role.status === "进行中"}
                   aria-label={`${actionLabel} ${role.code} ${role.name}`}
+                  title={`${role.code} · ${role.name} · ${role.model} · ${role.duration}`}
+                  aria-describedby={errorText && role.status === "失败" ? `role-error-${role.code}` : undefined}
                 />
               </form>
               <article className={`roleProgress ${role.status === "已完成" ? "done" : role.status === "进行中" ? "running" : role.status === "失败" ? "failed" : ""}`}>
-                <span>{role.code}</span>
-                <div><strong>{role.name}</strong><small>{role.model} · {role.duration}</small></div>
-                <em>{role.status}</em>
-                {role.status === "失败" && errorText ? <p className="roleRunError" title={errorText}>{errorText}</p> : null}
-                <span className="roleCardAction">{role.status === "进行中" ? "执行中" : role.status === "排队中" ? "排队中" : actionLabel}</span>
+                <span className="episodeRoleCode">{role.code}</span>
+                <div className="episodeRoleOverview">
+                  <span className="episodeRoleIcon" aria-hidden="true">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <path d={({
+                        E0: "M3 12h4l3-8 4 16 3-8h4",
+                        E1: "M4 4h16v16H4z M4 9h16 M9 9v11 M8 4l3 5 M14 4l3 5",
+                        E2: "M9 7a3 3 0 1 0 6 0 3 3 0 0 0-6 0 M5 21v-2a7 7 0 0 1 14 0v2 M3 10l3 3-3 3 M21 10l-3 3 3 3",
+                        E3: "M4 9h4l5-4v14l-5-4H4z M17 8a6 6 0 0 1 0 8 M20 5a10 10 0 0 1 0 14",
+                        E4: "M9 4h6l2 3h4v13H3V7h4z M8 13a4 4 0 1 0 8 0 4 4 0 0 0-8 0",
+                        E5: "M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6z M8 12l3 3 5-6"
+                      } as Record<string, string>)[role.code] ?? "M5 5h14v14H5z"} />
+                    </svg>
+                  </span>
+                  <div className="episodeRoleCopy">
+                    <strong>{role.name}</strong>
+                    <small className="episodeRoleDuty">{({
+                      E0: "节奏骨架 · 时长预算",
+                      E1: "拆镜结构 · 镜号时长",
+                      E2: "人物表演 · 空间调度",
+                      E3: "单元编排 · 声画转场",
+                      E4: "摄影策略 · 单元布光",
+                      E5: "问题定位 · 质量放行"
+                    } as Record<string, string>)[role.code]}</small>
+                  </div>
+                </div>
+                <small className="episodeRoleModel" title={role.model}>{role.model}</small>
+                <div className="episodeRoleFoot">
+                  <em>{role.status}</em>
+                  <span className="episodeRoleDuration" title={`执行耗时：${role.duration}`}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+                    {role.duration}
+                  </span>
+                  <span className="roleCardAction" aria-hidden="true">{role.status === "进行中" ? "执行中" : role.status === "排队中" ? "排队中" : actionLabel}</span>
+                </div>
               </article>
+              {role.status === "失败" && errorText ? <p id={`role-error-${role.code}`} className="episodeRoleError">{errorText}</p> : null}
             </div>
           );
         })}
@@ -100,12 +133,12 @@ export default async function EpisodeStudioPage({
 
       <WorkspaceGrid
         canvas={(
-          <section className="storyboardCanvas">
+          <section className={`storyboardCanvas episodeReadingCanvas ${view === "units" ? "is-units" : ""}`} aria-label="本集制作内容">
           <div className="canvasToolbar">
-            <nav className="viewTabs">
-              <Link className={view === "shots" ? "active" : ""} href={`?view=shots`}>分镜表 <b>{shotCount}</b></Link>
-              <Link className={view === "units" ? "active" : ""} href={`?view=units`}>Seedance单元 <b>{studio.units.length}</b></Link>
-              <Link className={view === "logs" ? "active" : ""} href={`?view=logs`}>执行与问题 <b>{studio.issues.filter((issue) => issue.status === "OPEN").length}</b></Link>
+            <nav className="viewTabs" aria-label="分集视图">
+              <Link className={view === "shots" ? "active" : ""} aria-current={view === "shots" ? "page" : undefined} href={`?view=shots`}>分镜表 <b>{shotCount}</b></Link>
+              <Link className={view === "units" ? "active" : ""} aria-current={view === "units" ? "page" : undefined} href={`?view=units`}>Seedance单元 <b>{studio.units.length}</b></Link>
+              <Link className={view === "logs" ? "active" : ""} aria-current={view === "logs" ? "page" : undefined} href={`?view=logs`}>执行与问题 <b>{studio.issues.filter((issue) => issue.status === "OPEN").length}</b></Link>
             </nav>
           </div>
 
@@ -139,7 +172,7 @@ export default async function EpisodeStudioPage({
                     </tr>
                   )))}
                   {!studio.scenes.some((scene) => scene.shots.length) ? (
-                    <tr><td colSpan={8} className="largeEmpty"><span>分镜表尚未生成</span><p>E0 先切出 Beat 骨架；E1 按 Beat 建立小镜号和时长，E2–E4 只补充各自负责的列。</p></td></tr>
+                    <tr><td colSpan={9} className="largeEmpty"><span>分镜表尚未生成</span><p>E0 先切出 Beat 骨架；E1 按 Beat 建立小镜号和时长，E2–E4 只补充各自负责的列。</p></td></tr>
                   ) : null}
                 </tbody>
               </table>
@@ -159,8 +192,14 @@ export default async function EpisodeStudioPage({
               {studio.units.map((unit) => {
                 const currentVersion = unit.versions[0];
                 return (
-                  <article className="unitCard" key={unit.id}>
-                    <div className="unitCardHead"><div><span>{unit.unitKey}</span><strong>{unit.duration.toFixed(1)}秒</strong></div><em>{unit.revision}</em></div>
+                  <article className="unitCard episodeUnitDocument" key={unit.id} aria-labelledby={`unit-heading-${unit.id}`}>
+                    <header className="unitCardHead episodeUnitIndex">
+                      <span className="episodeUnitEyebrow">生成单元</span>
+                      <h3 id={`unit-heading-${unit.id}`}>{unit.unitKey}</h3>
+                      <div className="episodeUnitDuration"><strong>{unit.duration.toFixed(1)}</strong><span>秒</span></div>
+                      <span className="episodeUnitShots">{unit.shotKeys.length} 个镜头</span>
+                      <em title={unit.revision}>{unit.revision}</em>
+                    </header>
                     {currentVersion ? (
                       <UnitPromptCard
                         key={currentVersion.id}

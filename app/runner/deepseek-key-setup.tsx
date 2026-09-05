@@ -96,11 +96,11 @@ export function DeepSeekKeySetup() {
       </div>
 
       <div className="runnerActions">
-        <button className="glassPrimary runnerPrimaryButton" disabled={pending} onClick={testAndSave} type="button">
+        <button className="studioButton glassPrimary runnerPrimaryButton" data-variant="primary" disabled={pending} aria-busy={pending} onClick={testAndSave} type="button">
           {pending ? "测试中" : "测试并保存本设备"}
         </button>
-        {apiKey ? <button className="quietButton runnerSecondaryButton" onClick={clearKey} type="button">删除 Key</button> : null}
-        {message ? <p className={`runnerMessage ${connected ? "success" : "error"}`}>{message}</p> : null}
+        {apiKey ? <button className="studioButton quietButton runnerSecondaryButton" data-variant="danger" disabled={pending} onClick={clearKey} type="button">删除 Key</button> : null}
+        {message ? <p className={`runnerMessage ${connected ? "success" : "error"}`} role={connected ? "status" : "alert"}>{message}</p> : null}
       </div>
     </section>
   );

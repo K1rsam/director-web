@@ -1,3 +1,4 @@
+import "@/app/page-surfaces.css";
 import { desc, eq } from "drizzle-orm";
 import Link from "next/link";
 
@@ -45,18 +46,10 @@ export default async function RunnerPage({ searchParams }: { searchParams: Promi
       episodes={activeProject?.episodes.map(({ id, number, title }) => ({ id, number, title: title ?? `第${number}集` }))}
       activeSection="runner"
       utility={<div className="runnerTopbarMeta"><span>个人凭证</span><span>{hasStatus ? "额度已同步" : "等待本机状态"}</span></div>}
-      primaryAction={<Link href={projectLibraryHref} className="topbarPrimary">返回项目总览</Link>}
+      primaryAction={<Link href={projectLibraryHref} className="studioButton" data-variant="ghost">返回项目总览</Link>}
     >
-      <section className="runnerSettingsPage">
-        <header className="runnerHero studioCard">
-          <span className="runnerHeroIcon" aria-hidden="true">↗</span>
-          <div>
-            <p className="sectionEyebrow">执行连接</p>
-            <h2>连接你的生产工具</h2>
-            <p>API Key 只留在当前浏览器；每台电脑使用自己的 Codex CLI、账号和额度。网站只保存线上项目数据与任务结果，不会读取任何设备的本机项目数据库。</p>
-          </div>
-          <div className="runnerHeroAssurance"><span>账号隔离</span><strong>每位用户独立连接</strong></div>
-        </header>
+      <section className="runnerSettingsPage pageSurface runnerSurface">
+        <header className="surfaceIntro"><p>API Key 只留在当前浏览器；CLI 通过已连接的电脑执行任务，结果同步到网站。</p><span className="surfaceCaption">线上版本 · 每位用户独立连接</span></header>
 
         <div className="runnerConnectionGrid">
           <DeepSeekKeySetup />
@@ -91,7 +84,7 @@ export default async function RunnerPage({ searchParams }: { searchParams: Promi
                 </div>
                 {!token.revokedAt ? (
                   <form action={revokeRunnerTokenAction.bind(null, token.id)}>
-                    <button className="runnerRevokeButton" type="submit">撤销</button>
+                    <button className="studioButton runnerRevokeButton" data-variant="danger" type="submit">撤销</button>
                   </form>
                 ) : null}
               </div>

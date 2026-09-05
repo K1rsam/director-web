@@ -35,7 +35,7 @@
 .runnerStatusMetric strong { overflow: hidden; color: var(--vision-text); font-size: var(--vision-font-small); text-overflow: ellipsis; white-space: nowrap; }
 .runnerStatusMetric small { overflow: hidden; color: var(--vision-faint); font-size: var(--vision-font-caption); line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .runnerStatusWarning { margin: 11px 0 0; color: var(--vision-bad); font-size: var(--vision-font-caption); line-height: 1.55; }
-.runnerStatusEmpty { margin: 20px 0 0; border: 1px dashed rgba(103,94,228,.22); border-radius: 14px; background: rgba(249,250,255,.58); padding: 18px; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.7; text-align: center; }
+.runnerStatusEmpty { margin: 20px 0 0; border: 1px dashed rgba(103,94,228,.22); border-radius: 22px; background: rgba(249,250,255,.58); padding: 18px; color: var(--vision-muted); font-size: var(--vision-font-small); line-height: 1.7; text-align: center; }
 .runnerStatusPendingList { display: grid; gap: 10px; text-align: left; }
 .runnerStatusPendingDevice { display: flex; align-items: center; gap: 12px; }
 .runnerStatusPendingDevice > div { display: grid; gap: 3px; }
@@ -54,16 +54,16 @@
 @media (max-width: 760px) {
   .runnerStatusDeviceGrid { grid-template-columns: 1fr; }
 }
-.runnerStatusCard.studioCard { border: 1px solid var(--vision-line); border-radius: 14px; background: #fff; box-shadow: var(--vision-shadow-sm); }
+.runnerStatusCard.studioCard { border: 1px solid var(--vision-line); border-radius: 22px; background: var(--vision-glass-strong); box-shadow: var(--vision-shadow-sm); }
 .runnerStatusHeader h2 { font-size: var(--vision-font-heading); font-weight: 650; }
 .runnerStatusDeviceGrid { grid-template-columns: repeat(auto-fit,minmax(min(100%,24rem),1fr)); gap: 20px; }
-.runnerStatusDevice { min-width: 0; border: 1px solid var(--vision-line); border-radius: 10px; background: #fafbfe; box-shadow: none; }
+.runnerStatusDevice { min-width: 0; border: 1px solid var(--vision-line); border-radius: 16px; background: var(--vision-glass); box-shadow: none; }
 .runnerStatusDevice > header { flex-wrap: wrap; gap: 10px; }
 .runnerStatusMetricGrid { grid-template-columns: repeat(auto-fit,minmax(min(100%,10rem),1fr)); gap: 12px; }
-.runnerStatusMetric { min-width: 0; padding: 14px; border: 1px solid var(--vision-line); border-radius: 8px; background: #fff; }
+.runnerStatusMetric { min-width: 0; padding: 14px; border: 1px solid var(--vision-line); border-radius: 12px; background: var(--vision-glass-strong); }
 .runnerStatusMetric strong { font-size: var(--vision-font-unit); color: var(--vision-text); }
 .runnerStatusMetric span, .runnerStatusMetric small { font-size: var(--vision-font-small); color: var(--vision-muted); white-space: normal; overflow-wrap: anywhere; }
 .runnerStatusIdentity strong, .runnerStatusIdentity span { white-space: normal; overflow-wrap: anywhere; }
-.runnerStatusRefresh { min-height: 44px; border: 1px solid var(--vision-line); border-radius: 8px; background: #fff; font-size: var(--vision-font-small); }
-.runnerLauncherPanel { border: 1px solid var(--vision-line); border-radius: 10px; background: #f8f9fc; }
+.runnerStatusRefresh { min-height: 44px; border: 1px solid var(--vision-line); border-radius: 12px; background: var(--vision-glass-strong); font-size: var(--vision-font-small); }
+.runnerLauncherPanel { border: 1px solid var(--vision-line); border-radius: 16px; background: var(--vision-reading); }
 @media(max-width:760px){.runnerStatusMetricGrid{grid-template-columns:1fr}.runnerStatusHeader{align-items:stretch;flex-direction:column}.runnerStatusActions{flex-wrap:wrap}}

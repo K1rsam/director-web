@@ -10,6 +10,7 @@ import { getProjectLibrary } from "@/lib/project-library";
 import { archiveProjectAction, restoreProjectAction } from "@/app/actions";
 import { DeleteProjectButton } from "./delete-project-button";
 import { AppChrome } from "./ui/app-chrome";
+import "./page-surfaces.css";
 
 export const dynamic = "force-dynamic";
 
@@ -43,7 +44,11 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
       )}
       primaryAction={<Link href={activeProject ? `/projects/new?projectId=${encodeURIComponent(activeProject.id)}` : "/projects/new"} className="topbarPrimary">新建项目 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14" /></svg></Link>}
     >
-      <section className="projectLibrary" aria-label="项目列表">
+      <section className="projectLibrary pageSurface librarySurface" aria-label="项目列表">
+        <div className="surfaceIntro libraryIntro">
+          <p>从项目继续制作，查看全剧资料与各集进度。</p>
+          {archivedProjects.length ? <a href="#archived-projects" className="surfaceTextLink">查看归档 <span aria-hidden="true">↓</span></a> : null}
+        </div>
         {projects.length ? (
           <div className={`projectCardGrid ${projects.length === 1 ? "singleProject" : ""}`}>
             {projects.map((project, index) => {
@@ -67,7 +72,7 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
                     className="projectCardHitArea"
                     aria-label={`进入项目 ${project.title}`}
                   />
-                  <div className="projectPoster" style={posterStyle}>
+                  <div className="projectPoster projectColorCover" style={posterStyle} data-cover-tone={index % 4}>
                     <div className="posterFrame" aria-hidden="true">
                       <span>{String(index + 1).padStart(2, "0")}</span>
                       <i />
@@ -85,6 +90,12 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
                       <span className="aspectBadge">{project.aspectRatio}</span>
                     </div>
 
+                    <dl className="projectCardFacts">
+                      <div><dt>剧集</dt><dd>{productionEpisodes.length}<span> 集</span></dd></div>
+                      <div><dt>资产</dt><dd>{project._count.assets}<span> 项</span></dd></div>
+                      <div><dt>已有分镜单元</dt><dd>{unitEpisodeCount}<span> 集</span></dd></div>
+                    </dl>
+
                     <div className="projectProgress" aria-label={`项目完成度 ${state.progress}%`}>
                       <div>
                         <span>当前进度</span>
@@ -94,7 +105,7 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
                     </div>
 
                     <div className="projectCardFooter">
-                      <span>{project._count.episodes} 集 · 更新于 <time dateTime={project.updatedAt.toISOString()}>{dateFormatter.format(project.updatedAt)}</time></span>
+                      <span>更新于 <time dateTime={project.updatedAt.toISOString()}>{dateFormatter.format(project.updatedAt)}</time></span>
                       <Link href={destination} className="continueLink" aria-label={`${state.actionLabel}：${project.title}`}>
                         {state.actionLabel}<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M4 12h16m-6-6 6 6-6 6" /></svg>
                       </Link>
@@ -122,7 +133,7 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
           </div>
         )}
         {archivedProjects.length ? (
-          <details className="archiveSection">
+          <details className="archiveSection" id="archived-projects">
             <summary>归档项目 <span>{archivedProjects.length}</span></summary>
             <div className="projectCardGrid">
               {archivedProjects.map((project) => (

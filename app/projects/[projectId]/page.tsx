@@ -16,6 +16,7 @@ import { ModeSwitch } from "../../mode-switch";
 import { requireSessionUser } from "@/lib/auth";
 import { resolvePresentationContractScope } from "@/lib/presentation-contracts";
 import { FoundationReferenceGrid } from "./foundation-reference-grid";
+import "@/app/page-surfaces.css";
 
 export const dynamic = "force-dynamic";
 
@@ -129,7 +130,7 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
       primaryAction={guidance.kind === "foundation" ? (
         <form action={startProjectFoundationAction}>
           <input name="projectId" type="hidden" value={projectId} />
-          <button type="submit" disabled={foundationActive}>{foundationActive ? foundationStatusLabel : guidance.actionLabel}</button>
+          <button type="submit" className="studioButton" data-variant="primary" disabled={foundationActive} aria-busy={foundationActive}>{foundationActive ? foundationStatusLabel : guidance.actionLabel}</button>
         </form>
       ) : topbarNextStep ? (
         <span className="topbarNextStep" aria-label={topbarNextStep}>{topbarNextStep}</span>
@@ -138,7 +139,7 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
       )}
       utility={<><div className="projectTopbarMeta" aria-label={`视觉风格 ${studio.project.style}，画幅 ${studio.project.aspectRatio}，${productionEpisodes.length} 集`}><span>{studio.project.style}</span><span>{studio.project.aspectRatio}</span><span>{productionEpisodes.length} 集</span></div><ModeSwitch projectId={studio.project.id} current={studio.project.executionMode} compact /><span className="topbarStatus"><i className={foundationActive ? "live" : ""} />{foundationActive ? foundationStatusLabel : "工作台已就绪"}</span></>}
     >
-      <div className="projectDashboard">
+      <div className="projectDashboard pageSurface workbenchSurface">
         <WorkflowGuidance
           eyebrow={guidance.eyebrow}
           title={guidance.title}
@@ -149,17 +150,22 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
           meta={<><span>{productionEpisodes.filter((episode) => episode.shotCount > 0).length}/{productionEpisodes.length} 集已开始</span><span>{studio.assets.length} 项资产</span></>}
         />
 
-      <section className="studioSection" id="phase-one">
+        <nav className="workbenchSectionNav" aria-label="全剧工作台内容">
+          <a href="#phase-one"><span>01</span>全剧基础工程</a>
+          <a href="#phase-two"><span>02</span>单集分镜生产</a>
+        </nav>
+
+      <section className="studioSection workbenchFoundation" id="phase-one" aria-labelledby="foundation-section-title">
+        <div className="sectionHeading">
+          <div><span className="sectionIndex">01</span><h2 id="foundation-section-title">全剧基础工程</h2></div>
+          <p>只建立服务全集的固定资料；图片资产由外部导入，当前系统只管理名称与状态。</p>
+        </div>
         <PresentationContracts
           projectId={projectId}
           pending={contracts.map(contractRow)}
           confirmed={confirmedContracts.map(contractRow)}
           formalEpisodeNumbers={formalEpisodeNumbers}
         />
-        <div className="sectionHeading">
-          <div><span className="sectionIndex">01</span><h2>全剧基础工程</h2></div>
-          <p>只建立服务全集的固定资料；图片资产由外部导入，当前系统只管理名称与状态。</p>
-        </div>
 
         <FoundationActions
           projectId={studio.project.id}
@@ -171,12 +177,12 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
         />
 
         <FoundationReferenceGrid>
-          <article className="studioCard" data-reference-card="bible">
+          <article className="studioCard surfaceReferenceCard" data-reference-card="bible">
             <div className="cardHeader"><div><span>PROJECT BIBLE</span><h3>项目策划与全剧索引</h3></div><em>{studio.firstPhase.planningReady ? "已生成" : "未生成"}</em></div>
             <ProjectBibleViewer content={studio.firstPhase.memory} />
           </article>
 
-          <article className="studioCard" data-reference-card="assets">
+          <article className="studioCard surfaceReferenceCard" data-reference-card="assets">
             <div className="cardHeader">
               <div><span>ASSET INDEX</span><h3>资产名称简表</h3></div>
               <div className="cardHeaderActions">
@@ -227,9 +233,9 @@ export default async function ProjectStudioPage({ params }: { params: Promise<{ 
         })))} />
       </section>
 
-      <section className="studioSection" id="phase-two">
+      <section className="studioSection workbenchProduction" id="phase-two" aria-labelledby="production-section-title">
         <div className="sectionHeading">
-          <div><span className="sectionIndex">02</span><h2>单集分镜生产</h2></div>
+          <div><span className="sectionIndex">02</span><h2 id="production-section-title">单集分镜生产</h2></div>
           <p>每集独立经过 E0–E5；最终由 Python 编译为一个个可单独发送给 Seedance 的分镜单元。</p>
         </div>
 

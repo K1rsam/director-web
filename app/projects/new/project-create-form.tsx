@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useId, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useActionState, useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { importProjectAction, type ProjectCreationState } from "@/app/actions";
 import type { ProjectStyleOption, ProjectSubmissionMode } from "@/lib/project-entry";
 
@@ -8,6 +8,8 @@ const initialState: ProjectCreationState = { error: "" };
 
 export function ProjectCreateForm({ styles }: { styles: ProjectStyleOption[] }) {
   const [state, formAction, pending] = useActionState(importProjectAction, initialState);
+  const submitting = useRef(false);
+  useEffect(() => { submitting.current = pending; }, [pending]);
   const [mode, setMode] = useState<ProjectSubmissionMode>("upload");
   const [executionMode, setExecutionMode] = useState<"CLI" | "API">("CLI");
   const [fileName, setFileName] = useState("");
@@ -37,7 +39,10 @@ export function ProjectCreateForm({ styles }: { styles: ProjectStyleOption[] }) 
   }
 
   return (
-    <form action={formAction} className="createProjectForm">
+    <form action={formAction} className="createProjectForm" onSubmit={(event) => {
+      if (pending || submitting.current) event.preventDefault();
+      else submitting.current = true;
+    }}>
       <input name="mode" type="hidden" value={mode} />
 
       <section className="createFormSection scriptSourceSection" aria-labelledby="script-source-title">
@@ -158,7 +163,7 @@ export function ProjectCreateForm({ styles }: { styles: ProjectStyleOption[] }) 
         </fieldset>
       </section>
 
-      {state.error ? <div className="formError" role="alert">{state.error}</div> : null}
+      {!pending && state.error ? <div className="formError" role="alert">{state.error}</div> : null}
 
       <footer className="createFormFooter">
         <div className="createFooterInfo">
@@ -181,7 +186,7 @@ export function ProjectCreateForm({ styles }: { styles: ProjectStyleOption[] }) 
               : "创建后自动进入全剧资料整理；CLI 模式使用本机 Codex 执行 E0–E5 岗位。"}
           </p>
         </div>
-        <button className="primaryAction createSubmit" type="submit" disabled={pending} aria-busy={pending}>
+        <button className="studioButton primaryAction createSubmit" data-variant="primary" type="submit" disabled={pending} aria-busy={pending}>
           {pending ? "正在创建项目…" : "创建项目并开始解析"}<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M4 12h16m-6-6 6 6-6 6" /></svg>
         </button>
       </footer>
