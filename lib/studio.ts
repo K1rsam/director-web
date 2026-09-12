@@ -3,6 +3,9 @@ import type { PrismaClient } from "@prisma/client";
 import { assetSceneRefsOf } from "@/lib/assets";
 import { composeShotCells } from "@/lib/shot-cells";
 import { PIPELINE_STAGE_CONFIGS } from "@/lib/episode-pipeline-contracts";
+import { foundationJson, getFoundationState } from "@/lib/foundation-state";
+import { isRecord, PROJECT_FOUNDATION_STAGES } from "@/lib/project-foundation-contracts";
+import { summarizeFoundationRunUsage } from "@/lib/foundation-run-usage";
 
 /** 岗位条与流水线契约同源，避免手工维护漂移（E0 叙事节奏 → E5 审查总控）。 */
 export const ROLE_STAGES = PIPELINE_STAGE_CONFIGS.map((stage) => [stage.code, stage.name] as const);
@@ -118,13 +121,49 @@ export function deriveActivePipelineScope(runs: readonly ActiveRunLike[]): Activ
   return { kind, stages, label };
 }
 
+/** SUCCEEDED 是执行结果；只有当前候选及批准链匹配才可显示资料就绪。 */
+export function buildFoundationStageViews(state: Awaited<ReturnType<typeof getFoundationState>>) {
+  return PROJECT_FOUNDATION_STAGES.map((stage) => {
+    const run = state.latestRuns[stage.code === "F1" ? "f1" : stage.code === "F2" ? "f2" : "q1"];
+    const current = stage.code === "F1" ? state.planningReady : stage.code === "F2" ? state.assetsReady : state.ready;
+    const input = foundationJson(run?.inputSummary);
+    const upstreamIds = isRecord(input.upstreamSnapshotIds) ? input.upstreamSnapshotIds : {};
+    const upstreamRuns = stage.code === "F1" ? [] : stage.code === "F2" ? [state.latestRuns.f1] : [state.latestRuns.f1, state.latestRuns.f2];
+    const staleRun = Boolean(run && (
+      (state.sourceVersion && typeof input.sourceVersion === "string" && input.sourceVersion !== state.sourceVersion)
+      || (state.inputVersion && typeof input.inputVersion === "string" && input.inputVersion !== state.inputVersion)
+      || (stage.code !== "F1" && state.candidates.f1 && typeof upstreamIds.f1 === "string" && upstreamIds.f1 !== state.candidates.f1.id)
+      || (stage.code === "Q1" && state.candidates.f2 && typeof upstreamIds.f2 === "string" && upstreamIds.f2 !== state.candidates.f2.id)
+      || upstreamRuns.some((upstream) => upstream && upstream.createdAt.getTime() > run.createdAt.getTime())
+    ));
+    const reviewCurrent = state.assetsReady && run?.status === "SUCCEEDED" && state.review?.runId === run.id
+      && state.review?.sourceVersion === state.sourceVersion && state.review?.inputVersion === state.inputVersion
+      && state.review?.upstreamSnapshotIds.f1 === state.candidates.f1?.id && state.review?.upstreamSnapshotIds.f2 === state.candidates.f2?.id;
+    const status = run?.status === "RUNNING" ? "进行中" : run?.status === "QUEUED" ? "排队中"
+      : staleRun ? "旧版／待重跑"
+      : run?.status === "CANCELED" ? "已停止" : run?.status === "FAILED" ? "失败"
+        : stage.code === "F2" && state.assetsReady && !state.dataReady ? "候选待补资料"
+          : stage.code === "Q1" && reviewCurrent && state.review?.output.verdict === "READY" && !state.dataReady ? "资料待补，未发布"
+        : stage.code === "Q1" && reviewCurrent && state.review?.output.verdict === "REPAIR" ? state.finalOutput ? "已整理 · 有待定项" : "需返修"
+          : stage.code === "Q1" && reviewCurrent && state.review?.output.verdict === "BLOCKED" ? "拒收"
+            : current ? stage.code === "Q1" ? state.finalOutput ? "已完成优化" : "当前已批准" : state.candidates.f1?.workflow ? "已整理" : "当前候选就绪"
+              : stage.code === "Q1" && state.reviewReady ? "已审待发布"
+                : run ? "旧版／待重跑" : "未开始";
+    const calls = foundationJson(run?.log).calls;
+    const efforts = Array.isArray(calls) ? [...new Set(calls.filter(isRecord).map(call => call.reasoningEffort).filter((effort): effort is string => typeof effort === "string" && effort.length > 0))] : [];
+    return { stageCode: stage.code, uiStage: stage.uiStage, name: stage.name, current, status,
+      usage: summarizeFoundationRunUsage(run?.log), durationMs: run?.durationMs ?? null, reasoningEffort: efforts.length ? efforts.join(" / ") : null,
+      model: run?.model ?? "默认模型", duration: displayDuration(run?.durationMs ?? null), error: run?.error ?? null,
+      errorHistorical: staleRun, errorCreatedAt: run?.createdAt.toISOString() ?? null };
+  });
+}
+
 export async function getProjectStudio(projectId: string, userId: string, db: Db = prisma) {
   const project = await db.project.findFirst({
     where: { id: projectId, roles: { some: { userId } } },
     include: {
       assets: { orderBy: [{ type: "asc" }, { code: "asc" }] },
-      sceneSnapshots: { orderBy: { createdAt: "desc" } },
-      pipelineRuns: { orderBy: { createdAt: "desc" }, take: 30 },
+      pipelineRuns: { where: { episodeId: null }, orderBy: { createdAt: "desc" }, take: 30 },
       episodes: {
         orderBy: { number: "asc" },
         include: {
@@ -144,7 +183,13 @@ export async function getProjectStudio(projectId: string, userId: string, db: Db
   });
 
   if (!project) return null;
-  const memory = project.sceneSnapshots.find((snapshot) => snapshot.sceneKey === "PROJECT_MEMORY");
+  const foundation = await getFoundationState(projectId, db);
+  // An invalid source blocks approval, but must not hide an active task or its stop control.
+  const stageState = foundation.sourceVersion ? foundation : { ...foundation, latestRuns: {
+    f1: project.pipelineRuns.find((run) => run.stageCode === "F1") ?? null,
+    f2: project.pipelineRuns.find((run) => run.stageCode === "F2") ?? null,
+    q1: project.pipelineRuns.find((run) => run.stageCode === "Q1") ?? null
+  } };
 
   return {
     project: {
@@ -157,10 +202,8 @@ export async function getProjectStudio(projectId: string, userId: string, db: Db
       updatedAt: project.updatedAt
     },
     firstPhase: {
-      planningReady: Boolean(memory),
-      assetsReady: project.assets.length > 0,
-      sceneCount: project.episodes.reduce((total, episode) => total + episode.scriptScenes.length, 0),
-      memory: memory?.content ?? "尚未生成项目策划与全剧索引。"
+      ...foundation,
+      stages: buildFoundationStageViews(stageState)
     },
     assets: project.assets.map((asset) => ({
       id: asset.id,

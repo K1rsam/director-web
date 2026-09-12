@@ -13,6 +13,7 @@ const sources = [
 ].map((path) => readFileSync(path, "utf8"));
 const combined = sources.join("\n");
 const authSource = sources[0];
+assert.match(authSource, /SESSION_COOKIE_NAME\s*=\s*process\.env\.DIRECTOR_SESSION_COOKIE_NAME/, "独立副本须允许专用登录 cookie 名称");
 
 for (const token of [
   "账号",

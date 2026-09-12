@@ -1,186 +1,93 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
-import { confirmAllAssetsAction, startProjectFoundationAction, stopProjectFoundationAction } from "@/app/actions";
 import { getProjectStudio } from "@/lib/studio";
+import { getFoundationDeliveryState } from "@/lib/foundation-delivery";
 import { prisma } from "@/lib/prisma";
-import { deriveProjectGuidance } from "@/lib/ui-guidance";
 import { AppChrome } from "@/app/ui/app-chrome";
-import { WorkflowGuidance } from "@/app/ui/workflow-guidance";
-import { AssetIndexTabs } from "./asset-index-tabs";
-import { FoundationActions } from "./foundation-actions";
-import { ProjectBibleViewer } from "./project-bible-viewer";
+import { FoundationUsage } from "./foundation-actions";
+import { FoundationDeliveryPanel, FoundationWorkflowStatus } from "./foundation-delivery-panel";
+import { LightFoundationDocumentViewer } from "./foundation-document-viewer";
 import { SceneStructureTable } from "./scene-structure-table";
 import { PresentationContracts } from "./presentation-contracts";
 import { ModeSwitch } from "../../mode-switch";
-import { StopFoundationButton } from "./stop-foundation-button";
 import { requireSessionUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
-export default async function ProjectStudioPage({ params }: { params: Promise<{ projectId: string }> }) {
+export default async function ProjectStudioPage({ params, searchParams }: { params: Promise<{ projectId: string }>; searchParams?: Promise<{ foundationNotice?: string | string[] }> }) {
   const { projectId } = await params;
+  const foundationNotice = (await searchParams)?.foundationNotice;
   const currentUser = await requireSessionUser(`/projects/${projectId}`);
   const studio = await getProjectStudio(projectId, currentUser.id);
   if (!studio) notFound();
 
-  const foundationRuns = studio.projectRuns
-    .filter((run) => run.stageCode === "P1" || run.stageCode === "P2")
-    .map((run) => ({ stageCode: run.stageCode, status: run.status, model: run.model, duration: run.duration, error: run.error }));
-  const foundationActive = studio.projectRuns.some((run) => run.status === "进行中" || run.status === "排队中");
-  const activeFoundationStage = foundationRuns.find((run) => run.status === "进行中" || run.status === "排队中")?.stageCode;
+  const delivery = await getFoundationDeliveryState(projectId);
+  const sourceEpisodes = await prisma.episode.findMany({ where: { projectId }, orderBy: { number: "asc" }, select: { id: true, number: true, title: true, content: true } });
+  const sceneCounts = new Map(studio.episodes.map(episode => [episode.id, episode.scenes.length]));
+  const foundationRuns = studio.firstPhase.stages;
+  const deliveryView = { task: delivery.task, totalEpisodes: delivery.totalEpisodes, availableEpisodes: delivery.availableEpisodes, editedEpisodes: delivery.editedEpisodes,
+    busy: delivery.busy, complete: delivery.complete, needsContextEdit: delivery.needsContextEdit, action: delivery.action, expectedState: delivery.expectedState,
+    suggestionsCount: delivery.suggestionsCount, continuationBlocker: delivery.continuationBlocker };
+  const unknownOutcome = delivery.action === "UNKNOWN_CONFIRM" || Boolean(delivery.task?.unknownOutcome);
+  const decisionNotice = foundationNotice === "decision-changed" ? "问题或资料已更新，本次未保存；请查看当前选项后重新选择。"
+    : foundationNotice === "decision-invalid" ? "请选择有效方案，或填写具体的自定义决定；本次尚未保存。"
+      : foundationNotice === "decision-running" ? "资料仍在处理中，本次未保存；请等待本轮处理结束。"
+        : foundationNotice === "decision-required" ? "还有必要决定未确认，本次未发起新调用；请查看下方选项。"
+          : foundationNotice === "decision-continued" ? "决定已保存，将自动接着处理；已生成的资料仍可阅读。"
+            : foundationNotice === "decision-saved" ? "决定已保存；继续完成时会应用这一决定。" : null;
+  const notice = foundationNotice === "state-changed" ? "页面状态已更新，本次未发起新调用；请核对当前资料后再继续。"
+    : foundationNotice === "call-unknown" ? "上次请求结果尚未确认，本次没有重发。已有资料仍保留；如接受可能重复计费，请明确勾选后继续。"
+      : foundationNotice === "worker-unknown" ? "暂时无法确认执行状态，本次未发起新调用；请稍后重新检查。"
+        : foundationNotice === "worker-unchanged" ? "尚不能确认后台已退出；未停止任务，也未发起新调用。"
+          : foundationNotice === "delivery-unavailable" ? "暂时无法接收这次操作，已保存资料和决定没有丢失；请稍后再试。" : null;
 
-  const contracts = await prisma.presentationContract.findMany({
-    where: { projectId, status: "PENDING" },
-    orderBy: { createdAt: "asc" }
-  });
-  const confirmedContracts = await prisma.presentationContract.findMany({
-    where: { projectId, status: "CONFIRMED" },
-    orderBy: { decidedAt: "asc" }
-  });
-
-  const episodeStates = studio.episodes.map((episode) => {
-    const running = episode.roles.some((role) => role.status === "进行中");
-    const failed = episode.roles.some((role) => role.status === "失败");
-    const finished = episode.roles.at(-1)?.status === "已完成";
-    return {
-      id: episode.id,
-      number: episode.number,
-      title: episode.title,
-      shotCount: episode.shotCount,
-      running,
-      failed,
-      finished,
-      state: failed ? "需处理" : running ? "生成中" : finished ? "已完成" : episode.shotCount ? "待继续" : "未开始"
-    };
-  });
-  const guidance = deriveProjectGuidance({
-    pendingContracts: contracts.length,
-    planningReady: studio.firstPhase.planningReady,
-    assetsReady: studio.firstPhase.assetsReady,
-    episodes: episodeStates
-  });
-  const guidanceHref = guidance.kind === "contracts"
-    ? "#presentation-contracts"
-    : guidance.kind === "foundation"
-      ? "#foundation-actions"
-      : guidance.episodeId
-        ? `/projects/${projectId}/episodes/${guidance.episodeId}`
-        : "#phase-two";
-  const guidanceAction = guidance.kind === "foundation" ? (
-    <form action={startProjectFoundationAction}>
-      <input name="projectId" type="hidden" value={projectId} />
-      <button type="submit" className="glassPrimary" disabled={foundationActive}>
-        {foundationActive ? `正在运行 ${activeFoundationStage ?? "P1–P2"}` : guidance.actionLabel}
-      </button>
-    </form>
-  ) : null;
-
-  return (
-    <AppChrome
-      title={studio.project.title}
-      eyebrow="全剧工作台"
-      projectId={projectId}
-      activeSection="project"
-      episodes={episodeStates.map(({ id, number, title, state }) => ({ id, number, title, state }))}
-      primaryAction={guidance.kind === "foundation" ? (
-        <form action={startProjectFoundationAction}>
-          <input name="projectId" type="hidden" value={projectId} />
-          <button type="submit" disabled={foundationActive}>{foundationActive ? "正在整理…" : guidance.actionLabel}</button>
-        </form>
-      ) : (
-        <Link href={guidanceHref} className="topbarPrimary">{guidance.actionLabel}</Link>
-      )}
-      utility={<><div className="projectTopbarMeta" aria-label={`视觉风格 ${studio.project.style}，画幅 ${studio.project.aspectRatio}，${studio.episodes.length} 集`}><span>{studio.project.style}</span><span>{studio.project.aspectRatio}</span><span>{studio.episodes.length} 集</span></div><ModeSwitch projectId={studio.project.id} current={studio.project.executionMode} compact /><span className="topbarStatus"><i className={foundationActive ? "live" : ""} />{foundationActive ? `正在运行 ${activeFoundationStage ?? "P1–P2"}` : "工作台已就绪"}</span><form action={stopProjectFoundationAction} className="topbarStopForm"><input name="projectId" type="hidden" value={projectId} /><StopFoundationButton active={foundationActive} /></form></>}
-    >
-      <div className="projectDashboard">
-        <WorkflowGuidance
-          eyebrow={guidance.eyebrow}
-          title={guidance.title}
-          description={guidance.description}
-          href={guidanceAction ? undefined : guidanceHref}
-          actionLabel={guidance.actionLabel}
-          action={guidanceAction}
-          meta={<><span>{studio.episodes.filter((episode) => episode.shotCount > 0).length}/{studio.episodes.length} 集已开始</span><span>{studio.assets.length} 项资产</span></>}
-        />
-
+  return <AppChrome title={studio.project.title} eyebrow="全剧资料工作台" projectId={projectId} activeSection="project"
+    primaryAction={<FoundationDeliveryPanel projectId={projectId} requiredChoiceCount={delivery.requiredChoices.length} state={deliveryView} compact />}
+    utility={<><ModeSwitch projectId={projectId} current={studio.project.executionMode} compact disabled={delivery.busy} /><div className="projectTopbarMeta" aria-label={`视觉风格 ${studio.project.style}，画幅 ${studio.project.aspectRatio}，${studio.episodes.length} 集`}><span>{studio.project.style}</span><span>{studio.project.aspectRatio}</span><span>{studio.episodes.length} 集</span></div></>}>
+    <div className="projectDashboard">
+      {decisionNotice ? <p role="status" className="biblePlaceholder">{decisionNotice} <a href="#presentation-contracts">查看确认区</a></p> : null}
+      {notice ? <p role="status" className="biblePlaceholder">{notice}</p> : null}
+      <FoundationWorkflowStatus projectId={projectId} state={deliveryView} sourceReady={Boolean(studio.firstPhase.preprocessReady)} sceneCount={studio.episodes.reduce((count, episode) => count + episode.scenes.length, 0)}
+        remaining={[...new Set([...delivery.document.editorialTodos.filter(todo => todo.owner !== "STAGE2").map(todo => todo.note), ...delivery.issues.map(issue => issue.problem)])]} />
       <section className="studioSection" id="phase-one">
-        <PresentationContracts
-          projectId={projectId}
-          pending={contracts.map((c) => ({ id: c.id, category: c.category, question: c.question, options: JSON.parse(c.options), evidence: c.evidence, userAnswer: c.userAnswer, episodeNumber: null, round: c.round, decidedAt: c.decidedAt }))}
-          confirmed={confirmedContracts.map((c) => ({ id: c.id, category: c.category, question: c.question, options: JSON.parse(c.options), evidence: c.evidence, userAnswer: c.userAnswer, episodeNumber: null, round: c.round, decidedAt: c.decidedAt }))}
-        />
+        <PresentationContracts projectId={projectId} pending={delivery.requiredChoices} confirmed={delivery.confirmedChoices}
+          active={delivery.busy || unknownOutcome} mode="delivery" expectedTaskId={delivery.task?.id}
+          blockedReason={unknownOutcome ? "请先处理上方的请求恢复，再确认这些决定。" : undefined} />
         <div className="sectionHeading">
           <div><span className="sectionIndex">01</span><h2>全剧基础工程</h2></div>
-          <p>只建立服务全集的固定资料；图片资产由外部导入，当前系统只管理名称与状态。</p>
+          <p>原文按集查看，资产按名称管理；图片和后续分镜另行制作。</p>
+          <a className="quietButton" href={`/projects/${encodeURIComponent(projectId)}/foundation/handoff`}>交接资料预览</a>
+          <a className="quietButton" href={`/projects/${encodeURIComponent(projectId)}/foundation/export`}>导出资料与历史 JSON</a>
         </div>
-
-        <FoundationActions
-          projectId={studio.project.id}
-          active={foundationActive}
-          runs={foundationRuns}
-          preprocessReady={studio.episodes.length > 0}
-          validationReady={studio.firstPhase.sceneCount > 0}
-        />
-
-        <div className="studioGrid twoColumns">
-          <article className="studioCard">
-            <div className="cardHeader"><div><span>PROJECT BIBLE</span><h3>项目策划与全剧索引</h3></div><em>{studio.firstPhase.planningReady ? "已生成" : "未生成"}</em></div>
-            <ProjectBibleViewer content={studio.firstPhase.memory} />
-          </article>
-
-          <article className="studioCard">
-            <div className="cardHeader">
-              <div><span>ASSET INDEX</span><h3>资产名称简表</h3></div>
-              <div className="cardHeaderActions">
-                <em>{studio.assets.length}项</em>
-                <form action={confirmAllAssetsAction}>
-                  <input name="projectId" type="hidden" value={studio.project.id} />
-                  <button type="submit" className="quietButton">全部确认</button>
-                </form>
-              </div>
-            </div>
-            <AssetIndexTabs assets={studio.assets.map((asset) => ({ id: asset.id, code: asset.code, type: asset.type, name: asset.name, status: asset.status, parentId: asset.parentId, role: asset.role }))} />
-          </article>
-        </div>
-
-        <SceneStructureTable scenes={studio.episodes.flatMap((episode) => episode.scenes.map((scene) => ({
-          episodeNumber: episode.number,
-          sceneKey: scene.sceneKey,
-          heading: scene.heading ?? scene.location ?? scene.sceneKey,
-          location: scene.location ?? "待补充",
-          timeOfDay: scene.timeOfDay ?? "待补充",
-          interiorExterior: scene.interiorExterior ?? "待补充",
-          weather: scene.weather ?? "默认",
-          timeLayer: scene.timeLayer,
-          sourceText: scene.sourceText
-        })))} />
+        <LightFoundationDocumentViewer state={delivery} sourceEpisodes={sourceEpisodes.map(episode => ({ ...episode, sceneCount: sceneCounts.get(episode.id) ?? 0 }))} />
+        {delivery.document.editorialTodos.some(todo => todo.owner === "STAGE2") ? <details className="bibleSection"><summary className="bibleSectionHead">后续分镜提醒（不触发第一阶段重试）</summary>
+          <div className="bibleBody">{delivery.document.editorialTodos.filter(todo => todo.owner === "STAGE2").map(todo => <p key={todo.id}>{todo.episodes?.length ? `第${todo.episodes.join("、")}集：` : ""}{todo.note}</p>)}</div>
+        </details> : null}
+        <details className="bibleSection" id="foundation-history">
+          <summary className="bibleSectionHead">处理历史与调用用量</summary>
+          <div className="bibleBody">
+            <p>以下仅展示已保存的处理记录，不代表当前资料已完成。原文、旧稿和原始响应保留在导出文件中。</p>
+            {delivery.task ? <details><summary>本次处理记录</summary><p>{delivery.task.message}</p><p>本任务累计请求 {delivery.task.addedCalls} 次 · 自动修正 {delivery.task.repairCalls} 次</p>{delivery.task.error ? <p className="roleRunError">{delivery.task.error}</p> : null}</details> : null}
+            {delivery.document.f1 || delivery.previousDocument ? <p>旧版分集导航与历史修订仍保留在导出资料中，不替代左侧原文。</p> : null}
+            {delivery.document.notes.length ? <details><summary>整理说明</summary>{delivery.document.notes.map((note, index) => <p key={index}>{note}</p>)}</details> : null}
+            {delivery.document.editorialTodos.length || delivery.issues.length ? <details><summary>待完善事项</summary>{delivery.document.editorialTodos.map(todo => <p key={todo.id}>{todo.note}</p>)}{delivery.issues.map((issue, index) => <p key={index}>{issue.problem}</p>)}</details> : null}
+            <div style={{ overflowX: "auto" }}><table style={{ width: "100%", minWidth: 560, textAlign: "left" }}>
+              <thead><tr><th scope="col">处理环节</th><th scope="col">记录状态</th><th scope="col">模型</th><th scope="col">耗时</th></tr></thead>
+              <tbody>{foundationRuns.map(run => <tr key={run.stageCode}><th scope="row">{run.stageCode} · {run.name}</th><td>{run.status}</td><td>{run.model}</td><td>{run.duration}</td></tr>)}</tbody>
+            </table></div>
+            <FoundationUsage runs={foundationRuns} />
+            {foundationRuns.filter(run => run.error).map(run => <details key={run.stageCode}><summary>{run.stageCode} · {run.errorHistorical ? "历史处理说明" : "处理说明"}</summary><p className="roleRunError">{run.error}</p></details>)}
+            {studio.assets.length ? <details><summary>历史资产名称简表（{studio.assets.length} 项）</summary><p>{studio.assets.map(asset => `${asset.code} · ${asset.name}`).join("；")}</p></details> : null}
+          </div>
+        </details>
+        <div id="foundation-scenes"><SceneStructureTable scenes={studio.episodes.flatMap(episode => episode.scenes.map(scene => ({
+          episodeNumber: episode.number, sceneKey: scene.sceneKey, heading: scene.heading ?? scene.location ?? scene.sceneKey,
+          location: scene.location ?? "未注明", timeOfDay: scene.timeOfDay ?? "未注明", interiorExterior: scene.interiorExterior ?? "未注明",
+          weather: scene.weather ?? "未注明", timeLayer: scene.timeLayer, sourceText: scene.sourceText
+        })))} /></div>
       </section>
-
       <section className="studioSection" id="phase-two">
-        <div className="sectionHeading">
-          <div><span className="sectionIndex">02</span><h2>单集分镜生产</h2></div>
-          <p>每集独立经过 E0–E5；最终由 Python 编译为一个个可单独发送给 Seedance 的分镜单元。</p>
-        </div>
-
-        <div className="episodeStudioList">
-          {studio.episodes.map((episode) => {
-            const episodeState = episodeStates.find((item) => item.id === episode.id)!;
-            const { running, failed, finished, state: status } = episodeState;
-            return (
-              <article key={episode.id}>
-                <div className="episodeNumber">{String(episode.number).padStart(2, "0")}</div>
-                <div className="episodeSummary">
-                  <div><h3>{episode.title}</h3><span className={`stateDot ${finished ? "ok" : failed ? "bad" : running ? "live" : ""}`}>{status}</span></div>
-                  <p>{episode.contentPreview}</p>
-                </div>
-                <div className="episodeCounts"><span><b>{episode.scenes.length}</b> 场</span><span><b>{episode.shotCount}</b> 镜号</span><span>{episode.unitCount ? <><b>{episode.unitCount}</b> 单元</> : <b className="countMuted">尚未生成</b>}</span></div>
-                <Link href={`/projects/${studio.project.id}/episodes/${episode.id}`} className="primaryLink">{episode.shotCount ? "继续制作" : "进入本集"}<span>→</span></Link>
-              </article>
-            );
-          })}
-        </div>
+        <div className="sectionHeading"><div><span className="sectionIndex">02</span><h2>后续阶段尚未启用</h2></div><p>这里整理的是制作资料；图片、分镜与视频制作尚未开始。</p></div>
       </section>
-      </div>
-    </AppChrome>
-  );
+    </div>
+  </AppChrome>;
 }

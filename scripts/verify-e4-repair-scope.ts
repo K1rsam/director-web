@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { PIPELINE_STAGE_CONFIGS } from "@/lib/episode-pipeline-contracts";
 import { executeEpisodePipeline, type PipelineStageRunner } from "@/lib/episode-pipeline";
 import { prisma } from "@/lib/prisma";
+import { seedApprovedFoundationFixture } from "./fixtures/approved-foundation";
 
 const SOURCE_TEXT = "1-1\n客厅 日 内\n场景：客厅\n人物：苏远、赵清雅\n道具：手机\n苏远拿起手机。\n苏远：你看。";
 
@@ -94,6 +95,7 @@ void (async () => {
   const episode = project.episodes[0];
   const scene = await prisma.scriptScene.findFirstOrThrow({ where: { episodeId: episode.id } });
   try {
+    await seedApprovedFoundationFixture(project.id, prisma);
     // 全量 E0-E5 首轮（fake）：建立 1-1-U01 + 正确 unit_lighting 基线
     await prisma.$transaction(PIPELINE_STAGE_CONFIGS.map((stage) => prisma.pipelineRun.create({
       data: { projectId: project.id, episodeId: episode.id, stageCode: stage.code, roleName: stage.name, provider: "test",

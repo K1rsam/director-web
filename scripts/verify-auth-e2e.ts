@@ -10,6 +10,7 @@ import { seedTestAccounts } from "@/lib/account-seed";
 import { migrateDatabase } from "@/lib/database-migration";
 
 const TEST_PASSWORD = "private-e2e-password";
+const SESSION_COOKIE_NAME = "director_auth_e2e_session";
 
 async function reservePort() {
   const server = createServer();
@@ -147,6 +148,7 @@ async function main() {
         env: {
           ...process.env,
           DATABASE_URL: databaseUrl,
+          DIRECTOR_SESSION_COOKIE_NAME: SESSION_COOKIE_NAME,
           NEXT_TELEMETRY_DISABLED: "1"
         },
         stdio: ["ignore", "pipe", "pipe"]
@@ -180,7 +182,7 @@ async function main() {
     assert.equal(await page.getByText("账号二专属项目", { exact: true }).count(), 0);
 
     const sessionCookie = (await context.cookies()).find(
-      (cookie) => cookie.name === "director_session"
+      (cookie) => cookie.name === SESSION_COOKIE_NAME
     );
     assert.ok(sessionCookie?.httpOnly);
     assert.equal(sessionCookie.sameSite, "Lax");
@@ -238,7 +240,7 @@ async function main() {
     await page.getByRole("button", { name: "退出登录" }).first().click();
     await page.waitForURL((url) => url.pathname === "/login");
     assert.equal(
-      (await context.cookies()).some((cookie) => cookie.name === "director_session"),
+      (await context.cookies()).some((cookie) => cookie.name === SESSION_COOKIE_NAME),
       false
     );
     assert.equal(await db.session.count({ where: { userId: tester01.id } }), 0);

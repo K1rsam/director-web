@@ -2,7 +2,7 @@
  * 岗位执行器（共享）：CLI（本机 Codex）/ API（DeepSeek）两种执行方式的统一入口。
  *
  * E1–E5 与 P1/P2 共用同一套 provider 解析、模型解析和会话/调用逻辑；
- * 岗位差异只体现在 RoleConfig（skill / model / reasoningEffort / apiReasoner）。
+ * 岗位差异只体现在 RoleConfig（skill / systemPrompt / model / reasoningEffort / apiReasoner）。
  *
  * 环境变量（CLI 侧）：
  *   CLI_MODEL_<岗位> > CLI_MODEL > 配置默认
@@ -21,6 +21,8 @@ export type RoleSessionMode = "fresh" | "resume" | "ephemeral";
 export type RoleConfig = {
   code: string;
   skill: string;
+  /** 显式岗位规则：API 原文作为 system；CLI 内嵌同一正文，不依赖 Skill 发现。 */
+  systemPrompt?: string;
   /** CLI 默认模型（如 gpt-5.6-terra） */
   model: string;
   /** CLI 默认推理强度 */
@@ -34,6 +36,8 @@ export type RoleRunResult = {
   sessionId: string | null;
   stdout: string;
   stderr: string;
+  /** 新显式岗位保留的完整模型正文（API content / CLI -o 文件），不以事件日志代替。 */
+  rawOutput?: string;
 };
 
 const MAX_SESSION_INPUT_CHARS = 260_000;
@@ -94,7 +98,11 @@ export async function runCliRoleJson(input: {
   prompt: string;
   sessionMode?: RoleSessionMode;
 }): Promise<RoleRunResult> {
-  const { projectId, episodeId: rawEpisodeId = "", role, prompt } = input;
+  const { projectId, episodeId: rawEpisodeId = "", role, prompt: taskPrompt } = input;
+  // codex exec 没有独立 system-role 参数；这里只内嵌同一正文，不声称与 API 消息层级等价。
+  const prompt = role.systemPrompt === undefined
+    ? taskPrompt
+    : `### 岗位规则（内嵌指令）\n\n${role.systemPrompt}\n\n### 当前任务\n\n${taskPrompt}`;
   const episodeId = rawEpisodeId ?? "";
   const sessionMode = input.sessionMode ?? "fresh";
   const model = resolveCliModel(role.code, role.model);
@@ -113,6 +121,7 @@ export async function runCliRoleJson(input: {
     stored.inputChars + prompt.length <= MAX_SESSION_INPUT_CHARS
   );
   let result: Awaited<ReturnType<typeof runCodexJson<Record<string, unknown>>>>;
+  let rawOutput: string | undefined;
   try {
     result = await runCodexJson<Record<string, unknown>>({
       prompt,
@@ -123,7 +132,9 @@ export async function runCliRoleJson(input: {
       reasoningEffort,
       cwd: process.cwd(),
       sessionId: canResume ? stored?.sessionId : null,
-      ephemeral: sessionMode === "ephemeral"
+      ephemeral: sessionMode === "ephemeral",
+      instructionProfile: sessionMode === "ephemeral" && ["F1", "F2", "Q1"].includes(role.code) && role.systemPrompt?.trim() ? "foundation" : undefined,
+      onRawOutput: role.systemPrompt === undefined ? undefined : (content) => { rawOutput = content; }
     });
   } catch (error) {
     // 会话内某轮失败（模型故障/超时/JSON 截断）：丢弃该会话，下一轮从全新会话开始，避免坏会话反复投毒
@@ -132,6 +143,7 @@ export async function runCliRoleJson(input: {
         where: { projectId, episodeId, stageCode: role.code }
       });
     }
+    if (rawOutput !== undefined && error instanceof Error) Object.assign(error, { rawOutput });
     throw error;
   }
   if (sessionMode !== "ephemeral" && result.sessionId) {
@@ -162,7 +174,10 @@ export async function runCliRoleJson(input: {
       where: { projectId, episodeId, stageCode: role.code }
     });
   }
-  return { data: result.data, sessionId: result.sessionId, stdout: result.stdout, stderr: result.stderr };
+  return {
+    data: result.data, sessionId: result.sessionId, stdout: result.stdout, stderr: result.stderr,
+    ...(rawOutput === undefined ? {} : { rawOutput })
+  };
 }
 
 /** API 模式岗位会话的上下文预算（字符）：超过后重开会话（不再携带历史）。
@@ -172,7 +187,7 @@ export async function runCliRoleJson(input: {
  *  - 中文混合 JSON 约 0.6~0.8 token/字符，300K 字符 ≈ 200~240K token，即重开阈值。 */
 const API_SESSION_MAX_INPUT_CHARS = 300_000;
 
-/** API 岗位调用：把 Skill 制度稿作为 system 提示，任务输入作为 user 提示。
+/** API 岗位调用：优先把显式岗位规则、否则 Skill 制度稿作为 system 提示；任务输入作为 user 提示。
  *  会话（useSession=true，修复轮）：同集同岗位的历史 turns 续接（messages 数组），
  *  模型记得自己上一轮拆过什么——不再"失忆重拆"；system + 历史前缀天然命中 DeepSeek prompt cache，省钱。
  *  首轮全量不读历史（新剧本新会话），但成功后会写入历史供后续修复轮续接。
@@ -187,7 +202,7 @@ export async function runApiRoleJson(input: {
   noSession?: boolean;
 }): Promise<RoleRunResult> {
   const { role, prompt } = input;
-  const system = await loadStageSkillText(role.skill);
+  const system = role.systemPrompt === undefined ? await loadStageSkillText(role.skill) : role.systemPrompt;
   const model = resolveApiModel(role.code, role.apiReasoner ?? false);
   const sessionKey = input.projectId && input.episodeId && !input.noSession
     ? { projectId: input.projectId, episodeId: input.episodeId, stageCode: role.code }
@@ -215,7 +230,7 @@ export async function runApiRoleJson(input: {
 
   // 完整 messages：system + 历史 turns + 本次 prompt（历史部分命中 prompt cache）
   const messages: Array<{ role: string; content: string }> = [];
-  if (system) messages.push({ role: "system", content: system });
+  if (system || role.systemPrompt !== undefined) messages.push({ role: "system", content: system });
   for (const turn of history) messages.push({ role: turn.role, content: turn.content });
   const hasHistory = history.length > 0;
   const sentPrompt = hasHistory
@@ -223,12 +238,23 @@ export async function runApiRoleJson(input: {
     : prompt;
   messages.push({ role: "user", content: sentPrompt });
 
+  let rawOutput: string | undefined;
   const result = await runDeepSeekJson<Record<string, unknown>>({
     prompt: sentPrompt,
     messages,
     system: null,
     model,
-    maxTokens: input.maxTokens ?? resolveApiMaxTokens(model)
+    maxTokens: input.maxTokens ?? resolveApiMaxTokens(model),
+    retry: role.systemPrompt === undefined,
+    onRawOutput: role.systemPrompt === undefined ? undefined : (content) => { rawOutput = content; }
+  }).catch((error: unknown) => {
+    if (role.systemPrompt !== undefined && error instanceof Error) {
+      Object.assign(error, {
+        ...(rawOutput === undefined ? {} : { rawOutput }),
+        stdout: rawOutput ?? "", stderr: error.message
+      });
+    }
+    throw error;
   });
 
   // 写入/续写会话历史（首轮也写，供修复轮续接）
@@ -256,7 +282,10 @@ export async function runApiRoleJson(input: {
       }
     });
   }
-  return { data: result.data, sessionId: null, stdout: result.stdout, stderr: result.stderr };
+  return {
+    data: result.data, sessionId: null, stdout: rawOutput ?? result.stdout, stderr: result.stderr,
+    ...(rawOutput === undefined ? {} : { rawOutput })
+  };
 }
 
 /** 按 provider 分发岗位调用。 */
@@ -268,7 +297,7 @@ export async function runRoleByProvider(input: {
   prompt: string;
   sessionMode?: RoleSessionMode;
 }): Promise<RoleRunResult> {
-  return input.provider === "API"
+  const result = input.provider === "API"
     ? runApiRoleJson({
         role: input.role,
         prompt: input.prompt,
@@ -284,4 +313,30 @@ export async function runRoleByProvider(input: {
         prompt: input.prompt,
         sessionMode: input.sessionMode ?? "fresh"
       });
+  if (input.role.systemPrompt === undefined) return result;
+  // 新显式规则分支只遮蔽已知 Key，保留完整输出及其余诊断；旧 E 分支不变。
+  const key = process.env.DEEPSEEK_API_KEY;
+  const redact = (value: string) => key ? value.replaceAll(key, "[REDACTED]") : value;
+  const redactData = (value: unknown): unknown => {
+    if (typeof value === "string") return redact(value);
+    if (Array.isArray(value)) return value.map(redactData);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([field, nested]) => [redact(field), redactData(nested)]));
+    return value;
+  };
+  return result.then(
+    (output) => ({
+      ...output, data: redactData(output.data) as Record<string, unknown>, stdout: redact(output.stdout), stderr: redact(output.stderr),
+      ...(output.rawOutput === undefined ? {} : { rawOutput: redact(output.rawOutput) })
+    }),
+    (error: unknown) => {
+      if (error instanceof Error) {
+        const captured = error as Error & { rawOutput?: string; stdout?: string; stderr?: string };
+        for (const field of ["message", "stack", "rawOutput", "stdout", "stderr"] as const) {
+          const value = captured[field];
+          if (typeof value === "string") captured[field] = redact(value);
+        }
+      } else if (typeof error === "string") throw redact(error);
+      throw error;
+    }
+  );
 }

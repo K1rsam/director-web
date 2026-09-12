@@ -7,6 +7,7 @@ import {
 } from "@/lib/project-entry";
 import { requireSessionUser } from "@/lib/auth";
 import { getProjectLibrary } from "@/lib/project-library";
+import { getFoundationDeliveryState } from "@/lib/foundation-delivery";
 import { archiveProjectAction, restoreProjectAction } from "@/app/actions";
 import { DeleteProjectButton } from "./delete-project-button";
 import { AppChrome } from "./ui/app-chrome";
@@ -24,6 +25,9 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
   const currentUser = await requireSessionUser("/");
   const { projectId: requestedProjectId } = await searchParams;
   const { projects, archivedProjects } = await getProjectLibrary(currentUser.id);
+  const foundationCompleteByProject = new Map(await Promise.all(projects.map(async (project) =>
+    [project.id, (await getFoundationDeliveryState(project.id)).complete] as const
+  )));
   const activeProject = requestedProjectId
     ? projects.find((project) => project.id === requestedProjectId)
     : undefined;
@@ -31,7 +35,7 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
   return (
     <AppChrome
       title="我的剧本项目"
-      eyebrow="项目库"
+      eyebrow="v0.2 第一阶段测试"
       activeSection="projects"
       projectId={activeProject?.id}
       projectLabel={activeProject?.title}
@@ -52,8 +56,7 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
               ).length;
               const state = deriveProjectCardState({
                 episodeCount: project._count.episodes,
-                snapshotCount: project._count.sceneSnapshots,
-                assetCount: project._count.assets,
+                foundationReady: foundationCompleteByProject.get(project.id) === true,
                 unitEpisodeCount
               });
               const posterStyle = {
@@ -86,9 +89,9 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
                       <span className="aspectBadge">{project.aspectRatio}</span>
                     </div>
 
-                    <div className="projectProgress" aria-label={`项目完成度 ${state.progress}%`}>
+                    <div className="projectProgress" aria-label={`第一阶段资料准备进度 ${state.progress}%，不代表作品质量通过`}>
                       <div>
-                        <span>当前进度</span>
+                        <span>第一阶段资料准备</span>
                         <b>{state.progress}%</b>
                       </div>
                       <i><span style={{ width: `${state.progress}%` }} /></i>

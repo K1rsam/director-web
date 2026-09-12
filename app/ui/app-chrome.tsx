@@ -9,8 +9,6 @@ export function AppChrome({
   eyebrow,
   projectId,
   projectLabel,
-  episodes = [],
-  activeEpisodeId,
   activeSection,
   primaryAction,
   utility,
@@ -32,7 +30,7 @@ export function AppChrome({
       <aside className="appSidebar" aria-label="工作台导航">
         <Link href="/" className="chromeBrand">
           <span aria-hidden="true">镜</span>
-          <div><strong>分镜工作台</strong><small>Director Studio</small></div>
+          <div><strong>第一阶段工作台</strong><small>v0.2 第一阶段测试</small></div>
         </Link>
 
         <nav className="sidebarNav">
@@ -41,27 +39,14 @@ export function AppChrome({
           <Link href="/projects/new" className={activeSection === "new" ? "active" : ""}><span className="navIcon" aria-hidden="true">＋</span><span className="navText">新建项目</span></Link>
         </nav>
 
-        {activeSection !== "projects" && projectId && episodes.length ? (
+        {activeSection !== "projects" && projectId ? (
           <div className="sidebarEpisodes">
-            <p>分集制作 <span>{episodes.length}</span></p>
-            <div>
-              {episodes.map((episode) => (
-                <Link
-                  href={`/projects/${projectId}/episodes/${episode.id}`}
-                  className={episode.id === activeEpisodeId ? "active" : ""}
-                  key={episode.id}
-                >
-                  <b>{String(episode.number).padStart(2, "0")}</b>
-                  <span>{episode.title}</span>
-                  <i title={episode.state}>{episode.state === "已完成" ? "✓" : episode.state === "生成中" ? "•" : ""}</i>
-                </Link>
-              ))}
-            </div>
+            <p>v0.2 后续阶段尚未启用</p>
           </div>
         ) : null}
 
         <div className="sidebarFooter">
-          <div className="sidebarWorkflow"><span>工作流</span><strong>P1 · P2 · E0–E5</strong></div>
+          <div className="sidebarWorkflow"><span>v0.2 第一阶段测试</span><strong>原文 · 整理 · 完善</strong></div>
           <AccountMenu />
         </div>
       </aside>

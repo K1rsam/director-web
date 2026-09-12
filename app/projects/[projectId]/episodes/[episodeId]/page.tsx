@@ -11,11 +11,33 @@ import { ModeSwitch } from "../../../../mode-switch";
 import { UnitPromptCard } from "./unit-prompt-card";
 import { ExportEpisodeButtons } from "./export-episode";
 import { WorkspaceGrid } from "./workspace-grid";
-import { requireSessionUser } from "@/lib/auth";
+import { requireEpisodeAccess, requireSessionUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 export default async function EpisodeStudioPage({
+  params
+}: {
+  params: Promise<{ projectId: string; episodeId: string }>;
+  searchParams: Promise<{ view?: string; issues?: string }>;
+}) {
+  const { projectId, episodeId } = await params;
+  await requireEpisodeAccess(projectId, episodeId);
+  return (
+    <AppChrome title="后续阶段未启用" eyebrow="v0.2 第一阶段测试" projectId={projectId} activeSection="project">
+      <section className="studioSection">
+        <div className="sectionHeading">
+          <div><h1>v0.2 后续阶段尚未启用</h1></div>
+          <p>当前仅测试 P0 / F1 / F2 / Q1 与资料评审。旧生产代码及历史数据保留，本页不提供旧 E0–E5 生产入口。</p>
+        </div>
+        <Link href={`/projects/${encodeURIComponent(projectId)}`} className="topbarPrimary">返回第一阶段资料</Link>
+      </section>
+    </AppChrome>
+  );
+}
+
+// 保留旧实现与历史数据，但不再映射为当前测试副本的可访问生产页面。
+async function LegacyEpisodeStudioPage({
   params,
   searchParams
 }: {

@@ -6,7 +6,7 @@ import { setProjectExecutionModeAction } from "@/app/actions";
 /**
  * 执行方式切换：点击瞬间乐观高亮，随后整页刷新与服务端对齐。
  */
-export function ModeSwitch({ projectId, current, compact = false }: { projectId: string; current?: string | null; compact?: boolean }) {
+export function ModeSwitch({ projectId, current, compact = false, disabled = false }: { projectId: string; current?: string | null; compact?: boolean; disabled?: boolean }) {
   const [mode, setMode] = useState<string>(current === "API" || current === "CLI" ? current : "API");
   const switchTo = (next: "API" | "CLI") => () => {
     setMode(next);
@@ -20,14 +20,14 @@ export function ModeSwitch({ projectId, current, compact = false }: { projectId:
       <form action={setProjectExecutionModeAction} onSubmit={switchTo("API")}>
         <input name="projectId" type="hidden" value={projectId} />
         <input name="executionMode" type="hidden" value="API" />
-        <button type="submit" className={`modeButton ${apiActive ? "active" : ""}`} title="使用 DeepSeek API 执行岗位">
+        <button type="submit" disabled={disabled} className={`modeButton ${apiActive ? "active" : ""}`} title="使用 DeepSeek API 执行岗位">
           {apiActive ? "● " : ""}{compact ? "API" : "API（DeepSeek）"}
         </button>
       </form>
       <form action={setProjectExecutionModeAction} onSubmit={switchTo("CLI")}>
         <input name="projectId" type="hidden" value={projectId} />
         <input name="executionMode" type="hidden" value="CLI" />
-        <button type="submit" className={`modeButton ${cliActive ? "active" : ""}`} title="使用本机 Codex CLI 执行岗位">
+        <button type="submit" disabled={disabled} className={`modeButton ${cliActive ? "active" : ""}`} title="使用本机 Codex CLI 执行岗位">
           {cliActive ? "● " : ""}{compact ? "CLI" : "CLI（本机 Codex）"}
         </button>
       </form>

@@ -1,10 +1,10 @@
 import type { PrismaClient } from "@prisma/client";
-import { extractEpisodeAssetCandidates, type DirectorAsset } from "@/lib/assets";
+import type { DirectorAsset } from "@/lib/assets";
 import { parseScriptBuffer, parseScriptContent } from "@/lib/import-script";
 import { prisma } from "@/lib/prisma";
 import { preprocessProject } from "@/lib/project-preprocess";
 import { buildSceneSnapshot, buildTaskSchemaV4Payload, validateTaskSchemaV4Payload } from "@/lib/task-package";
-import { formatAssetIndex } from "@/lib/assets";
+import { readApprovedEpisodeFoundation, requireApprovedFoundation, type ApprovedEpisodeFoundation } from "@/lib/foundation-state";
 
 type Db = PrismaClient;
 
@@ -38,7 +38,10 @@ export type GenerationOutcome = {
 };
 
 export async function importProjectFromText(input: ImportProjectInput, db: Db = prisma) {
-  const imported = parseScriptContent(input.sourceName, input.sourceText);
+  return importProjectFromParsedScript(input, parseScriptContent(input.sourceName, input.sourceText), db);
+}
+
+async function importProjectFromParsedScript(input: Omit<ImportProjectInput, "sourceText">, imported: ReturnType<typeof parseScriptContent>, db: Db) {
 
   const result = await db.$transaction(async (tx) => {
     const project = await tx.project.create({
@@ -68,6 +71,30 @@ export async function importProjectFromText(input: ImportProjectInput, db: Db = 
       )
     );
 
+    await tx.sceneSnapshot.create({
+      data: {
+        projectId: project.id,
+        sceneKey: "SOURCE_IMPORT",
+        title: `导入原文：${imported.sourceName}`,
+        content: JSON.stringify({
+          sourceName: imported.sourceName,
+          sourceText: imported.sourceText,
+          sourceStructure: imported.sourceStructure,
+          readingView: imported.readingView,
+          ...(imported.originalFile ? { originalFile: imported.originalFile } : {})
+        }),
+        metadata: JSON.stringify({
+          schema: "IMPORTED_SOURCE_TEXT_V2",
+          textOrigin: imported.readingView.kind === "DOCX" ? "DOCX_MAMMOTH_VIEW" : "TEXT_DECODED",
+          readingView: imported.readingView.view,
+          encoding: imported.readingView.encoding ?? null,
+          prefacePolicy: "PRESERVED_AS_BACKGROUND_SECTION",
+          noEpisodePolicy: "PRESERVED_WITHOUT_SYNTHETIC_EPISODE",
+          originalFileStoredForRecovery: Boolean(imported.originalFile)
+        })
+      }
+    });
+
     return { project, episodes };
   });
   await preprocessProject(result.project.id, db);
@@ -76,25 +103,20 @@ export async function importProjectFromText(input: ImportProjectInput, db: Db = 
 
 export async function importProjectFromFile(input: ImportProjectFileInput, db: Db = prisma) {
   const imported = await parseScriptBuffer(input.sourceName, input.buffer);
-  return importProjectFromText(
-    {
-      ownerUserId: input.ownerUserId,
-      title: input.title,
-      description: input.description,
-      style: input.style,
-      aspectRatio: input.aspectRatio,
-      executionMode: input.executionMode,
-      sourceName: imported.sourceName,
-      sourceText: imported.episodes.map((episode) => `${episode.title}\n${episode.content}`).join("\n\n")
-    },
-    db
-  );
+  return importProjectFromParsedScript({
+    ownerUserId: input.ownerUserId,
+    title: input.title,
+    description: input.description,
+    style: input.style,
+    aspectRatio: input.aspectRatio,
+    executionMode: input.executionMode,
+    sourceName: imported.sourceName
+  }, imported, db);
 }
 
 export async function prepareEpisodeProduction(projectId: string, episodeId: string, db: Db = prisma) {
-  await ensureProjectPreprocessed(projectId, db);
-  const episode = await db.episode.findUnique({
-    where: { id: episodeId },
+  const episode = await db.episode.findFirst({
+    where: { id: episodeId, projectId },
     include: {
       project: { include: { assets: true } }
     }
@@ -104,36 +126,25 @@ export async function prepareEpisodeProduction(projectId: string, episodeId: str
     throw new Error("Episode not found.");
   }
 
-  const existingAssets: DirectorAsset[] = episode.project.assets.map((asset) => ({
-    id: asset.code,
-    type: asset.type,
-    name: asset.name,
-    status: asset.status === "confirmed" ? "confirmed" : "needs_confirmation",
-    sourceText: asset.sourceText ?? undefined,
-    notes: asset.notes ?? undefined
-  }));
-  const candidates = extractEpisodeAssetCandidates(episode.content, existingAssets);
-  // 快照里的 人物/道具/场景 一律用正式资产（P2 产出，ID 与资产表一致）；
-  // 项目刚建、P2 还没跑时用候选兜底，保证快照不空
-  const sceneAssets = existingAssets.length ? existingAssets : candidates.all;
-  const newAssets = candidates.all.filter((asset) => !existingAssets.some((existing) => existing.id === asset.id));
-  const projectMemory = await db.sceneSnapshot.findFirst({
-    where: { projectId, sceneKey: "PROJECT_MEMORY" },
-    orderBy: { createdAt: "desc" }
+  const packet = await readApprovedEpisodeFoundation(projectId, episode.number, db);
+  const approved = await requireApprovedFoundation(projectId, db);
+  const assetByCode = new Map(episode.project.assets.map((asset) => [asset.code, asset]));
+  const existingAssets: DirectorAsset[] = packet.identities.map((identity) => {
+    const asset = assetByCode.get(identity.code);
+    if (!asset) throw new Error(`批准身份不存在：${identity.code}`);
+    // Full identity descriptions and notes are backstage knowledge, not episode supply.
+    return { id: identity.code, type: identity.type, name: identity.name, status: asset.status === "confirmed" ? "confirmed" : "needs_confirmation" };
   });
-  const episodeContext = await db.sceneSnapshot.findFirst({
-    where: { projectId, episodeId, sceneKey: { contains: "CONTEXT" } },
-    orderBy: { createdAt: "desc" }
-  });
-  const snapshot = buildSceneSnapshot({ sceneText: episode.content, assets: sceneAssets });
+  const handoff = buildApprovedFoundationContext(packet);
+  const snapshot = buildSceneSnapshot({ sceneText: packet.source.content, assets: existingAssets });
   const payload = await buildTaskSchemaV4Payload({
     projectName: episode.project.title,
     episodeNumber: episode.number,
     episodeTitle: episode.title ?? undefined,
-    episodeText: episode.content,
+    episodeText: packet.source.content,
     existingAssets,
-    projectMemory: projectMemory?.content,
-    episodeContext: episodeContext?.content,
+    projectMemory: JSON.stringify(handoff["全剧记忆快照"]),
+    episodeContext: JSON.stringify(handoff["本集上下文快照"]),
     projectProfile: { style: episode.project.style ?? undefined }
   });
   const validation = validateTaskSchemaV4Payload(payload);
@@ -144,6 +155,7 @@ export async function prepareEpisodeProduction(projectId: string, episodeId: str
   // 资产表只归 P2（资产拆解师）所有：信息包/剧本预处理不再自动粗提资产，
   // 避免每次更新信息包或跑 E1 都冒出一批裸名 CH/PROP 垃圾（如"电话""赵清雅"）
   return db.$transaction(async (tx) => {
+    if ((await requireApprovedFoundation(projectId, tx)).id !== approved.id) throw new Error("第一阶段批准版本已变更，请重新准备信息包。");
     await tx.sceneSnapshot.deleteMany({
       where: {
         projectId,
@@ -187,45 +199,33 @@ export async function prepareEpisodeProduction(projectId: string, episodeId: str
         });
 
 
-    // 用正式资产（P2 产出）刷新本集上下文快照里的人物/地点/道具与场次快照，
-    // 旧候选假 ID（CH-023 赵清雅）会随快照进 E1/P1/P2 提示词，必须覆盖
-    if (episodeContext) {
-      let parsed: Record<string, unknown> = {};
-      try {
-        const value: unknown = JSON.parse(episodeContext.content ?? "{}");
-        if (value && typeof value === "object" && !Array.isArray(value)) parsed = value as Record<string, unknown>;
-      } catch {
-        parsed = {};
-      }
-      const content: Record<string, unknown> = {
-        ...parsed,
-        knownCharacters: formatAssetIndex(sceneAssets.filter((asset) => asset.type === "CH")),
-        knownLocations: formatAssetIndex(sceneAssets.filter((asset) => asset.type === "LOC")),
-        knownProps: formatAssetIndex(sceneAssets.filter((asset) => asset.type === "PROP")),
-        sceneSnapshot: buildSceneSnapshot({ sceneText: episode.content, assets: sceneAssets })
-      };
-      await tx.sceneSnapshot.update({
-        where: { id: episodeContext.id },
-        data: { content: JSON.stringify(content, null, 2) }
-      });
-    }
-    return { assets: newAssets, sceneSnapshot, taskPackage, payload };
+    return { assets: [] as DirectorAsset[], sceneSnapshot, taskPackage, payload };
   });
+}
+
+/** Old consumers receive the approved episode view, never the full backstage bible. */
+export function buildApprovedFoundationContext(packet: ApprovedEpisodeFoundation) {
+  return {
+    "全剧记忆快照": {
+      schema: "FOUNDATION_HANDOFF_V1", sourceVersion: packet.sourceVersion, inputVersion: packet.inputVersion,
+      f1SnapshotId: packet.f1SnapshotId, f2SnapshotId: packet.f2SnapshotId,
+      scope: `仅第${packet.episode}集；必要前接与揭示边界见本集上下文`
+    },
+    "本集上下文快照": packet
+  };
 }
 
 
 
 export async function preprocessProjectProduction(projectId: string, db: Db = prisma) {
-  return preprocessProject(projectId, db);
+  const { assertNoActiveFoundationDelivery } = await import('@/lib/foundation-choice-store');
+  const checkIdle = async (tx: PrismaClient) => {
+    await assertNoActiveFoundationDelivery(tx, projectId);
+    if (await tx.pipelineRun.findFirst({ where: { projectId, status: { in: ['QUEUED', 'RUNNING'] } }, select: { id: true } })) throw new Error('资料正在运行，不能同时重建原文场次。');
+  };
+  await checkIdle(db);
+  return preprocessProject(projectId, db, { checkCurrent: checkIdle });
 }
-
-async function ensureProjectPreprocessed(projectId: string, db: Db) {
-  const memory = await db.sceneSnapshot.findFirst({ where: { projectId, sceneKey: "PROJECT_MEMORY" } });
-  if (!memory) {
-    await preprocessProject(projectId, db);
-  }
-}
-
 
 export function buildChatGptPrompt(payload: unknown) {
   return [

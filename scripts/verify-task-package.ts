@@ -53,6 +53,9 @@ async function main() {
   assert.ok(broken.errors.some((error) => error.includes("缺 TASK_SCHEMA_V4")));
   assert.ok(broken.errors.some((error) => error.includes("缺关键字段")));
 
+  const noIdentity = await buildTaskSchemaV4Payload({ projectName: "已审空身份", episodeNumber: 1, episodeText, existingAssets: [] });
+  assert.deepEqual(noIdentity["资产索引"]["资产明细"], [], "显式提供已审空身份集时不得回退粗提假ID");
+
   console.log("task package verification passed");
 }
 

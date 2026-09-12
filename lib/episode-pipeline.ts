@@ -44,7 +44,8 @@ import {
   type VisibleTextDeclaration
 } from "@/lib/episode-pipeline-quality";
 import { loadStageRules } from "@/lib/rule-engine";
-import { prepareEpisodeProduction } from "@/lib/workflow";
+import { buildApprovedFoundationContext, prepareEpisodeProduction } from "@/lib/workflow";
+import { readApprovedEpisodeFoundation, requireApprovedFoundation } from "@/lib/foundation-state";
 
 export type { PipelineProvider };
 export { resolveProvider, resolveApiModel, resolveCliModel, resolveCliReasoning };
@@ -163,6 +164,12 @@ const E5_REVIEW_ISSUE_LIMIT = 20;
 
 type PipelineContext = Awaited<ReturnType<typeof loadPipelineContext>>;
 
+async function assertApprovedContextCurrent(context: PipelineContext) {
+  if ((await requireApprovedFoundation(context.projectId)).id !== context.foundationApprovalId) {
+    throw new Error("第一阶段批准版本已变更，本批次停止，需重新准备信息包。");
+  }
+}
+
 type E1Output = {
   base_revision: string;
   shots: Record<string, unknown>[];
@@ -218,12 +225,18 @@ export type PipelineStageRunner = (
   stderr: string;
 }>;
 
+export function assertStageOneTestScope(): void {
+  throw new Error("[STAGE1_SCOPE_ONLY] 当前仅开放 v0.2 第一阶段测试 P0/F1/F2/Q1 与资料评审；v0.2 后续阶段尚未启用，不能启动旧 E0–E5。");
+}
+
 export async function queueEpisodePipeline(projectId: string, episodeId: string) {
+  assertStageOneTestScope();
   const episode = await prisma.episode.findFirst({
     where: { id: episodeId, projectId },
     include: { project: true }
   });
   if (!episode) throw new Error("没有找到这个剧集。");
+  await requireApprovedFoundation(projectId);
   // 单并发闸门：同一集同一时间只允许一条流水线；不同集（三线路）可并行，各自持有独立会话与批次
   const active = await prisma.pipelineRun.findFirst({
     where: { projectId, episodeId, status: { in: ["QUEUED", "RUNNING"] } }
@@ -268,11 +281,13 @@ export async function queueRepairPipeline(
   episodeId: string,
   options: { includeSuggestions?: boolean; force?: boolean } = {}
 ) {
+  assertStageOneTestScope();
   const episode = await prisma.episode.findFirst({
     where: { id: episodeId, projectId },
     include: { project: true }
   });
   if (!episode) throw new Error("没有找到这个剧集。");
+  await requireApprovedFoundation(projectId);
   const active = await prisma.pipelineRun.findFirst({
     where: { projectId, episodeId, status: { in: ["QUEUED", "RUNNING"] } }
   });
@@ -335,12 +350,14 @@ export async function queueRepairPipeline(
  * 前置校验：E2–E4 需要已有小镜号；E5 需要已有小镜号与单元。
  */
 export async function queueSingleStagePipeline(projectId: string, episodeId: string, stageCode: string) {
+  assertStageOneTestScope();
   const stage = readStageModel(stageCode as PipelineStageCode);
   const episode = await prisma.episode.findFirst({
     where: { id: episodeId, projectId },
     include: { project: true }
   });
   if (!episode) throw new Error("没有找到这个剧集。");
+  await requireApprovedFoundation(projectId);
   const active = await prisma.pipelineRun.findFirst({
     where: { projectId, episodeId, status: { in: ["QUEUED", "RUNNING"] } }
   });
@@ -401,6 +418,8 @@ export async function executeEpisodePipeline(
   batchToken: string,
   options: { stageRunner?: PipelineStageRunner; singleStage?: PipelineStageCode; stages?: PipelineStageCode[] } = {}
 ) {
+  // 仅保留已有注入 runner 的内部离线回归；页面、队列和真实 provider 均无绕行开关。
+  if (typeof options.stageRunner !== "function") assertStageOneTestScope();
   const context = await loadPipelineContext(projectId, episodeId);
   const provider = await resolveEpisodeBatchProvider(projectId, episodeId, batchToken, context.project.executionMode);
 
@@ -444,6 +463,7 @@ export async function executeEpisodePipeline(
     });
 
     try {
+      await assertApprovedContextCurrent(context);
       const structuralRebuild = safeParseJson(run.inputSummary).structuralRebuild === true;
       const repairPolicy = repairRunPolicy(structuralRebuild);
       let inputCharsTotal = 0;
@@ -743,6 +763,8 @@ export async function executeEpisodePipeline(
         }
       }
 
+      // External calls may outlive a source edit or a new foundation run.
+      await assertApprovedContextCurrent(context);
       if (stage.code === "E0") {
         const output = await persistE0(context, result!.data);
         // 骨架回灌 context：sequences + 扁平 beats，本批次的 E1 立即可用
@@ -882,6 +904,7 @@ export async function executeEpisodePipeline(
 
       // 每轮都编译一次 Seedance 提示词（纯 TS 确定性编译，零 Token）：
       // 任何岗位跑完都能立刻在单元卡看到最新可投喂稿；E5 全绿才标为正式放行。
+      await assertApprovedContextCurrent(context);
       await compileAndPersistPrompts(context, workingShots, unitOutput.units, { release: released });
 
       const finishedAt = new Date();
@@ -904,6 +927,7 @@ export async function executeEpisodePipeline(
         }
         return null;
       })();
+      await assertApprovedContextCurrent(context);
       await prisma.pipelineRun.update({
         where: { id: run.id },
         data: {
@@ -913,6 +937,7 @@ export async function executeEpisodePipeline(
           // 保留发起时元数据（repairPipeline/openBlockers/openMajors/includeSuggestions），供收敛门禁读取
           inputSummary: JSON.stringify({
             batchToken,
+            foundationApprovalId: context.foundationApprovalId,
             inputChars: inputCharsTotal,
             sessionId: result?.sessionId ?? null,
             fingerprint,
@@ -1243,6 +1268,11 @@ export async function loadPipelineContext(projectId: string, episodeId: string) 
     }
   });
   if (!episode) throw new Error("没有找到本集数据。");
+  const approved = await requireApprovedFoundation(projectId);
+  const packet = await readApprovedEpisodeFoundation(projectId, episode.number);
+  const approvedCodes = new Set(packet.assetCodes);
+  const episodeAssets = episode.project.assets.filter((asset) => approvedCodes.has(asset.code));
+  if (episodeAssets.length !== approvedCodes.size) throw new Error("第一阶段批准身份缺失，请重新核对资产与批准包。");
   if (!episode.scriptScenes.length) throw new Error("本集场次结构为空，请先更新本集信息包。");
 
   // 表现规范（用户已确认）：项目级 + 本集级，注入各岗 input
@@ -1254,7 +1284,7 @@ export async function loadPipelineContext(projectId: string, episodeId: string) 
   const version = Math.max(0, ...existingVersions) + 1;
   const now = new Date();
   const stamp = `${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
-  const knownCharacterNames = episode.project.assets
+  const knownCharacterNames = episodeAssets
     .filter((asset) => ["CH", "GROUP", "BEAST"].includes(asset.type))
     .flatMap((asset) => {
       const metadata = safeParseJson(asset.metadata);
@@ -1301,8 +1331,9 @@ export async function loadPipelineContext(projectId: string, episodeId: string) 
   return {
     projectId,
     episodeId,
+    foundationApprovalId: approved.id,
     revision: `V${version}_${stamp}`,
-    project: episode.project,
+    project: { ...episode.project, assets: episodeAssets },
     contracts: contracts.map((contract) => ({
       category: contract.category,
       question: contract.question,
@@ -1312,7 +1343,7 @@ export async function loadPipelineContext(projectId: string, episodeId: string) 
     scenes: episode.scriptScenes,
     sourcePackage,
     sourceNodes: new Map(sourcePackage.scenes.flatMap((scene) => scene.source_nodes).map((node) => [node.source_node_id, node])),
-    taskPayload: safeParseJson(episode.taskPackages[0]?.payload),
+    taskPayload: buildApprovedFoundationContext(packet),
     sequences,
     beats
   };
@@ -1900,11 +1931,13 @@ async function runE1Chunked(input: {
     ].filter(Boolean).join("\n\n");
     inputChars += prompt.length;
     try {
+      await assertApprovedContextCurrent(context);
       const result = stageRunner
         ? await stageRunner("E1", prompt)
         : provider === "API"
           ? await runApiRoleSession({ projectId, episodeId: context.episodeId, stageCode: "E1", prompt, noSession: true })
           : await runRoleSession({ projectId, episodeId: context.episodeId, stageCode: "E1", prompt, sessionMode: "ephemeral" });
+      await assertApprovedContextCurrent(context);
       sessionId = result.sessionId;
       stdout += result.stdout;
       stderr += result.stderr;

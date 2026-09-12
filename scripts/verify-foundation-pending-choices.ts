@@ -1,0 +1,20 @@
+import assert from 'node:assert/strict';
+import { buildSourceIndex } from '@/lib/project-foundation-contracts';
+import { requireProductionOptimization } from '@/lib/foundation-production-contracts';
+import * as runtime from '@/lib/project-foundation';
+
+const collect = (runtime as unknown as { collectProductionPendingChoices?: (parts: unknown[]) => { pending: Array<{ id: string; key?: string; note: string }>; warnings: string[] } }).collectProductionPendingChoices;
+assert.equal(typeof collect, 'function', '跨批未决事项必须按真实后续解决结果收口');
+const source = buildSourceIndex([{ number: 1, title: '初见', content: '女孩尚未揭名。' }, { number: 2, title: '揭名', content: '原来她就是苏镜。' }]);
+const first = requireProductionOptimization({ format: 'FOUNDATION_OPTIMIZATION_V2', coverage: [1], changes: {}, unresolved: [{ key: 'girl', episodes: [1], note: '女孩身份待后文确定' }] }, source, [1]);
+const later = requireProductionOptimization({ format: 'FOUNDATION_OPTIMIZATION_V2', coverage: [2], changes: {}, resolvedUnresolved: ['q1-1'] }, source, [2]);
+const unknown = requireProductionOptimization({ format: 'FOUNDATION_OPTIMIZATION_V2', coverage: [2], changes: {}, resolvedUnresolved: ['not-supplied'] }, source, [2]);
+const original = JSON.stringify([first, later, unknown]);
+assert.equal(collect!([first]).pending[0].id, 'q1-1');
+assert.equal(collect!([first, later]).pending.length, 0, '后文已明确解决的事项不能永久留下REPAIR');
+assert.equal(collect!([first, unknown]).pending.length, 1, '未知关闭ID不能删掉实际未决项');
+assert.equal(collect!([first, unknown]).warnings.length, 1);
+const stillPending = requireProductionOptimization({ format: 'FOUNDATION_OPTIMIZATION_V2', coverage: [2], changes: {}, resolvedUnresolved: ['q1-1'], unresolved: [{ note: '另一件物证仍待确定' }] }, source, [2]);
+assert.deepEqual(collect!([first, stillPending]).pending.map(item => [item.id, item.note]), [['q2-1', '另一件物证仍待确定']]);
+assert.equal(JSON.stringify([first, later, unknown]), original);
+console.log('PASS pending choices: later resolution, unknown-ID safety, new pending item and immutable inputs');

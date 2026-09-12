@@ -8,7 +8,7 @@ const accountMenu = readFileSync(join(root, "app/ui/account-menu.tsx"), "utf8");
 const styles = readFileSync(join(root, "app/globals.css"), "utf8");
 const layout = readFileSync(join(root, "app/layout.tsx"), "utf8");
 const projectPage = readFileSync(join(root, "app/projects/[projectId]/page.tsx"), "utf8");
-const foundationActions = readFileSync(join(root, "app/projects/[projectId]/foundation-actions.tsx"), "utf8");
+const foundationDelivery = readFileSync(join(root, "app/projects/[projectId]/foundation-delivery-panel.tsx"), "utf8");
 const homePage = readFileSync(join(root, "app/page.tsx"), "utf8");
 const newPage = readFileSync(join(root, "app/projects/new/page.tsx"), "utf8");
 const episodePage = readFileSync(join(root, "app/projects/[projectId]/episodes/[episodeId]/page.tsx"), "utf8");
@@ -42,17 +42,17 @@ if (!styles.includes("--ui-canvas") || !styles.includes("position: sticky") || !
   throw new Error("Light UI tokens or fixed navigation behavior are missing");
 }
 
-if (!projectPage.includes("WorkflowGuidance") || projectPage.includes("advancedPanel")) {
-  throw new Error("Project page must expose one guidance action without the retired advanced settings panel");
+if ((projectPage.match(/<FoundationDeliveryPanel\b/g) ?? []).length !== 1 || projectPage.includes("advancedPanel") || projectPage.includes("<FoundationActions")) {
+  throw new Error("Project page must expose one delivery entry without the retired role controls or advanced panel");
 }
 
 if (!layout.includes("vision-studio.css") || !layout.includes("PageTransition")) {
   throw new Error("Root layout must load the Vision Studio design layer and shared-axis transition");
 }
 
-for (const token of ["foundationStageForm", "foundationCardHitArea", "foundationCardAction", "maintenancePanel", "StopFoundationButton"]) {
-  if (!foundationActions.includes(token) && !projectPage.includes(token)) {
-    throw new Error(`Foundation controls are missing the unified interaction ${token}`);
+for (const token of ["startFoundationDeliveryAction", "stopFoundationDeliveryAction", "expectedState", "taskId", "useFormStatus"]) {
+  if (!foundationDelivery.includes(token)) {
+    throw new Error(`Delivery controls are missing the safe interaction ${token}`);
   }
 }
 
@@ -60,8 +60,8 @@ for (const [name, source] of [["home", homePage], ["new", newPage], ["episode", 
   if (!source.includes("AppChrome")) throw new Error(`${name} page has not migrated to shared chrome`);
 }
 
-if (!projectPage.includes("compact") || !projectPage.includes("ModeSwitch")) {
-  throw new Error("Project topbar must show the current CLI/API execution mode");
+if (!/<details><summary>运行设置<\/summary><ModeSwitch/.test(projectPage) || !projectPage.includes("处理历史与运行设置")) {
+  throw new Error("Execution mode must remain available in folded processing settings");
 }
 
 for (const selector of [".appChrome .bibleEpisode", ".appChrome .bibleLine", ".appChrome .studioTableScroll thead"]) {
@@ -84,8 +84,8 @@ if (homePage.includes("?? projects[0]") || !/requestedProjectId\s*\?/.test(homeP
   throw new Error("Project library must not invent a recent-project context when no projectId was requested");
 }
 
-if (projectPage.includes('href="#next-action"') || !projectPage.includes("guidanceHref")) {
-  throw new Error("Project top action must open the recommended destination directly instead of scrolling");
+if (projectPage.includes('href="#next-action"') || projectPage.includes("primaryAction=") || !foundationDelivery.includes('href="#presentation-contracts"')) {
+  throw new Error("Project must avoid a duplicate topbar mutation and point necessary choices to their confirmation area");
 }
 
 if (homePage.includes("episodes={activeProject?.episodes") || !homePage.includes("projectLabel={activeProject?.title}")) {
@@ -256,41 +256,37 @@ if (!episodePage.includes('title={shot.revision}') || !episodePage.includes('sho
 
 const contractFirst = deriveProjectGuidance({
   pendingContracts: 2,
-  planningReady: false,
-  assetsReady: false,
+  foundationReady: false,
   episodes: []
 });
 if (contractFirst.kind !== "contracts") throw new Error("Pending contracts must be the first action");
 
 const foundationNext = deriveProjectGuidance({
   pendingContracts: 0,
-  planningReady: false,
-  assetsReady: false,
+  foundationReady: false,
   episodes: []
 });
 if (foundationNext.kind !== "foundation") throw new Error("Incomplete foundation must be recommended");
 
 const failedEpisode = deriveProjectGuidance({
   pendingContracts: 0,
-  planningReady: true,
-  assetsReady: true,
+  foundationReady: true,
   episodes: [
     { id: "running", number: 1, shotCount: 10, running: true, failed: false, finished: false },
     { id: "failed", number: 2, shotCount: 4, running: false, failed: true, finished: false }
   ]
 });
-if (failedEpisode.kind !== "running" || failedEpisode.episodeId !== "running") {
-  throw new Error("Running work must remain visible before failed work");
+if (failedEpisode.kind !== "review" || failedEpisode.episodeId !== undefined) {
+  throw new Error("First-stage guidance must not route to legacy running or failed E work");
 }
 
 const continueEpisode = deriveProjectGuidance({
   pendingContracts: 0,
-  planningReady: true,
-  assetsReady: true,
+  foundationReady: true,
   episodes: [{ id: "e3", number: 3, shotCount: 8, running: false, failed: false, finished: false }]
 });
-if (continueEpisode.kind !== "continue" || continueEpisode.episodeId !== "e3") {
-  throw new Error("Incomplete episode must be continued");
+if (continueEpisode.kind !== "review" || continueEpisode.episodeId !== undefined || continueEpisode.actionLabel !== "下载第一阶段资料") {
+  throw new Error("Q1 READY must recommend first-stage export for quality review, not legacy E production");
 }
 
 console.log("light UI system verification passed");

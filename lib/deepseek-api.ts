@@ -33,6 +33,10 @@ export type DeepSeekJsonRequest = {
   thinking?: "enabled" | "disabled";
   /** 思考程度（flash）：low | high | max；请求级 > DEEPSEEK_API_REASONING_EFFORT > 默认 high */
   reasoningEffort?: "low" | "high" | "max";
+  /** 默认保留现有重试；基础工程质量测试可显式禁止隐藏重试。 */
+  retry?: boolean;
+  /** 可选捕获完整模型正文（解析前），HTTP 失败时捕获完整响应正文。 */
+  onRawOutput?: (content: string) => void;
 };
 
 export type DeepSeekJsonResult<T> = {
@@ -71,7 +75,8 @@ export async function runDeepSeekJson<T>(request: DeepSeekJsonRequest): Promise<
   // 非截断的 JSON 非法（模型随机转义失误，如未转义引号/换行）也重试——重试大概率输出正常。
   // 只有 finish_reason=length 的截断不重试（模型写不完，重试大概率仍截断）。
   let lastError: unknown;
-  for (let attempt = 0; attempt < 4; attempt++) {
+  const maxAttempts = request.retry === false ? 1 : 4;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       return await runDeepSeekJsonOnce<T>(request);
     } catch (error) {
@@ -80,7 +85,7 @@ export async function runDeepSeekJson<T>(request: DeepSeekJsonRequest): Promise<
       const message = error instanceof Error ? error.message : String(error);
       const emptyContent = /原文前 400 字：[）)]/.test(message);
       const lengthTruncated = /finish_reason=length/.test(message);
-      if (attempt === 3) throw error;
+      if (attempt === maxAttempts - 1) throw error;
       if (lengthTruncated && !emptyContent) throw error;
       // 降级策略：思考模式空 content 后，后续重试关思考（request 同引用，直接改）
       if (emptyContent && attempt >= 1 && request.thinking === undefined) {
@@ -95,7 +100,7 @@ export async function runDeepSeekJson<T>(request: DeepSeekJsonRequest): Promise<
 async function runDeepSeekJsonOnce<T>(request: DeepSeekJsonRequest): Promise<DeepSeekJsonResult<T>> {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) {
-    throw new Error("缺少 DEEPSEEK_API_KEY：API 执行模式需要在 .env 中配置 DeepSeek 平台 Key。");
+    throw Object.assign(new Error("缺少 DEEPSEEK_API_KEY：API 执行模式需要在 .env 中配置 DeepSeek 平台 Key。"), { requestOutcome: "NOT_SENT" });
   }
 
   const startedAt = Date.now();
@@ -138,6 +143,7 @@ async function runDeepSeekJsonOnce<T>(request: DeepSeekJsonRequest): Promise<Dee
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), request.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  let requestOutcome: "UNKNOWN" | "RESPONDED" = "UNKNOWN";
   try {
     const response = await fetch(`${API_BASE}/chat/completions`, {
       method: "POST",
@@ -150,11 +156,18 @@ async function runDeepSeekJsonOnce<T>(request: DeepSeekJsonRequest): Promise<Dee
     });
 
     if (!response.ok) {
+      requestOutcome = "RESPONDED";
       const detail = await response.text().catch(() => "");
+      request.onRawOutput?.(detail);
       throw new Error(`DeepSeek API 请求失败（HTTP ${response.status}）：${detail.slice(-800) || response.statusText}`);
     }
 
-    const payload = (await response.json()) as {
+    // Capture the envelope before interpreting it: HTTP 200 can still contain
+    // a proxy error, null, an empty message, or an unexpected response schema.
+    const responseText = await response.text();
+    requestOutcome = "RESPONDED";
+    request.onRawOutput?.(responseText);
+    const payload = JSON.parse(responseText) as {
       id?: string;
       usage?: {
         prompt_tokens?: number;
@@ -165,7 +178,12 @@ async function runDeepSeekJsonOnce<T>(request: DeepSeekJsonRequest): Promise<Dee
       };
       choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
     };
-    const content = payload.choices?.[0]?.message?.content ?? "";
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)
+      || !Array.isArray(payload.choices) || typeof payload.choices[0]?.message?.content !== "string") {
+      throw new Error("DeepSeek API 响应结构异常：缺少字符串 choices[0].message.content，完整响应已保留供诊断。");
+    }
+    const content = payload.choices[0].message.content;
+    if (content.trim()) request.onRawOutput?.(content);
     const finishReason = payload.choices?.[0]?.finish_reason ?? "";
     let data: T;
     try {
@@ -196,8 +214,9 @@ async function runDeepSeekJsonOnce<T>(request: DeepSeekJsonRequest): Promise<Dee
     };
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(`DeepSeek API 调用超过${Math.round((request.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 60_000)}分钟，已停止本岗位。`);
+      throw Object.assign(new Error(`DeepSeek API 调用超过${Math.round((request.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 60_000)}分钟，已停止本岗位。`), { requestOutcome });
     }
+    if (error instanceof Error) Object.assign(error, { requestOutcome });
     throw error;
   } finally {
     clearTimeout(timer);

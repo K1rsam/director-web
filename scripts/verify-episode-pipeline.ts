@@ -8,6 +8,7 @@ import {
 } from "@/lib/episode-pipeline-contracts";
 import { compileSeedancePrompts, computeUnitPartition, filterPythonDuplicateReviewIssues, hasOverLimitContinuityRun, executeEpisodePipeline, newRegressionBlockerKeys, planRepairPipeline, repairRunPolicy, shouldRollbackRepairRegression, sourceNodeCarrierChanged, validatePipeline, visualStepPartsForShots, type PipelineStageRunner } from "@/lib/episode-pipeline";
 import { prisma } from "@/lib/prisma";
+import { seedApprovedFoundationFixture } from "./fixtures/approved-foundation";
 
 let lastE5Prompt = "";
 
@@ -414,6 +415,7 @@ void (async () => {
   const episode = project.episodes[0];
   const batchToken = "verify-batch";
   try {
+    await seedApprovedFoundationFixture(project.id, prisma);
     await prisma.$transaction(PIPELINE_STAGE_CONFIGS.map((stage) => prisma.pipelineRun.create({
       data: {
         projectId: project.id,

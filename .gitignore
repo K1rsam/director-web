@@ -11,6 +11,7 @@ coverage/
 prisma/dev.db*
 *.tsbuildinfo
 .DS_Store
+.local-login.md
 
 # 本机调试、项目数据与会话交接，不进入源码仓库
 .planning/
@@ -28,3 +29,12 @@ TencentDB-Agent-Memory/
 
 # 内部实施记录不属于产品发布包
 docs/superpowers/
+
+# 本机交接记录与固定项目的一次性脚本；保留本地，不作为发布内容
+/task_plan.md
+/findings.md
+/progress.md
+/第一阶段测试指南.md
+/scripts/verify-stage1-closeout-live.ts
+/scripts/dry-run-advisor.ts
+/scripts/resync-shot-order.ts

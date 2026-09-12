@@ -328,6 +328,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .guidanceCopy h1 { font-size: clamp(18px, 1.9vw, 25px); letter-spacing: -.035em; }
 .guidanceCopy > span, .guidanceMeta { color: var(--vision-muted); }
 .projectDashboard > .studioSection {
+  min-width: 0;
   margin: 0;
   border: 1px solid rgba(255,255,255,.82);
   border-radius: 28px;
@@ -361,6 +362,10 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
   padding: 0 !important;
 }
 .foundationStageForm { position: relative; min-width: 0; }
+.foundationRunError { min-width: 0; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--vision-line); border-radius: 12px; }
+.foundationRunError > summary { color: var(--vision-muted); font-size: 11px; cursor: pointer; }
+.foundationRunError > time, .foundationRunError > p { font-size: 11px; line-height: 1.7; }
+.foundationRunError .roleRunError { white-space: pre-wrap; overflow-wrap: anywhere; }
 .foundationRole {
   position: relative;
   display: grid;

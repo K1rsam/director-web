@@ -33,6 +33,9 @@ for (const name of [
   "setProjectExecutionModeAction",
   "preprocessProjectAction",
   "startProjectFoundationAction",
+  "startFoundationDeliveryAction",
+  "stopFoundationDeliveryAction",
+  "confirmFoundationDeliveryChoiceAction",
   "confirmAllAssetsAction",
   "decidePresentationContractAction",
   "skipPresentationContractAction",
@@ -40,6 +43,10 @@ for (const name of [
   "stopProjectFoundationAction"
 ]) {
   assert.ok(actionSource(name).includes("requireProjectAccess"), `${name} lacks project access guard`);
+}
+for (const name of ['startFoundationDeliveryAction', 'stopFoundationDeliveryAction', 'confirmFoundationDeliveryChoiceAction']) {
+  const source = actionSource(name);
+  assert.ok(source.indexOf('requireProjectAccess') < source.indexOf('try {'), `${name} must authenticate before its mutation/error handler`);
 }
 
 for (const name of [
