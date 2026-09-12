@@ -11,7 +11,7 @@ import {
 } from "@/lib/auth-service";
 import { prisma } from "@/lib/prisma";
 
-export const SESSION_COOKIE_NAME = "director_session";
+export const SESSION_COOKIE_NAME = process.env.DIRECTOR_SESSION_COOKIE_NAME || "director_session";
 
 function loginDestination(returnTo?: string): string {
   const safeReturnTo = sanitizeReturnTo(returnTo);

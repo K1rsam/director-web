@@ -1,0 +1,9 @@
+import { requireProjectAccess } from "@/lib/auth";
+import { readFidelityReceipt } from "@/lib/fidelity-store";
+import { prisma } from "@/lib/prisma";
+import { createFidelityExternalMaterial } from "@/lib/fidelity-external";
+export async function GET(request:Request,{params}:{params:Promise<{projectId:string}>}){const {projectId}=await params;await requireProjectAccess(projectId);const current=await readFidelityReceipt(projectId);if(!current)return new Response("此历史项目没有新版清洗证明",{status:404});const url=new URL(request.url);if(url.searchParams.get("revision")&&url.searchParams.get("revision")!==current.snapshot.id)return new Response("资料已更新，请刷新后下载当前版本",{status:409});const kind=url.searchParams.get("format");let content:string|Uint8Array=JSON.stringify({source:current.receipt.result.source,plan:current.receipt.result.plan},null,2);let file="fidelity-import.json",type="application/json";
+if(kind==="md"){content=current.receipt.result.normalizedText;file="screenplay-normalized.md";type="text/markdown; charset=utf-8";}
+if(kind==="external"){content=createFidelityExternalMaterial(current.receipt.result.source.text).text;file="external-structure-material.txt";type="text/plain; charset=utf-8";}
+if(kind==="original"){const row=await prisma.sceneSnapshot.findFirst({where:{projectId,sceneKey:"SOURCE_IMPORT"},orderBy:[{createdAt:"asc"},{id:"asc"}]});const source=JSON.parse(row?.content??"{}");if(source.originalFile?.base64){content=new Uint8Array(Buffer.from(source.originalFile.base64,"base64"));file="original"+(source.sourceName?.match(/\.[a-z0-9]+$/i)?.[0]??".bin");type="application/octet-stream";}else{content=current.receipt.result.source.text;file="original-reading.txt";type="text/plain; charset=utf-8";}}
+return new Response(typeof content === "string" ? content : new Uint8Array(content),{headers:{"Content-Type":type,"Content-Disposition":"attachment; filename="+file,"Cache-Control":"no-store"}});}

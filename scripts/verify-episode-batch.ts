@@ -7,9 +7,13 @@ import {
   shouldSkipInitialBatch,
   summarizeEpisodePipeline
 } from "@/lib/episode-batch";
+import { defaultEpisodeBatchConcurrency } from "@/lib/episode-batch-monitor";
 
 const stages = ["E0", "E1", "E2", "E3", "E4", "E5"];
 const start = new Date("2026-08-27T00:00:00.000Z").getTime();
+
+assert.equal(defaultEpisodeBatchConcurrency("CLI"), 3, "CLI 批量默认应保持 3 集并发");
+assert.equal(defaultEpisodeBatchConcurrency("API"), 3, "API 批量默认应保持 3 集并发");
 
 function run(stageCode: string, status = "SUCCEEDED", offset = Number(stageCode.slice(1)) * 1_000, outputSummary?: string) {
   return {

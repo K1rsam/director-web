@@ -6,8 +6,12 @@ import {
   readStageModel,
   type WorkingShot
 } from "@/lib/episode-pipeline-contracts";
+import { formatDialogueEntries, normalizeDialogueEntriesForSource } from "@/lib/shot-cells";
+import { maxShortUnitExceptions, parseShortUnitException } from "@/lib/episode-pipeline-quality";
+import { isProductionCliModel, resolveCliModel } from "@/lib/role-runner";
 import { compileSeedancePrompts, compactProjectMemoryForEpisode, computeUnitPartition, filterPythonDuplicateReviewIssues, hasOverLimitContinuityRun, executeEpisodePipeline, newRegressionBlockerKeys, newRegressionIssueKeys, planRepairPipeline, repairOwnerForIssue, repairRollbackScope, repairRunPolicy, shouldRollbackRepairRegression, sourceNodeCarrierChanged, validatePipeline, visualStepPartsForShots, workflowIssueKey, type PipelineStageRunner } from "@/lib/episode-pipeline";
 import { prisma } from "@/lib/prisma";
+import { seedApprovedFoundationFixture } from "./fixtures/approved-foundation";
 
 let lastE5Prompt = "";
 
@@ -28,6 +32,86 @@ assert.equal(source.scenes[0].source_nodes.length, 3);
 assert.deepEqual(source.scenes[0].source_nodes.map((node) => node.type), ["ACTION", "DIALOGUE", "OS"]);
 assert.equal(source.scenes[0].source_nodes[1].speaker, "苏远");
 
+const flattenedDialogueSource = buildSourcePackage([{
+  sceneKey: "3-1",
+  heading: "工具间 夜/内",
+  location: "工具间",
+  interiorExterior: "内",
+  timeOfDay: "夜",
+  weather: null,
+  timeLayer: "现实",
+  sourceText: "3-1工具间 夜/内人物：姜恋、时烬、崔健△时烬倚在门口，神色轻松。崔健：你去哪儿了？时烬：去五楼看住处，环境不错。△姜恋（低头）：先吃饭。"
+}]);
+const flattenedNodes = flattenedDialogueSource.scenes[0].source_nodes;
+assert.deepEqual(
+  flattenedNodes.map((node) => [node.type, node.speaker, node.text]),
+  [
+    ["ACTION", null, "时烬倚在门口，神色轻松。"],
+    ["DIALOGUE", "崔健", "你去哪儿了？"],
+    ["DIALOGUE", "时烬", "去五楼看住处，环境不错。"],
+    ["DIALOGUE", "姜恋", "先吃饭。"]
+  ],
+  "扁平化同一行的多人物台词必须按人物拆成独立源节点"
+);
+const repairedDialogue = normalizeDialogueEntriesForSource([{
+  source_node_id: "N0001",
+  speaker: "时烬",
+  type: "对白",
+  text: "你去哪儿了？时烬：去五楼看住处，环境不错。"
+}], flattenedNodes);
+assert.deepEqual(
+  repairedDialogue.map((entry) => [entry.speaker, entry.text]),
+  [["崔健", "你去哪儿了？"], ["时烬", "去五楼看住处，环境不错。"]],
+  "旧数据中合并的台词应按源节点恢复真实说话人"
+);
+assert.equal(
+  formatDialogueEntries(repairedDialogue),
+  "崔健：“你去哪儿了？”\n时烬：“去五楼看住处，环境不错。”",
+  "台词展示应逐条换行"
+);
+
+const actionTailSource = buildSourcePackage([{
+  sceneKey: "4-2",
+  heading: "前台 日/内",
+  location: "前台",
+  interiorExterior: "内",
+  timeOfDay: "日",
+  weather: null,
+  timeLayer: "现实",
+  sourceText: "人物：时烬、姜恋\n时烬：偷东西？姜恋猛回头。"
+}]);
+assert.deepEqual(
+  actionTailSource.scenes[0].source_nodes.map((node) => [node.type, node.speaker, node.text]),
+  [["DIALOGUE", "时烬", "偷东西？"], ["ACTION", null, "姜恋猛回头。"]],
+  "对白后的无冒号动作必须独立成 ACTION 源节点"
+);
+const repairedActionTail = normalizeDialogueEntriesForSource([{
+  source_node_id: "N0001",
+  speaker: "时烬",
+  type: "对白",
+  text: "偷东西？姜恋猛回头。"
+}], actionTailSource.scenes[0].source_nodes);
+assert.deepEqual(
+  repairedActionTail.map((entry) => [entry.speaker, entry.text]),
+  [["时烬", "偷东西？"]],
+  "历史台词残片中的尾部动作不能继续进入台词格"
+);
+const actionColonSource = buildSourcePackage([{
+  sceneKey: "4-2",
+  heading: "前台 日/内",
+  location: "前台",
+  interiorExterior: "内",
+  timeOfDay: "日",
+  weather: null,
+  timeLayer: "现实",
+  sourceText: "人物：姜恋\n她展开纸团，上面写着：夜间十二点后，不要给任何客人开门。"
+}]);
+assert.equal(
+  actionColonSource.scenes[0].source_nodes[0].type,
+  "ACTION",
+  "动作描述中的冒号不能伪造说话人"
+);
+
 const shots = mergeShotPatches(
   [{ shot_id: "1-1-S001", e1: { visual_goal: "展示证据" }, e2: {}, e3: {}, e4: {} }],
   [{ shot_id: "1-1-S001", action: "set", fields: { action_chain: "苏远拿起手机" } }],
@@ -37,6 +121,19 @@ assert.equal((shots[0].e2 as Record<string, unknown>).action_chain, "苏远拿�
 
 assert.equal(readStageModel("E5").model, "gpt-5.6-sol");
 assert.equal(PIPELINE_STAGE_CONFIGS.length, 6, "E0-E5 六岗流水线");
+assert.equal(PIPELINE_STAGE_CONFIGS.every((stage) => isProductionCliModel(stage.model)), true, "生产岗位只能使用 terra/sol");
+const savedCliModel = process.env.CLI_MODEL;
+const savedCliModelE0 = process.env.CLI_MODEL_E0;
+process.env.CLI_MODEL = "gpt-5.6-luna";
+process.env.CLI_MODEL_E0 = "gpt-5.6-luna";
+try {
+  assert.equal(resolveCliModel("E0", "gpt-5.6-terra"), "gpt-5.6-terra", "快速模型覆盖不得进入生产岗位");
+} finally {
+  if (savedCliModel === undefined) delete process.env.CLI_MODEL;
+  else process.env.CLI_MODEL = savedCliModel;
+  if (savedCliModelE0 === undefined) delete process.env.CLI_MODEL_E0;
+  else process.env.CLI_MODEL_E0 = savedCliModelE0;
+}
 
 const scopedMemory = compactProjectMemoryForEpisode({
   schema: "P1_MEMORY_V2",
@@ -126,6 +223,16 @@ assert.equal(
   repairOwnerForIssue({ coordinate: "1-1-U06.subject_bindings", code: "UNSUPPORTED_ASSET_BINDING", ownerRole: "E3" }),
   "E3",
   "单元绑定问题必须路由到 E3"
+);
+assert.equal(
+  repairOwnerForIssue({ coordinate: "1-1-U06.short_unit_reason", code: "SHORT_UNIT_EXCEPTION_INVALID", ownerRole: "E3" }),
+  "E1",
+  "短单元时长问题必须路由到 E1 重新拆镜/重排"
+);
+assert.deepEqual(
+  planRepairPipeline([{ ownerRole: "E3", severity: "BLOCKER", code: "SHORT_UNIT_EXCEPTION_LIMIT" }]),
+  { stages: ["E1", "E2", "E3", "E4", "E5"], structuralRebuild: true },
+  "短单元例外超量必须触发 E1→E5 结构重建"
 );
 assert.deepEqual(
   repairRunPolicy(true),
@@ -245,6 +352,7 @@ type ValidatorBoundaryCase = {
   previousEndState?: string;
   visibleText?: unknown;
   duration?: number;
+  shortUnitReason?: string;
   dialogue?: Array<Record<string, unknown>>;
   contracts?: Array<Record<string, unknown>>;
 };
@@ -286,7 +394,7 @@ function validatorBoundaryIssues(input: ValidatorBoundaryCase = {}) {
     unit_id: "1-1-U01",
     shot_ids: [shot.shot_id],
     unit_duration: input.duration ?? 5,
-    short_unit_reason: "场次边界余数",
+    short_unit_reason: input.shortUnitReason ?? "SHORT_EXCEPTION/SCENE_BOUNDARY|本场只有一个完整动作，镜头边界无法与相邻场次合并",
     unit_dominant_goal: "林砚秋确认来人",
     subject_bindings: input.bindings ?? ["林砚秋@CH-001"],
     unit_start_premise: input.premise ?? "林砚秋静立在县学堂中，面向门口",
@@ -322,6 +430,19 @@ function validatorBoundaryIssues(input: ValidatorBoundaryCase = {}) {
 const hasValidatorIssue = (code: string, input: ValidatorBoundaryCase) =>
   validatorBoundaryIssues(input).some((item) => item.code === code);
 
+assert.deepEqual(
+  parseShortUnitException("SHORT_EXCEPTION/SCENE_BOUNDARY|本场只有一个完整动作，镜头边界无法与相邻场次合并"),
+  { code: "SCENE_BOUNDARY", detail: "本场只有一个完整动作，镜头边界无法与相邻场次合并" },
+  "短单元例外必须使用规范代码和具体不可合并事实"
+);
+assert.equal(parseShortUnitException("场次边界余数"), null, "泛化场次余数理由不得作为短单元例外");
+assert.equal(maxShortUnitExceptions(10), 1, "10个单元的剧集最多允许1个短单元例外");
+assert.equal(maxShortUnitExceptions(30), 2, "短单元例外每集最多2个");
+assert.equal(hasValidatorIssue("SHORT_UNIT_EXCEPTION_REQUIRED", { duration: 9.5, shortUnitReason: "" }), true, "低于10秒且无例外必须阻断");
+assert.equal(hasValidatorIssue("SHORT_UNIT_EXCEPTION_INVALID", { duration: 9.5, shortUnitReason: "场次边界余数" }), true, "泛化短单元理由必须阻断");
+assert.equal(hasValidatorIssue("SHORT_UNIT_BELOW_ABSOLUTE_MIN", { duration: 3.5 }), true, "低于4秒必须阻断");
+assert.equal(hasValidatorIssue("SHORT_UNIT_EXCEPTION_REQUIRED", { duration: 10 }), false, "10秒整不属于短单元例外范围");
+
 assert.equal(hasValidatorIssue("SPEAKER_PERFORMANCE_ALIGNMENT", { picture: "林砚秋抬眼对着书吏说话" }), false, "受话宾语不得误判为说话人");
 assert.equal(hasValidatorIssue("SPEAKER_PERFORMANCE_ALIGNMENT", { picture: "书吏开口说话，林砚秋侧耳听着" }), true, "明确开口的错位人物仍应拦截");
 const soundSpeakerIssues = validatorBoundaryIssues({ sound: "书吏开口说话" })
@@ -347,6 +468,9 @@ assert.equal(hasValidatorIssue("MULTI_SPEAKER_SHOT", {
     { source_node_id: "N0002", type: "OS", speaker: "书吏", text: "是。" }
   ]
 }), false, "群体合声与 OS 不应误报多说话人");
+assert.equal(hasValidatorIssue("DIALOGUE_EMBEDDED_SPEAKER", {
+  dialogue: [{ source_node_id: "N0001", type: "对白", speaker: "林砚秋", text: "请进。书吏：是。" }]
+}), true, "对白条目内再次嵌入说话人标签必须被拦截");
 assert.equal(hasValidatorIssue("ACTION_PHASE_OVERLOAD", {
   picture: "林砚秋先取出考牌，再填写姓名，然后盖下印章"
 }), true, "同镜至少三段明确连续动作必须开卡");
@@ -535,6 +659,7 @@ void (async () => {
   const episode = project.episodes[0];
   const batchToken = "verify-batch";
   try {
+    await seedApprovedFoundationFixture(project.id, prisma);
     await prisma.$transaction(PIPELINE_STAGE_CONFIGS.map((stage) => prisma.pipelineRun.create({
       data: {
         projectId: project.id,
@@ -947,7 +1072,7 @@ function fakeStageOutput(stageCode: string): Record<string, unknown> {
       unit_id: "1-1-U01",
       shot_ids: ["1-1-S001"],
       unit_duration: 5,
-      short_unit_reason: "本场只有一个完整短动作，场次边界必须独立",
+    short_unit_reason: "SHORT_EXCEPTION/SCENE_BOUNDARY|本场只有一个完整动作，镜头边界无法与相邻场次合并",
       unit_dominant_goal: "展示手机提示",
       subject_bindings: [],
       unit_start_premise: "苏远在桌边，手机在手边",

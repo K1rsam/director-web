@@ -4,8 +4,8 @@ export type ProjectSubmissionMode = "upload" | "paste";
 export type ProjectExecutionMode = "CLI" | "API";
 
 export const EXECUTION_MODE_OPTIONS: ReadonlyArray<{ value: ProjectExecutionMode; label: string; hint: string }> = [
-  { value: "CLI", label: "CLI（本机 Codex）", hint: "使用本机 Codex CLI + 已安装 E0–E5 Skill" },
-  { value: "API", label: "API（DeepSeek）", hint: "通过 DeepSeek API 调用同一套岗位 Skill" }
+  { value: "CLI", label: "CLI（本机 Codex）", hint: "v0.2 第一阶段测试：运行 F1、F2、Q1 普通提示词，后续阶段未启用" },
+  { value: "API", label: "API（DeepSeek）", hint: "v0.2 第一阶段测试：用同一套 F1、F2、Q1 普通提示词调用 API，后续阶段未启用" }
 ];
 
 export type ProjectStyleOption = {
@@ -20,8 +20,7 @@ export type ProjectStyleOption = {
 
 export type ProjectCardMetrics = {
   episodeCount: number;
-  snapshotCount: number;
-  assetCount: number;
+  foundationReady: boolean;
   unitEpisodeCount: number;
 };
 
@@ -109,28 +108,11 @@ export function resolveProjectDestination(projectId: string): string {
 }
 
 export function deriveProjectCardState(metrics: ProjectCardMetrics) {
-  const firstPhaseReady =
-    metrics.episodeCount > 0 &&
-    metrics.assetCount > 0 &&
-    metrics.snapshotCount >= metrics.episodeCount + 1;
-
-  if (!firstPhaseReady) {
+  if (metrics.foundationReady !== true || metrics.episodeCount === 0) {
     return { stage: "全剧资料", progress: 20, actionLabel: "继续整理" } as const;
   }
 
-  if (metrics.unitEpisodeCount === 0) {
-    return { stage: "分镜生产", progress: 55, actionLabel: "开始分镜" } as const;
-  }
-
-  if (metrics.unitEpisodeCount >= metrics.episodeCount) {
-    return { stage: "单集结果", progress: 100, actionLabel: "查看结果" } as const;
-  }
-
-  return {
-    stage: "分镜生产",
-    progress: Math.round(55 + 45 * (metrics.unitEpisodeCount / metrics.episodeCount)),
-    actionLabel: "继续制作"
-  } as const;
+  return { stage: "全剧资料就绪", progress: 100, actionLabel: "查看第一阶段资料" } as const;
 }
 
 export function readProjectSubmissionMode(value: FormDataEntryValue | null): ProjectSubmissionMode {
@@ -187,7 +169,7 @@ export async function readProjectSubmission(formData: FormData): Promise<Project
 
   const file = formData.get("script");
   if (!(file instanceof File) || file.size === 0) throw new Error("请选择剧本文件。");
-  if (!/\.(txt|md|docx)$/i.test(file.name)) throw new Error("仅支持 TXT、MD 或 DOCX 剧本文件。");
+  if (!/\.(txt|md|docx|json|zip)$/i.test(file.name)) throw new Error("支持 TXT、MD、DOCX、清洗JSON或整个清洗ZIP包。");
 
   return {
     title,

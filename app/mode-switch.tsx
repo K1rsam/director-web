@@ -9,7 +9,7 @@ import { MotionSelection } from "./ui/motion-selection";
 /**
  * 执行方式切换：即时选中反馈，保存完成后刷新数据并保留阅读位置。
  */
-export function ModeSwitch({ projectId, current, compact = false }: { projectId: string; current?: string | null; compact?: boolean }) {
+export function ModeSwitch({ projectId, current, compact = false, disabled = false }: { projectId: string; current?: string | null; compact?: boolean; disabled?: boolean }) {
   const router = useRouter();
   const [mode, setMode] = useState<string>(current === "API" || current === "CLI" ? current : "API");
   const [pending, setPending] = useState(false);
@@ -26,7 +26,7 @@ export function ModeSwitch({ projectId, current, compact = false }: { projectId:
     }
   }, [router]);
   const switchTo = (next: "API" | "CLI") => (event: FormEvent<HTMLFormElement>) => {
-    if (submitting.current || next === mode) {
+    if (disabled || submitting.current || next === mode) {
       event.preventDefault();
       return;
     }
@@ -42,12 +42,12 @@ export function ModeSwitch({ projectId, current, compact = false }: { projectId:
       <form action={setProjectExecutionModeAction} onSubmit={switchTo("API")}>
         <input name="projectId" type="hidden" value={projectId} />
         <input name="executionMode" type="hidden" value="API" />
-        <ModeSubmitButton selected={apiActive} disabled={pending} label={compact ? "API" : "API（DeepSeek）"} title="使用 DeepSeek API 执行岗位" onPendingChange={handlePendingChange} />
+        <ModeSubmitButton selected={apiActive} disabled={disabled || pending} label={compact ? "API" : "API（DeepSeek）"} title="使用 DeepSeek API 执行岗位" onPendingChange={handlePendingChange} />
       </form>
       <form action={setProjectExecutionModeAction} onSubmit={switchTo("CLI")}>
         <input name="projectId" type="hidden" value={projectId} />
         <input name="executionMode" type="hidden" value="CLI" />
-        <ModeSubmitButton selected={cliActive} disabled={pending} label={compact ? "CLI" : "CLI（本机 Codex）"} title="使用本机 Codex CLI 执行岗位" onPendingChange={handlePendingChange} />
+        <ModeSubmitButton selected={cliActive} disabled={disabled || pending} label={compact ? "CLI" : "CLI（本机 Codex）"} title="使用本机 Codex CLI 执行岗位" onPendingChange={handlePendingChange} />
       </form>
       </MotionSelection>
       {!compact ? <small className="modeCurrent">当前：{mode}</small> : null}

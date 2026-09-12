@@ -12,6 +12,7 @@ import {
   resolvePresentationContractScope,
   type PresentationContractScopeMode
 } from "@/lib/presentation-contracts";
+import { confirmFoundationChoice, FoundationChoiceError } from "@/lib/foundation-choice-store";
 
 export type ProjectCreationState = { error: string };
 
@@ -139,25 +140,16 @@ export async function importProjectAction(
   try {
     const submission = await readProjectSubmission(formData);
     const workflow = await import("@/lib/workflow");
-    const result = submission.mode === "upload"
-      ? await workflow.importProjectFromFile({
-          ownerUserId: currentUser.id,
-          title: submission.title,
-          style: submission.style,
-          aspectRatio: submission.aspectRatio,
-          executionMode: submission.executionMode,
-          sourceName: submission.sourceName,
-          buffer: submission.buffer
-        })
-      : await workflow.importProjectFromText({
-          ownerUserId: currentUser.id,
-          title: submission.title,
-          style: submission.style,
-          aspectRatio: submission.aspectRatio,
-          executionMode: submission.executionMode,
-          sourceName: submission.sourceName,
-          sourceText: submission.sourceText
-        });
+    const { prepareFidelityImport } = await import("@/lib/fidelity-import");
+    const mode = formData.get("cleaningMode") === "direct" ? "direct" : "fidelity";
+    if (formData.get("cleaningMode") === "optimize") throw new Error("内容优化尚未开放；请选择保真清洗或直接导入。");
+    const bytes = submission.mode === "upload" ? submission.buffer : Buffer.from(submission.sourceText,"utf8");
+    const original = formData.get("originalScript");
+    if (bytes.length > 20 * 1024 * 1024 || original instanceof File && original.size > 20 * 1024 * 1024) throw new Error("剧本或配对原稿超过20MB。");
+    const prepared = await prepareFidelityImport(submission.sourceName,bytes,mode,[],formData.get("trustExternalDecisions")==="1",original instanceof File && original.size ? {name:original.name,bytes:Buffer.from(await original.arrayBuffer())}:undefined);
+    if (formData.get("previewSourceVersion") !== prepared.receipt.readingHash || formData.get("previewOriginalHash") !== prepared.receipt.originalHash) throw new Error("稿件或预览已变化，请重新预览后创建。");
+    if (prepared.receipt.mode === "fidelity") prepared.receipt.p1Review = { status: "PENDING" };
+    const result = await workflow.importParsedProject({ownerUserId:currentUser.id,title:submission.title,style:submission.style,aspectRatio:submission.aspectRatio,executionMode:submission.executionMode,sourceName:submission.sourceName,fidelityReceipt:prepared.receipt},prepared.imported,(await import("@/lib/prisma")).prisma);
     projectId = result.project.id;
   } catch (error) {
     return { error: formatProjectCreationError(error) };
@@ -196,6 +188,8 @@ export async function setProjectExecutionModeAction(formData: FormData) {
   });
   if (!project) throw new Error("没有找到项目。");
   if (project.executionMode !== executionMode) {
+    const { assertNoActiveFoundationDelivery } = await import('@/lib/foundation-choice-store');
+    await assertNoActiveFoundationDelivery(prisma, projectId);
     const active = await prisma.pipelineRun.findFirst({
       where: { projectId, status: { in: ["QUEUED", "RUNNING"] } },
       select: { id: true }
@@ -212,6 +206,8 @@ export async function prepareEpisodeAction(formData: FormData) {
   const episodeId = String(formData.get("episodeId") ?? "");
   await requireProjectAccess(projectId);
   await requireEpisodeAccess(projectId, episodeId);
+  const { assertStageOneTestScope } = await import("@/lib/episode-pipeline");
+  assertStageOneTestScope();
   const { prepareEpisodeProduction } = await import("@/lib/workflow");
   await prepareEpisodeProduction(projectId, episodeId);
   revalidatePath("/");
@@ -432,6 +428,7 @@ export async function preprocessProjectAction(formData: FormData) {
   await requireProjectAccess(projectId);
   const { preprocessProjectProduction } = await import("@/lib/workflow");
   await preprocessProjectProduction(projectId);
+  revalidatePath(`/projects/${projectId}`);
   revalidatePath("/");
 }
 
@@ -439,8 +436,95 @@ export async function startProjectFoundationAction(formData: FormData) {
   const projectId = String(formData.get("projectId") ?? "");
   await requireProjectAccess(projectId);
   const { queueProjectFoundation } = await import("@/lib/project-foundation");
-  await queueProjectFoundation(projectId);
+  try { await queueProjectFoundation(projectId); }
+  catch (error) {
+    if (!(error instanceof FoundationChoiceError)) throw error;
+    redirect(`/projects/${encodeURIComponent(projectId)}?foundationNotice=${error.notice}#presentation-contracts`);
+  }
   revalidatePath(`/projects/${projectId}`);
+  revalidatePath("/");
+}
+
+/** Normal product entry: one persistent delivery, not a choice of backstage roles. */
+export async function startFoundationDeliveryAction(formData: FormData) {
+  const projectId = String(formData.get('projectId') ?? '');
+  await requireProjectAccess(projectId);
+  const expectedState = String(formData.get('expectedState') ?? '');
+  const { queueFoundationDelivery, launchFoundationDelivery } = await import('@/lib/foundation-delivery');
+  let notice = '';
+  try {
+    if (!expectedState) throw new Error('资料任务状态已变化');
+    const task = await queueFoundationDelivery(projectId, { expectedState, allowUnknownRetry: formData.get('allowUnknownRetry') === 'yes' });
+    await launchFoundationDelivery(task);
+  } catch (error) {
+    notice = error instanceof Error && /未知|重复计费|重发/.test(error.message) ? 'call-unknown' : error instanceof Error && /状态已变化|正在处理中/.test(error.message) ? 'state-changed' : 'delivery-unavailable';
+  }
+  revalidatePath(`/projects/${projectId}`); revalidatePath('/');
+  redirect(`/projects/${encodeURIComponent(projectId)}${notice ? `?foundationNotice=${notice}` : ''}`);
+}
+
+export async function stopFoundationDeliveryAction(formData: FormData) {
+  const projectId = String(formData.get('projectId') ?? '');
+  await requireProjectAccess(projectId);
+  const { stopFoundationDelivery } = await import('@/lib/foundation-delivery');
+  let notice = '';
+  try { await stopFoundationDelivery(projectId, String(formData.get('taskId') ?? '')); }
+  catch (error) { notice = error instanceof Error && /状态已变化/.test(error.message) ? 'state-changed' : 'delivery-unavailable'; }
+  revalidatePath(`/projects/${projectId}`); revalidatePath('/');
+  redirect(`/projects/${encodeURIComponent(projectId)}${notice ? `?foundationNotice=${notice}` : ''}`);
+}
+
+export async function confirmFoundationDeliveryChoiceAction(formData: FormData) {
+  const projectId = String(formData.get('projectId') ?? '');
+  await requireProjectAccess(projectId);
+  const { prisma } = await import('@/lib/prisma');
+  const { confirmAndContinueFoundationDelivery, launchFoundationDelivery } = await import('@/lib/foundation-delivery');
+  let notice = 'decision-continued';
+  try {
+    const task = await confirmAndContinueFoundationDelivery(prisma, { projectId, contractId: String(formData.get('contractId') ?? ''), revision: String(formData.get('revision') ?? ''), expectedTaskId: String(formData.get('expectedTaskId') ?? ''),
+      ...(formData.has('optionIndex') ? { optionIndex: String(formData.get('optionIndex')) } : {}), ...(formData.has('customAnswer') ? { customAnswer: String(formData.get('customAnswer')) } : {}) });
+    await launchFoundationDelivery(task);
+  } catch (error) { notice = error instanceof FoundationChoiceError ? error.notice : error instanceof Error && /状态已变化/.test(error.message) ? 'state-changed' : 'delivery-unavailable'; }
+  revalidatePath(`/projects/${projectId}`); revalidatePath('/');
+  redirect(`/projects/${encodeURIComponent(projectId)}?foundationNotice=${notice}#presentation-contracts`);
+}
+
+export async function continueProjectFoundationAction(formData: FormData) {
+  const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
+  const expectedState = String(formData.get("expectedState") ?? "");
+  const { queueProjectFoundationContinuation, reconcileAbandonedFoundationRuns, FoundationContinuationStateChangedError, FoundationUnknownCallError } = await import("@/lib/project-foundation");
+  let stateChanged = false;
+  let storageUnknown = false;
+  let callUnknown = false;
+  let decisionNotice: string | undefined;
+  try {
+    const recovery = await reconcileAbandonedFoundationRuns(projectId);
+    storageUnknown = recovery.errors.length > 0;
+    stateChanged = recovery.updated > 0;
+    if (!stateChanged && !storageUnknown) await queueProjectFoundationContinuation(projectId, undefined, expectedState);
+  }
+  catch (error) {
+    if (error instanceof FoundationChoiceError) decisionNotice = error.notice;
+    else if (error instanceof FoundationUnknownCallError) callUnknown = true;
+    else if (error instanceof FoundationContinuationStateChangedError) stateChanged = true;
+    else throw error;
+  }
+  const projectPath = `/projects/${encodeURIComponent(projectId)}`;
+  revalidatePath(projectPath);
+  revalidatePath("/");
+  redirect(decisionNotice ? `${projectPath}?foundationNotice=${decisionNotice}#presentation-contracts` : callUnknown ? `${projectPath}?foundationNotice=call-unknown` : storageUnknown ? `${projectPath}?foundationNotice=worker-unknown` : stateChanged ? `${projectPath}?foundationNotice=state-changed` : projectPath);
+}
+
+/** Explicit user check only: no provider call, no timeout-based cancellation of a live worker. */
+export async function inspectFoundationWorkerAction(formData: FormData) {
+  const projectId = String(formData.get("projectId") ?? "");
+  await requireProjectAccess(projectId);
+  const { reconcileAbandonedFoundationRuns } = await import("@/lib/project-foundation");
+  const result = await reconcileAbandonedFoundationRuns(projectId);
+  const projectPath = `/projects/${encodeURIComponent(projectId)}`;
+  revalidatePath(projectPath);
+  redirect(`${projectPath}?foundationNotice=${result.errors.length ? "worker-unknown" : result.updated ? "state-changed" : "worker-unchanged"}`);
 }
 
 export async function confirmAllAssetsAction(formData: FormData) {
@@ -455,6 +539,18 @@ export async function decidePresentationContractAction(formData: FormData) {
   const projectId = String(formData.get("projectId") ?? "");
   await requireProjectAccess(projectId);
   const contractId = String(formData.get("contractId") ?? "");
+  if (formData.has("revision")) {
+  const { prisma } = await import("@/lib/prisma");
+  let notice = "decision-saved";
+  try { await confirmFoundationChoice(prisma, { projectId, contractId, revision: String(formData.get("revision") ?? ""),
+    ...(formData.has("optionIndex") ? { optionIndex: String(formData.get("optionIndex")) } : {}),
+    ...(formData.has("customAnswer") ? { customAnswer: String(formData.get("customAnswer")) } : {}) }); }
+  catch (error) { if (!(error instanceof FoundationChoiceError)) throw error; notice = error.notice; }
+  revalidatePath(`/projects/${projectId}`);
+  redirect(`/projects/${encodeURIComponent(projectId)}?foundationNotice=${notice}#presentation-contracts`);
+
+    return;
+  }
   const useCustom = String(formData.get("useCustom") ?? "") === "1";
   const customAnswer = String(formData.get("customAnswer") ?? "").trim();
   const answer = (useCustom ? customAnswer : String(formData.get("answer") ?? "")).trim();
@@ -517,26 +613,30 @@ export async function decidePresentationContractAction(formData: FormData) {
 export async function skipPresentationContractAction(formData: FormData) {
   const projectId = String(formData.get("projectId") ?? "");
   await requireProjectAccess(projectId);
-  const contractId = String(formData.get("contractId") ?? "");
-  const { prisma } = await import("@/lib/prisma");
-  await prisma.presentationContract.updateMany({
-    where: { id: contractId, projectId },
-    data: { status: "SKIPPED", decidedAt: new Date() }
-  });
-  revalidatePath(`/projects/${projectId}`);
+  redirect(`/projects/${encodeURIComponent(projectId)}?foundationNotice=decision-required#presentation-contracts`);
 }
 
 export async function runFoundationStageAction(formData: FormData) {
   const projectId = String(formData.get("projectId") ?? "");
   await requireProjectAccess(projectId);
   const stageCode = String(formData.get("stageCode") ?? "");
-  if (stageCode !== "P1" && stageCode !== "P2") throw new Error("无效的第一阶段岗位。");
-  const { queueSingleFoundationStage } = await import("@/lib/project-foundation");
-  await queueSingleFoundationStage(projectId, stageCode);
+  if (stageCode !== "F1" && stageCode !== "F2" && stageCode !== "Q1") throw new Error("无效的第一阶段岗位。");
+  const resumeFromRunId = String(formData.get("resumeFromRunId") ?? "").trim();
+  const replayOnly = formData.get("replayOnly") === "1";
+  const allowUnknownRetry = formData.get("allowUnknownRetry") === "1";
+  const { queueSingleFoundationStage, FoundationUnknownCallError } = await import("@/lib/project-foundation");
+  try { await queueSingleFoundationStage(projectId, stageCode, resumeFromRunId || replayOnly || allowUnknownRetry ? { resumeFromRunId, replayOnly, ...(allowUnknownRetry ? { allowUnknownRetry } : {}) } : undefined); }
+  catch (error) {
+    if (error instanceof FoundationChoiceError) redirect(`/projects/${encodeURIComponent(projectId)}?foundationNotice=${error.notice}#presentation-contracts`);
+    if (!(error instanceof FoundationUnknownCallError)) throw error;
+    revalidatePath(`/projects/${projectId}`);
+    redirect(`/projects/${encodeURIComponent(projectId)}?foundationNotice=call-unknown`);
+  }
   revalidatePath(`/projects/${projectId}`);
+  revalidatePath("/");
 }
 
-/** 停止全剧基础工程（P1/P2 worker 进程组 + 当前批次状态）。 */
+/** 停止全剧基础工程（F1/F2/Q1 worker 进程组 + 当前批次状态）。 */
 export async function stopProjectFoundationAction(formData: FormData) {
   const projectId = String(formData.get("projectId") ?? "");
   await requireProjectAccess(projectId);
@@ -545,7 +645,7 @@ export async function stopProjectFoundationAction(formData: FormData) {
     where: {
       projectId,
       episodeId: null,
-      stageCode: { in: ["P1", "P2"] },
+      stageCode: { in: ["F1", "F2", "Q1"] },
       status: { in: ["QUEUED", "RUNNING"] }
     },
     select: { id: true, inputSummary: true }
@@ -566,12 +666,13 @@ export async function stopProjectFoundationAction(formData: FormData) {
   }
   if (!batchToken) throw new Error("缺少基础工程批次信息，无法从页面停止。");
 
-  await prisma.pipelineRun.updateMany({
-    where: { id: { in: runs.map((run) => run.id) } },
-    data: { status: "FAILED", finishedAt: new Date(), error: "用户手动停止" }
+  const canceled = await prisma.pipelineRun.updateMany({
+    where: { id: { in: runs.map((run) => run.id) }, status: { in: ["QUEUED", "RUNNING"] } },
+    data: { status: "CANCELED", finishedAt: new Date(), error: "用户手动停止" }
   });
-  if (workerPid > 0) {
+  if (canceled.count > 0 && workerPid > 0) {
     await terminateWorkerProcessTree(workerPid);
   }
   revalidatePath(`/projects/${projectId}`);
+  revalidatePath("/");
 }

@@ -11,9 +11,7 @@ const accountMenu = readFileSync(join(root, "app/ui/account-menu.tsx"), "utf8");
 const styles = readFileSync(join(root, "app/globals.css"), "utf8");
 const layout = readFileSync(join(root, "app/layout.tsx"), "utf8");
 const projectPage = readFileSync(join(root, "app/projects/[projectId]/page.tsx"), "utf8");
-const presentationContracts = readFileSync(join(root, "app/projects/[projectId]/presentation-contracts.tsx"), "utf8");
-const foundationActions = readFileSync(join(root, "app/projects/[projectId]/foundation-actions.tsx"), "utf8");
-const assetTabs = readFileSync(join(root, "app/projects/[projectId]/asset-index-tabs.tsx"), "utf8");
+const foundationDelivery = readFileSync(join(root, "app/projects/[projectId]/foundation-delivery-panel.tsx"), "utf8");
 const homePage = readFileSync(join(root, "app/page.tsx"), "utf8");
 const newPage = readFileSync(join(root, "app/projects/new/page.tsx"), "utf8");
 const episodePage = readFileSync(join(root, "app/projects/[projectId]/episodes/[episodeId]/page.tsx"), "utf8");
@@ -49,36 +47,18 @@ if (!styles.includes("--ui-canvas") || !styles.includes("position: sticky") || !
   throw new Error("Light UI tokens or fixed navigation behavior are missing");
 }
 
-if (!projectPage.includes("WorkflowGuidance") || projectPage.includes("advancedPanel")) {
-  throw new Error("Project page must expose one guidance action without the retired advanced settings panel");
+if ((projectPage.match(/<FoundationDeliveryPanel\b/g) ?? []).length !== 1 || projectPage.includes("advancedPanel") || projectPage.includes("<FoundationActions")) {
+  throw new Error("Project page must expose one delivery entry without the retired role controls or advanced panel");
 }
 
 if (!layout.includes("vision-studio.css") || !layout.includes("PageTransition")) {
   throw new Error("Root layout must load the Vision Studio design layer and shared-axis transition");
 }
 
-for (const token of ["foundationStageForm", "foundationCardHitArea", "foundationCardAction", "maintenancePanel", "StopFoundationButton"]) {
-  if (!foundationActions.includes(token) && !projectPage.includes(token)) {
-    throw new Error(`Foundation controls are missing the unified interaction ${token}`);
+for (const token of ["startFoundationDeliveryAction", "stopFoundationDeliveryAction", "expectedState", "taskId", "useFormStatus"]) {
+  if (!foundationDelivery.includes(token)) {
+    throw new Error(`Delivery controls are missing the safe interaction ${token}`);
   }
-}
-for (const token of ["foundationHeaderState", "foundationReady ?", "重新生成 P1–P2"]) {
-  if (!foundationActions.includes(token)) throw new Error(`Foundation completion state is missing ${token}`);
-}
-if (!foundationActions.includes("{foundationReady ? (") || !foundationActions.includes(") : null}")) {
-  throw new Error("Foundation maintenance controls must be hidden until P1/P2 are ready");
-}
-for (const token of ["AssetExportButton", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "资产ID", "所属集", "assetExportButton"]) {
-  if (!assetTabs.includes(token)) throw new Error(`Asset export is missing ${token}`);
-}
-for (const token of ["buildAssetWorkbookXlsx", "sortAssetsHierarchically", "资产总览", "标准名称", "状态 / 着装 / 形态", "确认状态", "人物", "场景", "道具"]) {
-  if (!assetTabs.includes(token)) throw new Error(`Asset export workbook structure is missing ${token}`);
-}
-for (const token of ["targetEpisodeNumber", "targetEpisodeNumbers", "P1 识别的相关集（可调整）", "只应用到发现的相关集（推荐）", "修改后会同步后台"]) {
-  if (!presentationContracts.includes(token)) throw new Error(`表现规范范围编辑缺少 ${token}`);
-}
-for (const token of ["episodeStudioGroups", "episodeStudioGroup", "defaultEpisodeGroupStart"]) {
-  if (!projectPage.includes(token)) throw new Error(`Episode production list is missing grouped navigation: ${token}`);
 }
 for (const token of ["ResizeObserver", "foundationReferenceGrid", "data-reference-card", "matchMedia"]) {
   if (!foundationReferenceGrid.includes(token)) throw new Error(`Reference panels are missing adaptive height behavior: ${token}`);
@@ -88,8 +68,8 @@ for (const [name, source] of [["home", homePage], ["new", newPage], ["episode", 
   if (!source.includes("AppChrome")) throw new Error(`${name} page has not migrated to shared chrome`);
 }
 
-if (!projectPage.includes("compact") || !projectPage.includes("ModeSwitch")) {
-  throw new Error("Project topbar must show the current CLI/API execution mode");
+if (!projectPage.includes("<ModeSwitch") || !projectPage.includes("disabled={delivery.busy}")) {
+  throw new Error("Execution mode must remain visible and disabled during active work");
 }
 
 for (const selector of [".appChrome .bibleEpisode", ".appChrome .bibleLine", ".appChrome .studioTableScroll thead"]) {
@@ -112,11 +92,11 @@ if (homePage.includes("?? projects[0]") || !/requestedProjectId\s*\?/.test(homeP
   throw new Error("Project library must not invent a recent-project context when no projectId was requested");
 }
 
-if (projectPage.includes('href="#next-action"') || !projectPage.includes("guidanceHref")) {
-  throw new Error("Project top action must open the recommended destination directly instead of scrolling");
+if ((projectPage.match(/<FoundationDeliveryPanel\b/g) ?? []).length !== 1 || !foundationDelivery.includes('href="#presentation-contracts"')) {
+  throw new Error("Project must avoid a duplicate topbar mutation and point necessary choices to their confirmation area");
 }
 
-if (projectPage.includes("topbarNextStep") || !projectPage.includes("进入本集") || !projectPage.includes("基础工程需处理")) {
+if (projectPage.includes("topbarNextStep") || !projectPage.includes("FoundationWorkflowStatus")) {
   throw new Error("Project header must show workbench status once and keep episode actions in the workspace");
 }
 
@@ -312,74 +292,37 @@ if (!episodePage.includes('title={shot.revision}') || !episodePage.includes('sho
 
 const contractFirst = deriveProjectGuidance({
   pendingContracts: 2,
-  planningReady: false,
-  assetsReady: false,
+  foundationReady: false,
   episodes: []
 });
 if (contractFirst.kind !== "contracts") throw new Error("Pending contracts must be the first action");
 
 const foundationNext = deriveProjectGuidance({
   pendingContracts: 0,
-  planningReady: false,
-  assetsReady: false,
+  foundationReady: false,
   episodes: []
 });
 if (foundationNext.kind !== "foundation") throw new Error("Incomplete foundation must be recommended");
 
 const failedEpisode = deriveProjectGuidance({
   pendingContracts: 0,
-  planningReady: true,
-  assetsReady: true,
+  foundationReady: true,
   episodes: [
     { id: "running", number: 1, shotCount: 10, running: true, failed: false, finished: false },
     { id: "failed", number: 2, shotCount: 4, running: false, failed: true, finished: false }
   ]
 });
-if (failedEpisode.kind !== "running" || failedEpisode.episodeId !== "running") {
-  throw new Error("Running work must remain visible before failed work");
+if (failedEpisode.kind !== "review" || failedEpisode.episodeId !== undefined) {
+  throw new Error("First-stage guidance must not route to legacy running or failed E work");
 }
 
 const continueEpisode = deriveProjectGuidance({
   pendingContracts: 0,
-  planningReady: true,
-  assetsReady: true,
+  foundationReady: true,
   episodes: [{ id: "e3", number: 3, shotCount: 8, running: false, failed: false, finished: false }]
 });
-if (continueEpisode.kind !== "continue" || continueEpisode.episodeId !== "e3") {
-  throw new Error("Incomplete episode must be continued");
-}
-
-const batchRunning = deriveProjectGuidance({
-  pendingContracts: 0,
-  planningReady: true,
-  assetsReady: true,
-  batchMonitor: { status: "RUNNING", message: "批量推进监控已启动。", error: null, processed: 2, total: 80 },
-  episodes: [{ id: "e4", number: 4, shotCount: 0, running: true, failed: false, finished: false }]
-});
-if (batchRunning.kind !== "batch-running" || batchRunning.actionLabel !== "查看批量状态") {
-  throw new Error("Active batch monitor must be the primary project guidance");
-}
-
-const batchPaused = deriveProjectGuidance({
-  pendingContracts: 0,
-  planningReady: true,
-  assetsReady: true,
-  batchMonitor: { status: "FAILED", message: "批量推进已暂停：检测到 Codex CLI 额度不足。", error: null, processed: 16, total: 80 },
-  episodes: [{ id: "e5", number: 5, shotCount: 0, running: false, failed: true, finished: false }]
-});
-if (batchPaused.kind !== "batch-paused" || batchPaused.batchPauseReason !== "quota" || !batchPaused.description.includes("16/80")) {
-  throw new Error("Quota-paused batch must not be presented as a single-episode repair");
-}
-
-const completeAfterStaleBatch = deriveProjectGuidance({
-  pendingContracts: 0,
-  planningReady: true,
-  assetsReady: true,
-  batchMonitor: { status: "FAILED", message: "旧批量记录", error: "旧批量记录", processed: 80, total: 80 },
-  episodes: [{ id: "e6", number: 6, shotCount: 12, running: false, failed: false, finished: true }]
-});
-if (completeAfterStaleBatch.kind !== "complete") {
-  throw new Error("A stale failed monitor must not hide a fully completed project");
+if (continueEpisode.kind !== "review" || continueEpisode.episodeId !== undefined || continueEpisode.actionLabel !== "下载第一阶段资料") {
+  throw new Error("Q1 READY must recommend first-stage export for quality review, not legacy E production");
 }
 
 if (deriveEpisodeProductionStatus([{ status: "失败" }], false) !== "待继续") {

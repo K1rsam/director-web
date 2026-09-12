@@ -1,0 +1,53 @@
+import assert from 'node:assert/strict';
+import { buildSourceIndex, requireF1Output } from '../lib/project-foundation-contracts';
+import { requireProductionCatalogAuthor as author, requireProductionOptimization as optimize, applyProductionOptimizations as apply, mergeProductionCatalogs as merge, projectProductionCatalog as project } from '../lib/foundation-production-contracts';
+import { PRODUCTION_OUTPUT_SCHEMAS } from '../lib/foundation-production-prompts';
+import { buildEpisodeFoundationPackets, type FoundationCandidate } from '../lib/foundation-state';
+
+function freeze<T>(value: T): T { if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); } return value; }
+const index = buildSourceIndex([{ number: 9, title: null, content: '女主穿白裙，先擦伤后重伤。\n火球留下坑洞。\n门后只有声音。' }, { number: 10, title: null, content: '旧坑被新扇形坑覆盖。\n来者揭面。' }]);
+const wire = (assets: unknown[]) => ({ format: 'ASSET_CATALOG_V2', coverage: [9, 10], assets });
+const raw = freeze(wire([{ name: '女主', type: 'CH', episodes: [9, 10], preparation: { mode: 'REFERENCE' }, variants: [{ name: '白裙', episodes: [9, 10], preparation: { mode: 'DERIVE' } }] }]));
+const base = freeze(author(raw, index, [9, 10]));
+const projected = project(base, [9, 10]);
+const dress = projected.assets[0].variants![0];
+assert.equal(Reflect.get(dress, 'key'), base.assets[0].variants[0].key, 'V2 projection must expose canonical white-dress key');
+assert.ok('sourceSelections' in PRODUCTION_OUTPUT_SCHEMAS.F1.episodes[0], 'F1 schema must declare existing source selection capability');
+assert.equal('key' in PRODUCTION_OUTPUT_SCHEMAS.F2.assets[0].variants[0], false, 'author schema must not invite assigning variant identity');
+const f1 = freeze(requireF1Output({ coverage: [9, 10], overview: '冲突升级；门后身份到揭面才可知。', episodes: [{ number: 9, summary: '白裙受伤，坑洞形成。', context: '门后只声，不提前认出。' }, { number: 10, summary: '新坑覆盖旧坑，来者揭面。', context: '承接旧坑；覆盖发生后解除旧坑状态。', sourceSelections: [{ episode: 9, startLine: 2, endLine: 2, purpose: '旧坑起点' }] }] }, index, [9, 10]));
+const variants = [dress, { name: '白裙轻伤', episodes: [9], note: '擦伤后至重创前；只叠加伤痕。', preparation: { mode: 'DERIVE', fromKey: Reflect.get(dress, 'key') } }, { name: '白裙重伤', episodes: [9, 10], note: '重创后延续；无解除依据不复原。', preparation: { mode: 'DERIVE', fromKey: Reflect.get(dress, 'key') } }];
+const edit = freeze(optimize({ format: 'FOUNDATION_OPTIMIZATION_V2', coverage: [9, 10], changes: { assets: [{ ...projected.assets[0], variants }] } }, index, [9, 10]));
+const before = JSON.stringify({ raw, base, f1, edit });
+const result = apply(f1, base, [edit], index);
+const merged = merge([result.f2], index, [9, 10]);
+for (const v of merged.assets[0].variants.slice(1)) { assert.equal(v.preparation?.mode, 'DERIVE'); assert.equal(v.preparation?.fromKey, base.assets[0].variants[0].key); }
+assert.equal(JSON.stringify({ raw, base, f1, edit }), before, 'projection/apply/merge must not mutate frozen inputs');
+const forged = author(wire([{ ...projected.assets[0], variants: [{ ...dress, key: 'FORGED' }] }]), index, [9, 10], base.assets);
+assert.equal(forged.assets[0].variants[0].key, base.assets[0].variants[0].key, 'author key cannot take over variant identity');
+assert.ok(!JSON.stringify(forged).includes('FORGED'));
+const forgedEdit = optimize({ format: 'FOUNDATION_OPTIMIZATION_V2', coverage: [9, 10], changes: { assets: [{ ...projected.assets[0], variants: [{ ...dress, key: 'FORGED' }] }] } }, index, [9, 10]);
+assert.equal(apply(f1, base, [forgedEdit], index).f2.assets[0].variants[0].key, base.assets[0].variants[0].key);
+const invalid = author(wire([{ ...projected.assets[0], variants: [{ ...dress, preparation: { mode: 'DERIVE', fromKey: 'unknown' } }] }]), index, [9, 10], base.assets);
+assert.equal(invalid.assets[0].variants[0].preparation?.mode, 'UNRESOLVED', 'unknown sources remain unresolved');
+const reused = author(wire([{ ...projected.assets[0], variants: [{ ...dress, preparation: { mode: 'DERIVE', fromKey: base.assets[0].variants[0].key, note: '继续沿用原版' } }] }]), index, [9, 10], base.assets);
+assert.equal(reused.assets[0].variants[0].preparation?.mode, base.assets[0].variants[0].preparation?.mode);
+assert.equal(reused.assets[0].variants[0].preparation?.fromKey, base.assets[0].variants[0].preparation?.fromKey);
+assert.match(reused.assets[0].variants[0].preparation?.note ?? '', /继续沿用原版/);
+const candidate = <T>(output: T): FoundationCandidate<T> => ({ schema: 'FOUNDATION_CANDIDATE_V1', id: 'synthetic', output, inputVersion: 'synthetic', sourceVersion: index.version, createdAt: '', stageCode: 'F1', runId: 'synthetic', batchToken: 'synthetic', upstreamSnapshotIds: {}, scope: [9, 10], mechanicalIssues: [] });
+const packets = buildEpisodeFoundationPackets(index, 'synthetic', candidate(result.f1), candidate(merged));
+assert.match(packets[0].f1Context, /只声，不提前认出/);
+assert.match(packets[1].f1Context, /覆盖发生后解除/);
+assert.equal(packets[1].sourceSelections[0].content, '火球留下坑洞。\n');
+assert.deepEqual(packets[1].identities[0].variants?.map(v => v.name), ['白裙', '白裙重伤']);
+assert.equal(packets[1].identities[0].variants?.[1].preparation?.fromKey, base.assets[0].variants[0].key);
+// Generic environmental continuity is supplied as state choices, not image orders.
+const environment = freeze(author(wire([{ name: '庭院', type: 'LOC', episodes: [9, 10], preparation: { mode: 'REFERENCE' }, variants: [{ name: '火球坑', episodes: [9, 10], note: '第9集形成，延续至第10集新坑覆盖前。', preparation: { mode: 'INLINE' } }, { name: '扇形坑', episodes: [10], note: '第10集覆盖旧坑后使用。', preparation: { mode: 'DERIVE' } }] }]), index, [9, 10]));
+const envPackets = buildEpisodeFoundationPackets(index, 'synthetic', candidate(result.f1), candidate(environment));
+assert.deepEqual(envPackets[0].identities[0].variants?.map(v => v.name), ['火球坑']);
+assert.deepEqual(envPackets[1].identities[0].variants?.map(v => v.name), ['火球坑', '扇形坑']);
+assert.match(envPackets[1].identities[0].variants![0].note, /覆盖前/);
+assert.equal(envPackets[1].identities[0].variants![0].preparation?.mode, 'INLINE');
+const whole = requireF1Output({ ...f1, episodes: f1.episodes.map(e => e.number === 10 ? { ...e, sourceSelections: [{ episode: 9, wholeEpisode: true, purpose: '确需完整前情' }] } : e) }, index, [9, 10]);
+assert.deepEqual(whole.episodes[1].sourceSelections[0], { episode: 9, startLine: 1, endLine: 3, purpose: '确需完整前情' });
+assert.throws(() => requireF1Output({ ...f1, episodes: f1.episodes.map(e => ({ ...e, sourceSelections: [{ episode: 9, wholeEpisode: true, startLine: 1, purpose: '混填' }] })) }, index, [9, 10]), /wholeEpisode/);
+console.log('PASS synthetic continuity projection, identity boundary, apply/merge and packet supply (not model quality)');

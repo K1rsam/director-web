@@ -182,6 +182,26 @@
     "scripts/stop-local-service.ps1",
     "scripts/verify-*.ts",
     "scripts/verify_e8_pipeline.py",
-    "*.cmd"
+    "*.cmd",
+    "lib/foundation-*.ts",
+    "lib/light-*.ts",
+    "lib/fidelity-*.ts",
+    "lib/source-*.ts",
+    "lib/scene-parser-version.ts",
+    "lib/scene-split-plan.ts",
+    "lib/legacy-project-foundation-contracts.ts",
+    "prompts/foundation/**",
+    "app/api/fidelity/**",
+    "app/projects/[projectId]/source/**",
+    "app/projects/[projectId]/foundation/**",
+    "app/projects/[projectId]/foundation-*",
+    "scripts/verify-*.tsx",
+    "scripts/verify-*.cjs",
+    "scripts/*3008*",
+    "scripts/*foundation*",
+    "scripts/source_parser.py",
+    "docs/cto-handoff/**",
+    "docs/external-references/**",
+    "integration-merge-report.json"
   ]
 }

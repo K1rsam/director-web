@@ -1,0 +1,57 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import {createSource,proposePlan,validatePlan,normalize} from './fidelity.mjs';
+const copy=o=>JSON.parse(JSON.stringify(o));
+test('完整覆盖含CRLF emoji组合字 空格和假完成词',()=>{
+ const text='第一集\r\n1-1\r\n张三（OS）：  é😀\r\n字幕：完\n【步骤1输出完毕】\n尾段 ';const r=normalize(text);
+ assert.equal(r.segments.map(s=>s.text).join(''),text);assert.equal(r.validation.ok,true);
+});
+test('10段漏第5段拒绝，即使每段内容hash未改',()=>{const s=createSource(Array.from({length:10},(_,i)=>`段${i+1}\n`).join(''));const p=proposePlan(s);p.segments.splice(4,1);assert.equal(validatePlan(s,p).ok,false);});
+test('张三台词绑定李四拒绝',()=>{const s=createSource('第一集\n张三：回来。\n');const p=proposePlan(s);p.segments[1].speakerLabels=['李四'];assert.equal(validatePlan(s,p).ok,false);});
+test('重复第一处同句而遗漏第二处拒绝',()=>{const s=createSource('第一集\n他转身离开。\n他转身离开。\n');const p=proposePlan(s);p.segments[2]=copy(p.segments[1]);assert.equal(validatePlan(s,p).ok,false);});
+test('过期来源与决定拒绝',()=>{const s=createSource('无标题\n内容\n');const p=proposePlan(s);assert.equal(validatePlan(createSource(s.text+'尾'),p).ok,false);const decisions=[{start:0,end:s.length,kind:'context',note:'用户明确为资料'}];const q=proposePlan(s,{decisions});assert.equal(validatePlan(s,q).ok,false);assert.equal(validatePlan(s,q,{decisions}).ok,true);assert.equal(validatePlan(s,p,{decisions}).ok,false);});
+test('资料第0集排除、真实第0集保留、附录保留',()=>{const r=normalize('第0集｜作者资料\n秘密\n第0集\n张三：走。\n第一集\n行动\n附录\n小传\n');assert.equal(r.episodes.length,2);assert.equal(r.episodes[0].sourceNumber,'0');assert.equal(r.episodes[0].productionEligible,true);assert.match(r.contextText,/秘密/);assert.match(r.contextText,/小传/);assert.ok(!r.episodes.map(e=>e.content).join('').includes('小传'));});
+test('无标题完整保留并待确认，序章仍为剧情',()=>{const r=normalize('张三：开门\n尾段');assert.equal(r.episodes.length,0);assert.ok(r.validation.issues.length);assert.equal(normalize('序章\n开门').episodes[0].productionEligible,true);});
+test('小数和点号不误拆，中文混合标题识别',()=>{const r=normalize('第十二集\n3.14\n1.1\n第2场 夜\n台词\n第13集 后续\n完');assert.equal(r.episodes.length,2);assert.equal(r.episodes[0].scenes.length,1);});
+test('重复标题不去重，来源身份不同，疑点保留',()=>{const r=normalize('第一集\n甲\n第一集\n乙\n');assert.equal(r.episodes.length,2);assert.notEqual(r.episodes[0].id,r.episodes[1].id);assert.ok(r.validation.issues.some(i=>i.code==='DUPLICATE_EPISODE_NUMBER'));});
+test('标签多人同一行不改，禁止replacementText',()=>{const s=createSource('第一集\n张三（VO）：一；李四：二；系统声：三\n');const r=normalize(s);assert.equal(r.segments[1].text,s.text.slice(s.text.indexOf('\n')+1));const p=copy(r.plan);p.segments[1].replacementText='错';assert.equal(validatePlan(s,p).ok,false);});
+test('非法CRLF与emoji内部切分拒绝',()=>{for(const text of ['a\r\nb','😀\n末']){const s=createSource(text),p=proposePlan(s);p.segments[0].end=1;assert.equal(validatePlan(s,p).ok,false);}});
+test('长背景超长集不截断',()=>{const text='作者资料\n'+'资料'.repeat(30000)+'\n第一集\n'+'正文'.repeat(120000);const r=normalize(text);assert.equal(r.segments.map(s=>s.text).join(''),text);assert.equal(r.validation.coverage.covered,text.length);});
+test('空文本有效空覆盖，无生产集',()=>{const r=normalize('');assert.equal(r.validation.ok,true);assert.equal(r.episodes.length,0);});
+test('点号数字对含场景元数据识别，金额小数不识别',()=>{for(const heading of ['1.1 日 内 门厅','1．1 日 内 门厅','1. 1 日 内 门厅']){const r=normalize(`第一集 回家\n${heading}\n张三：我回来了；李四：哥哥！`);assert.equal(r.episodes[0].scenes.length,1);assert.equal(r.validation.issues.length,0);}const r=normalize('第一集\n1.5万元\n他拿出1.5万元。');assert.equal(r.episodes[0].scenes.length,0);assert.ok(r.validation.issues.some(i=>i.code==='SCENE_BOUNDARY_UNCONFIRMED'));});
+test('有集无场正文保留且待确认，受信整集一场可解决',()=>{const source=createSource('第一集 回家\n张三：到家。');const r=normalize(source);assert.ok(r.validation.issues.some(i=>i.code==='SCENE_BOUNDARY_UNCONFIRMED'));const fixed=normalize(source,{decisions:[{start:0,end:source.length,kind:'body',note:'采用整集一场',episodeNumber:1,sceneNumber:1}]});assert.equal(fixed.validation.issues.length,0);assert.equal(fixed.episodes[0].content,source.text);});
+test('空格间隔多人同一行标签识别且动作时间冒号不识别',()=>{const r=normalize('第一集\n1-1\n张三：甲 李四：乙\n他看了一眼时间12:30，离开。\n12:30，他走了。');assert.deepEqual(r.segments[2].speakerLabels,['张三','李四']);assert.deepEqual(r.segments[3].speakerLabels,[]);assert.deepEqual(r.segments[4].speakerLabels,[]);});
+test('DOCX读取明确拒绝而非假称提取全保真',()=>{const r=spawnSync(process.execPath,[fileURLToPath(new URL('./cli.mjs',import.meta.url)),'missing.docx','unused-output'],{encoding:'utf8'});assert.equal(r.status,1);assert.match(r.stderr,/DOCX/);});
+test('上下文空白保留、裸0集可见待确认、点号标题解析',()=>{const r=normalize('作者资料\n\n设定\n第0集\n一． 修表铺\n动作\n2. 街道\n末');assert.equal(r.contextText,'作者资料\n\n设定\n');assert.ok(r.validation.issues.some(i=>i.code==='ZERO_EPISODE_UNCONFIRMED'));assert.equal(r.episodes[0].scenes.length,2);assert.match(r.normalizedText,/source-range/);});
+test('无标题可信用户指定第0集场号可生产，旧决定拒绝',()=>{const s=createSource('张三：开门\n动作\n');const decisions=[{start:0,end:s.length,kind:'body',note:'用户指定序章',episodeNumber:0,sceneNumber:1}];const r=normalize(s,{decisions});assert.equal(r.episodes[0].sourceNumber,'0');assert.equal(r.episodes[0].scenes.length,1);assert.equal(r.validation.issues.length,0);assert.equal(validatePlan(s,r.plan).ok,false);});
+test('局部资料决定不会清空后续所属集，生产内容排除资料',()=>{const s=createSource('第一集\n资料\n剧情\n');const decisions=[{start:4,end:7,kind:'context',note:'用户明确'}];const r=normalize(s,{decisions});assert.equal(r.episodes.length,1);assert.equal(r.episodes[0].content,'第一集\n剧情\n');assert.equal(r.contextText,'资料\n');});
+test('删疑点、重排、伪造源版本均拒绝',()=>{const s=createSource('一\n二\n');for(const fn of [p=>p.issues=[],p=>p.segments.reverse(),p=>p.sourceVersion='bad']){const p=proposePlan(s);fn(p);assert.equal(validatePlan(s,p).ok,false);}});
+
+test('无空格场头需独立场元数据，比分金额与无元数据不能误判',()=>{
+ for(const heading of ['1-1收容所 夜 内','70-3日 内 收容所','1.1门厅 日 内']){const r=normalize(`第一集\n${heading}\n张三：走。`);assert.equal(r.episodes[0].scenes.length,1);assert.equal(r.validation.issues.length,0);}
+ for(const heading of ['1-1','70-3比分','1-1收容所','1.5万元','1-1昨日获胜']){assert.equal(normalize(`第一集\n${heading}\n张三：走。`).episodes[0].scenes.length,0);}
+});
+test('零集下一行明确资料连同标题归资料，真实剧情零集保留',()=>{
+ for(const label of ['故事大纲：','人物设定：']){const text=`第零集\r\n\r\n${label}\r\n资料\r\n第一集\r\n1-1门厅 夜 内\r\n张三：走。`;const r=normalize(text);assert.equal(r.episodes.length,1);assert.equal(r.episodes[0].number,1);assert.match(r.contextText,/第零集/);assert.equal(r.segments.map(s=>s.text).join(''),text);assert.equal(r.validation.issues.length,0);}
+ const r=normalize('第零集\n0-1门厅 夜 内\n张三：走。');assert.equal(r.episodes[0].sourceNumber,'零');assert.equal(r.episodes[0].productionEligible,true);
+});
+test('场决定复用同源集场，不将标题与尾空白制造额外集场',()=>{
+ const source=createSource('第一集\n1-1门厅 夜 内\n张三：走。\n\n第二集\n2-1走廊 日 内\n李四：来。\n');
+ const start=source.text.indexOf('1-1'),end=source.text.indexOf('\n\n')+1;
+ const decisions=[{start,end,kind:'body',note:'用户确认',episodeNumber:1,sceneNumber:1}];
+ const r=normalize(source,{decisions});assert.equal(r.episodes.length,2);assert.deepEqual(r.episodes.map(e=>e.number),[1,2]);assert.deepEqual(r.episodes.map(e=>e.scenes.length),[1,1]);assert.equal(r.segments.map(s=>s.text).join(''),source.text);
+ const changed=[{...decisions[0],note:'新的用户确认'}];assert.notEqual(proposePlan(source,{decisions:changed}).decisionVersion,r.plan.decisionVersion);assert.equal(validatePlan(source,r.plan,{decisions:changed}).ok,false);
+ const old=copy(r.plan);old.contractVersion='fidelity/1';assert.equal(validatePlan(source,old,{decisions}).ok,false);
+});
+test('非生产标题不占生产编号',()=>{
+ const s=createSource('第零集\n资料\n第一集\n1-1门厅 夜 内\n张三：走。');
+ const r=normalize(s,{decisions:[{start:4,end:7,kind:'context',note:'资料'}]});
+ assert.equal(r.episodes[0].productionEligible,false);assert.equal(r.episodes[0].number,0);assert.equal(r.episodes[1].number,1);
+});
+
+test('资料前短文档标题归资料，动作对白长稿不能整体吞掉',()=>{
+ const r=normalize('山海图鉴：收容所开局\n\n第零集\n故事大纲：\n资料\n第一集\n1-1门厅 夜 内\n甲：走。');assert.equal(r.validation.issues.length,0);assert.match(r.contextText,/山海图鉴/);
+ for(const opening of ['△他推门而入。','张三：走！','正文'.repeat(80)]){const text=`${opening}\n第零集\n故事大纲：\n资料\n`;const x=normalize(text);assert.equal(x.segments[0].kind,'body');assert.equal(x.segments.map(s=>s.text).join(''),text);assert.ok(x.validation.issues.length);}
+});

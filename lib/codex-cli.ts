@@ -22,6 +22,10 @@ export type CodexJsonRequest = {
   ephemeral?: boolean;
   /** 岗位只做结构化文本推理，默认关闭无关的 Apps/浏览器/图像/多代理能力。 */
   minimalRuntime?: boolean;
+  /** 仅自包含F1/F2/Q1资料调用：关闭自动技能目录与项目开发说明注入，不改变权限或全局配置。 */
+  instructionProfile?: "foundation";
+  /** 可选捕获完整 -o 输出文件（解析前）；不等同于有长度上限的 stdout JSONL。 */
+  onRawOutput?: (content: string) => void;
 };
 
 export type CodexJsonResult<T> = {
@@ -92,7 +96,12 @@ const MINIMAL_RUNTIME_ARGS = [
   "--disable", "multi_agent"
 ];
 
-/** 排队前的零 Token 预检：读取本机 CLI 版本与 app-server 登录态，不调用模型。 */
+export const FOUNDATION_CLI_INSTRUCTION_PROFILE = {
+  version: "FOUNDATION_SELF_CONTAINED_V1",
+  overrides: { "skills.include_instructions": false, project_doc_max_bytes: 0 }
+} as const;
+
+/** 排队前的零 Token 预检：只检查本机 CLI 可执行文件、版本与登录态。 */
 export async function assertCodexCliReady(): Promise<{ executable: string; version: string }> {
   const executable = resolveCodexExecutable();
   try {
@@ -161,13 +170,14 @@ export async function readCodexCliStatus(): Promise<CodexCliStatus> {
 
 export async function runCodexJson<T>(request: CodexJsonRequest): Promise<CodexJsonResult<T>> {
   if (request.ephemeral && request.sessionId) {
-    throw new Error("临时 CLI 会话不能续接已有 sessionId。");
+    throw Object.assign(new Error("临时 CLI 会话不能续接已有 sessionId。"), { requestOutcome: "NOT_SENT" });
   }
   const startedAt = Date.now();
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "seedance-codex-"));
+  const notSent = (error: unknown): never => { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { requestOutcome: "NOT_SENT" }); };
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "seedance-codex-")).catch(notSent);
   const schemaPath = path.join(tempDir, "schema.json");
   const outputPath = path.join(tempDir, "output.json");
-  if (request.schema) await writeFile(schemaPath, JSON.stringify(request.schema), "utf8");
+  if (request.schema) await writeFile(schemaPath, JSON.stringify(request.schema), "utf8").catch(notSent);
 
   const executable = request.executable ?? resolveCodexExecutable();
   const useMinimalRuntime = request.minimalRuntime ?? (process.env.CODEX_CLI_MINIMAL_RUNTIME !== "0");
@@ -176,6 +186,8 @@ export async function runCodexJson<T>(request: CodexJsonRequest): Promise<CodexJ
     "exec",
     ...(request.sessionId ? ["resume"] : []),
     ...(useMinimalRuntime ? MINIMAL_RUNTIME_ARGS : []),
+    ...(request.instructionProfile === "foundation"
+      ? Object.entries(FOUNDATION_CLI_INSTRUCTION_PROFILE.overrides).flatMap(([key, value]) => ["--config", `${key}=${JSON.stringify(value)}`]) : []),
     "--model",
     request.model,
     "--config",
@@ -190,15 +202,20 @@ export async function runCodexJson<T>(request: CodexJsonRequest): Promise<CodexJ
     "-"
   ];
 
+  let processResult: { stdout: string; stderr: string } | undefined;
+  let rawOutputCaptured = false;
   try {
-    const processResult = await runProcess({
+    processResult = await runProcess({
       executable,
       args,
       prompt: request.prompt,
       cwd: request.cwd,
-      timeoutMs: request.timeoutMs ?? resolveCliTimeoutMs()
+      timeoutMs: request.timeoutMs ?? resolveCliTimeoutMs(),
+      captureDiagnostics: Boolean(request.onRawOutput)
     });
     const rawOutput = await readFile(outputPath, "utf8");
+    rawOutputCaptured = true;
+    request.onRawOutput?.(rawOutput);
     const data = parseJsonOutput<T>(rawOutput);
     return {
       data,
@@ -207,6 +224,18 @@ export async function runCodexJson<T>(request: CodexJsonRequest): Promise<CodexJ
       stdout: processResult.stdout,
       stderr: processResult.stderr
     };
+  } catch (error) {
+    if (error instanceof Error) Object.assign(error, {
+      requestOutcome: rawOutputCaptured ? "RESPONDED" : (error as Error & { requestOutcome?: string }).requestOutcome ?? "UNKNOWN"
+    });
+    if (request.onRawOutput) {
+      if (!rawOutputCaptured) {
+        const rawOutput = await readFile(outputPath, "utf8").catch(() => null);
+        if (rawOutput !== null) request.onRawOutput(rawOutput);
+      }
+      if (processResult && error instanceof Error) Object.assign(error, processResult);
+    }
+    throw error;
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -267,6 +296,17 @@ function normalizeConfiguredExecutable(value: string): string {
 }
 
 function resolveSpawnInvocation(executable: string, args: string[]): { executable: string; args: string[] } {
+  // An absent absolute target is known not sent, even when Windows would successfully
+  // spawn cmd.exe first. Bare PATH commands remain the operating system's responsibility.
+  if (path.isAbsolute(executable)) {
+    const candidates = [executable];
+    if (process.platform === "win32" && !path.extname(executable)) {
+      candidates.push(...(process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean).map(extension => `${executable}${extension}`));
+    }
+    if (!candidates.some(candidate => existsSync(candidate))) {
+      throw Object.assign(new Error(`找不到 Codex CLI 启动程序（${executable}）。`), { code: "ENOENT", requestOutcome: "NOT_SENT" });
+    }
+  }
   if (process.platform !== "win32") return { executable, args };
 
   // Node 在 Windows 上不能像终端一样直接 spawn .cmd/.bat；显式使用隐藏的
@@ -547,7 +587,11 @@ async function runProcess(input: {
   prompt: string;
   cwd: string;
   timeoutMs: number;
+  captureDiagnostics?: boolean;
 }) {
+  let stdout = "";
+  let stderr = "";
+  let spawned = false;
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
     const invocation = resolveSpawnInvocation(input.executable, input.args);
     const child = spawn(invocation.executable, invocation.args, {
@@ -556,9 +600,8 @@ async function runProcess(input: {
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"]
     });
-    let stdout = "";
-    let stderr = "";
     const maxLogLength = 2_000_000;
+    child.on("spawn", () => { spawned = true; });
     let timedOut = false;
     let forceTimer: NodeJS.Timeout | null = null;
     const timer = setTimeout(() => {
@@ -599,6 +642,10 @@ async function runProcess(input: {
       // 子进程提前退出时由 close 事件统一给出真实错误，忽略 stdin EPIPE。
     });
     child.stdin.end(input.prompt);
+  }).catch((error: unknown) => {
+    if (error instanceof Error) Object.assign(error, { requestOutcome: spawned ? "UNKNOWN" : "NOT_SENT" });
+    if (input.captureDiagnostics && error instanceof Error) Object.assign(error, { stdout, stderr });
+    throw error;
   });
 }
 

@@ -9,21 +9,7 @@ export function StopFoundationButton({ active }: { active: boolean }) {
   useEffect(() => { submitting.current = pending; }, [pending]);
   if (!active && !pending) return null;
   return (
-    <button
-      type="submit"
-      className="studioButton foundationStopButton cautionQuietButton"
-      data-variant="caution"
-      disabled={!active || pending}
-      aria-busy={pending}
-      title="停止当前 P1/P2 基础工程任务"
-      onClick={(event) => {
-        if (!active || pending || submitting.current) {
-          event.preventDefault();
-          return;
-        }
-        submitting.current = true;
-      }}
-    >
+    <button type="submit" className="foundationStopButton" disabled={pending} title="停止当前 F1/F2/Q1 基础资料任务">
       {pending ? "停止中…" : "停止"}
     </button>
   );

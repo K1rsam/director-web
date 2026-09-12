@@ -1,0 +1,255 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { PrismaClient } from "@prisma/client";
+import type { FoundationStageRunner } from "@/lib/project-foundation";
+
+const directory = mkdtempSync(path.join(tmpdir(), "foundation-choice-runtime-"));
+const url = `file:${path.join(directory, "test.db")}`;
+process.env.DATABASE_URL = url;
+copyFileSync(path.resolve("prisma/schema.prisma"), path.join(directory, "schema.prisma"));
+execFileSync(process.execPath, [path.resolve("node_modules/prisma/build/index.js"), "db", "push", "--schema", path.join(directory, "schema.prisma"), "--skip-generate"], { cwd: directory, env: { ...process.env, DATABASE_URL: url, RUST_LOG: "info" }, stdio: "pipe" });
+const db = new PrismaClient({ datasourceUrl: url });
+(globalThis as unknown as { prisma: PrismaClient }).prisma = db;
+
+async function main() {
+  const core = await import("@/lib/project-foundation");
+  const stateApi = await import("@/lib/foundation-state");
+  const { preprocessProject } = await import("@/lib/project-preprocess");
+  const choice = { decisionKey: "production/甲/reference", kind: "PRODUCTION_CHOICE" as const, question: "甲采用哪种已获授权的参考？", reason: "授权素材由用户掌握，源文无法决定。", options: ["使用自有参考", "重新制作参考"], recommended: "重新制作参考", recommendationReason: "当前没有已确认素材。", evidence: "本阶段未提供素材清单。", episodes: [1] };
+  const parse = (prompt: string) => JSON.parse(prompt.slice(prompt.lastIndexOf("INPUT_JSON:\n") + 12));
+  async function project() {
+    const p = await db.project.create({ data: { title: "__synthetic_choices__", executionMode: "API", episodes: { create: [{ number: 1, content: "1-1\n甲在屋内。" }] } } });
+    await preprocessProject(p.id, db); return p;
+  }
+  const seen: string[] = [];
+  const runner: FoundationStageRunner = async (stage, prompt) => {
+    seen.push(stage); const input = parse(prompt);
+    const data = stage === "F1" ? { coverage: input.scope, overview: "甲在屋内", episodes: input.scope.map((number: number) => ({ number, summary: "甲在屋内" })), humanChoices: [choice] }
+      : stage === "F2" ? { format: "ASSET_CATALOG_V2", coverage: input.scope, assets: [] }
+        : { format: "FOUNDATION_OPTIMIZATION_V2", coverage: input.scope, changes: {} };
+    return { data, rawOutput: JSON.stringify(data), sessionId: null, stdout: "synthetic", stderr: "" };
+  };
+  const p = await project();
+  await core.queueProjectFoundationContinuation(p.id, { db, stageRunner: runner });
+  assert.equal(await db.presentationContract.count({ where: { projectId: p.id } }), 1, "F1 human decision must be persisted");
+  assert.deepEqual(seen, ["F1"], "F1 choice pauses F2/Q1 without an extra provider call");
+  assert.equal(await db.pipelineRun.count({ where: { projectId: p.id, status: { in: ["RUNNING", "QUEUED"] } } }), 0);
+  assert.equal((await db.pipelineRun.findFirstOrThrow({ where: { projectId: p.id, stageCode: "F1" } })).status, "SUCCEEDED");
+  console.log("PASS successful F1 choice persistence and suffix pause");
+  const store = await import("@/lib/foundation-choice-store");
+  const source = (await stateApi.loadFoundationInputs(p.id, db)).sourceVersion;
+  const originalRun = await db.pipelineRun.findFirstOrThrow({ where: { projectId: p.id, stageCode: "F1" } });
+  const beforeVersion = (await stateApi.loadFoundationInputs(p.id, db)).inputVersion;
+  const submit = async (overrides: Record<string, unknown> = {}) => {
+    const view = (await store.loadFoundationChoices(db, p.id, source)).pending[0];
+    return store.confirmFoundationChoice(db, { projectId: p.id, contractId: view.id, revision: view.revision, optionIndex: "0", ...overrides });
+  };
+  const first = (await store.loadFoundationChoices(db, p.id, source)).pending[0];
+  await db.$transaction(tx => store.syncFoundationChoices(tx, p.id, source, "F2", [choice]));
+  const merged = (await store.loadFoundationChoices(db, p.id, source)).pending[0];
+  assert.deepEqual(merged.sourceStages, ["F1", "F2"]);
+  assert.equal(await db.presentationContract.count({ where: { projectId: p.id } }), 1);
+  assert.equal((await stateApi.loadFoundationInputs(p.id, db)).inputVersion, beforeVersion, "pending registry does not invalidate same-run inputs");
+  await assert.rejects(() => submit({ revision: first.revision }), /更新/);
+  for (const invalid of ["-1", "2", "0.0", "abc", "9007199254740993"]) await assert.rejects(() => submit({ optionIndex: invalid }), /有效方案/);
+  await assert.rejects(() => submit({ optionIndex: undefined, customAnswer: "  " }), /有效方案/);
+  await assert.rejects(() => submit({ customAnswer: "not an option" }), /有效方案/);
+  const other = await project();
+  await assert.rejects(() => submit({ projectId: other.id }), /更新/);
+  const active = await db.pipelineRun.create({ data: { projectId: p.id, stageCode: "F2", roleName: "fake", status: "RUNNING" } });
+  await assert.rejects(() => submit(), /执行/);
+  await db.pipelineRun.update({ where: { id: active.id }, data: { status: "CANCELED" } });
+  const seenBefore = seen.length;
+  await assert.rejects(() => core.queueProjectFoundationContinuation(p.id, { db, stageRunner: runner }), /必要确认/);
+  await assert.rejects(() => core.queueSingleFoundationStage(p.id, "F1", undefined, { db, stageRunner: runner }), /必要确认/);
+  await assert.rejects(() => core.queueSingleFoundationStage(p.id, "F2", { resumeFromRunId: originalRun.id, replayOnly: true }, { db, stageRunner: runner }), /必要确认/);
+  await submit();
+  assert.equal(seen.length, seenBefore, "confirming never runs a provider");
+  await assert.rejects(() => store.confirmFoundationChoice(db, { projectId: p.id, contractId: merged.id, revision: merged.revision, optionIndex: "1" }), /更新/);
+  const confirmedBefore = await db.presentationContract.findUniqueOrThrow({ where: { id: merged.id } });
+  await db.$transaction(tx => store.syncFoundationChoices(tx, p.id, source, "Q1", [{ ...choice, question: "改问法", options: ["改变", "另改"], recommended: "改变" }]));
+  assert.deepEqual(await db.presentationContract.findUniqueOrThrow({ where: { id: merged.id } }), confirmedBefore);
+  assert.notEqual((await stateApi.loadFoundationInputs(p.id, db)).inputVersion, beforeVersion);
+  assert.deepEqual(await db.pipelineRun.findUniqueOrThrow({ where: { id: originalRun.id } }), originalRun, "confirmation never rewrites prior input signatures or logs");
+  assert.equal((await stateApi.getFoundationState(p.id, db)).planningReady, false);
+  const confirmedInput = await stateApi.loadFoundationInputs(p.id, db);
+  assert.equal(confirmedInput.presentationConditions[0].answer, choice.options[0]);
+  const signedChoice = JSON.parse(confirmedBefore.note!);
+  await db.presentationContract.update({ where: { id: confirmedBefore.id }, data: { note: JSON.stringify({ ...signedChoice, episodes: [] }) } });
+  assert.notEqual((await stateApi.loadFoundationInputs(p.id, db)).inputVersion, confirmedInput.inputVersion, "same answer with changed confirmed scope must change shared version");
+  await db.presentationContract.update({ where: { id: confirmedBefore.id }, data: { note: JSON.stringify({ ...signedChoice, decisionKey: "production/乙/reference" }) } });
+  assert.notEqual((await stateApi.loadFoundationInputs(p.id, db)).inputVersion, confirmedInput.inputVersion, "same answer with changed confirmed decision key must change shared version");
+  await db.presentationContract.update({ where: { id: confirmedBefore.id }, data: { note: confirmedBefore.note } });
+  const conditions = (await stateApi.loadFoundationInputs(p.id, db)).presentationConditions[0] as Record<string, unknown>;
+  assert.equal(conditions.decisionKey, choice.decisionKey);
+  assert.deepEqual(conditions.episodes, [1]);
+  console.log("PASS key dedup, confirmed immutability, revision/project/active/options guards, no automatic generation or signature rewriting");
+
+  await db.$transaction(tx => store.syncFoundationChoices(tx, p.id, source, "F2", [{ ...choice, decisionKey: "production/乙/reference" }]));
+  assert.equal((await stateApi.loadFoundationInputs(p.id, db)).inputVersion, confirmedInput.inputVersion, "new pending decision does not change confirmed version");
+  assert.equal(await db.presentationContract.count({ where: { projectId: p.id } }), 2, "distinct object must remain independent");
+  const pendingBeforeSource = (await store.loadFoundationChoices(db, p.id, source)).pending[0];
+  const episode = await db.episode.findFirstOrThrow({ where: { projectId: p.id } });
+  await db.episode.update({ where: { id: episode.id }, data: { content: "1-1\n另一源文。" } });
+  const newSource = (await stateApi.loadFoundationInputs(p.id, db)).sourceVersion;
+  assert.equal((await store.loadFoundationChoices(db, p.id, newSource)).pending.length, 0);
+  assert.equal((await store.loadFoundationChoices(db, p.id, newSource)).confirmed.length, 1);
+  await assert.rejects(() => store.confirmFoundationChoice(db, { projectId: p.id, contractId: pendingBeforeSource.id, revision: pendingBeforeSource.revision, optionIndex: "0" }), /更新/);
+  const legacy = await db.presentationContract.create({ data: { projectId: p.id, category: "legacy", question: "旧题", options: "bad json", note: "原手工备注", status: "PENDING" } });
+  let legacyView = (await store.loadFoundationChoices(db, p.id, newSource)).pending.find(row => row.id === legacy.id)!;
+  assert.deepEqual(legacyView.options, []);
+  await store.confirmFoundationChoice(db, { projectId: p.id, contractId: legacy.id, revision: legacyView.revision, customAnswer: "真实自定义答案" });
+  const legacyCondition = (await stateApi.loadFoundationInputs(p.id, db)).presentationConditions.find(item => item.question === "旧题")!;
+  assert.equal(legacyCondition, undefined, "unknown legacy scope must not become global");
+  const legacyConfirmed = (await store.loadFoundationChoices(db, p.id, newSource)).confirmed.find(item=>item.id===legacy.id);
+  assert.ok(legacyConfirmed?.reason, "unknown scope remains visible for resolution");
+  await db.$transaction(tx => store.syncFoundationChoices(tx, p.id, newSource, "Q1", [{ ...choice, decisionKey: `legacy:${legacy.id}` }]));
+  assert.equal((await db.presentationContract.findUniqueOrThrow({ where: { id: legacy.id } })).note, "原手工备注");
+  const placeholder = await db.presentationContract.create({ data: { projectId: other.id, category: "legacy", question: "旧题", options: JSON.stringify(["方案", "D. 用户自定义"]), status: "PENDING" } });
+  const otherSource = (await stateApi.loadFoundationInputs(other.id, db)).sourceVersion;
+  const placeholderView = (await store.loadFoundationChoices(db, other.id, otherSource)).pending.find(row => row.id === placeholder.id)!;
+  await assert.rejects(() => store.confirmFoundationChoice(db, { projectId: other.id, contractId: placeholder.id, revision: placeholderView.revision, optionIndex: "1" }), /有效方案/);
+  console.log("PASS source-scoped pending, legacy malformed options/custom answer, literal custom placeholder rejection");
+
+  for (const target of ["F2", "Q1", "NONE"]) {
+    const testProject = await project(); const calls: string[] = [];
+    await core.queueProjectFoundationContinuation(testProject.id, { db, stageRunner: async (stage, prompt, ctx) => {
+      calls.push(stage); const result = await runner(stage, prompt, ctx); delete result.data.humanChoices;
+      if (stage === target) result.data.humanChoices = [choice];
+      if (target === "NONE" && stage === "Q1") result.data.unresolved = [{ note: "AI仍可自行核对的资料", episodes: [1] }];
+      result.rawOutput = JSON.stringify(result.data); return result;
+    } });
+    const s = await stateApi.getFoundationState(testProject.id, db);
+    assert.deepEqual(calls, target === "F2" ? ["F1", "F2"] : ["F1", "F2", "Q1"]);
+    assert.equal(await db.presentationContract.count({ where: { projectId: testProject.id } }), target === "NONE" ? 0 : 1);
+    assert.equal(s.ready, false); assert.equal(await db.pipelineRun.count({ where: { projectId: testProject.id, status: { in: ["QUEUED", "RUNNING"] } } }), 0);
+    if (target === "Q1") {
+      assert.equal(s.reviewReady, false);
+      const q1 = await db.pipelineRun.findFirstOrThrow({ where: { projectId: testProject.id, stageCode: "Q1" } });
+      assert.equal(JSON.parse(q1.outputSummary!).reviewReady, false, "summary must not promise review readiness while a human decision waits");
+    }
+  }
+  console.log("PASS F2/Q1 required choices stop publication; plain unresolved never invents human questions");
+  const chunkProject = await project();
+  const chunkEpisode = await db.episode.findFirstOrThrow({ where: { projectId: chunkProject.id } });
+  await db.episode.update({ where: { id: chunkEpisode.id }, data: { content: `1-1\n甲在屋内。${"源".repeat(24001)}` } });
+  await db.episode.create({ data: { projectId: chunkProject.id, number: 2, content: `2-1\n甲在屋内。${"源".repeat(24001)}` } });
+  await preprocessProject(chunkProject.id, db);
+  let chunks = 0;
+  await core.queueProjectFoundationContinuation(chunkProject.id, { db, stageRunner: async (stage, prompt, ctx) => {
+    const input = parse(prompt); chunks++;
+    if (chunks === 2) assert.equal(input.humanChoiceRegistry[0].decisionKey, choice.decisionKey);
+    const result = await runner(stage, prompt, ctx); result.data.humanChoices = [{ ...choice, episodes: input.scope }]; result.rawOutput = JSON.stringify(result.data); return result;
+  } });
+  assert.equal(chunks, 2, "same-stage chunks finish with prior proposal index; subsequent stages wait");
+  const chunkSource = (await stateApi.loadFoundationInputs(chunkProject.id, db)).sourceVersion;
+  const chunkView = (await store.loadFoundationChoices(db, chunkProject.id, chunkSource)).pending[0];
+  assert.deepEqual(chunkView.episodes, [1, 2]);
+  await store.confirmFoundationChoice(db, { projectId: chunkProject.id, contractId: chunkView.id, revision: chunkView.revision, optionIndex: "1" });
+  const roles = new Set<string>();
+  await core.queueProjectFoundationContinuation(chunkProject.id, { db, stageRunner: async (stage, prompt, ctx) => {
+    roles.add(stage); const input = parse(prompt);
+    assert.equal(input.humanChoiceRegistry[0].status, "CONFIRMED");
+    assert.equal(input.humanChoiceRegistry[0].answer, choice.options[1]);
+    assert.equal(input.presentationConditions[0].answer, choice.options[1]);
+    const result = await runner(stage, prompt, ctx); delete result.data.humanChoices; result.rawOutput = JSON.stringify(result.data); return result;
+  } });
+  assert.deepEqual([...roles], ["F1", "F2", "Q1"]);
+  const executeBlocked = await project();
+  const blockedInput = await stateApi.loadFoundationInputs(executeBlocked.id, db);
+  const token = "synthetic-execution-pending";
+  await db.pipelineRun.create({ data: { projectId: executeBlocked.id, stageCode: "F1", roleName: "F1", status: "QUEUED", inputSummary: JSON.stringify({ batchToken: token, provider: "API" }) } });
+  await db.$transaction(tx => store.syncFoundationChoices(tx, executeBlocked.id, blockedInput.sourceVersion, "F1", [choice]));
+  await assert.rejects(() => core.executeProjectFoundation(executeBlocked.id, token, { db, stageRunner: runner }), /必要确认/);
+  assert.equal(await db.pipelineRun.count({ where: { projectId: executeBlocked.id, status: { in: ["QUEUED", "RUNNING"] } } }), 0);
+  console.log("PASS prior chunk and confirmed registry supplied to all roles; worker rechecks before any provider");
+  const scopeProject = await project();
+  await db.episode.create({ data: { projectId: scopeProject.id, number: 2, content: "2-1\n甲继续在屋内。" } });
+  await preprocessProject(scopeProject.id, db);
+  const scopedRunner = (first: boolean, calls: string[]): FoundationStageRunner => async (stage, prompt, ctx) => {
+    calls.push(stage); const result = await runner(stage, prompt, ctx); delete result.data.humanChoices;
+    if (first && stage === "F1") result.data.humanChoices = [{ ...choice, episodes: [1] }];
+    if (!first && stage === "F2") result.data.humanChoices = [{ ...choice, episodes: [2] }];
+    result.rawOutput = JSON.stringify(result.data); return result;
+  };
+  await core.queueProjectFoundationContinuation(scopeProject.id, { db, stageRunner: scopedRunner(true, []) });
+  const scopeVersion = (await stateApi.loadFoundationInputs(scopeProject.id, db)).sourceVersion;
+  const firstScope = (await store.loadFoundationChoices(db, scopeProject.id, scopeVersion)).pending[0];
+  await store.confirmFoundationChoice(db, { projectId: scopeProject.id, contractId: firstScope.id, revision: firstScope.revision, optionIndex: "0" });
+  const immutableFirstScope = await db.presentationContract.findUniqueOrThrow({ where: { id: firstScope.id } });
+  const extensionCalls: string[] = [];
+  await core.queueProjectFoundationContinuation(scopeProject.id, { db, stageRunner: scopedRunner(false, extensionCalls) });
+  assert.deepEqual(extensionCalls, ["F1", "F2"], "a confirmed episode-1 decision does not authorize episode 2 or start Q1");
+  assert.equal(await db.sceneSnapshot.count({ where: { projectId: scopeProject.id, sceneKey: "FOUNDATION_APPROVED" } }), 0);
+  const extension = (await store.loadFoundationChoices(db, scopeProject.id, scopeVersion)).pending[0];
+  assert.deepEqual(extension.episodes, [2]);
+  assert.match(extension.reason!, /仅确认.*新增适用范围.*原已确认范围和答案保持不变/);
+  assert.deepEqual(await db.presentationContract.findUniqueOrThrow({ where: { id: firstScope.id } }), immutableFirstScope);
+  await db.$transaction(tx => store.syncFoundationChoices(tx, scopeProject.id, scopeVersion, "Q1", [{ ...choice, episodes: [2] }]));
+  const refreshedExtension = (await store.loadFoundationChoices(db, scopeProject.id, scopeVersion)).pending[0];
+  assert.equal(refreshedExtension.id, extension.id, "repeated scope expansion remains one question");
+  await assert.rejects(() => store.confirmFoundationChoice(db, { projectId: scopeProject.id, contractId: extension.id, revision: refreshedExtension.revision, customAnswer: " " }), error => error instanceof store.FoundationChoiceError && error.notice === "decision-invalid");
+  await store.confirmFoundationChoice(db, { projectId: scopeProject.id, contractId: extension.id, revision: refreshedExtension.revision, optionIndex: "1" });
+  const immutableExtension = await db.presentationContract.findUniqueOrThrow({ where: { id: extension.id } });
+  const scopedResume = scopedRunner(false, []);
+  await core.queueProjectFoundationContinuation(scopeProject.id, { db, stageRunner: async (stage, prompt, context) => {
+    const input = parse(prompt);
+    const registered = input.humanChoiceRegistry.filter((item: { decisionKey: string }) => item.decisionKey === choice.decisionKey);
+    assert.equal(registered.length, 2);
+    assert.ok(registered.some((item: { episodes: number[]; answer: string }) => JSON.stringify(item.episodes) === "[1]" && item.answer === choice.options[0]));
+    assert.ok(registered.some((item: { episodes: number[]; answer: string }) => JSON.stringify(item.episodes) === "[2]" && item.answer === choice.options[1]));
+    return scopedResume(stage, prompt, context);
+  } });
+  assert.equal((await store.loadFoundationChoices(db, scopeProject.id, scopeVersion)).pending.length, 0);
+  const scopedConditions = (await stateApi.loadFoundationInputs(scopeProject.id, db)).presentationConditions;
+  assert.ok(scopedConditions.some(item => JSON.stringify(item.episodes) === "[1]" && item.answer === choice.options[0]));
+  assert.ok(scopedConditions.some(item => JSON.stringify(item.episodes) === "[2]" && item.answer === choice.options[1]));
+  assert.deepEqual(await db.presentationContract.findUniqueOrThrow({ where: { id: firstScope.id } }), immutableFirstScope);
+  assert.deepEqual(await db.presentationContract.findUniqueOrThrow({ where: { id: extension.id } }), immutableExtension);
+  const globalProject = await project();
+  await db.episode.createMany({ data: [2, 3].map(number => ({ projectId: globalProject.id, number, content: `${number}-1\n甲在屋内。` })) });
+  const globalSource = (await stateApi.loadFoundationInputs(globalProject.id, db)).sourceVersion;
+  await db.$transaction(tx => store.syncFoundationChoices(tx, globalProject.id, globalSource, "F1", [choice]));
+  const localOriginal = (await store.loadFoundationChoices(db, globalProject.id, globalSource)).pending[0];
+  await store.confirmFoundationChoice(db, { projectId: globalProject.id, contractId: localOriginal.id, revision: localOriginal.revision, optionIndex: "0" });
+  await db.$transaction(tx => store.syncFoundationChoices(tx, globalProject.id, globalSource, "F2", [{ ...choice, episodes: [2] }]));
+  const extensionId = (await store.loadFoundationChoices(db, globalProject.id, globalSource)).pending[0].id;
+  await db.$transaction(tx => store.syncFoundationChoices(tx, globalProject.id, globalSource, "Q1", [{ ...choice, episodes: [] }]));
+  const globalExtension = (await store.loadFoundationChoices(db, globalProject.id, globalSource)).pending[0];
+  assert.equal(globalExtension.id, extensionId); assert.deepEqual(globalExtension.episodes, [2, 3], "global proposal confirms only still-uncovered current scope, never broadens earlier consent");
+  const allScopeKey = "production/全剧/reference";
+  await db.$transaction(tx => store.syncFoundationChoices(tx, globalProject.id, globalSource, "F1", [{ ...choice, decisionKey: allScopeKey, episodes: [] }]));
+  const allScope = (await store.loadFoundationChoices(db, globalProject.id, globalSource)).pending.find(item => item.id !== extensionId)!;
+  await store.confirmFoundationChoice(db, { projectId: globalProject.id, contractId: allScope.id, revision: allScope.revision, optionIndex: "0" });
+  const globalCount = await db.presentationContract.count({ where: { projectId: globalProject.id } });
+  await db.$transaction(tx => store.syncFoundationChoices(tx, globalProject.id, globalSource, "Q1", [{ ...choice, decisionKey: allScopeKey, episodes: [2, 3] }]));
+  assert.equal(await db.presentationContract.count({ where: { projectId: globalProject.id } }), globalCount, "confirmed global scope authorizes any covered episode without another row");
+  const localChunkProject = await project();
+  const firstChunkEpisode = await db.episode.findFirstOrThrow({ where: { projectId: localChunkProject.id } });
+  await db.episode.update({ where: { id: firstChunkEpisode.id }, data: { content: `1-1\n甲在屋内。${"源".repeat(24001)}` } });
+  await db.episode.createMany({ data: [2, 3].map(number => ({ projectId: localChunkProject.id, number, content: `${number}-1\n甲在屋内。${"源".repeat(24001)}` })) });
+  await preprocessProject(localChunkProject.id, db);
+  const localChunkSource = (await stateApi.loadFoundationInputs(localChunkProject.id, db)).sourceVersion;
+  await db.$transaction(tx => store.syncFoundationChoices(tx, localChunkProject.id, localChunkSource, "F1", [choice]));
+  const oldChunkChoice = (await store.loadFoundationChoices(db, localChunkProject.id, localChunkSource)).pending[0];
+  await store.confirmFoundationChoice(db, { projectId: localChunkProject.id, contractId: oldChunkChoice.id, revision: oldChunkChoice.revision, optionIndex: "0" });
+  let localChunks = 0;
+  await core.queueProjectFoundationContinuation(localChunkProject.id, { db, stageRunner: async (stage, prompt, context) => {
+    assert.equal(stage, "F1"); localChunks++;
+    const input = parse(prompt);
+    if (context.chunkIndex === 3) {
+      assert.ok(input.humanChoiceRegistry.some((item: { status: string; episodes: number[] }) => item.status === "CONFIRMED" && JSON.stringify(item.episodes) === "[1]"));
+      assert.ok(input.humanChoiceRegistry.some((item: { status: string; episodes: number[] }) => item.status === "PENDING" && JSON.stringify(item.episodes) === "[2]"), "same-key confirmed entry must not hide the preceding chunk's uncovered proposal");
+    }
+    const result = await runner(stage, prompt, context); delete result.data.humanChoices;
+    if (context.chunkIndex === 2) result.data.humanChoices = [{ ...choice, episodes: [2] }];
+    result.rawOutput = JSON.stringify(result.data); return result;
+  } });
+  assert.equal(localChunks, 3);
+  assert.deepEqual((await store.loadFoundationChoices(db, localChunkProject.id, localChunkSource)).pending[0].episodes, [2]);
+  console.log("PASS confirmed scope extensions wait, preserve both scoped answers, merge pending scope and honor global consent; invalid input notice is distinct");
+}
+main().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => { await db.$disconnect(); rmSync(directory, { recursive: true, force: true }); });

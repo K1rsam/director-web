@@ -1,0 +1,169 @@
+{
+  "description": "Regression: physical key recipient incorrectly excluded from episode 1 because dialogue is VO. Preserve the rejected response; newer successful model samples must not replace this negative fixture.",
+  "provenance": {
+    "evidenceDirectory": "runtime-3008/live-evidence/2026-09-12T05-05-24-608Z",
+    "sha256": {
+      "F2-response.json": "c5fd86f495fed7d9acb5510921c63b1f6b527cba0ba27beb92cdc06a6fd88dfe",
+      "Q1-response.json": "4294bb34dbe664c7ca005d6c1e5a1ca92e4edbf556caf3ec0fea47beab2e6d48",
+      "source-receipt.json": "f5ceecd6fcc2b3da61e54c280b17a064393072b4e548e0ef0c439b0ce0af159d"
+    }
+  },
+  "source": "第一集\n1-1 仓库 内 夜\n张三的左臂被划伤，鲜血浸湿袖口。他把铜钥匙交给李四。\n张三：替我保管，明天还我。\n李四VO：我记住了。\n第二集\n2-1 仓库 内 日\n张三再次走进仓库，左臂伤口尚未愈合。李四把铜钥匙交还张三。\n张三：钥匙没有丢。",
+  "f2": {
+    "data": {
+      "format": "ASSET_CATALOG_V2",
+      "coverage": [
+        1,
+        2
+      ],
+      "assets": [
+        {
+          "name": "张三｜默认",
+          "type": "CH",
+          "role": "主角",
+          "episodes": [
+            1,
+            2
+          ],
+          "sceneRefs": [
+            {
+              "episode": 1,
+              "sceneKey": "1-1"
+            },
+            {
+              "episode": 2,
+              "sceneKey": "2-1"
+            }
+          ],
+          "preparation": {
+            "mode": "REFERENCE"
+          },
+          "variants": [
+            {
+              "name": "左臂划伤、袖口浸血",
+              "episodes": [
+                1
+              ],
+              "sceneRefs": [
+                {
+                  "episode": 1,
+                  "sceneKey": "1-1"
+                }
+              ],
+              "note": "第一集交出铜钥匙时适用。",
+              "preparation": {
+                "mode": "DERIVE"
+              }
+            },
+            {
+              "name": "左臂伤口未愈合",
+              "episodes": [
+                2
+              ],
+              "sceneRefs": [
+                {
+                  "episode": 2,
+                  "sceneKey": "2-1"
+                }
+              ],
+              "note": "承接第一集受伤；第二集仅确认伤口未愈合，不延续袖口浸血状态。",
+              "preparation": {
+                "mode": "DERIVE"
+              }
+            }
+          ]
+        },
+        {
+          "name": "李四｜默认",
+          "type": "CH",
+          "role": "配角",
+          "episodes": [
+            1,
+            2
+          ],
+          "sceneRefs": [
+            {
+              "episode": 1,
+              "sceneKey": "1-1"
+            },
+            {
+              "episode": 2,
+              "sceneKey": "2-1"
+            }
+          ],
+          "preparation": {
+            "mode": "REFERENCE",
+            "note": "第一集为VO，本次不安排实体入镜；第二集交还铜钥匙时需保留人物连续性。"
+          }
+        },
+        {
+          "name": "仓库",
+          "type": "LOC",
+          "episodes": [
+            1,
+            2
+          ],
+          "sceneRefs": [
+            {
+              "episode": 1,
+              "sceneKey": "1-1"
+            },
+            {
+              "episode": 2,
+              "sceneKey": "2-1"
+            }
+          ],
+          "preparation": {
+            "mode": "REFERENCE"
+          }
+        },
+        {
+          "name": "铜钥匙",
+          "type": "PROP",
+          "episodes": [
+            1,
+            2
+          ],
+          "sceneRefs": [
+            {
+              "episode": 1,
+              "sceneKey": "1-1"
+            },
+            {
+              "episode": 2,
+              "sceneKey": "2-1"
+            }
+          ],
+          "preparation": {
+            "mode": "REFERENCE",
+            "note": "两集交接的关键物证，需保持同一外形。"
+          }
+        }
+      ],
+      "humanChoices": []
+    },
+    "rawOutput": "{\"format\":\"ASSET_CATALOG_V2\",\"coverage\":[1,2],\"assets\":[{\"name\":\"张三｜默认\",\"type\":\"CH\",\"role\":\"主角\",\"episodes\":[1,2],\"sceneRefs\":[{\"episode\":1,\"sceneKey\":\"1-1\"},{\"episode\":2,\"sceneKey\":\"2-1\"}],\"preparation\":{\"mode\":\"REFERENCE\"},\"variants\":[{\"name\":\"左臂划伤、袖口浸血\",\"episodes\":[1],\"sceneRefs\":[{\"episode\":1,\"sceneKey\":\"1-1\"}],\"note\":\"第一集交出铜钥匙时适用。\",\"preparation\":{\"mode\":\"DERIVE\"}},{\"name\":\"左臂伤口未愈合\",\"episodes\":[2],\"sceneRefs\":[{\"episode\":2,\"sceneKey\":\"2-1\"}],\"note\":\"承接第一集受伤；第二集仅确认伤口未愈合，不延续袖口浸血状态。\",\"preparation\":{\"mode\":\"DERIVE\"}}]},{\"name\":\"李四｜默认\",\"type\":\"CH\",\"role\":\"配角\",\"episodes\":[1,2],\"sceneRefs\":[{\"episode\":1,\"sceneKey\":\"1-1\"},{\"episode\":2,\"sceneKey\":\"2-1\"}],\"preparation\":{\"mode\":\"REFERENCE\",\"note\":\"第一集为VO，本次不安排实体入镜；第二集交还铜钥匙时需保留人物连续性。\"}},{\"name\":\"仓库\",\"type\":\"LOC\",\"episodes\":[1,2],\"sceneRefs\":[{\"episode\":1,\"sceneKey\":\"1-1\"},{\"episode\":2,\"sceneKey\":\"2-1\"}],\"preparation\":{\"mode\":\"REFERENCE\"}},{\"name\":\"铜钥匙\",\"type\":\"PROP\",\"episodes\":[1,2],\"sceneRefs\":[{\"episode\":1,\"sceneKey\":\"1-1\"},{\"episode\":2,\"sceneKey\":\"2-1\"}],\"preparation\":{\"mode\":\"REFERENCE\",\"note\":\"两集交接的关键物证，需保持同一外形。\"}}],\"humanChoices\":[]}"
+  },
+  "q1": {
+    "data": {
+      "format": "FOUNDATION_OPTIMIZATION_V2",
+      "coverage": [
+        1,
+        2
+      ],
+      "changes": {
+        "scenes": [
+          {
+            "episode": 2,
+            "sceneKey": "2-1",
+            "characters": [
+              "张三",
+              "李四"
+            ]
+          }
+        ]
+      }
+    },
+    "rawOutput": "{\"format\":\"FOUNDATION_OPTIMIZATION_V2\",\"coverage\":[1,2],\"changes\":{\"scenes\":[{\"episode\":2,\"sceneKey\":\"2-1\",\"characters\":[\"张三\",\"李四\"]}]}}"
+  }
+}

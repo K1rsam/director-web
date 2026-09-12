@@ -1,13 +1,17 @@
-import type { AssetType, PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
+import crypto from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   DIRECTOR_ASSET_TYPES,
-  extractEpisodeAssetCandidates,
   formatAssetIndex,
   type DirectorAsset,
   type DirectorAssetType
 } from "@/lib/assets";
 import { prisma } from "@/lib/prisma";
-import { extractScriptScenes } from "@/lib/scene-structure";
+import { buildSourceIndex } from "@/lib/project-foundation-contracts";
+import { parseSceneBatch } from "@/lib/source-parser";
+import { readSceneSplitPlans } from "@/lib/scene-split-plan";
+import { readSceneParserVersions } from "@/lib/scene-parser-version";
 import { buildSceneSnapshot } from "@/lib/task-package";
 
 type Db = PrismaClient;
@@ -45,120 +49,116 @@ export type ProjectMemorySnapshot = {
   }>;
 };
 
-export async function preprocessProject(projectId: string, db: Db = prisma) {
+export type PreprocessOptions = { checkCurrent?: (tx: PrismaClient) => Promise<void> };
+
+export async function preprocessProject(projectId: string, db: Db = prisma, options: PreprocessOptions = {}) {
   const project = await db.project.findUnique({
     where: { id: projectId },
-    include: { episodes: { orderBy: { number: "asc" } }, assets: true }
+    include: { episodes: { orderBy: { number: "asc" } } }
   });
   if (!project) {
     throw new Error("Project not found.");
   }
 
-  const mergedAssets = mergeProjectAssets(
-    project.assets.map((asset) => ({
-      id: asset.code,
-      type: asset.type as DirectorAssetType,
-      name: asset.name,
-      status: asset.status === "confirmed" ? "confirmed" : "needs_confirmation",
-      sourceText: asset.sourceText ?? undefined,
-      notes: asset.notes ?? undefined
-    })),
-    project.episodes.flatMap((episode) => extractEpisodeAssetCandidates(episode.content).all)
-  );
-  const assets = mergedAssets.map((asset) => asset.type === "STYLE"
-    ? { ...asset, name: project.style ?? "未选择画面风格", notes: "项目创建时选择的固定母风格。" }
-    : asset.type === "NEG"
-      ? { ...asset, name: "通用负面约束", notes: "由最终Python编译阶段统一加入每个Seedance单元。" }
-      : asset);
-  const memory = buildProjectMemory(project.title, project.episodes, assets);
-  const productionEpisodes = project.episodes.filter((episode) => episode.number >= 1);
-  const snapshots = productionEpisodes.map((episode) =>
-    buildEpisodeContextSnapshot({
-      episode,
-      // 第0集/无编号前置资料参与上下文，但不生成自己的单集生产快照。
-      previousEpisodes: project.episodes.filter((previous) => previous.number < episode.number),
-      assets,
-      memory
-    })
-  );
-  const episodeScenes = project.episodes.map((episode) => ({
-    episodeId: episode.id,
-    scenes: extractScriptScenes(episode.number, episode.content)
-  }));
+  if (project.episodes.length === 0) {
+    const imported = await db.sceneSnapshot.findFirst({ where: { projectId, sceneKey: "SOURCE_IMPORT" }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
+    const sourceVersion = crypto.createHash("sha256").update(imported?.content ?? "NO_SOURCE_IMPORT", "utf8").digest("hex");
+    const source = {
+      schema: "FOUNDATION_SOURCE_IMPORT_ONLY_V1",
+      sourceVersion,
+      message: "未识别到可安全建立的正剧分集；P0 已保留读取原文与来源分区，待人工划分后再进入分集处理。",
+      sourceImportSnapshotId: imported?.id ?? null
+    };
+    await db.$transaction(async (tx) => {
+      if (options.checkCurrent) await options.checkCurrent(tx as unknown as PrismaClient);
+      const currentImport = await tx.sceneSnapshot.findFirst({ where: { projectId, sceneKey: "SOURCE_IMPORT" }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
+      if (await tx.episode.count({ where: { projectId } }) || currentImport?.id !== imported?.id
+        || crypto.createHash("sha256").update(currentImport?.content ?? "NO_SOURCE_IMPORT", "utf8").digest("hex") !== sourceVersion) throw new Error("导入原文已变化，请重新读取后重试预处理。");
+      const previous = await tx.sceneSnapshot.findFirst({ where: { projectId, sceneKey: "FOUNDATION_SOURCE" }, orderBy: { createdAt: "desc" } });
+      const data = { projectId, episodeId: null, sceneKey: "FOUNDATION_SOURCE", title: "导入原文待人工划分", content: JSON.stringify(source, null, 2), metadata: JSON.stringify({ schema: source.schema, sourceVersion: source.sourceVersion }) };
+      if (previous) await tx.sceneSnapshot.update({ where: { id: previous.id }, data });
+      else await tx.sceneSnapshot.create({ data });
+    });
+    return { source, episodeScenes: [] };
+  }
+
+  // SOURCE 的边界是数据库内 Episode.content，不是导入前的 docx 文件字节。
+  const sourceIndex = buildSourceIndex(project.episodes);
+  const sceneParserVersions = await readSceneParserVersions(projectId, db, project.episodes);
+  const source = {
+    schema: "FOUNDATION_SOURCE_V1",
+    sourceVersion: sourceIndex.version,
+    sourceIndex,
+    sceneParserVersions,
+    sourceRefs: sourceIndex.episodes.map((episode) => ({
+      episode: episode.number,
+      startLine: 1,
+      endLine: episode.lineCount
+    }))
+  };
+  const splitPlans = await readSceneSplitPlans(projectId, db);
+  const splitEpisodes = new Set(splitPlans.map(plan => plan.episode));
+  const parsedScenes = new Map(parseSceneBatch(project.episodes.map((episode) => ({ number: episode.number, content: episode.content })), splitPlans, { versions: sceneParserVersions }).map((entry) => [entry.episodeNumber, entry.scenes]));
+  const episodeScenes = project.episodes.map((episode) => ({ episodeId: episode.id, episodeContent: episode.content, scenes: parsedScenes.get(episode.number) ?? [] }));
 
   await db.$transaction(async (tx) => {
-    for (const asset of assets) {
-      await tx.asset.upsert({
-        where: { projectId_code: { projectId, code: asset.id } },
-        create: {
-          projectId,
-          episodeId: null,
-          code: asset.id,
-          type: asset.type as AssetType,
-          name: asset.name,
-          status: asset.status,
-          sourceText: asset.sourceText,
-          notes: asset.notes,
-          metadata: JSON.stringify(asset, null, 2)
-        },
-        update: {
-          name: asset.name,
-          status: asset.status,
-          sourceText: asset.sourceText,
-          notes: asset.notes,
-          metadata: JSON.stringify(asset, null, 2)
-        }
-      });
-    }
-
-    await tx.sceneSnapshot.deleteMany({
-      where: {
-        projectId,
-        sceneKey: {
-          in: [
-            "PROJECT_MEMORY",
-            ...project.episodes.map((episode) => `EP-${episode.number}-CONTEXT`)
-          ]
-        }
-      }
+    if (options.checkCurrent) await options.checkCurrent(tx as unknown as PrismaClient);
+    // Parsing happened before this transaction; reject a stale source or split-plan snapshot before any write.
+    const currentEpisodes = await tx.episode.findMany({ where: { projectId }, orderBy: { number: "asc" } });
+    if (!currentEpisodes.length || buildSourceIndex(currentEpisodes).version !== sourceIndex.version) throw new Error("分集原文已变化，请重新读取后重试预处理。");
+    const currentPlans = await readSceneSplitPlans(projectId, tx);
+    if (currentPlans.length !== splitPlans.length || splitPlans.some(plan => !currentPlans.some(current => isDeepStrictEqual(current, plan)))) throw new Error("拆场计划已变化，请重新读取后重试预处理。");
+    if (!isDeepStrictEqual(await readSceneParserVersions(projectId, tx, currentEpisodes), sceneParserVersions)) throw new Error("场次解析版本已变化，请重新读取后重试预处理。");
+    const previousSource = await tx.sceneSnapshot.findFirst({
+      where: { projectId, sceneKey: "FOUNDATION_SOURCE" },
+      orderBy: { createdAt: "desc" }
     });
-
-    await tx.sceneSnapshot.create({
-      data: {
-        projectId,
-        episodeId: null,
-        sceneKey: "PROJECT_MEMORY",
-        title: "全剧记忆快照",
-        content: JSON.stringify(memory, null, 2),
-        metadata: JSON.stringify({ schema: memory.schema })
-      }
-    });
-
-    for (const snapshot of snapshots) {
-      const episode = project.episodes.find((item) => item.number === snapshot.episodeNumber);
-      await tx.sceneSnapshot.create({
-        data: {
-          projectId,
-          episodeId: episode?.id,
-          sceneKey: `EP-${snapshot.episodeNumber}-CONTEXT`,
-          title: `第${snapshot.episodeNumber}集上下文快照`,
-          content: JSON.stringify(snapshot, null, 2),
-          metadata: JSON.stringify({ schema: snapshot.schema })
-        }
-      });
+    const sourceData = {
+      projectId,
+      episodeId: null,
+      sceneKey: "FOUNDATION_SOURCE",
+      title: "分集原文与行导航",
+      content: JSON.stringify(source, null, 2),
+      metadata: JSON.stringify({ schema: source.schema, sourceVersion: source.sourceVersion })
+    };
+    const previousVersion = previousSource ? JSON.parse(previousSource.metadata ?? "{}")?.sourceVersion : null;
+    if (previousSource && previousVersion === source.sourceVersion) {
+      await tx.sceneSnapshot.update({ where: { id: previousSource.id }, data: sourceData });
+    } else {
+      await tx.sceneSnapshot.create({ data: sourceData });
     }
 
     for (const entry of episodeScenes) {
-      const sceneKeys = entry.scenes.map((scene) => scene.sceneKey);
-      await tx.scriptScene.deleteMany({
-        where: {
-          episodeId: entry.episodeId,
-          sceneKey: { notIn: sceneKeys },
-          shots: { none: {} },
-          units: { none: {} }
+      const existingScenes = new Map((await tx.scriptScene.findMany({
+        where: { episodeId: entry.episodeId },
+        select: { id: true, sceneKey: true, sortOrder: true, sourceText: true, metadata: true, shots: { select: { id: true } }, units: { select: { id: true } } }
+      })).map((scene) => [scene.sceneKey, scene]));
+      const activeKeys = new Set(entry.scenes.map((scene) => scene.sceneKey));
+      for (const [sceneKey, existing] of existingScenes) {
+        if (activeKeys.has(sceneKey)) continue;
+        const metadata = parseMetadata(existing.metadata);
+        if (isRetirableProgramScene(existing, metadata)) {
+          await tx.sceneSnapshot.create({ data: { projectId, episodeId: entry.episodeId, sceneKey: `RETIRED_P0_SCENE-${sceneKey}`, title: `${sceneKey} 旧 P0 场次快照`, content: existing.sourceText, metadata: JSON.stringify({ schema: "RETIRED_P0_SCENE_V1", sceneKey, metadata }) } });
+          await tx.scriptScene.delete({ where: { id: existing.id } });
+          continue;
         }
-      });
+        const noticeKey = `P0_SCENE_RETENTION-${sceneKey}`;
+        const noticed = await tx.sceneSnapshot.findFirst({ where: { projectId, episodeId: entry.episodeId, sceneKey: noticeKey } });
+        if (!noticed) await tx.sceneSnapshot.create({ data: { projectId, episodeId: entry.episodeId, sceneKey: noticeKey, title: `${sceneKey} 场次保留说明`, content: JSON.stringify({ code: "P0_SCENE_RETENTION_BLOCKED", message: "当前场次已不在固定来源解析结果中，但含人工标注、补丁或下游材料，P0 未删除。", sceneKey }) } });
+      }
       for (const scene of entry.scenes) {
+        const existing = existingScenes.get(scene.sceneKey);
+        const sourceHash = crypto.createHash("sha256").update(scene.sourceText, "utf8").digest("hex");
+        const previousMetadata = parseMetadata(existing?.metadata ?? "{}");
+        // A row without our exact source hash is human/legacy material.  P0 may add
+        // missing scenes, but must not overwrite or erase that material.
+        const legacyProgramRow = Boolean(existing) && isLegacyProgramScene(existing!, entry.episodeContent, previousMetadata);
+        if (existing && !legacyProgramRow && (previousMetadata.sourceHash !== crypto.createHash("sha256").update(existing.sourceText, "utf8").digest("hex") || previousMetadata.sourceHash === sourceHash)) {
+          if (splitEpisodes.has(project.episodes.find(episode => episode.id === entry.episodeId)!.number) && previousMetadata.sourceHash === sourceHash
+            && existing.sourceText === scene.sourceText && existing.sortOrder !== scene.sortOrder) await tx.scriptScene.update({ where: { id: existing.id }, data: { sortOrder: scene.sortOrder } });
+          continue;
+        }
+        const metadata = JSON.stringify({ ...previousMetadata, ...scene.metadata, sourceHash });
         await tx.scriptScene.upsert({
           where: { episodeId_sceneKey: { episodeId: entry.episodeId, sceneKey: scene.sceneKey } },
           create: {
@@ -172,7 +172,7 @@ export async function preprocessProject(projectId: string, db: Db = prisma) {
             weather: scene.weather,
             timeLayer: scene.timeLayer,
             sourceText: scene.sourceText,
-            metadata: JSON.stringify(scene.metadata)
+            metadata
           },
           update: {
             sortOrder: scene.sortOrder,
@@ -183,14 +183,48 @@ export async function preprocessProject(projectId: string, db: Db = prisma) {
             weather: scene.weather,
             timeLayer: scene.timeLayer,
             sourceText: scene.sourceText,
-            metadata: JSON.stringify(scene.metadata)
+            metadata
           }
         });
       }
     }
   });
 
-  return { assets, memory, snapshots, episodeScenes };
+  return { source, episodeScenes };
+}
+
+/** Old P0 had only parser-owned characters/props metadata and no provenance hash.
+ * This deliberately narrow proof allows a one-time column repair without treating
+ * manually annotated legacy scenes as safe to rewrite. */
+function isLegacyProgramScene(
+  scene: { sourceText: string; shots: { id: string }[]; units: { id: string }[] },
+  episodeContent: string,
+  metadata: Record<string, unknown>
+) {
+  const keys = Object.keys(metadata);
+  return keys.length > 0
+    && keys.every((key) => key === "characters" || key === "props")
+    && scene.shots.length === 0
+    && scene.units.length === 0
+    && normalizeSourceText(scene.sourceText).length > 0
+    && normalizeSourceText(episodeContent).includes(normalizeSourceText(scene.sourceText));
+}
+
+function isRetirableProgramScene(scene: { sourceText: string; metadata: string; shots: { id: string }[]; units: { id: string }[] }, metadata: Record<string, unknown>) {
+  const keys = Object.keys(metadata);
+  const pureLegacy = keys.length > 0 && keys.every((key) => key === "characters" || key === "props");
+  const generated = metadata.sourceFieldPatch === undefined
+    && metadata.sourceHash === crypto.createHash("sha256").update(scene.sourceText, "utf8").digest("hex")
+    && keys.every((key) => ["characters", "props", "sourceHash", "sourceSceneKey", "sceneKeyAmbiguous"].includes(key));
+  return (pureLegacy || generated) && scene.shots.length === 0 && scene.units.length === 0;
+}
+
+function parseMetadata(value: string) {
+  try { const parsed = JSON.parse(value); return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}; } catch { return {}; }
+}
+
+function normalizeSourceText(value: string) {
+  return value.replace(/\r\n?/g, "\n").trim();
 }
 
 export function mergeProjectAssets(existing: DirectorAsset[], incoming: DirectorAsset[]) {

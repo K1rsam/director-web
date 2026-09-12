@@ -76,8 +76,8 @@ export function presentationDecisionKey(input: {
 
 /**
  * 把数据库/旧快照中的范围解析成可用于页面和流水线的正式集号。
- * 旧记录没有范围字段时：有 episodeId 就沿用原集；没有 episodeId 则沿用旧
- * 的“项目级规则”语义，视为全部正式集，避免已有项目的生成结果悄悄改变。
+ * 旧记录有 episodeId 时沿用原集；只有明确 ALL_EPISODES 才是全剧。
+ * 缺少范围和锚点时不向任何集供给。
  */
 export function resolvePresentationContractScope(
   input: PresentationContractScopeInput,
@@ -97,10 +97,8 @@ export function resolvePresentationContractScope(
     return { mode, episodeNumbers: formal.includes(source) ? [source] : [] };
   }
 
-  // 旧的 episodeId=null 表示项目级契约；没有可用锚点时保守保持全剧适用。
-  return mode === "SELECTED_EPISODES"
-    ? { mode, episodeNumbers: [] }
-    : { mode: "ALL_EPISODES", episodeNumbers: formal };
+  // 缺少锚点不代表用户授权全剧。
+  return { mode, episodeNumbers: [] };
 }
 
 export function contractAppliesToEpisode(

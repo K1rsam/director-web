@@ -4,7 +4,7 @@ import {
   mergeP1Outputs,
   type FoundationContext,
   type P1Output
-} from "../lib/project-foundation-contracts";
+} from "../lib/legacy-project-foundation-contracts";
 import {
   contractAppliesToAnyEpisode,
   contractAppliesToEpisode,

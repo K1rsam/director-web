@@ -194,7 +194,7 @@ async function executeJob(databasePath: string, task: RunnerInput): Promise<void
       const { executeProjectFoundation } = await import("../lib/project-foundation");
       const stage = typeof payload.stage === "string" ? payload.stage : undefined;
       await executeProjectFoundation(task.job.projectId, required(String(payload.batchToken ?? ""), "基础工程任务缺少批次标识。"), {
-        singleStage: stage as "P1" | "P2" | undefined,
+        singleStage: stage as "F1" | "F2" | "Q1" | undefined,
       });
     } else {
       const { prepareEpisodeProduction } = await import("../lib/workflow");

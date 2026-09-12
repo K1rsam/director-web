@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { PIPELINE_STAGE_CONFIGS } from "@/lib/episode-pipeline-contracts";
 import { executeEpisodePipeline, type PipelineStageRunner } from "@/lib/episode-pipeline";
 import { prisma } from "@/lib/prisma";
+import { seedApprovedFoundationFixture } from "./fixtures/approved-foundation";
 
 const SOURCE_TEXT = "1-1\n客厅 日 内\n场景：客厅\n人物：苏远、赵清雅\n道具：手机\n苏远拿起手机。\n苏远：你看。";
 
@@ -49,7 +50,7 @@ function fakeStageOutput(stageCode: string): Record<string, unknown> {
   if (stageCode === "E3") return {
     role: "E3", base_revision: "V1_TEST",
     patches: [{ shot_id: "1-1-S001", action: "set", fields: { sound: "手机提示音", transition: "硬切" } }],
-    units: [{ unit_id: "1-1-U01", shot_ids: ["1-1-S001"], unit_duration: 5, short_unit_reason: "本场只有一个完整短动作，场次边界必须独立",
+    units: [{ unit_id: "1-1-U01", shot_ids: ["1-1-S001"], unit_duration: 5, short_unit_reason: "SHORT_EXCEPTION/QUICK_ACTION_CUT|本场只有一个完整短动作，场次边界必须独立",
       unit_dominant_goal: "展示手机提示", subject_bindings: ["苏远"], unit_start_premise: "苏远在桌边，手机在手边", unit_end_state: "苏远仍在桌边持手机" }],
     issues: []
   };
@@ -94,6 +95,7 @@ void (async () => {
   const episode = project.episodes[0];
   const scene = await prisma.scriptScene.findFirstOrThrow({ where: { episodeId: episode.id } });
   try {
+    await seedApprovedFoundationFixture(project.id, prisma);
     // 全量 E0-E5 首轮（fake）：建立 1-1-U01 + 正确 unit_lighting 基线
     await prisma.$transaction(PIPELINE_STAGE_CONFIGS.map((stage) => prisma.pipelineRun.create({
       data: { projectId: project.id, episodeId: episode.id, stageCode: stage.code, roleName: stage.name, provider: "test",

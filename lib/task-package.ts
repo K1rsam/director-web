@@ -1,3 +1,4 @@
+import { readApplicationScope, scopeApplies, type ApplicationScope } from './foundation-application-scope';
 import { DirectorAsset, extractEpisodeAssetCandidates, formatAssetIndex } from "@/lib/assets";
 import { buildDirectorRuleContextSummary, TASK_SCHEMA_V4_REQUIRED_FIELDS, type DirectorRuleContextSummary } from "@/lib/director-rules";
 
@@ -45,12 +46,14 @@ export type TaskSchemaV4Payload = {
 };
 
 export type BuildTaskPackageInput = {
+  scopedDecisions?: { id: string; userAnswer: string | null; applicationScope?: ApplicationScope; episodes: number[]; revision: string; sourceVersion?: string }[];
   projectName: string;
   episodeNumber: number;
   episodeTitle?: string;
   episodeText: string;
   sceneText?: string;
   sceneId?: string;
+  sceneIds?: string[];
   existingAssets?: DirectorAsset[];
   maturity?: "结构成熟" | "质量成熟" | "大规模成熟";
   complexity?: "A类简单集" | "B类中等集" | "C类复杂集";
@@ -76,11 +79,11 @@ const UNKNOWN = "待确认";
 const NONE = "无";
 
 export async function buildTaskSchemaV4Payload(input: BuildTaskPackageInput): Promise<TaskSchemaV4Payload> {
+  const requestedScenes = input.sceneIds ?? (input.sceneId ? [input.sceneId] : []);
+  const matchingDecision = (choice: NonNullable<BuildTaskPackageInput['scopedDecisions']>[number]) => { const scope = readApplicationScope(choice.applicationScope, choice.episodes); return requestedScenes.length ? requestedScenes.some(scene=>scopeApplies(scope,input.episodeNumber,scene)) : scopeApplies(scope,input.episodeNumber); };
   const sceneText = input.sceneText?.trim() || firstSceneText(input.episodeText);
-  // 资产一律用正式资产（P2 产出）：候选粗提的假 ID（CH-023 赵清雅）会跟着快照进 E1/P1/P2 提示词，
-  // 既费 token 又与正式资产索引打架；仅 P2 未跑、正式资产为空时用候选兜底
-  const baseAssets = input.existingAssets ?? [];
-  const assets = baseAssets.length ? baseAssets : extractEpisodeAssetCandidates(input.episodeText, []).all;
+  // An explicitly supplied empty approved set is meaningful, not permission to invent IDs.
+  const assets = input.existingAssets ?? extractEpisodeAssetCandidates(input.episodeText, []).all;
   const snapshot = buildSceneSnapshot({
     sceneText,
     sceneId: input.sceneId,
@@ -91,6 +94,8 @@ export async function buildTaskSchemaV4Payload(input: BuildTaskPackageInput): Pr
     schema: "TASK_SCHEMA_V4",
     versions: ["TASK_SCHEMA_V4", "SCRIPT_CLEAN_V1", "BIBLE_V1", "ASSET_V1", "STYLE_V1"],
     "任务范围": {
+      "已确认决定": (input.scopedDecisions ?? []).filter(choice => { const scope = readApplicationScope(choice.applicationScope, choice.episodes); return (requestedScenes.length > 0 || scope.kind !== "SCENES") && matchingDecision(choice); }),
+      "按场接收决定": (input.scopedDecisions ?? []).filter(choice => readApplicationScope(choice.applicationScope, choice.episodes).kind === "SCENES" && scopeApplies(readApplicationScope(choice.applicationScope, choice.episodes), input.episodeNumber) && matchingDecision(choice)),
       "项目名": input.projectName,
       "集数": input.episodeNumber,
       "场次": snapshot["场次ID"],
@@ -150,7 +155,7 @@ export async function buildTaskSchemaV4Payload(input: BuildTaskPackageInput): Pr
     "本集上下文快照": parseSnapshotBlock(input.episodeContext, "EPISODE_CONTEXT_SNAPSHOT_V1"),
     "时长和台词容量": {
       "常规单元": "13-15秒优先",
-      "短单元": "8-9秒仅用于语义边界、动作结果、声音/视角打断或避免漂移/超载",
+      "短单元": "低于10秒默认退回；只有规范例外且未超过每集稀有上限才可使用，格式为SHORT_EXCEPTION/<CODE>|<具体不可合并事实>",
       "普通对白": "4-5字/秒估算，目标不超过4.5字/秒，最终不得超过5.0字/秒",
       "情绪台词": "3-4字/秒估算，并预留听者反应、道具变化或空间压力",
       "长句": "22字以上先按语义节点拆，再写正文",

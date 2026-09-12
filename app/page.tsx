@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { getFoundationDeliveryState } from "@/lib/foundation-delivery";
 import type { CSSProperties } from "react";
 import {
   deriveProjectCardState,
@@ -25,6 +26,7 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
   const currentUser = await requireSessionUser("/");
   const { projectId: requestedProjectId } = await searchParams;
   const { projects, archivedProjects } = await getProjectLibrary(currentUser.id);
+  const foundationCompleteByProject = new Map(await Promise.all(projects.map(async project => [project.id, (await getFoundationDeliveryState(project.id)).complete] as const)));
   const activeProject = requestedProjectId
     ? projects.find((project) => project.id === requestedProjectId)
     : undefined;
@@ -61,8 +63,7 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
               const unitEpisodeCount = productionEpisodes.filter((episode) => episode._count.seedanceUnits > 0).length;
               const state = deriveProjectCardState({
                 episodeCount: productionEpisodes.length,
-                snapshotCount: project._count.sceneSnapshots,
-                assetCount: project._count.assets,
+                foundationReady: foundationCompleteByProject.get(project.id) === true,
                 unitEpisodeCount
               });
               const posterStyle = {

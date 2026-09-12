@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import { coalesceFidelityDecisions } from '../lib/fidelity-decision-ranges';
+import { createSource, normalize } from '../.agents/skills/screenplay-fidelity/scripts/fidelity.mjs';
+import type { FidelityResult } from '../lib/fidelity-import';
+const source='第1集\n甲：aaa。\n乙：bbb。\n';
+const start=source.indexOf('甲'),split=source.indexOf('乙');
+const decisions=[{start,end:split,kind:'body' as const,episodeNumber:1,sceneNumber:1,note:'第一批'}, {start:split,end:source.length,kind:'body' as const,episodeNumber:1,sceneNumber:1,note:'第二批'}];
+const merged=coalesceFidelityDecisions(source,decisions);
+assert.equal(merged.length,1);
+const result=normalize(createSource(source),{decisions:merged}) as unknown as FidelityResult;
+assert.equal(result.episodes[0].scenes.length,1);
+assert.equal(result.source.text,source);
+assert.equal(coalesceFidelityDecisions(source,[decisions[0],{...decisions[1],sceneNumber:2}]).length,2);
+assert.equal(coalesceFidelityDecisions(source,decisions.map(({sceneNumber,...item})=>item)).length,2,'unknown scene boundaries are never joined by guessing');
+console.log('PASS adjacent batch declarations retain one explicit scene, different/unknown scenes stay separate, source unchanged');

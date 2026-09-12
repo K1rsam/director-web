@@ -7,6 +7,7 @@ coverage/
 .env
 .env.*
 !.env.example
+!.env.3008.example
 
 prisma/dev.db*
 *.tsbuildinfo
@@ -35,3 +36,19 @@ docs/superpowers/
 .tmp-asset-xlsx-review/
 outputs/
 prisma/backup-before-stale-episode-errors-20260829/
+
+runtime-3008/
+uploads/
+
+.next-qa/
+
+# 单机样本审计与一次性修复；不属于跨平台产品入口
+integration-merge-report.json
+scripts/repair-existing-fidelity-3008.ts
+scripts/verify-p1-user-pair.ts
+scripts/verify-payload-recovery-local.ts
+scripts/audit-foundation-output.ts
+scripts/audit-foundation-payload.ts
+scripts/audit-foundation-scene-wire.ts
+__pycache__/
+*.pyc

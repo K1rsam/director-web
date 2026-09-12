@@ -1,269 +1,102 @@
-import {
-  decidePresentationContractAction,
-  skipPresentationContractAction
-} from "@/app/actions";
-import {
-  formatPresentationContractScope,
-  formatPresentationEpisodeNumbers,
-  type PresentationContractScopeMode
-} from "@/lib/presentation-contracts";
+import { confirmFoundationDeliveryChoiceAction, decidePresentationContractAction } from "@/app/actions";
+import type { FoundationChoiceView } from "@/lib/foundation-choice-store";
+import styles from "./presentation-contracts.module.css";
 
-type ContractRow = {
-  id: string;
-  category: string;
-  question: string;
-  options: string[];
-  evidence: string | null;
-  userAnswer: string | null;
-  sourceEpisodeNumber: number | null;
-  episodeNumbers: number[];
-  scopeMode: PresentationContractScopeMode;
-  round: number;
-  decidedAt: Date | null;
-};
+const categoryLabel = (category: string) => category === "asset_identity" ? "资产身份"
+  : category === "SOURCE_CONFLICT" ? "原文取舍"
+    : category === "PRODUCTION_CHOICE" ? "制作取舍" : category;
+const scopeLabel = (episodes: number[]) => episodes.length ? `第${episodes.join("、")}集` : "全剧";
 
-function cleanOption(option: string) {
-  return option.replace(/^\s*[A-ZＡ-Ｄ][\.．、]\s*/, "").trim();
-}
-
-function ContractScopeEditor({
-  contract,
-  formalEpisodeNumbers
-}: {
-  contract: ContractRow;
-  formalEpisodeNumbers: number[];
-}) {
-  const discoveredNumbers = contract.scopeMode === "ALL_EPISODES"
-    ? []
-    : contract.episodeNumbers.length
-      ? contract.episodeNumbers
-      : contract.sourceEpisodeNumber !== null
-        ? [contract.sourceEpisodeNumber]
-        : [];
-  const discovered = contract.scopeMode === "ALL_EPISODES"
-    ? `全部${formalEpisodeNumbers.length}集（当前设置）`
-    : discoveredNumbers.length
-    ? formatPresentationEpisodeNumbers(discoveredNumbers)
-    : contract.sourceEpisodeNumber !== null
-      ? `第${contract.sourceEpisodeNumber}集`
-      : "P1 尚未给出正式集范围";
-
-  return (
-    <div className="contractScopeEditor">
-      <input name="targetEpisodeSelectionPresent" type="hidden" value="1" />
-      <div className="contractScopeLabel">
-        <strong>适用范围</strong>
-        <span>这条规则要传给哪些正式集？</span>
-      </div>
-      <div className="contractScopeControls">
-        <select name="scopeMode" defaultValue={contract.scopeMode} aria-label="表现规范适用范围">
-          <option value="SOURCE_EPISODES">只应用到发现的相关集（推荐）</option>
-          <option value="SELECTED_EPISODES">应用到我指定的集</option>
-          <option value="ALL_EPISODES">应用到全部正式集</option>
-        </select>
-        <input
-          name="targetEpisodeNumbers"
-          type="text"
-          defaultValue=""
-          placeholder="还可补充集号，例如：1、10、20"
-          aria-label="指定表现规范适用的集号"
-        />
-      </div>
-      {discoveredNumbers.length ? (
-        <fieldset className="contractEpisodeChoices">
-          <legend>P1 识别的相关集（可调整）</legend>
-          <div>
-            {discoveredNumbers.map((number) => (
-              <label key={number}>
-                <input
-                  type="checkbox"
-                  name="targetEpisodeNumber"
-                  value={number}
-                  defaultChecked
-                />
-                <span>第{number}集</span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
-      ) : null}
-      <p className="contractScopeHelp">
-        P1 定位：{discovered}。默认只传给这些相关集；勾选或补充集号后，只有所选集的 P2 和 E0–E5 会收到这条规则。选择“全部正式集”时无需填写集号。当前项目共 {formalEpisodeNumbers.length} 集。
-      </p>
-    </div>
-  );
-}
-
-function ContractDecisionForm({
-  projectId,
-  contract,
-  formalEpisodeNumbers,
-  editing = false
-}: {
-  projectId: string;
-  contract: ContractRow;
-  formalEpisodeNumbers: number[];
-  editing?: boolean;
-}) {
-  return (
-    <form action={decidePresentationContractAction} className={`contractDecisionForm${editing ? " contractDecisionFormEditing" : ""}`}>
-      <input name="projectId" type="hidden" value={projectId} />
-      <input name="contractId" type="hidden" value={contract.id} />
-      <ContractScopeEditor contract={contract} formalEpisodeNumbers={formalEpisodeNumbers} />
-      <div className="contractOptionsLabel">确认后，仅适用集的 P2 和 E0–E5 会使用这条规则：</div>
-      <div className="contractOptions" role="group" aria-label="表现规范方案">
-        {contract.options.map((option, index) => {
-          const label = String.fromCharCode(65 + index);
-          const text = cleanOption(option);
-          return (
-            <button
-              type="submit"
-              name="answer"
-              value={`${label}. ${text}`}
-              className="contractOptionButton"
-              data-control="choice"
-              aria-pressed={contract.userAnswer === `${label}. ${text}`}
-              title={text}
-              key={label}
-            >
-              <b>{label}</b>
-              <span>{text}</span>
-            </button>
-          );
-        })}
-        <div className="contractCustom">
-          <input name="customAnswer" type="text" placeholder="输入自定义方案…" aria-label="自定义表现规范方案" />
-          <button type="submit" name="useCustom" value="1" className="studioButton contractCustomAction" data-variant="secondary">使用自定义</button>
-        </div>
-      </div>
-      {editing ? <p className="contractEditNote">修改后会同步后台；只影响之后新生成或返修的任务，已有成品不会被自动重写。</p> : null}
-    </form>
-  );
-}
-
-function SkipContractForm({ projectId, contractId }: { projectId: string; contractId: string }) {
-  return (
-    <form action={skipPresentationContractAction} className="contractSkipForm">
-      <input name="projectId" type="hidden" value={projectId} />
-      <input name="contractId" type="hidden" value={contractId} />
-      <button type="submit" className="studioButton contractSkip" data-variant="ghost">暂不处理</button>
-    </form>
-  );
-}
-
-function ConfirmedContractList({
-  projectId,
-  contracts,
-  formalEpisodeNumbers
-}: {
-  projectId: string;
-  contracts: ContractRow[];
-  formalEpisodeNumbers: number[];
-}) {
-  return (
-    <div className="contractConfirmedList">
-      {contracts.map((contract) => (
-        <details className="contractConfirmedItem" key={contract.id}>
-          <summary>
-            <span className="contractCategoryBadge">{contract.category}</span>
-            <b>{contract.userAnswer || "已确认"}</b>
-            <em>适用：{formatPresentationContractScope({
-              scope_mode: contract.scopeMode,
-              target_episode_numbers: contract.episodeNumbers,
-              source_episode_number: contract.sourceEpisodeNumber
-            }, formalEpisodeNumbers)}</em>
-            <i>编辑</i>
-          </summary>
-          <div className="contractConfirmedItemBody">
-            <p className="contractConfirmedQuestion">{contract.question}</p>
-            {contract.evidence ? <p className="contractEvidence">原文依据：{contract.evidence}</p> : null}
-            <ContractDecisionForm
-              projectId={projectId}
-              contract={contract}
-              formalEpisodeNumbers={formalEpisodeNumbers}
-              editing
-            />
-          </div>
-        </details>
-      ))}
-    </div>
-  );
-}
-
-function ConfirmedContracts({
-  projectId,
-  contracts,
-  formalEpisodeNumbers,
-  compact = false
-}: {
-  projectId: string;
-  contracts: ContractRow[];
-  formalEpisodeNumbers: number[];
-  compact?: boolean;
-}) {
-  if (!contracts.length) return null;
-  return (
-    <details className={`contractConfirmed${compact ? " contractConfirmedCompact" : ""}`}>
-      <summary>已锁定的表现规范（{contracts.length}）<span>可展开编辑适用集和方案</span></summary>
-      <ConfirmedContractList projectId={projectId} contracts={contracts} formalEpisodeNumbers={formalEpisodeNumbers} />
-    </details>
-  );
-}
-
-/** 表现规范确认面板：P1 通读全剧本后提出需要拍板的非常规表现元素。 */
+/** F1/F2/Q1 共用的必要人工取舍入口；展示推荐，但仅在用户明确提交时保存。 */
 export function PresentationContracts({
   projectId,
   pending,
   confirmed,
-  formalEpisodeNumbers
+  active = false,
+  mode = "legacy",
+  expectedTaskId,
+  blockedReason
 }: {
   projectId: string;
-  pending: ContractRow[];
-  confirmed: ContractRow[];
-  formalEpisodeNumbers: number[];
+  pending: FoundationChoiceView[];
+  confirmed: FoundationChoiceView[];
+  active?: boolean;
+  mode?: "legacy" | "delivery";
+  expectedTaskId?: string;
+  blockedReason?: string;
 }) {
   if (!pending.length && !confirmed.length) return null;
-
-  if (!pending.length && confirmed.length) {
-    return (
-      <section className="contractSection contractSectionCompact" id="presentation-contracts">
-        <details className="contractCompactDetails">
-          <summary>
-            <span>PRESENTATION CONTRACTS</span>
-            <b>表现规范已锁定</b>
-            <em>{confirmed.length} 项</em>
-            <i>查看 / 编辑</i>
-          </summary>
-          <div className="contractCompactBody">
-            <ConfirmedContractList projectId={projectId} contracts={confirmed} formalEpisodeNumbers={formalEpisodeNumbers} />
-          </div>
-        </details>
-      </section>
-    );
-  }
-
+  const delivery = mode === "delivery";
+  const action = delivery ? confirmFoundationDeliveryChoiceAction : decidePresentationContractAction;
   return (
-    <section className="contractSection" id="presentation-contracts">
-      <div className="cardHeader">
-        <div><span>PRESENTATION CONTRACTS</span><h3>表现规范确认（P1 发现，需你拍板）</h3></div>
-        <em>{pending.length} 待确认 · {confirmed.length} 已锁定</em>
+    <section className={styles.section} id="presentation-contracts" aria-labelledby="foundation-choices-heading">
+      <div className={styles.header}>
+        <div><span>{delivery ? "必要取舍" : "F1 · F2 · Q1"}</span><h3 id="foundation-choices-heading">{pending.length ? "需要你确认" : "已确认的决定"}</h3></div>
+        <span>{pending.length} 项待确认 · {confirmed.length} 项已确认</span>
       </div>
-      <p className="contractHint">只处理 P1 依据原文定位到的非常规表现。确认时请同时选择适用范围：默认只传给相关集；只有明确选择“全部正式集”才会全剧使用。</p>
-      {[...pending]
-        .sort((a, b) => a.round - b.round || a.category.localeCompare(b.category))
-        .map((contract) => (
-          <article className="contractCard" key={contract.id}>
-            <div className="contractHead">
-              <span>{contract.category}</span>
-              <b>{contract.question}</b>
-              <em>{contract.round > 1 ? `第${contract.round}轮 · ` : ""}{contract.sourceEpisodeNumber !== null ? `发现于第${contract.sourceEpisodeNumber}集` : "P1 定位"}</em>
+      {pending.length ? <p className={styles.hint}>这里只收集原文和现有资料无法替你决定的取舍。请选择一个方案，或写下自定义方案；推荐只是建议，不会自动选中。{delivery ? "点击方案即确认，并自动继续处理。" : ""}</p> : null}
+      {active && pending.length ? <p role="status" className={styles.running}>{blockedReason ?? "请先等待当前运行结束，再确认这些决定。"}</p> : null}
+      {pending.map((contract) => {
+        const recommendedIndex = contract.recommended ? contract.options.indexOf(contract.recommended) : -1;
+        // Historical option arrays may contain a custom-input placeholder; retain every real option's stored index.
+        const options = contract.options.map((text, index) => ({ text, index })).filter(({ text }) => !/^(?:[A-Z][.、．]\s*)?(?:用户)?自定义(?:方案)?(?:…|\.{3})?$/.test(text.trim()));
+        return (
+          <article className={styles.card} key={contract.id} aria-labelledby={`choice-${contract.id}`}>
+            <div className={styles.meta}>
+              <span>{categoryLabel(contract.category)}</span>
+              <span>{scopeLabel(contract.episodes)}</span>
+              {!delivery ? <span>{contract.sourceStages.length ? `来源：${contract.sourceStages.join(" · ")}` : "来源未记录"}</span> : null}
             </div>
-            {contract.evidence ? <p className="contractEvidence">出现处：{contract.evidence}</p> : null}
-            <ContractDecisionForm projectId={projectId} contract={contract} formalEpisodeNumbers={formalEpisodeNumbers} />
-            <SkipContractForm projectId={projectId} contractId={contract.id} />
+            <h4 id={`choice-${contract.id}`}>{contract.question}</h4>
+            {contract.reason || contract.evidence || (delivery && contract.sourceStages.length) ? (
+              <details className={styles.evidence}>
+                <summary>为什么需要你决定 · 查看依据</summary>
+                {contract.reason ? <p>{contract.reason}</p> : null}
+                {contract.evidence ? <p>原文依据：{contract.evidence}</p> : null}
+                {delivery && contract.sourceStages.length ? <p>处理来源：{contract.sourceStages.join(" · ")}</p> : null}
+              </details>
+            ) : null}
+            <div className={styles.options}>
+              {options.map(({ text, index }) => (
+                <form action={action} key={index} className={styles.option}>
+                  <input name="projectId" type="hidden" value={projectId} />
+                  <input name="contractId" type="hidden" value={contract.id} />
+                  <input name="revision" type="hidden" value={contract.revision} />
+                  {delivery ? <input name="expectedTaskId" type="hidden" value={expectedTaskId ?? ""} /> : null}
+                  <button name="optionIndex" value={index} type="submit" disabled={active} className={`${styles.optionButton} ${index === recommendedIndex ? styles.recommended : ""}`}>
+                    <span className={styles.optionLabel}><b>{String.fromCharCode(65 + index)}</b>{index === recommendedIndex ? <em>推荐</em> : null}</span>
+                    <span>{text}</span>
+                    {delivery ? <span>确认并继续</span> : null}
+                  </button>
+                  {index === recommendedIndex && contract.recommendationReason ? <p className={styles.recommendationReason}>推荐理由：{contract.recommendationReason}</p> : null}
+                </form>
+              ))}
+            </div>
+            <form action={action} className={styles.custom}>
+              <input name="projectId" type="hidden" value={projectId} />
+              <input name="contractId" type="hidden" value={contract.id} />
+              <input name="revision" type="hidden" value={contract.revision} />
+              {delivery ? <input name="expectedTaskId" type="hidden" value={expectedTaskId ?? ""} /> : null}
+              <label htmlFor={`custom-${contract.id}`}>自定义方案</label>
+              <textarea id={`custom-${contract.id}`} name="customAnswer" rows={2} required disabled={active} placeholder="写下你的具体决定…" />
+              <button type="submit" disabled={active}>{delivery ? "确认自定义方案并继续" : "保存自定义方案"}</button>
+            </form>
           </article>
-        ))}
-      <ConfirmedContracts projectId={projectId} contracts={confirmed} formalEpisodeNumbers={formalEpisodeNumbers} />
+        );
+      })}
+      {pending.length ? <p className={styles.hint}>{delivery ? "确认后会采纳你的决定并自动继续；若还有其他必要取舍，会继续在这里提示。已生成的资料保留可读。" : "这里只保存决定，不自动运行。决定改变后可能需要更新 F1、F2、Q1；继续前请核对实际范围，旧稿仍保留。"}</p> : null}
+      {confirmed.length ? (
+        <details className={styles.confirmed}>
+          <summary>已确认的决定（{confirmed.length}）</summary>
+          {confirmed.map((contract) => (
+            <div key={contract.id} className={styles.confirmedItem}>
+              <p><b>{categoryLabel(contract.category)}</b> · {scopeLabel(contract.episodes)}{contract.decidedAt ? <> · <time dateTime={contract.decidedAt.toISOString()}>{contract.decidedAt.toISOString().slice(0, 10)}</time></> : null}</p>
+              <p>{contract.question}</p>
+              <p>{contract.userAnswer}</p>
+            </div>
+          ))}
+        </details>
+      ) : null}
     </section>
   );
 }

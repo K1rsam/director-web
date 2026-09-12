@@ -1,0 +1,37 @@
+import assert from 'node:assert/strict';
+import { buildSourceIndex } from '../lib/project-foundation-contracts';
+import { buildFoundationFragments, fragmentSource, fragmentsComplete } from '../lib/foundation-fragments';
+import { buildFoundationFacts, selectFoundationFacts } from '../lib/foundation-facts';
+import type { FoundationSourceContext } from '../lib/foundation-source';
+const context: FoundationSourceContext = { version: 'context-1', background: [{ key: 'author', text: '张三：未来会成为将军。\n规则：所有人午夜后不得说谎。\n蓝色笔记。\n' }], unresolved: [], issues: [], notices: [], complete: true, coverage: 'COMPLETE' };
+const index = buildSourceIndex([{ number: 1, title: null, content: '张三：我回来了。\r\n张三受伤，缠上绷带。\r\n' }, { number: 2, title: null, content: '李四：今天天晴。\n' }, { number: 3, title: null, content: '张三：出发。\n' }]);
+const facts = buildFoundationFacts(index, context, null), selected = selectFoundationFacts(facts, index, [3]);
+assert(selected.historicalStates.some(f => f.evidence.episode === 1 && f.statement.includes('绷带')));
+assert(selected.background.some(f => f.statement.includes('未来')));
+assert(selected.background.some(f => f.statement.includes('午夜')&&f.applicability==='GLOBAL'));
+assert(selected.backgroundCandidates.some(f => f.statement.includes('蓝色笔记') && f.applicability === 'UNRESOLVED'));
+const manyCandidates = selectFoundationFacts(buildFoundationFacts(index, { ...context, background: [{ key: 'large', text: '无关联笔记。\n'.repeat(3000) }] }, null), index, [3]);
+assert(manyCandidates.backgroundCandidates.reduce((n, f) => n + f.statement.length, 0) <= 12000);
+assert(manyCandidates.backgroundCandidatesOmitted > 0);
+assert(selected.unlinkedBackgroundCount>0);assert(selected.sourceFactIndex.length>0);
+const noFalseGap=buildFoundationFacts(index,{...context,background:[{key:'heading',text:'作者资料\n张三是李四的哥哥。\n李四：远方的商人。\n'}]},null);
+const scoped=selectFoundationFacts(noFalseGap,index,[3]);
+assert.equal(scoped.unlinkedBackgroundCount,0);
+assert(noFalseGap.facts.some(f=>f.kind==='FORMAT'&&f.statement==='作者资料\n'));
+assert(scoped.background.some(f=>f.statement.includes('哥哥')));
+assert(selected.historicalStates.every(f => f.validity.status === 'UNKNOWN'));
+for (const fact of facts.facts) {
+  const text = fact.evidence.domain === 'CONTEXT' ? context.background.find(s => s.key === fact.evidence.sectionKey)!.text : index.episodes.find(e => e.number === fact.evidence.episode)!.content;
+  assert.equal(fact.statement, text.slice(fact.evidence.start, fact.evidence.end));
+}
+const repeated = buildSourceIndex([{ number: 0, title: '剧情序章', content: ('他转身离开。😀\r\n').repeat(5000) }]);
+const fragments = buildFoundationFragments(repeated, 71);
+assert(fragments.length > 100);
+assert.equal(fragments.map(f => fragmentSource(repeated, f).episodes[0].lines.map(([,s]) => s).join('')).join(''), repeated.episodes[0].content);
+assert.deepEqual(fragmentsComplete(repeated, fragments, fragments.map(f => f.id)), [0]);
+assert.deepEqual(fragmentsComplete(repeated, fragments, fragments.filter((_,i) => i !== 5).map(f => f.id)), []);
+assert.deepEqual(fragmentsComplete(repeated, fragments, [...fragments.filter((_,i) => i !== 5).map(f => f.id), fragments[0].id]), []);
+assert.throws(() => fragmentSource(buildSourceIndex([{ number: 0, title: null, content: 'new' }]), fragments[0]));
+const line = buildSourceIndex([{ number: 1, title: null, content: '😀'.repeat(10000) }]);
+for (const fragment of buildFoundationFragments(line, 71)) assert.equal(fragment.start % 2, 0);
+console.log('PASS: evidence source equality, cross-episode state, future context, repeated positions, missing slice, stale source, CRLF and emoji, real episode zero');

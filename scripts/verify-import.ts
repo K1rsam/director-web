@@ -1,16 +1,14 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { cleanEpisodeTitle, parseEpisodeNumber, parseScriptFile, splitEpisodes } from "@/lib/import-script";
-import { importProjectFromText } from "@/lib/workflow";
-import { prisma } from "@/lib/prisma";
+import { parseEpisodeNumber, parseScriptBuffer, parseScriptContent, parseScriptFile, splitEpisodes } from "@/lib/import-script";
 
 async function main() {
   assert.equal(parseEpisodeNumber("1"), 1);
   assert.equal(parseEpisodeNumber("十"), 10);
   assert.equal(parseEpisodeNumber("二十三"), 23);
+  assert.equal(parseEpisodeNumber("一百二十三"), 123);
 
   const episodes = splitEpisodes("第1集 开端\n第一场\n第十集 终局\n最后一场");
   assert.equal(episodes.length, 2);
@@ -18,33 +16,42 @@ async function main() {
   assert.equal(episodes[1]?.number, 10);
   assert.match(episodes[0]?.content ?? "", /第一场/);
 
-  const repeatedNumberEpisodes = splitEpisodes("第1集 片段A\n正文A\n第1集 片段B\n正文B");
-  assert.deepEqual(repeatedNumberEpisodes.map((episode) => episode.number), [1, 2]);
-  assert.match(repeatedNumberEpisodes[1]?.title ?? "", /原集号与前文重复，已自动整理为第2集/);
-
-  const zeroNumberEpisodes = splitEpisodes("第0集 前置资料\n人物小传：常见青自幼……\n第1集 正式开篇\n正文A\n第2集 后续\n正文B");
-  assert.deepEqual(zeroNumberEpisodes.map((episode) => episode.number), [0, 1, 2]);
-  assert.match(zeroNumberEpisodes[0]?.content ?? "", /人物小传/);
-  assert.equal(cleanEpisodeTitle("第0集 页眉", 0), "第0集");
-  assert.equal(cleanEpisodeTitle(zeroNumberEpisodes[1]?.title, 1), "第1集 正式开篇");
-  assert.equal(cleanEpisodeTitle(zeroNumberEpisodes[2]?.title, 2), "第2集 后续");
-
-  const repeatedPreludeEpisodes = splitEpisodes("第0集 前置资料A\n人物小传A\n第0集 前置资料B\n剧情简述B\n第1集 正式开篇\n正文");
-  assert.deepEqual(repeatedPreludeEpisodes.map((episode) => episode.number), [0, 1]);
-  assert.match(repeatedPreludeEpisodes[0]?.content ?? "", /人物小传A/);
-  assert.match(repeatedPreludeEpisodes[0]?.content ?? "", /剧情简述B/);
-  assert.equal(repeatedPreludeEpisodes[1]?.number, 1);
-
-  const unheadedPreludeEpisodes = splitEpisodes("剧本类型：都市现代\n人物小传：常见青……\n剧情简述：……\n第1集 正式开篇\n正文");
-  assert.deepEqual(unheadedPreludeEpisodes.map((episode) => episode.number), [0, 1]);
-  assert.equal(unheadedPreludeEpisodes[0]?.title, "前置资料（第0集）");
-  assert.match(unheadedPreludeEpisodes[0]?.content ?? "", /剧情简述/);
-  assert.match(unheadedPreludeEpisodes[1]?.content ?? "", /正文/);
-  assert.equal(cleanEpisodeTitle("第 1 集", 3), "第3集");
-
   const fallback = splitEpisodes("没有集标题的剧本正文");
-  assert.equal(fallback.length, 1);
-  assert.equal(fallback[0]?.number, 1);
+  assert.deepEqual(fallback, [], "无分集标题不得假造第1集");
+  const noHeading = parseScriptContent("background-only.txt", "没有集标题的剧本正文");
+  assert.deepEqual(noHeading.sourceStructure.sections, [{ key: "BACKGROUND-1", kind: "BACKGROUND", start: 0, end: "没有集标题的剧本正文".length }]);
+  assert.deepEqual(noHeading.sourceStructure.issues.map((issue) => issue.code), ["NO_RECOGNIZED_EPISODE"]);
+
+  const raw = "\uFEFF全剧说明\r\n  人物设定不得遗漏。\r\n\r\n第0集 序章\r\n  正文保留空格。  \r\n\r\n第2集 后续\r\n末行\r\n";
+  const preserved = parseScriptContent("source.txt", raw);
+  assert.equal(preserved.sourceText, raw, "完整提取原文必须单独保留");
+  assert.deepEqual(preserved.episodes.map((episode) => episode.number), [0, 2]);
+  assert.equal(preserved.sourceStructure.sections.map((section) => raw.slice(section.start, section.end)).join(""), raw, "分区重建不能丢掉卷首、标题、空白或原换行");
+  assert.deepEqual(preserved.sourceStructure.sections.map((section) => section.kind), ["BACKGROUND", "EPISODE", "EPISODE"]);
+  assert.equal(raw.slice(preserved.sourceStructure.sections[0]!.start, preserved.sourceStructure.sections[0]!.end), "\uFEFF全剧说明\r\n  人物设定不得遗漏。\r\n\r\n");
+  assert.ok(preserved.episodes[0]!.content.startsWith("第0集 序章\r\n"), "前言只作背景，不混入首个 Episode");
+  assert.equal(preserved.episodes[1]!.content, "第2集 后续\r\n末行\r\n");
+  const whitespaceText = "  无分集标题\r第二行  \r";
+  const whitespaceOnly = parseScriptContent("whitespace-only.txt", whitespaceText);
+  assert.deepEqual(whitespaceOnly.episodes, []);
+  assert.equal(whitespaceText.slice(whitespaceOnly.sourceStructure.sections[0]!.start, whitespaceOnly.sourceStructure.sections[0]!.end), whitespaceText);
+  assert.deepEqual(splitEpisodes("第1集\r甲\r第2集\r乙").map((episode) => episode.number), [1, 2]);
+  for (const space of ["\u00a0", "\u2009"]) {
+    const unicodeSpaced = `第1集\n甲\n${space}第${space}2${space}集\n乙`;
+    const parsed = splitEpisodes(unicodeSpaced);
+    assert.deepEqual(parsed.map((episode) => episode.number), [1, 2]);
+    assert.equal(parsed.map((episode) => episode.content).join(""), unicodeSpaced);
+    assert.equal(splitEpisodes(`${space}第58集\n正文`)[0]!.number, 58);
+  }
+  const duplicate = parseScriptContent("duplicate.txt", "第1集\n甲\n第一集\n乙");
+  assert.deepEqual(duplicate.episodes, [], "同号异文不自动择稿或整份拒绝");
+  assert.deepEqual(duplicate.sourceStructure.sections.map((section) => [section.kind, section.episodeNumber, "第1集\n甲\n第一集\n乙".slice(section.start, section.end)]), [
+    ["UNRESOLVED", 1, "第1集\n甲\n"], ["UNRESOLVED", 1, "第一集\n乙"]
+  ]);
+  assert.deepEqual(duplicate.sourceStructure.issues.map((issue) => issue.code), ["DUPLICATE_EPISODE_NUMBER"]);
+  const doubleHeading = splitEpisodes("第1集 主标题\n\n第一集 副标题\n正文");
+  assert.deepEqual(doubleHeading.map((episode) => [episode.number, episode.title, episode.content]), [[1, "第1集 主标题", "第1集 主标题\n\n第一集 副标题\n正文"]], "相邻双标题应合为同一逻辑分集");
+  assert.equal((await parseScriptBuffer("source.md", Buffer.from(raw))).sourceText, raw);
 
   const dir = await mkdtemp(path.join(os.tmpdir(), "director-import-"));
   try {
@@ -55,41 +62,6 @@ async function main() {
     assert.equal(imported.episodes[0]?.number, 2);
   } finally {
     await rm(dir, { recursive: true, force: true });
-  }
-
-  const verifierUserId = randomUUID();
-  const verifierTitle = `import-verifier-${verifierUserId}`;
-  const preludeVerifierTitle = `import-prelude-verifier-${verifierUserId}`;
-  try {
-    await prisma.user.create({
-      data: {
-        id: verifierUserId,
-        email: `${verifierUserId}@import-test.local`,
-        username: `import_${verifierUserId.replaceAll("-", "").slice(0, 20)}`,
-        passwordHash: "test-only",
-        name: "import verifier"
-      }
-    });
-    const created = await importProjectFromText({
-      ownerUserId: verifierUserId,
-      title: verifierTitle,
-      sourceName: "duplicate-episodes.txt",
-      sourceText: "第1集 片段A\n正文A\n第1集 片段B\n正文B",
-      executionMode: "CLI"
-    });
-    assert.deepEqual(created.episodes.map((episode) => episode.number), [1, 2]);
-    const createdWithPrelude = await importProjectFromText({
-      ownerUserId: verifierUserId,
-      title: preludeVerifierTitle,
-      sourceName: "prelude-episodes.txt",
-      sourceText: "第0集 前置资料\n人物小传\n第1集 正式开篇\n正文A\n第2集 后续\n正文B",
-      executionMode: "CLI"
-    });
-    assert.deepEqual(createdWithPrelude.episodes.map((episode) => episode.number), [0, 1, 2]);
-  } finally {
-    await prisma.project.deleteMany({ where: { title: { in: [verifierTitle, preludeVerifierTitle] } } });
-    await prisma.user.deleteMany({ where: { id: verifierUserId } });
-    await prisma.$disconnect();
   }
 
   console.log("import parser verification passed");

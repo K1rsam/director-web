@@ -8,6 +8,7 @@ export type AssetIndexRow = {
   type: string;
   name: string;
   status: string;
+  statusLabel?: string;
   parentId?: string | null;
   role?: string | null;
   episodeNumber?: number | null;
@@ -548,8 +549,10 @@ export function AssetExportButton({ projectTitle, assets }: { projectTitle: stri
 export function AssetIndexTabs({ assets }: { assets: AssetIndexRow[] }) {
   const visibleTabs = ASSET_INDEX_TABS.filter((tab) => assets.some((asset) => tab.types.includes(asset.type)));
   const [activeKey, setActiveKey] = useState(visibleTabs[0]?.key ?? "people");
-  const activeTab = ASSET_INDEX_TABS.find((tab) => tab.key === activeKey) ?? ASSET_INDEX_TABS[0];
-  const visible = sortAssetsHierarchically(assets.filter((asset) => activeTab.types.includes(asset.type)));
+  const activeTab = visibleTabs.find((tab) => tab.key === activeKey) ?? visibleTabs[0] ?? ASSET_INDEX_TABS[0];
+  const visible = assets
+    .filter((asset) => activeTab.types.includes(asset.type))
+    .sort((a, b) => a.code.localeCompare(b.code, "zh-Hans-CN", { numeric: true }));
 
   if (!assets.length) {
     return <div className="studioTableScroll compactTable"><table><tbody><tr><td colSpan={4} className="emptyCell">尚未拆解资产名称</td></tr></tbody></table></div>;
@@ -580,8 +583,8 @@ export function AssetIndexTabs({ assets }: { assets: AssetIndexRow[] }) {
             key={tab.key}
             type="button"
             role="tab"
-            aria-selected={activeKey === tab.key}
-            className={activeKey === tab.key ? "active" : ""}
+            aria-selected={activeTab.key === tab.key}
+            className={activeTab.key === tab.key ? "active" : ""}
             onClick={() => setActiveKey(tab.key)}
           >
             {tab.label}<b>{assets.filter((asset) => tab.types.includes(asset.type)).length}</b>
@@ -590,7 +593,7 @@ export function AssetIndexTabs({ assets }: { assets: AssetIndexRow[] }) {
       </div>
       <div className="studioTableScroll compactTable">
         <table>
-          <thead><tr><th>资产ID</th><th>类型</th><th>名称 / 状态</th><th>确认</th></tr></thead>
+          <thead><tr><th>资产ID</th><th>类型</th><th>名称 / 状态</th><th>{assets.some(asset => asset.statusLabel !== undefined) ? "状态" : "确认"}</th></tr></thead>
           <tbody>
             {rows.map(({ asset, depth }) => (
               <tr key={asset.id} className={depth > 0 ? "assetChildRow" : ""}>
@@ -606,7 +609,7 @@ export function AssetIndexTabs({ assets }: { assets: AssetIndexRow[] }) {
                 <td style={depth > 0 ? { paddingLeft: "34px" } : undefined}>
                   {depth > 0 ? <span className="assetChildMarker" aria-hidden="true">└ </span> : null}{asset.name}
                 </td>
-                <td><span className={`stateDot ${asset.status === "confirmed" ? "ok" : "warn"}`}>{asset.status === "confirmed" ? "已确认" : "待确认"}</span></td>
+                <td><span className={`stateDot ${asset.statusLabel ? "" : asset.status === "confirmed" ? "ok" : "warn"}`}>{asset.statusLabel ?? (asset.status === "confirmed" ? "已确认" : "待确认")}</span></td>
               </tr>
             ))}
             {!rows.length ? <tr><td colSpan={4} className="emptyCell">该分类暂无资产</td></tr> : null}

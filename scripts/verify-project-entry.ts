@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   PROJECT_STYLE_OPTIONS,
+  EXECUTION_MODE_OPTIONS,
   deriveProjectCardState,
   getProjectStyle,
   readProjectSubmission,
@@ -27,22 +28,23 @@ async function main() {
   assert.equal(resolveProjectStyleCover("3D国漫"), "/style-covers/3d-guoman.webp");
   assert.equal(resolveProjectStyleCover("真人竖屏短剧写实风格"), "/style-covers/live-action-cinematic.webp");
   assert.equal(resolveProjectStyleCover("未识别旧风格"), "/style-covers/custom.webp");
+  assert.ok(EXECUTION_MODE_OPTIONS.every((option) => option.hint.includes("v0.2 第一阶段测试") && !option.hint.includes("E0")));
 
   assert.deepEqual(
-    deriveProjectCardState({ episodeCount: 12, snapshotCount: 0, assetCount: 0, unitEpisodeCount: 0 }),
+    deriveProjectCardState({ episodeCount: 12, foundationReady: false, unitEpisodeCount: 0 }),
     { stage: "全剧资料", progress: 20, actionLabel: "继续整理" }
   );
   assert.deepEqual(
-    deriveProjectCardState({ episodeCount: 12, snapshotCount: 13, assetCount: 40, unitEpisodeCount: 0 }),
-    { stage: "分镜生产", progress: 55, actionLabel: "开始分镜" }
+    deriveProjectCardState({ episodeCount: 12, foundationReady: true, unitEpisodeCount: 0 }),
+    { stage: "全剧资料就绪", progress: 100, actionLabel: "查看第一阶段资料" }
   );
   assert.deepEqual(
-    deriveProjectCardState({ episodeCount: 12, snapshotCount: 13, assetCount: 40, unitEpisodeCount: 4 }),
-    { stage: "分镜生产", progress: 70, actionLabel: "继续制作" }
+    deriveProjectCardState({ episodeCount: 12, foundationReady: true, unitEpisodeCount: 4 }),
+    { stage: "全剧资料就绪", progress: 100, actionLabel: "查看第一阶段资料" }
   );
   assert.deepEqual(
-    deriveProjectCardState({ episodeCount: 12, snapshotCount: 13, assetCount: 40, unitEpisodeCount: 12 }),
-    { stage: "单集结果", progress: 100, actionLabel: "查看结果" }
+    deriveProjectCardState({ episodeCount: 12, foundationReady: true, unitEpisodeCount: 12 }),
+    { stage: "全剧资料就绪", progress: 100, actionLabel: "查看第一阶段资料" }
   );
 
   const pasted = new FormData();

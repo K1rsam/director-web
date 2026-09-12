@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import { buildSourceIndex } from '../lib/project-foundation-contracts';
+import { partitionFoundationSource, fragmentDependency, changedFragmentIds } from '../lib/foundation-fragment-work';
+import type { FoundationChoiceRegistry } from '../lib/foundation-choice-store';
+const index=buildSourceIndex([{number:1,title:'长',content:'甲'.repeat(36000)},{number:2,title:'短',content:'乙'},{number:3,title:'短',content:'丙'}]);
+const plan=partitionFoundationSource(index);assert.deepEqual(plan.shortEpisodes,[2,3]);assert.equal(plan.fragments.length,2);assert.ok(plan.fragments.every(f=>f.episode===1));
+const scenes=[{episode:1,sceneKey:'1-1',sourceRange:{start:0,end:18000}},{episode:1,sceneKey:'1-2',sourceRange:{start:18000,end:36000}}];
+const choices:FoundationChoiceRegistry=[{decisionKey:'key',status:'CONFIRMED',question:'持有者',episodes:[1],applicationScope:{kind:'SCENES',scenes:[{episode:1,sceneKey:'1-1'}]},answer:'甲'}];
+const deps=(c:FoundationChoiceRegistry)=>Object.fromEntries(plan.fragments.map(f=>[f.id,fragmentDependency(f,index,c,scenes,[],'settings')]));
+const before=deps(choices);const modified=structuredClone(choices);modified[0].answer='乙';
+assert.deepEqual(changedFragmentIds(plan.fragments.map(f=>f.id),before,deps(modified)),[plan.fragments[0].id]);
+const unrelated=structuredClone(choices);unrelated.push({decisionKey:'else',status:'CONFIRMED',question:'短集',episodes:[2],answer:'甲'});assert.deepEqual(changedFragmentIds(plan.fragments.map(f=>f.id),before,deps(unrelated)),[]);
+const global=structuredClone(choices);global.push({decisionKey:'all',status:'CONFIRMED',question:'全局',episodes:[],applicationScope:{kind:'GLOBAL',reason:'全剧风格'},answer:'A'});assert.equal(changedFragmentIds(plan.fragments.map(f=>f.id),before,deps(global)).length,2);
+assert.deepEqual(changedFragmentIds(plan.fragments.map(f=>f.id),undefined,before),[],'legacy evidence must not be discarded merely for missing new dependency metadata');
+console.log('PASS mixed source partition; local scene choice invalidates only relevant slice; unrelated episode retained; explicit global invalidates all; legacy evidence preserved');

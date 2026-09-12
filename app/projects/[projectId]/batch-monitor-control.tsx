@@ -35,7 +35,7 @@ export function BatchMonitorControl({
   const submitting = useRef(false);
   const active = Boolean(monitor && ACTIVE_STATUSES.has(monitor.status));
   const providerLabel = String(executionMode).toUpperCase() === "API" ? "API" : "CLI";
-  const concurrencyLabel = providerLabel === "CLI" ? "CLI 单集串行" : "API 最多 3 集并发";
+  const concurrencyLabel = `${providerLabel} 最多 3 集并发`;
 
   useEffect(() => {
     if (!active) return;
@@ -50,7 +50,7 @@ export function BatchMonitorControl({
   const compactDescription = foundationActive
     ? "全剧基础工程完成后，批量推进会自动进入未完成剧集。"
     : active
-      ? `正在按${providerLabel === "CLI" ? "串行" : "最多 3 集并发"}推进未完成剧集；完成一集后自动启动下一集。`
+      ? `正在按最多 3 集并发推进未完成剧集；每集内部仍按 E0→E5 顺序执行，完成一集后自动启动下一集。`
       : monitor?.status === "FAILED" || monitor?.status === "CANCELED"
         ? pausedByQuota
           ? "检测到额度或频率限制，批量推进已暂停；额度恢复后可继续，不会重复消耗额度。"
@@ -139,7 +139,7 @@ export function BatchMonitorControl({
         <section className="batchMonitorDetails" aria-labelledby="batch-monitor-rules-title">
           <h3 id="batch-monitor-rules-title">执行规则与历史说明</h3>
           <div className="batchMonitorDetailsBody">
-            <p>从页面启动后台监控（当前使用 {providerLabel}）：先完成所有正式集的 E0–E5 初稿；{concurrencyLabel}，避免 CLI 同时读取多份大上下文并触发额度窗口限制。普通执行失败会整集重做 1 次，仍失败就自动跳过并继续后续剧集；如果检测到额度不足或频率限制，批量会立即暂停，不会继续消耗额度。BLOCKER、MAJOR 和 MINOR 只记录，不在批量阶段自动返修；全部初稿完成后，再到各集的“问题与返修”中统一处理。</p>
+            <p>从页面启动后台监控（当前使用 {providerLabel}）：先完成所有正式集的 E0–E5 初稿；{concurrencyLabel}，每集内部岗位仍按 E0→E5 顺序执行。普通执行失败会整集重做 1 次，仍失败就自动跳过并继续后续剧集；如果检测到额度不足或频率限制，批量会立即暂停，不会继续消耗额度。BLOCKER、MAJOR 和 MINOR 只记录，不在批量阶段自动返修；全部初稿完成后，再到各集的“问题与返修”中统一处理。</p>
             <div className="batchMonitorMeta" aria-label="批量推进规则">
               <span>页面后台运行</span>
               <span>{providerLabel} 执行</span>

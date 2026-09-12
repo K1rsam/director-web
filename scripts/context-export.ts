@@ -13,6 +13,8 @@
  * 依赖项目现有约定：@/lib/prisma 单例、tsx 运行、process.argv 解析（同 run-episode-pipeline.ts）。
  */
 import { prisma } from "@/lib/prisma";
+import { getFoundationState } from "@/lib/foundation-state";
+import { deriveProjectCardState } from "@/lib/project-entry";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
@@ -49,14 +51,6 @@ function safeJson(raw: string | null | undefined): unknown {
   }
 }
 
-/** 与 @/lib/project-entry.deriveProjectCardState 的测试口径一致（全剧资料 20 → 分镜生产 55/70 → 单集结果 100）。 */
-function deriveStage(episodeCount: number, snapshotCount: number, assetCount: number, unitEpisodeCount: number) {
-  if (snapshotCount === 0) return { stage: "全剧资料", progress: 20, actionLabel: "继续整理" };
-  if (unitEpisodeCount === 0) return { stage: "分镜生产", progress: 55, actionLabel: "开始分镜" };
-  if (unitEpisodeCount < episodeCount) return { stage: "分镜生产", progress: 70, actionLabel: "继续制作" };
-  return { stage: "单集结果", progress: 100, actionLabel: "查看结果" };
-}
-
 async function refreshIndex(
   file: string,
   ctx: { projectTitle: string; stage: string; progress: number; generatedAt: string | null; episodeNumber: number }
@@ -80,7 +74,7 @@ ${GEN_END}`;
 - \`episodes/episode-<N>.json\` —— 单集信息包（自动生成）
 
 ## 工作流速查
-全剧资料（校验分集 → 基础策划 → 资产 → 场次）→ 分镜生产（E0 叙事节奏 → E1 结构导演 → E2 表演调度 → E3 单元视听 → E4 摄影光影 → E5 审查总控；失败即停）→ 单集结果
+全剧资料（P0 原文机械检查 → F1 理解供给 → F2 身份与源状态 → Q1 独立审查并批准）→ 旧版分镜生产（E0 叙事节奏 → E1 结构导演 → E2 表演调度 → E3 单元视听 → E4 摄影光影 → E5 审查总控；失败即停）→ 单集结果
 
 ${generated}
 `;
@@ -251,7 +245,8 @@ async function main() {
   const snapshotCount = await prisma.sceneSnapshot.count({ where: { projectId: project.id } });
   const assetCount = await prisma.asset.count({ where: { projectId: project.id } });
   const unitEpisodeCount = epSummaries.filter((e) => e.unitCount > 0).length;
-  const { stage, progress, actionLabel } = deriveStage(epSummaries.length, snapshotCount, assetCount, unitEpisodeCount);
+  const foundationReady = (await getFoundationState(project.id)).ready;
+  const { stage, progress, actionLabel } = deriveProjectCardState({ episodeCount: epSummaries.length, foundationReady, unitEpisodeCount });
 
   const currentState = {
     generatedAt: iso(new Date()),

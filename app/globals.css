@@ -2253,12 +2253,12 @@ button:disabled {
 
 .storyboardTable .shotColKey { width: 8%; }
 .storyboardTable .shotColDuration { width: 5%; }
-.storyboardTable .shotColPicture { width: 22%; }
-.storyboardTable .shotColCamera { width: 17%; }
-.storyboardTable .shotColLighting { width: 14%; }
-.storyboardTable .shotColSound { width: 12%; }
-.storyboardTable .shotColDialogue { width: 11%; }
-.storyboardTable .shotColTransition { width: 7%; }
+.storyboardTable .shotColPicture { width: 20%; }
+.storyboardTable .shotColCamera { width: 16%; }
+.storyboardTable .shotColLighting { width: 12%; }
+.storyboardTable .shotColSound { width: 11%; }
+.storyboardTable .shotColDialogue { width: 16%; }
+.storyboardTable .shotColTransition { width: 6%; }
 .storyboardTable .shotColRevision { width: 4%; }
 
 .storyboardTable td {
@@ -3165,6 +3165,11 @@ button:disabled {
   max-height: 6.4em;
   line-height: 1.5;
   word-break: break-all;
+}
+
+.storyboardTable td.cellClamp .dialogueCellText {
+  white-space: pre-line;
+  word-break: break-word;
 }
 
 .seedancePrompt pre {
