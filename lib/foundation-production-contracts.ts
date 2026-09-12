@@ -408,7 +408,7 @@ export function requireProductionOptimization(value: unknown, index: SourceIndex
           // Numbered source includes line endings; accept one, never trim or repair the line body.
           const anchor = typeof cut.anchor === 'string' ? cut.anchor.replace(/(?:\r\n|\n|\r)$/, '') : '';
           if (!anchor.trim() || /[\r\n]/.test(anchor) || anchor !== lines[Number(cut.startLine) - 1]) fail(`${cutAt}.anchor`, '须逐字匹配对应行完整原文，不含行尾换行');
-          return { startLine: Number(cut.startLine), anchor, ...Object.fromEntries(['location', 'interiorExterior', 'timeOfDay', 'timeLayer'].filter(key => cut[key] !== undefined).map(key => [key, string(cut[key], `${cutAt}.${key}`)])) };
+          return { startLine: Number(cut.startLine), anchor, ...Object.fromEntries(['location', 'interiorExterior', 'timeOfDay', 'timeLayer'].filter(key => cut[key] != null).map(key => [key, string(cut[key], `${cutAt}.${key}`)])) };
         });
         if (!cuts.length) fail(`${at}.cuts`, '须有实际拆场位置');
         return { episode, sourceHash, sceneKey: string(raw.sceneKey, `${at}.sceneKey`), cuts };

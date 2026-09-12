@@ -90,7 +90,7 @@ export const FOUNDATION_REQUEST_BUDGET = { totalChars: 200_000, estimatedOutputC
 export function assertFoundationRequestBudget(systemPrompt: string, taskPrompt: string) {
   const requestChars = systemPrompt.length + taskPrompt.length;
   if (requestChars + FOUNDATION_REQUEST_BUDGET.estimatedOutputChars > FOUNDATION_REQUEST_BUDGET.totalChars) {
-    throw new Error(`待处理：完整请求${requestChars}字符＋预计输出预留${FOUNDATION_REQUEST_BUDGET.estimatedOutputChars}字符超过应用请求预算${FOUNDATION_REQUEST_BUDGET.totalChars}字符；未调用模型、未截断原文，现有草稿保留。需先缩减资料或另行设计单集分块。此为应用预算，并非模型token上限。`);
+    throw new Error(`待处理：完整请求${requestChars}字符＋预计输出预留${FOUNDATION_REQUEST_BUDGET.estimatedOutputChars}字符超过应用请求预算${FOUNDATION_REQUEST_BUDGET.totalChars}字符；本次请求在发送前被拦截，原文及已有返回均保留；此前是否已调用请查看运行记录。需要检查该请求的资料范围或修复包，不应通过截断原文绕过。此为应用预算，并非模型token上限。`);
   }
 }
 export class FoundationContinuationStateChangedError extends Error {

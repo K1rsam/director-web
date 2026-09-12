@@ -37,6 +37,14 @@ assert.throws(() => requireProductionOptimization(wire([cut(4)]), { ...index, ve
 assert.throws(() => requireProductionOptimization({ ...wire([cut(4)]), changes: { sceneSplits: [{ episode: 7, sceneKey: '7-1', sourceHash: 'stale', cuts: [cut(4)] }] } }, index, [7]), /版本/);
 assert.throws(() => requireProductionOptimization({ ...wire([cut(4)]), changes: { sceneSplits: [{ episode: 8, sceneKey: '8-1', cuts: [cut(4)] }] } }, index, [7]), FoundationContractError);
 
+// Nullable optional metadata means no declaration, consistently with ordinary scene patches.
+for (const field of ['location', 'interiorExterior', 'timeOfDay', 'timeLayer']) {
+  const value = wire([{ ...cut(4), [field]: null }]), before = structuredClone(value);
+  const result = requireProductionOptimization(value, index, [7]);
+  assert.deepEqual(result.changes.sceneSplits![0].cuts[0], cut(4));
+  assert.deepEqual(value, before, 'retain the original paid response');
+  for (const invalid of [3, false, [], {}]) assert.throws(() => receive([{ ...cut(4), [field]: invalid }]), FoundationContractError);
+}
 console.log('PASS light scene edit anchor normalization');
 
 assert.doesNotThrow(() => requireProductionOptimization({ format: 'FOUNDATION_OPTIMIZATION_V2', coverage: [7], changes: { scenes: [{ episode: 7, sceneKey: '7-1', timeLayer: '现实' }] } }, index, [7]), 'first-segment timeLayer must remain a valid scene patch');

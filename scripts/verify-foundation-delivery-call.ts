@@ -143,8 +143,9 @@ async function main() {
     assert.deepEqual(original.data, invalid);
     assert.ok(result.attempts[1].normalization, "program merge must be labelled, not masquerade as provider output");
     const repairedTask = JSON.parse(fake.calls[1].prompt.split(/\nINPUT_JSON:\s*\n/).at(-1)!);
-    assert.deepEqual(repairedTask.source, task.source);
-    assert.deepEqual(repairedTask.registry, task.registry);
+    assert.equal(repairedTask.source, undefined);
+    assert.equal(repairedTask.registry, undefined);
+    assert.deepEqual(repairedTask.repairRequest.fields.map((f: {path:string}) => f.path), ["episodes.0.summary"]);
     assert.deepEqual(repairedTask.scope, task.scope);
     assert.deepEqual(repairedTask.repairRequest.issues, [issue("episodes.0.summary")]);
     assert.ok(fake.calls[1].prompt.includes("只修"));
@@ -244,7 +245,8 @@ async function main() {
     const fake = queued(response(invalid), response(valid));
     await run({ stage: "F1", prompt: "旧任务：只处理第二集。原文。", context, validate, runner: fake.runner, takeRepairBudget: async () => true });
     const envelope = JSON.parse(fake.calls[1].prompt.split("\nINPUT_JSON:\n").at(-1)!);
-    assert.equal(envelope.originalTaskPrompt, "旧任务：只处理第二集。原文。");
+    assert.equal(envelope.originalTaskPrompt, undefined);
+    assert.deepEqual(envelope.repairRequest.fields.map((f: {path:string}) => f.path), ["episodes.0.summary"]);
     assert.deepEqual(envelope.scope, [2]);
     assert.ok(envelope.repairRequest);
   });
@@ -332,11 +334,12 @@ async function main() {
     assert.deepEqual(error.attempts[0].response?.data, { malformed: true });
   });
 
-  await check("repair keeps the original output schema ahead of a single terminal input object", async () => {
+  await check("field repair uses its patch contract and one terminal input object", async () => {
     const fake = queued(response(invalid), response(valid));
     const originalPrompt = `OUTPUT_SCHEMA:\n{"coverage":[],"episodes":[{"summary":"必需文本"}]}\n${prompt}`;
     await run({ stage: "F1", prompt: originalPrompt, context, validate, runner: fake.runner, takeRepairBudget: async () => true });
-    assert.ok(fake.calls[1].prompt.includes('"summary":"必需文本"'), "repair still needs the original contract schema");
+    assert.ok(fake.calls[1].prompt.includes("FIELD_REPAIR_V1"));
+    assert.ok(!fake.calls[1].prompt.includes("OUTPUT_SCHEMA"), "field repair must not reintroduce the full authoring schema");
     assert.deepEqual(JSON.parse(fake.calls[1].prompt.split("\nINPUT_JSON:\n").at(-1)!).scope, [2]);
   });
 
