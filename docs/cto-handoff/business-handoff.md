@@ -2,7 +2,7 @@
 
 > GitHub整理版｜原稿日期：2026-09-08；归档日期：2026-09-12；整理者：web-CTO。本文为用户与CTO公开讨论及资料研究形成的历史文档，不是当前第一阶段的运行指令或全部已批准的规范。正文中的“本轮/当前/下一阶段”按原稿日期理解。
 >
-> 阅读优先级：本包[README](README.md)的现行业务校准与[来源说明](source-index.md) → 本文。旧文中“15/30只作上限”不能覆盖后来明确的“模式预选、合理时默认近上限、短单元有理由”；51不是合格正例。原始聊天、真实剧本、私有日志、第三方完整模板和本机路径未上传；无法公开的原始引用已转为来源索引。保留历史观点是为说明演变，不是重新启用旧规则。
+> 阅读优先级：本包[README](README.md)的业务校准与[来源说明](source-index.md) → 本文。旧文中“15/30只作上限”不能覆盖后来明确的“模式预选、合理时默认近上限、短单元有理由”；51不是合格正例。首轮未附第三方模板；2026-09-12追加参考原文及开源快照见[外部参考库](../external-references/README.md)，其中灵墨六阶段编辑框快照已从历史读取记录补齐。原始会话/剧本/私有日志仍未上传；本文原阅读声明和缺口描述保留当时语境，不是重新启用旧规则。
 
 2026-09-08｜交给当前主审的历史业务交接。不是新工作流定稿、制作任务、Skill安装单或旧团队复工授权。
 
@@ -404,27 +404,27 @@
 [FRAME170]: architecture-options.md
 [OPS]: source-index.md#s032
 [LINGMO]: lingmo-review.md
-[LINGMO-RAW]: source-index.md#s033
+[LINGMO-RAW]: ../external-references/lingmo/05a-character.source.md
 [MAP]: source-index.md#s034
 [LEARNING-MANIFEST]: source-index.md#s035
-[LIRA32]: source-index.md#s036
-[LIRA217]: source-index.md#s037
-[ACTING]: source-index.md#s038
-[ACTING76]: source-index.md#s039
-[CINE243]: source-index.md#s040
-[CINE304]: source-index.md#s041
+[LIRA32]: ../external-references/higgsfield/LIRA.source.md
+[LIRA217]: ../external-references/higgsfield/LIRA.source.md
+[ACTING]: ../external-references/higgsfield/ACTING.source.md
+[ACTING76]: ../external-references/higgsfield/ACTING.source.md
+[CINE243]: ../external-references/higgsfield/CINEDANCE.source.md
+[CINE304]: ../external-references/higgsfield/CINEDANCE.source.md
 [MANJU]: manju-review.md
-[MANJU-ROOT]: source-index.md#s042
-[MANJU-SPATIAL]: source-index.md#s043
+[MANJU-ROOT]: ../external-references/manju-laoli/short-drama-director/SKILL.md
+[MANJU-SPATIAL]: ../external-references/manju-laoli/short-drama-director/references/spatial-topview-camera.md
 [CAMERA-KNOWLEDGE]: source-index.md#s044
-[FEISHU-TEMPLATES]: source-index.md#s045
+[FEISHU-TEMPLATES]: ../external-references/feishu/template-review.md
 [FEISHU-LIFE]: source-index.md#s046
 [FEISHU-MANUAL]: source-index.md#s047
 [FEISHU-PROMPT]: source-index.md#s048
 [FEISHU-TOB]: source-index.md#s049
-[EMOTION-SCRIPT]: source-index.md#s050
-[ACTION-GRID]: source-index.md#s051
-[MODEL-ADAPTER]: source-index.md#s052
+[EMOTION-SCRIPT]: ../external-references/manju-laoli/short-drama-director/scripts/generate_emotion_curve.py
+[ACTION-GRID]: ../external-references/manju-laoli/short-drama-director/references/action-previs-15grid.md
+[MODEL-ADAPTER]: ../external-references/manju-laoli/short-drama-director/references/model-adapters.md
 [BACKEND]: source-index.md#s053
 [DOCX]: source-index.md#s054
 [SOURCE-MANIFEST]: source-index.md#s055
