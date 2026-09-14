@@ -1,3 +1,4 @@
+import { actionableFoundationIssues } from './foundation-decision-wait';
 import { planFoundationIssueDispatch } from './foundation-issue-dispatch';
 import { assessFoundationWorkerHealth } from './foundation-worker-health';
 import { selectRequestChoices, selectRequestIssues } from './foundation-request-context';
@@ -522,7 +523,7 @@ async function knownAssets(db: Db, projectId: string, document: FoundationDocume
   return [...known.values()];
 }
 
-export function buildDeliveryInput(stage: 'F2' | 'Q1', phase: DeliveryPhase, input: Inputs, doc: FoundationDocument, scope: number[], suggestions: FoundationChoiceView[], decisions: FoundationChoiceView[], identities: F2Asset[], scenes: LightScene[], targets?: LocalRepairTargets) {
+export function buildDeliveryInput(stage: 'F2' | 'Q1', phase: DeliveryPhase, input: Inputs, doc: FoundationDocument, scope: number[], suggestions: FoundationChoiceView[], decisions: FoundationChoiceView[], identities: F2Asset[], scenes: LightScene[], targets?: LocalRepairTargets, requiredChoices: FoundationChoiceView[] = []) {
   const boundaryContext = buildLightBoundaryContext(input.sourceIndex, doc.f2, scenes, scope);
   const selectedFacts = selectFoundationFacts(cachedFoundationFacts(input.sourceIndex, input.sourceContext, doc.f2), input.sourceIndex, scope);
   const { sourceFactIndex: _sourceFactIndex, ...modelFacts } = selectedFacts;
@@ -541,7 +542,7 @@ export function buildDeliveryInput(stage: 'F2' | 'Q1', phase: DeliveryPhase, inp
     editorialSuggestions: suggestions.filter(choice => scopeEpisodes(readApplicationScope(choice.applicationScope,choice.episodes),scope).some(n=>scope.includes(n))), confirmedDecisions: decisions.filter(choice => scopeEpisodes(readApplicationScope(choice.applicationScope,choice.episodes),scope).some(n=>scope.includes(n))),
     pendingChoices: doc.editorialTodos.filter(todo => unresolvedOwner(todo) === 'Q1' && overlaps(scope, todo.episodes ?? []) && (!targets?.todoIds || targets.todoIds.includes(todo.id))),
     programTasks: programTodos(doc).filter(todo => overlaps(scope, todo.episodes ?? []) && (!targets?.todoIds || targets.todoIds.includes(todo.id))),
-    repairIssues: selectRequestIssues([...collectFoundationPublicationIssues(doc.f2!, input.sourceContext), ...collectLightSceneIssues(doc.f2!, scenes)], scope, doc.f2!.assets.flatMap(asset=>[{key:asset.key,episodes:asset.usageEpisodes},...asset.variants.map(v=>({key:v.key,episodes:v.episodes}))])).filter(issue => !targets || planFoundationIssueDispatch({ doc, scenes, index: input.sourceIndex, issues: [issue] }).targets.some(target => target.items.some(item => !item.todoId && item.coordinate === issue.coordinate) && target.episodes.some(n => scope.includes(n)) && (!targets.keys.length || target.keys.some(key => targets.keys.includes(key))) && (!targets.sceneKeys?.length || !target.sceneKeys.length || target.sceneKeys.some(key => targets.sceneKeys!.includes(key))))) };
+    repairIssues: selectRequestIssues(actionableFoundationIssues(doc, [...collectFoundationPublicationIssues(doc.f2!, input.sourceContext), ...collectLightSceneIssues(doc.f2!, scenes)], phase === 'REPAIR' ? requiredChoices : []), scope, doc.f2!.assets.flatMap(asset=>[{key:asset.key,episodes:asset.usageEpisodes},...asset.variants.map(v=>({key:v.key,episodes:v.episodes}))])).filter(issue => !targets || planFoundationIssueDispatch({ doc, scenes, index: input.sourceIndex, issues: [issue] }).targets.some(target => target.items.some(item => !item.todoId && item.coordinate === issue.coordinate) && target.episodes.some(n => scope.includes(n)) && (!targets.keys.length || target.keys.some(key => targets.keys.includes(key))) && (!targets.sceneKeys?.length || !target.sceneKeys.length || target.sceneKeys.some(key => targets.sceneKeys!.includes(key))))) };
 }
 
 async function paidContinuationBlocker(db: Db, input: Inputs, document: FoundationDocument, scenes: LightScene[], pending: FoundationChoiceView[], confirmed: FoundationChoiceView[], needsContextEdit: boolean) {
@@ -574,7 +575,7 @@ async function paidContinuationBlocker(db: Db, input: Inputs, document: Foundati
     const decisions = confirmed.filter(choice => document.appliedDecisions[choice.id] !== choice.revision && scope.some(n => remainingChoiceScope(document, choice, 'decisionCoverage', all).includes(n)));
     const delivery = isRecord(entry.request.delivery) ? entry.request.delivery : {};
     const targets = isRecord(delivery.targets) ? delivery.targets as LocalRepairTargets : undefined;
-    const fingerprint = costFingerprint(stage, { ...buildDeliveryInput(stage, entry.queued.phase as DeliveryPhase, input, document, scope, suggestions, decisions, identities, scenes, targets),
+    const fingerprint = costFingerprint(stage, { ...buildDeliveryInput(stage, entry.queued.phase as DeliveryPhase, input, document, scope, suggestions, decisions, identities, scenes, targets, pending.filter(choice => document.requiredDecisionIds.includes(choice.id))),
       humanChoiceRegistry: selectRequestChoices((await loadFoundationChoices(db, input.project.id, input.sourceVersion, true)).registry,scope) });
     const matches = evidence.filter(item => item.fingerprint === fingerprint && item.receiver === DELIVERY_RECEIVERS[stage] && !document.origins.some(origin => origin.runId === item.run.id));
     let canRestore = false;
@@ -774,7 +775,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
         }
         return output;
       };
-      const fullInput = { ...buildDeliveryInput(stage, phase, input, doc, scope, suggestions, decisions, identities, scenes, targets), humanChoiceRegistry: selectRequestChoices(choices.registry, scope) };
+      const fullInput = { ...buildDeliveryInput(stage, phase, input, doc, scope, suggestions, decisions, identities, scenes, targets, choices.pending.filter(choice => doc.requiredDecisionIds.includes(choice.id))), humanChoiceRegistry: selectRequestChoices(choices.registry, scope) };
       const callInput = fragment ? { ...fullInput, source: fragmentSource(input.sourceIndex, fragment), fragment,
         scenes: fullInput.scenes.filter(scene => scenes.some(original => original.episode === scene.episode && original.sceneKey === scene.sceneKey && original.sourceRange.start < fragment.end && original.sourceRange.end > fragment.start)),
         facts: { ...fullInput.facts, current: fullInput.facts.current.filter(fact => fact.evidence.episode === fragment.episode && fact.evidence.start < fragment.end && fact.evidence.end > fragment.start) },
@@ -906,7 +907,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       if (retained) {const scope=retained.calls.find(attempt => attempt.scope.some(n => pending.includes(n)))!.scope;const group=orderedGroups.find(group=>group.includes(pending[0]))!;if(scope.some(n=>!group.includes(n)))throw new Error('历史已付费核对范围跨越长集边界，原响应已保留；需校核前接资料后恢复，未自动重购。');return scope;}
       return planFoundationRequestScope(pending, scope => {
         const work = buildEditWork(scope, currentChoices);
-        const request = { ...buildDeliveryInput('Q1', work.phase, input, doc, work.scope, work.localSuggestions, work.localDecisions, identities, scenes, work.targets), humanChoiceRegistry: selectRequestChoices(currentChoices.registry,work.scope) };
+        const request = { ...buildDeliveryInput('Q1', work.phase, input, doc, work.scope, work.localSuggestions, work.localDecisions, identities, scenes, work.targets, currentChoices.pending.filter(choice => doc.requiredDecisionIds.includes(choice.id))), humanChoiceRegistry: selectRequestChoices(currentChoices.registry,work.scope) };
         return input.systemPrompts.Q1.length + buildLightFoundationPrompt('Q1', request).length;
       });
     };
@@ -964,7 +965,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       }
       for (const number of work.scope) { const at = remainingEdit.indexOf(number); if (at >= 0) remainingEdit.splice(at,1); }
     }
-    const pendingWork = () => ({ issues: [...collectFoundationPublicationIssues(doc.f2!, input.sourceContext), ...collectLightSceneIssues(doc.f2!, scenes)], todos: currentTodos(doc),
+    const pendingWork = () => ({ issues: actionableFoundationIssues(doc, [...collectFoundationPublicationIssues(doc.f2!, input.sourceContext), ...collectLightSceneIssues(doc.f2!, scenes)], choices.pending.filter(choice => doc.requiredDecisionIds.includes(choice.id))), todos: currentTodos(doc),
       suggestions: choices.pending.filter(choice => !doc.requiredDecisionIds.includes(choice.id) && doc.reviewedSuggestions[choice.id] !== choice.revision),
       decisions: choices.confirmed.filter(choice => doc.appliedDecisions[choice.id] !== choice.revision && remainingChoiceScope(doc, choice, 'decisionCoverage', all).length) });
     repairRounds: for (let round = task!.repairRounds; round < task!.maxRepairRounds; round++) {
@@ -999,10 +1000,10 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
         const identities = await knownAssets(db, projectId, doc);
         // A saved task owns its scope array: consuming the local queue must not
         // mutate the previous JSON used by storeTask's compare-and-swap.
-        const localScope = job.todoIds?.length ? [...pendingScope] : planFoundationRequestScope(pendingScope, scope => input.systemPrompts.Q1.length + buildLightFoundationPrompt('Q1', buildDeliveryInput('Q1', 'REPAIR', input, doc, scope, pending.suggestions, pending.decisions, identities, scenes, { ...job, episodes: scope })).length);
+        const localScope = job.todoIds?.length ? [...pendingScope] : planFoundationRequestScope(pendingScope, scope => input.systemPrompts.Q1.length + buildLightFoundationPrompt('Q1', buildDeliveryInput('Q1', 'REPAIR', input, doc, scope, pending.suggestions, pending.decisions, identities, scenes, { ...job, episodes: scope }, choices.pending.filter(choice => doc.requiredDecisionIds.includes(choice.id)))).length);
         const targets = { ...job, episodes: localScope, todoIds: job.todoIds?.filter(id => doc.editorialTodos.some(todo => todo.id === id && unresolvedEpisodeScope(todo).every(n => localScope.includes(n)))) };
         if (job.todoIds?.length) {
-          try { assertFoundationRequestBudget(input.systemPrompts.Q1, buildLightFoundationPrompt('Q1', { ...buildDeliveryInput('Q1', 'REPAIR', input, doc, localScope, currentPending.suggestions, currentPending.decisions, identities, scenes, targets), humanChoiceRegistry: selectRequestChoices(choices.registry, localScope) })); }
+          try { assertFoundationRequestBudget(input.systemPrompts.Q1, buildLightFoundationPrompt('Q1', { ...buildDeliveryInput('Q1', 'REPAIR', input, doc, localScope, currentPending.suggestions, currentPending.decisions, identities, scenes, targets, choices.pending.filter(choice => doc.requiredDecisionIds.includes(choice.id))), humanChoiceRegistry: selectRequestChoices(choices.registry, localScope) })); }
           catch (error) { await update({ repairHalt: { fingerprint: repairFingerprint(input, doc, scenes), reason: '局部待办须完整校验，其范围超过当前处理容量，已暂停且未发起新请求。技术诊断：' + errorText(error) } }); break repairRounds; }
         }
         const previousPending = pendingWork(), before = pendingSignature(doc, previousPending.issues, previousPending.suggestions, previousPending.decisions);

@@ -103,15 +103,17 @@ export async function syncFoundationChoices(db: Db, projectId: string, sourceVer
       if (ref.sceneKey && !await db.scriptScene.findFirst({ where: { episode: { projectId, number: ref.episode }, sceneKey: ref.sceneKey }, select: { id: true } })) throw new Error('问题证据场次不存在。');
       if (ref.nodeId) throw new Error('当前问题协议请使用已验证的场次和原文行号，不接收未核实的节点编号。');
     }
-    const confirmed = matching.filter(row => row.status === "CONFIRMED");
+    const confirmed = matching.filter(row => row.status === "CONFIRMED" && (!metadata(row) || metadata(row)?.sourceVersion === sourceVersion));
     const scopes = confirmed.flatMap(row => {
       const scope = foundationChoiceCondition(row, sourceEpisodes);
       return scope.scopeResolved ? [scope.episodes] : [];
     });
     const episodes = proposedScope.kind === "UNRESOLVED" ? [] : confirmed.length ? null : scopeEpisodes(proposedScope);
     if (episodes === null) continue;
-    const old = matching.find(row => row.status === "PENDING" && metadata(row)?.sourceVersion === sourceVersion)
-      ?? matching.find(row => row.status === "PENDING");
+    // Author suggestions retain the same identity when Q1 asks for a human decision.
+    const isOpen = (row: PresentationContract) => row.status === "PENDING" || row.status === "SUGGESTED";
+    const old = matching.find(row => isOpen(row) && metadata(row)?.sourceVersion === sourceVersion)
+      ?? matching.find(row => isOpen(row));
     // Legacy questions keep their hand-written note and original options; matching is by supplied registry key only.
     if (old && !metadata(old)) continue;
     const sameSource = old && metadata(old)?.sourceVersion === sourceVersion;
@@ -122,11 +124,20 @@ export async function syncFoundationChoices(db: Db, projectId: string, sourceVer
       sourceStages: [...new Set([...(previous?.sourceStages ?? []), stage])], reason: previous?.reason ?? reason,
       recommended: previous?.recommended ?? choice.recommended, recommendationReason: previous?.recommendationReason ?? choice.recommendationReason };
     const evidence = [...new Set([...(sameSource && old?.evidence ? old.evidence.split("\n") : []), ...choice.evidence.split("\n")])].join("\n");
-    if (old) await db.presentationContract.updateMany({ where: { id: old.id, projectId, status: "PENDING" }, data: {
-      evidence, note: JSON.stringify(meta), ...(sameSource ? {} : { category: choice.kind, question: choice.question, options: JSON.stringify(choice.options), round: old.round + 1 })
-    } });
-    else await db.presentationContract.create({ data: { id: `foundation-choice-${digest([projectId, decisionKey, sourceVersion, proposedScope, choice.options])}`, projectId, category: choice.kind,
-      question: choice.question, options: JSON.stringify(choice.options), evidence, note: JSON.stringify(meta), status: "PENDING" } });
+    if (old) {
+      const data = { evidence, note: JSON.stringify(meta),
+        status: stage === 'Q1' || !sameSource ? 'PENDING' : old.status,
+        ...(sameSource ? {} : { category: choice.kind, question: choice.question, options: JSON.stringify(choice.options), round: old.round + 1 }) };
+      const updated = await db.presentationContract.updateMany({ where: { id: old.id, projectId, status: old.status, updatedAt: old.updatedAt }, data });
+      if (updated.count !== 1) throw new FoundationChoiceError('decision-changed');
+      const refreshed = await db.presentationContract.findUniqueOrThrow({ where: { id: old.id } });
+      rows[rows.findIndex(row => row.id === old.id)] = refreshed;
+    } else {
+      const created = await db.presentationContract.create({ data: { id: `foundation-choice-${digest([projectId, decisionKey, sourceVersion, proposedScope, choice.options])}`, projectId, category: choice.kind,
+        question: choice.question, options: JSON.stringify(choice.options), evidence, note: JSON.stringify(meta), status: "PENDING" } });
+      // Different proposed scope kinds can subtract confirmed consent to the same scope.
+      rows.push(created);
+    }
   }
 }
 

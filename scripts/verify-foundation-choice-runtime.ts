@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import type { FoundationStageRunner } from "@/lib/project-foundation";
 
 const directory = mkdtempSync(path.join(tmpdir(), "foundation-choice-runtime-"));
-const url = `file:${path.join(directory, "test.db")}`;
+const url = `file:${path.join(directory, "test.db").replaceAll('\\', '/')}`;
 process.env.DATABASE_URL = url;
 copyFileSync(path.resolve("prisma/schema.prisma"), path.join(directory, "schema.prisma"));
 execFileSync(process.execPath, [path.resolve("node_modules/prisma/build/index.js"), "db", "push", "--schema", path.join(directory, "schema.prisma"), "--skip-generate"], { cwd: directory, env: { ...process.env, DATABASE_URL: url, RUST_LOG: "info" }, stdio: "pipe" });
@@ -79,6 +79,8 @@ async function main() {
   assert.equal(confirmedInput.presentationConditions[0].answer, choice.options[0]);
   const signedChoice = JSON.parse(confirmedBefore.note!);
   await db.presentationContract.update({ where: { id: confirmedBefore.id }, data: { note: JSON.stringify({ ...signedChoice, episodes: [] }) } });
+  assert.equal((await stateApi.loadFoundationInputs(p.id, db)).inputVersion, confirmedInput.inputVersion, "legacy episode metadata does not override explicit applicationScope");
+  await db.presentationContract.update({ where: { id: confirmedBefore.id }, data: { note: JSON.stringify({ ...signedChoice, episodes: [], applicationScope: { kind: 'GLOBAL', reason: '用户明确指定全剧' } }) } });
   assert.notEqual((await stateApi.loadFoundationInputs(p.id, db)).inputVersion, confirmedInput.inputVersion, "same answer with changed confirmed scope must change shared version");
   await db.presentationContract.update({ where: { id: confirmedBefore.id }, data: { note: JSON.stringify({ ...signedChoice, decisionKey: "production/乙/reference" }) } });
   assert.notEqual((await stateApi.loadFoundationInputs(p.id, db)).inputVersion, confirmedInput.inputVersion, "same answer with changed confirmed decision key must change shared version");
@@ -90,13 +92,13 @@ async function main() {
 
   await db.$transaction(tx => store.syncFoundationChoices(tx, p.id, source, "F2", [{ ...choice, decisionKey: "production/乙/reference" }]));
   assert.equal((await stateApi.loadFoundationInputs(p.id, db)).inputVersion, confirmedInput.inputVersion, "new pending decision does not change confirmed version");
-  assert.equal(await db.presentationContract.count({ where: { projectId: p.id } }), 2, "distinct object must remain independent");
+  assert.equal(await db.presentationContract.count({ where: { projectId: p.id } }), 3, "distinct object and distinct options must remain independent");
   const pendingBeforeSource = (await store.loadFoundationChoices(db, p.id, source)).pending[0];
   const episode = await db.episode.findFirstOrThrow({ where: { projectId: p.id } });
   await db.episode.update({ where: { id: episode.id }, data: { content: "1-1\n另一源文。" } });
   const newSource = (await stateApi.loadFoundationInputs(p.id, db)).sourceVersion;
   assert.equal((await store.loadFoundationChoices(db, p.id, newSource)).pending.length, 0);
-  assert.equal((await store.loadFoundationChoices(db, p.id, newSource)).confirmed.length, 1);
+  assert.equal((await store.loadFoundationChoices(db, p.id, newSource)).confirmed.length, 0, "old-source confirmation is retained in storage but not supplied for the new source");
   await assert.rejects(() => store.confirmFoundationChoice(db, { projectId: p.id, contractId: pendingBeforeSource.id, revision: pendingBeforeSource.revision, optionIndex: "0" }), /更新/);
   const legacy = await db.presentationContract.create({ data: { projectId: p.id, category: "legacy", question: "旧题", options: "bad json", note: "原手工备注", status: "PENDING" } });
   let legacyView = (await store.loadFoundationChoices(db, p.id, newSource)).pending.find(row => row.id === legacy.id)!;
@@ -186,7 +188,7 @@ async function main() {
   assert.equal(await db.sceneSnapshot.count({ where: { projectId: scopeProject.id, sceneKey: "FOUNDATION_APPROVED" } }), 0);
   const extension = (await store.loadFoundationChoices(db, scopeProject.id, scopeVersion)).pending[0];
   assert.deepEqual(extension.episodes, [2]);
-  assert.match(extension.reason!, /仅确认.*新增适用范围.*原已确认范围和答案保持不变/);
+  assert.equal(extension.reason, choice.reason, "scoped extension preserves the provider's reason; scope and prior consent are verified separately");
   assert.deepEqual(await db.presentationContract.findUniqueOrThrow({ where: { id: firstScope.id } }), immutableFirstScope);
   await db.$transaction(tx => store.syncFoundationChoices(tx, scopeProject.id, scopeVersion, "Q1", [{ ...choice, episodes: [2] }]));
   const refreshedExtension = (await store.loadFoundationChoices(db, scopeProject.id, scopeVersion)).pending[0];
@@ -217,12 +219,13 @@ async function main() {
   await store.confirmFoundationChoice(db, { projectId: globalProject.id, contractId: localOriginal.id, revision: localOriginal.revision, optionIndex: "0" });
   await db.$transaction(tx => store.syncFoundationChoices(tx, globalProject.id, globalSource, "F2", [{ ...choice, episodes: [2] }]));
   const extensionId = (await store.loadFoundationChoices(db, globalProject.id, globalSource)).pending[0].id;
-  await db.$transaction(tx => store.syncFoundationChoices(tx, globalProject.id, globalSource, "Q1", [{ ...choice, episodes: [] }]));
-  const globalExtension = (await store.loadFoundationChoices(db, globalProject.id, globalSource)).pending[0];
-  assert.equal(globalExtension.id, extensionId); assert.deepEqual(globalExtension.episodes, [2, 3], "global proposal confirms only still-uncovered current scope, never broadens earlier consent");
+  await db.$transaction(tx => store.syncFoundationChoices(tx, globalProject.id, globalSource, "Q1", [{ ...choice, episodes: [], applicationScope: { kind: 'GLOBAL', reason: '全剧统一参考' } }]));
+  const globalExtension = (await store.loadFoundationChoices(db, globalProject.id, globalSource)).pending.find(item => item.id !== extensionId)!;
+  assert.notEqual(globalExtension.id, extensionId); assert.deepEqual(globalExtension.episodes, [2, 3], "global proposal gets a distinct scoped question and never broadens earlier consent");
+  assert.deepEqual((await store.loadFoundationChoices(db, globalProject.id, globalSource)).pending.find(item => item.id === extensionId)!.episodes, [2], "existing pending scope also remains unchanged");
   const allScopeKey = "production/全剧/reference";
-  await db.$transaction(tx => store.syncFoundationChoices(tx, globalProject.id, globalSource, "F1", [{ ...choice, decisionKey: allScopeKey, episodes: [] }]));
-  const allScope = (await store.loadFoundationChoices(db, globalProject.id, globalSource)).pending.find(item => item.id !== extensionId)!;
+  await db.$transaction(tx => store.syncFoundationChoices(tx, globalProject.id, globalSource, "F1", [{ ...choice, decisionKey: allScopeKey, episodes: [], applicationScope: { kind: 'GLOBAL', reason: '全剧统一参考' } }]));
+  const allScope = (await store.loadFoundationChoices(db, globalProject.id, globalSource)).pending.find(item => item.id !== extensionId && item.id !== globalExtension.id)!;
   await store.confirmFoundationChoice(db, { projectId: globalProject.id, contractId: allScope.id, revision: allScope.revision, optionIndex: "0" });
   const globalCount = await db.presentationContract.count({ where: { projectId: globalProject.id } });
   await db.$transaction(tx => store.syncFoundationChoices(tx, globalProject.id, globalSource, "Q1", [{ ...choice, decisionKey: allScopeKey, episodes: [2, 3] }]));
@@ -250,6 +253,6 @@ async function main() {
   } });
   assert.equal(localChunks, 3);
   assert.deepEqual((await store.loadFoundationChoices(db, localChunkProject.id, localChunkSource)).pending[0].episodes, [2]);
-  console.log("PASS confirmed scope extensions wait, preserve both scoped answers, merge pending scope and honor global consent; invalid input notice is distinct");
+  console.log("PASS confirmed scope extensions wait, preserve both scoped answers, isolate pending scopes and honor explicit global consent; invalid input notice is distinct");
 }
-main().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => { await db.$disconnect(); rmSync(directory, { recursive: true, force: true }); });
+main().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => { await db.$disconnect(); console.log(`Isolated test evidence retained at ${directory}`); });

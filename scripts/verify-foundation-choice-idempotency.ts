@@ -1,0 +1,61 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { copyFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { PrismaClient } from '@prisma/client';
+import { syncFoundationChoices } from '@/lib/foundation-choice-store';
+import type { HumanChoice } from '@/lib/foundation-human-choices';
+
+const directory = mkdtempSync(path.join(tmpdir(), 'foundation-choice-idempotency-'));
+const url = `file:${path.join(directory, 'test.db').replaceAll('\\', '/')}`;
+const db = new PrismaClient({ datasourceUrl: url });
+const choice: HumanChoice = { decisionKey: 'production/reference', kind: 'PRODUCTION_CHOICE', question: '采用哪种参考？', reason: '需要授权', options: ['自有', '制作'], recommended: '制作', recommendationReason: '没有素材', evidence: '原文', episodes: [1] };
+async function main() {
+  copyFileSync(path.resolve('prisma/schema.prisma'), path.join(directory, 'schema.prisma'));
+  execFileSync(process.execPath, [path.resolve('node_modules/prisma/build/index.js'), 'db', 'push', '--schema', path.join(directory, 'schema.prisma'), '--skip-generate'], { cwd: directory, env: { ...process.env, DATABASE_URL: url, RUST_LOG: 'info' }, stdio: 'pipe' });
+  const project = await db.project.create({ data: { title: '__isolated_choice_idempotency__', episodes: { create: [1, 2].map(number => ({ number, content: '原文' })) } } });
+  const sync = (stage: 'F1' | 'F2' | 'Q1', values: HumanChoice[], source = 'source-v1') => db.$transaction(tx => syncFoundationChoices(tx, project.id, source, stage, values));
+  const rows = () => db.presentationContract.findMany({ where: { projectId: project.id } });
+  await sync('F2', [choice]);
+  const original = (await rows())[0];
+  await db.presentationContract.update({ where: { id: original.id }, data: { status: 'SUGGESTED' } });
+  await sync('F2', [choice]);
+  assert.equal((await rows())[0].status, 'SUGGESTED');
+  await sync('Q1', [choice]);
+  await sync('Q1', [choice, choice]);
+  const promoted = (await rows())[0];
+  assert.equal((await rows()).length, 1);
+  assert.equal(promoted.id, original.id);
+  assert.equal(promoted.status, 'PENDING');
+  assert.deepEqual(JSON.parse(promoted.note!).sourceStages, ['F2', 'Q1']);
+  await db.presentationContract.update({ where: { id: original.id }, data: { status: 'CONFIRMED', userAnswer: '自有', decidedAt: new Date() } });
+  const confirmed = (await rows())[0];
+  // These distinct input kinds both become EPISODES [2] after subtracting [1].
+  await sync('Q1', [{ ...choice, episodes: [], applicationScope: { kind: 'GLOBAL', reason: '整部作品' } }, { ...choice, episodes: [1, 2] }]);
+  assert.equal((await rows()).length, 2);
+  assert.deepEqual(await db.presentationContract.findUnique({ where: { id: original.id } }), confirmed);
+  const remaining = (await rows()).find(row => row.id !== original.id)!;
+  assert.deepEqual(JSON.parse(remaining.note!).applicationScope, { kind: 'EPISODES', episodes: [2] });
+  await sync('Q1', [{ ...choice, options: ['授权甲', '授权乙'], recommended: '授权甲' }]);
+  assert.equal((await rows()).length, 3, 'different options must not consume old consent');
+  await sync('Q1', [choice], 'source-v2');
+  assert.equal((await rows()).length, 4, 'old-source confirmation must not suppress a current-source question');
+  assert.deepEqual(await db.presentationContract.findUnique({ where: { id: original.id } }), confirmed);
+  const episode = await db.episode.findFirstOrThrow({ where: { projectId: project.id, number: 1 } });
+  await db.scriptScene.create({ data: { episodeId: episode.id, sceneKey: '1-1', sortOrder: 1, sourceText: '原文' } });
+  const scoped: HumanChoice = { ...choice, decisionKey: 'production/scene-reference', applicationScope: { kind: 'SCENES', scenes: [{ episode: 1, sceneKey: '1-1' }] } };
+  await sync('F2', [scoped]);
+  const sceneRow = (await rows()).find(row => JSON.parse(row.note!).decisionKey === scoped.decisionKey)!;
+  await db.presentationContract.update({ where: { id: sceneRow.id }, data: { status: 'SUGGESTED' } });
+  await sync('Q1', [scoped]);
+  const sceneAfter = await db.presentationContract.findUniqueOrThrow({ where: { id: sceneRow.id } });
+  assert.equal(sceneAfter.status, 'PENDING');
+  assert.deepEqual(JSON.parse(sceneAfter.note!).applicationScope, scoped.applicationScope);
+  assert.equal((await rows()).length, 5, 'scene-scoped suggestion must reuse its identity');
+  console.log('PASS suggestion reuse/promotion, repeated calls, same-batch convergent scopes, confirmed immutability, options/source isolation (temporary SQLite, no AI)');
+}
+main().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => {
+  await db.$disconnect();
+  console.log(`Isolated test evidence retained at ${directory}`);
+}).catch(error => { console.error(error); process.exitCode = 1; });
