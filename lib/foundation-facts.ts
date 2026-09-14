@@ -11,6 +11,10 @@ export type FoundationFact = {
   claim: 'SOURCE' | 'CHARACTER_CLAIM'; applicability: 'GLOBAL' | 'SUBJECT' | 'UNRESOLVED'; validity: { status: 'EXPLICIT' | 'UNKNOWN'; start?: number; end?: number };
 };
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+// Whole-line format markers only: an episode number followed by narrative text
+// remains evidence, including anonymous background and episode-zero prose.
+const PURE_EPISODE_HEADING = /^(?:#{1,6}\s*)?(?:(?:第\s*)?(?:[0-9０-９]+|[零〇一二两三四五六七八九十百千]+)\s*集|(?:episode\s+|ep\.?\s*)(?:[0-9０-９]+|zero|one|two|three|four|five|six|seven|eight|nine|ten))\s*[:：｜|－—-]*\s*$/i;
+const CONTEXT_SECTION_HEADING = /^(?:#{1,6}\s*)?(?:第\s*[0零〇]\s*集[\s｜|:：-]*)?(?:作者资料|人物小传|人物设定|世界观设定|背景资料|附录)[\s:：｜|]*$/;
 /** Includes every nonempty source line, regardless of whether an image asset exists. */
 export function buildFoundationFacts(index: SourceIndex, context: FoundationSourceContext, catalog: ProductionCatalog | null) {
   const sourceTexts = [...context.background.map(s => s.text), ...index.episodes.map(e => e.content)];
@@ -22,7 +26,7 @@ export function buildFoundationFacts(index: SourceIndex, context: FoundationSour
       if (!statement.trim()) continue;
       const speaker = statement.match(/^\s*([^：:\r\n]{1,30}?)(?:[（(](?:OS|VO|旁白|画外音)[）)])?\s*[：:]/i)?.[1]?.trim();
       const subjects = [...new Set([...names.filter(name => statement.includes(name)), ...(speaker ? [speaker] : [])])];
-      const formatHeading = origin.domain === 'CONTEXT' && /^(?:#{1,6}\s*)?(?:第\s*[0零〇]\s*集[\s｜|:：-]*)?(?:作者资料|人物小传|人物设定|世界观设定|背景资料|附录)[\s:：｜|]*$/.test(statement.trim());
+      const formatHeading = origin.domain === 'CONTEXT' && (PURE_EPISODE_HEADING.test(statement.trim()) || CONTEXT_SECTION_HEADING.test(statement.trim()));
       const globalRule = !formatHeading && origin.domain === 'CONTEXT' && /世界|规则|设定|所有|任何|不得|禁止|只有|必须|每逢|每当|无法|不能|永远/.test(statement);
       const kind = formatHeading ? 'FORMAT' : globalRule ? 'SETTING' : speaker ? 'UTTERANCE' : /受伤|伤口|绷带|骨折|换上|换下|脱下|穿着|痊愈|恢复|交给|递给|归还/.test(statement) ? 'STATE'
         : /父亲|母亲|兄弟|姐妹|夫妻|师父|师徒|父子|母子/.test(statement) ? 'RELATION' : origin.domain === 'CONTEXT' ? 'CONTEXT' : 'SETTING';

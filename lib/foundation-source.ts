@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { SourceStructure } from "@/lib/import-script";
+import { duplicateSourceHeadingKeys } from './source-structural-headings';
 
 type Db = Pick<PrismaClient, "sceneSnapshot">;
 type SourceTextSection = { key: string; text: string };
@@ -61,12 +62,14 @@ export async function loadFoundationSourceContext(projectId: string, db: Db = pr
   }
 
   const background = structure.sections.filter((section) => section.kind === "BACKGROUND").map((section) => ({ key: section.key, text: sourceText.slice(section.start, section.end) }));
-  const unresolved = structure.sections.filter((section) => section.kind === "UNRESOLVED").map((section) => ({ key: section.key, text: sourceText.slice(section.start, section.end) }));
+  const structuralHeadings=duplicateSourceHeadingKeys(sourceText,structure);
+  const unresolved = structure.sections.filter((section) => section.kind === "UNRESOLVED"&&!structuralHeadings.has(section.key)).map((section) => ({ key: section.key, text: sourceText.slice(section.start, section.end) }));
   const issues = structure.issues;
   const noticeCode = readingView.kind === "DOCX" ? "DOCX_READER_WARNING" : "SOURCE_READING_WARNING";
   const notices = readingView.warnings && Array.isArray(readingView.warnings)
     ? readingView.warnings.filter((warning): warning is string => typeof warning === "string").map((message) => ({ code: noticeCode, message }))
     : [];
+  if(structuralHeadings.size)notices.push({code:'REPEATED_EPISODE_HEADING',message:`${structuralHeadings.size}处重复集标题已核对与紧邻正文集号一致，作为格式标记保留在原文中，无需人工确认。`});
   return {
     version: fingerprint({ snapshotId: current.id, sourceText, sections: structure.sections, issues, readingView }),
     background,
