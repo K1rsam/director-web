@@ -3,13 +3,13 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { CONTRACT_VERSION } from '../.agents/skills/screenplay-fidelity/scripts/fidelity.mjs';
 import { readFidelityReceipt } from './fidelity-store';
 import { prepareFidelityReading, type FidelityDecision } from './fidelity-import';
-import type { ImportedScript } from './import-script';
 import { assertNoActiveFoundationDelivery } from './foundation-choice-store';
 import { preprocessProject } from './project-preprocess';
 import type { P1ReviewState } from './fidelity-p1-review';
 import {parseSceneBatch} from './source-parser';
 import {readSceneParserVersions} from './scene-parser-version';
 import {isDeepStrictEqual} from 'node:util';
+import {projectPinnedFidelitySource} from './fidelity-source-projection';
 const hash = (text:string) => createHash('sha256').update(text).digest('hex');
 /** Rebuild only the derived reading structure; source bytes and accepted decisions stay pinned. */
 export async function refreshFidelitySource(projectId:string, db:PrismaClient, options:{expectedReceiptId?:string;expectedSourceId?:string;checkAfterCommit?:(tx:Prisma.TransactionClient)=>Promise<void>;checkCurrent?:(tx:Prisma.TransactionClient)=>Promise<void>;decisions?:FidelityDecision[];p1Review?:P1ReviewState}={}) {
@@ -22,7 +22,7 @@ export async function refreshFidelitySource(projectId:string, db:PrismaClient, o
  if(!options.decisions&&!options.p1Review&&current.receipt.p1Review?.status==='PENDING'&&current.receipt.p1Review.completedRanges?.length)return {changed:false};
  const retryLeadingBoundary=current.receipt.result.validation.issues.some(issue=>issue.code==='BOUNDARY_UNCONFIRMED'&&issue.start===0);
  if(current.receipt.result.contractVersion===CONTRACT_VERSION&&!options.decisions&&!options.p1Review&&!retryLeadingBoundary)return {changed:false};
- const original=JSON.parse(current.sourceSnapshot.content) as ImportedScript;
+ const original=projectPinnedFidelitySource(JSON.parse(current.sourceSnapshot.content),current.receipt);
  if(original.sourceText!==current.receipt.result.source.text||hash(original.sourceText)!==current.receipt.readingHash)throw new Error('保真来源校验失败，未覆盖原文。');
  const decisions=options.decisions??current.receipt.decisions;
  const prepared=prepareFidelityReading({...original,readingView:current.receipt.reader},current.receipt.mode,decisions,current.receipt.originalHash);
