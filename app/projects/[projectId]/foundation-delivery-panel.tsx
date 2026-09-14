@@ -102,9 +102,10 @@ export function FoundationDeliveryPanel({ projectId, state, requiredChoiceCount,
           : state.action === "START" ? "一次开始，持续补齐分集导航与资产目录；只有必要取舍才会请你确认。"
             : "继续时会接着处理尚未完成的部分，已保存内容保持可读。";
   const canContinue = unknown || !state.complete && (state.action === "START" || state.action === "CONTINUE");
-  const startForm = <form key={state.expectedState} action={startFoundationDeliveryAction} className={compact ? "topbarStopForm" : styles.startForm}>
+  const startForm = <form id={`foundation-start-${projectId}`} key={state.expectedState} action={startFoundationDeliveryAction} className={compact ? "topbarStopForm" : styles.startForm}>
     <input name="projectId" type="hidden" value={projectId} />
     <input name="expectedState" type="hidden" value={state.expectedState} />
+    <input name="assetPromptOptionPresent" type="hidden" value="yes" />
     {unknown ? <label className={compact ? "biblePlaceholder" : styles.consent}>
       <input type="checkbox" name="allowUnknownRetry" value="yes" required />
       <span>我理解结果尚未确认，重发可能重复计费，同意重发并继续。</span>
@@ -192,6 +193,12 @@ export function FoundationWorkflowStatus({ projectId, state, sourceReady, sceneC
       return <article className={`foundationRole automatic ${running ? `${styles.activeCard} ${state.task?.status === "QUEUED" ? "queued" : "running"}` : selected && paused ? styles.pausedCard : ""}`} key={card.code} aria-current={running ? "step" : undefined} aria-busy={running || undefined}>
         <span>{card.code}</span><div><strong>{card.name}</strong><small>{card.note}</small></div><em>{running ? <><i className={state.task?.status === "QUEUED" ? styles.queuedDot : styles.workSpinner} aria-hidden="true" />{activity}</> : selected && paused ? paused : card.status}</em>
         <a className="foundationCardAction" href={card.href}>{card.link}</a>
+        {card.code === "P3" ? <label style={{ gridColumn: "1 / -1", fontSize: "0.8rem", lineHeight: 1.6 }}>
+          <input key={`${state.task?.id ?? "new"}:${state.task?.autoAssetPrompts ?? true}`} type="checkbox" name="autoAssetPrompts" value="yes" form={`foundation-start-${projectId}`}
+            defaultChecked={state.task?.autoAssetPrompts ?? true} disabled={state.busy || state.complete} style={{ width: "auto", height: "auto", marginRight: 6 }} />
+          完成后生成人物资产提示词
+          <small style={{ display: "block" }}>后台生成文字，另计模型调用；不生成图片，不阻挡第二阶段。</small>
+        </label> : null}
       </article>;
     })}</div>
     {state.task ? <p className={styles.operationMessage}><FoundationTaskElapsed task={state.task} active={live} activeCallStartedAt={state.activeCallStartedAt} /></p> : null}

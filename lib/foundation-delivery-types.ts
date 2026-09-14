@@ -18,6 +18,8 @@ export type FoundationDeliveryTask = {
   repairHalt?: { fingerprint: string; reason: string };
   sourceInputVersion?: string;
   unknownOutcome: boolean; error: string | null; decisionIds: string[];
+  /** Explicit opt-in captured when queueing; image generation is not included. */
+  autoAssetPrompts?: boolean;
   unknownRetry?: { runId: string; sequence: number };
   unresolved: { key?: string; episodes?: number[]; note: string }[];
 };

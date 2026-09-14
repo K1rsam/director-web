@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import {planAssetPromptQueue} from '../lib/asset-prompt-queue';
+import {emptyPrompt,type PromptAsset,type PromptWorkspace} from '../lib/asset-prompt-contract';
+const asset=(key:string,parent?:string):PromptAsset=>({key,baseKey:'base',name:key,baseName:'base',type:'CH',variant:Boolean(parent),fromKey:parent,episodes:[1],mode:'REFERENCE',description:'',note:'',evidence:[],reasons:[],eligible:true,fingerprint:'v1'});
+const w:PromptWorkspace={projectId:'test',title:'test',style:'',stylePrefix:'',styleRevision:0,busy:false,assets:[asset('base'),asset('outfit','base'),asset('mud','outfit')],records:{}};
+assert.deepEqual(planAssetPromptQueue(w,['mud']),['base','outfit','mud']);
+w.records.base={...emptyPrompt('base'),body:'saved',fingerprint:'v1',status:'READY',revision:1};
+assert.deepEqual(planAssetPromptQueue(w,['mud']),['outfit','mud']);
+assert.throws(()=>planAssetPromptQueue(w,['mud'],['outfit']),/先保存/);
+w.records.base.origin='MANUAL';w.records.base.fingerprint='old';assert.throws(()=>planAssetPromptQueue(w,['mud']),/人工设计/);
+delete w.records.base;w.assets[0].fromKey='mud';assert.throws(()=>planAssetPromptQueue(w,['mud']),/循环/);
+console.log('PASS: multi-level source order, current source reuse, dirty/manual protection, dependency cycle');

@@ -61,6 +61,7 @@ export default async function ProjectStudioPage({ params, searchParams }: { para
         <div className="sectionHeading">
           <div><span className="sectionIndex">01</span><h2>全剧基础工程</h2></div>
           <p>原文按集查看，资产按名称管理；图片和后续分镜另行制作。</p>
+          <a className="quietButton" href={`/projects/${encodeURIComponent(projectId)}/asset-prompts`}>1.5 · 资产形象设计</a>
           <a className="quietButton" href={`/projects/${encodeURIComponent(projectId)}/foundation/handoff`}>交接资料预览</a>
           <a className="quietButton" href={`/projects/${encodeURIComponent(projectId)}/foundation/export`}>导出资料与历史 JSON</a>
         </div>

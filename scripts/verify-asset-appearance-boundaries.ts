@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {buildAppearanceEvidenceIndex} from '../lib/asset-appearance-evidence';
+const people=[{key:'a',name:'甲辰｜默认',aliases:['小甲']},{key:'b',name:'乙霖｜默认',aliases:[]},{key:'c',name:'丙风｜默认',aliases:['小甲']}];
+const index=buildAppearanceEvidenceIndex(people,[{key:'source',text:'人物小传：\n甲辰\n外形：身材高大。\n背景：乙霖的朋友。\n乙霖\n外形：皮肤黝黑。\n背景：甲辰发小，父亲另有其人。\n陌生人\n外形：身材瘦弱。\n甲辰：后期失明，身穿白色长袍。'}],[{number:1,content:'甲辰身穿蓝色外套。\n乙霖身穿红色长袍。\n甲辰看着白色墙壁。\n甲辰OS：乙霖皮肤黝黑。\n甲辰的朋友身材高大。\n甲辰身穿外套，乙霖留着长发。\n小甲身穿长袍。\n甲辰身穿白衣，后来受伤失明。'},{number:2,content:'甲辰身穿黑色大衣。'}]);
+const a=index.forAsset('甲辰｜默认',[1],false),b=index.forAsset('乙霖｜默认',[1],false);
+assert.ok(a.some(e=>e.text==='外形：身材高大。'));
+assert.ok(a.some(e=>e.text==='甲辰身穿蓝色外套。'));
+assert.equal(a.length,2,'他人背景、对白、宾语、关系、跨集、未来状态、歧义别名均不作为本人外貌');
+assert.ok(b.some(e=>e.text==='外形：皮肤黝黑。'));
+assert.ok(!b.some(e=>e.text.includes('瘦弱')),'未知人物标题也必须终止前一个人的资料块');
+assert.ok(index.forAsset('甲辰｜默认',[2],true).some(e=>e.text==='甲辰身穿黑色大衣。'));
+assert.deepEqual(index.forAsset('未知',[1],false),[]);
+const scoped=buildAppearanceEvidenceIndex(people,[],[{number:1,content:'甲辰身穿蓝色外套。\n甲辰身穿白色长袍。'}],[{episode:1,sceneKey:'before',sourceRange:{start:0,end:10}},{episode:1,sceneKey:'after',sourceRange:{start:10,end:99}}]);
+assert.equal(scoped.forAsset('甲辰',[1],false,[{episode:1,sceneKey:'before'},{episode:1,sceneKey:'after'}],[{episode:1,sceneKey:'after'}]).length,1);
+assert.ok(scoped.forAsset('甲辰',[1],true,[{episode:1,sceneKey:'after'}])[0].text.includes('白色'));
+console.log('PASS: source ownership, unknown headings, shared aliases, dialogue, other subjects, temporal and episode boundaries');

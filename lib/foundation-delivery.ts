@@ -409,7 +409,7 @@ export async function getFoundationDeliveryState(projectId: string, db: Db = pri
     expectedState: hash({ source: input.sourceVersion, context: contextFingerprint(input), revision: document.revision, task: storedTask, unknown, pending: choices.pending.map(c => c.revision), confirmed: choices.confirmed.map(c => c.revision) }) };
 }
 
-type QueueOptions = { expectedState?: string; allowUnknownRetry?: boolean };
+type QueueOptions = { expectedState?: string; allowUnknownRetry?: boolean; autoAssetPrompts?: boolean };
 async function queueInTransaction(projectId: string, options: QueueOptions, db: Db) {
   const shown = await getFoundationDeliveryState(projectId, db);
   if (options.expectedState && options.expectedState !== shown.expectedState) throw new Error('资料任务状态已变化，请刷新后继续。');
@@ -434,6 +434,7 @@ async function queueInTransaction(projectId: string, options: QueueOptions, db: 
   const decisions = state.confirmedChoices.filter(choice => document.appliedDecisions[choice.id] !== choice.revision && remainingChoiceScope(document, choice, 'decisionCoverage', source.project.episodes.map(e => e.number)).length);
   const id = current && current.status !== 'COMPLETE' ? current.id : randomUUID();
   const task: FoundationDeliveryTask = { schema: 'FOUNDATION_DELIVERY_TASK_V1', id, revision: 0, projectId, provider: resolveProvider(source.project.executionMode), contextFingerprint: input ? contextFingerprint(input) : source.sourceInputVersion,
+    autoAssetPrompts: options.autoAssetPrompts ?? current?.autoAssetPrompts ?? true,
     sourceInputVersion: source.sourceInputVersion, sourceVersion: input?.sourceVersion ?? '', documentRevision: document.revision, status: 'QUEUED', phase: 'PREPARE_SOURCE',
     scope: [], completedEpisodes: [], totalEpisodes: state.totalEpisodes, message: '任务已接收，将沿用已保存资料继续整理。', createdAt: current?.id === id ? current.createdAt : now, updatedAt: now,
     workerPid: null, workerToken: randomUUID(), ...(current?.id === id ? await deliveryCounts(db, projectId, id) : { addedCalls: 0, repairCalls: 0 }), repairBudgetUsed: budget.used, repairBudgetKey: budget.key, repairBudgetContext: budget.context,
@@ -1106,6 +1107,13 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
     await update({ status: state.requiredChoices.length ? 'WAITING_USER' : state.documentReady ? 'COMPLETE' : 'PARTIAL', scope: [], workerPid: null,
       message: state.requiredChoices.length ? '其他资料已整理，请连续保存剩余选择，全部确认后自动继续。' : state.documentReady ? '资料已整理完成，可以阅读和使用。'
         : programTodos(doc).length ? '已有资料已保存；尚有技术问题未完成，当前已暂停自动整理。' : task!.repairHalt?.reason ?? '已有资料已保存，剩余局部事项尚未完成，可继续补齐。', error: null });
+    if (state.documentReady && !state.requiredChoices.length && task!.autoAssetPrompts === true && !options.stageRunner && db === prisma) {
+      // Dispatch after P3 success. The separate prompt worker owns its failures and
+      // cannot hold up the first-stage handoff or turn this delivery into PARTIAL.
+      await import('./asset-prompt-automation')
+        .then(module => module.launchAssetPromptAutomation(projectId, input.sourceVersion))
+        .catch(error => console.error('资产提示词后台任务未启动：', errorText(error)));
+    }
   } catch (error) {
     const current = await readTask(db, projectId);
     if (current?.id === taskId && current.status === 'RUNNING' && current.workerToken === task.workerToken) {

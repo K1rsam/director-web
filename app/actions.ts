@@ -454,7 +454,8 @@ export async function startFoundationDeliveryAction(formData: FormData) {
   let notice = '';
   try {
     if (!expectedState) throw new Error('资料任务状态已变化');
-    const task = await queueFoundationDelivery(projectId, { expectedState, allowUnknownRetry: formData.get('allowUnknownRetry') === 'yes' });
+    const task = await queueFoundationDelivery(projectId, { expectedState, allowUnknownRetry: formData.get('allowUnknownRetry') === 'yes',
+      ...(formData.get('assetPromptOptionPresent') === 'yes' ? { autoAssetPrompts: formData.get('autoAssetPrompts') === 'yes' } : {}) });
     await launchFoundationDelivery(task);
   } catch (error) {
     notice = error instanceof Error && /未知|重复计费|重发/.test(error.message) ? 'call-unknown' : error instanceof Error && /状态已变化|正在处理中/.test(error.message) ? 'state-changed' : 'delivery-unavailable';
