@@ -53,7 +53,7 @@ function check(name: string, test: () => void) { checks += 1; try { test(); } ca
 const before = JSON.stringify(base);
 
 check("紧凑阶段与真实范围进度可见，等待不伪造百分比", () => {
-  for (const [phase, label] of [["PREPARE_SOURCE", "P1 · 来源判断"], ["GENERATE_F1", "P2 · 拆集分场"], ["GENERATE_F2", "P3 · 素材提取"], ["EDIT", "P3 · 资料核对"], ["REPAIR", "P3 · 资料核对"], ["APPLY_DECISION", "P3 · 应用决定"]] as const) {
+  for (const [phase, label] of [["PREPARE_SOURCE", "P1 · 原文结构检查"], ["GENERATE_F1", "P2 · 拆集分场"], ["GENERATE_F2", "P3 · 素材提取"], ["EDIT", "P3 · 自动校验"], ["REPAIR", "P3 · 局部修复"], ["APPLY_DECISION", "P3 · 应用决定"]] as const) {
     const state = { ...base, busy: true, totalEpisodes: 70, availableEpisodes: 31, editedEpisodes: 0, task: task({ phase, scope: Array.from({ length: 27 }, (_, i) => i + 32) }) };
     const compact = renderToStaticMarkup(createElement(FoundationDeliveryPanel, { projectId: "project-1", state, requiredChoiceCount: 0, compact: true }));
     const status = renderToStaticMarkup(createElement(FoundationWorkflowStatus, { projectId: "project-1", state, sourceReady: true, sceneCount: 70, remaining: [] }));
@@ -85,7 +85,7 @@ check("首次整理与完成态", () => {
   assert.ok(staleAction.includes("资料已整理") && buttons(staleAction).length === 0);
   assert.doesNotMatch(complete + staleAction, /再完善一次|继续完善（可选）/);
   const empty = render({ ...base, document: { ...document, f1: null, f2: null }, totalEpisodes: 0, availableEpisodes: 0, action: "NONE" });
-  assert.ok(empty.includes("请先检查原文") && buttons(empty).length === 0);
+  assert.ok(empty.includes("原文暂未就绪") && buttons(empty).length === 0);
 });
 check("运行期间禁止重复提交且停止绑定当前任务", () => {
   const html = render({ ...base, busy: true, action: "NONE", task: task() });
@@ -97,9 +97,9 @@ check("运行期间禁止重复提交且停止绑定当前任务", () => {
   assert.ok(html.includes("本任务累计请求") && html.includes("自动修正") && html.includes("不会重置"));
   assert.ok(!html.includes("继续操作会开启新一轮限额"));
 });
-check("付费失败原因直接可见且不提供无目标重跑", () => {
+check("付费失败原因保留诊断且不提供无目标重跑", () => {
   const html = render({ ...base, action: "BLOCKED", continuationBlocker: "同一输入已付费，格式修复额度已用完；已停止重复请求。", task: task({ status: "PARTIAL" }) });
-  assert.ok(html.includes("格式修复额度已用完") && html.includes("查看原因"));
+  assert.ok(html.includes("格式修复额度已用完") && html.includes("查看整理状态"));
   assert.equal(buttons(html).length, 0);
 });
 check("未知结果必须显式勾选重复计费确认", () => {
@@ -248,6 +248,28 @@ check("刷新只读且局部样式可键盘和窄屏使用", () => {
   assert.ok(!panel.includes("setInterval(() => startFoundationDeliveryAction"));
   assert.ok(css.includes(":focus-visible") && css.includes("overflow-wrap: anywhere") && css.includes("@media"));
 });
+check("技术故障折叠诊断，正文不转交底层修复，未知结果优先", () => {
+  const technical = "请修 JSON sceneKey，再缩减资料 <script>诊断</script>";
+  const failed = { ...base, action: "BLOCKED" as const, continuationBlocker: technical, task: task({ status: "PARTIAL", message: technical, error: technical }) };
+  const rail = (state: FoundationDeliveryState) => renderToStaticMarkup(createElement(FoundationWorkflowStatus, { projectId: "project-1", state, sourceReady: true, sceneCount: 3, remaining: ["人物身份需创作确认"] }));
+  const visible = (html: string) => html.replace(/<details\b[^>]*>[\s\S]*?<\/details>/g, "");
+  for (const html of [render(failed), rail(failed)]) {
+    assert.ok(visible(html).includes("当前已暂停") && visible(html).includes("已保存资料"));
+    assert.doesNotMatch(visible(html), /sceneKey|JSON|请修|缩减资料|修复成功/);
+    assert.ok(html.includes("sceneKey") && html.includes("&lt;script&gt;诊断&lt;/script&gt;"));
+    assert.ok(html.includes('role="status"') && html.includes('aria-live="polite"'));
+    assert.doesNotMatch(html, /<script>诊断/);
+  }
+  const diagnostic = rail(failed).match(/<details[^>]*><summary>技术诊断与处理记录<\/summary>/)?.[0];
+  assert.ok(diagnostic && !diagnostic.includes("open"));
+  assert.ok(rail(failed).includes("人物身份需创作确认"), "内容待办不得隐藏或替代");
+  const unknownState = { ...failed, task: task({ status: "INTERRUPTED", unknownOutcome: true, error: technical }) };
+  assert.ok(render(unknownState).includes("确认重发并继续") && rail(unknownState).includes("重发可能重复计费"));
+  assert.ok(!visible(rail(unknownState)).includes("无需你修改剧本格式"));
+  const waiting = { ...base, requiredChoices: [choice], action: "NONE" as const, task: task({ status: "WAITING_USER" }) };
+  assert.ok(render(waiting).includes("需要你确认") && rail(waiting).includes("创作取舍"));
+});
+
 check("SSR无提交且不改输入", () => { assert.equal(actionCalls, 0); assert.equal(JSON.stringify(base), before); });
 
 for (const failure of failures) console.error(`FAIL ${failure}`);

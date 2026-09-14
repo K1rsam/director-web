@@ -4,7 +4,7 @@ import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PrismaClient } from '@prisma/client';
-import { planP1ReviewBatches,validateP1ReviewPlan,type P1ReviewRequest } from '../lib/fidelity-p1-review';
+import { planP1ReviewBatches,validateP1ReviewPlan,p1RepairSections,projectP1ReviewRequest,type P1ReviewRequest } from '../lib/fidelity-p1-review';
 import { cachedFoundationFacts } from '../lib/foundation-fact-cache';
 
 async function main(){
@@ -42,6 +42,9 @@ async function main(){
   assert.equal(receipt.p1Review?.status,'COMPLETE');assert.equal(receipt.result.source.text,source);
   await prepareFidelitySourceAssisted(raw.id,db,options);assert.equal(calls,1,'complete review must not repeat');
   const direct=await create(source,'direct');await prepareFidelitySourceAssisted(direct.id,db,options);assert.equal(calls,1,'external direct never calls AI');
+  const directPending=await create('甲：没有集场标题。\n','direct');
+  const directOut=await prepareFidelitySourceAssisted(directPending.id,db,options);
+  assert.equal(calls,1);assert.equal(directOut.backendPending?.reason,'DIRECT_STRUCTURE_PENDING');
   const legacy=await create(source,'fidelity',false);await prepareFidelitySourceAssisted(legacy.id,db,options);assert.equal(calls,1,'old clean project not automatically reviewed');
   const longText='第1集\n1-1 客厅 日 内\n'+'甲：原样保留😀。\n'.repeat(7000),long=await create(longText);
   let seen:string[]=[];let fail=true;
@@ -62,6 +65,44 @@ async function main(){
   const stopped=await create(source);
   await assert.rejects(prepareFidelitySourceAssisted(stopped.id,db,{...options,checkCurrent:async()=>{throw new Error('已停止');}}),/已停止/);
   assert.equal((await readFidelityReceipt(stopped.id,db))!.receipt.p1Review?.completedRanges,undefined);
+  // Writer-format variations remain source faithful; ambiguous structure is backend pending.
+  for(const text of ['第0集\n第0集\n甲：到了。\n','甲：到了。\n乙：请进。\n','作者：某编剧\n第一集\n甲：到了。\n','第一集\n甲：到了。\n','第0集 序章\n0-1 门口 夜 外\n甲：回来了。\n']){
+   const project=await create(text);let localCalls=0;
+   const out=await prepareFidelitySourceAssisted(project.id,db,{...options,assist:async(request:any,validate:any)=>{localCalls++;const plan=answer(request);validate(plan);return {plan,runId:`variation-${localCalls}`};}});
+   assert.equal((await readFidelityReceipt(project.id,db))!.receipt.result.source.text,text);
+   if(out.unresolved.length){assert.equal(out.backendPending?.kind,'BACKEND_STRUCTURE_PENDING');assert.equal((await readFidelityReceipt(project.id,db))!.receipt.p1Review?.status,'PENDING');}
+   await prepareFidelitySourceAssisted(project.id,db,{...options,assist:async()=>{throw new Error('已读全文和已完成局部补漏不可重复购买');}});
+   assert(localCalls<=2);
+  }
+  const missedTitle=await create('未命名剧本\n第1集\n1-1 客厅 日 内\n甲：到了。\n');let repairCalls=0;
+  const repaired=await prepareFidelitySourceAssisted(missedTitle.id,db,{...options,assist:async(request:any,validate:any)=>{
+   repairCalls++;assert(request.issues.length,'full and repair requests expose unresolved structural evidence');
+   const plan={...answer(request),assignments:request.repairAttempt?[{firstBlock:request.sections[0].key,lastBlock:request.sections[0].key,kind:'context',note:'独立作品标题，后接明确第一集'}]:[]};
+   return {plan:validate(plan),runId:`title-${repairCalls}`};
+  }});
+  assert.equal(repairCalls,2);assert.equal(repaired.unresolved.length,0);assert.equal((await readFidelityReceipt(missedTitle.id,db))!.receipt.p1Review?.status,'COMPLETE');
+  await prepareFidelitySourceAssisted(missedTitle.id,db,{...options,assist:async()=>{throw new Error('不得重复全文');}});
+  const tinyText='字\n'.repeat(6000),tinyBlocks=planP1ReviewBatches(tinyText).flat();
+  const tinySections=p1RepairSections(tinyText,tinyBlocks);
+  assert(tinySections.filter(s=>s.before!==undefined||s.after!==undefined).length<=2,'continuous tiny blocks share context edges');
+  const sparse=p1RepairSections(tinyText,[tinyBlocks[1000],tinyBlocks[3000]]);
+  assert(sparse.every(s=>s.before?.length===400&&s.after?.length===400),'discrete ranges keep both neighbors');
+  const oversized=await create(tinyText);let oversizedCalls=0;
+  const oversizedOut=await prepareFidelitySourceAssisted(oversized.id,db,{...options,assist:async(request:any,validate:any)=>{oversizedCalls++;assert(!request.repairAttempt,'serialized request budget prevents thousands of issue rows overflowing repair');const plan=answer(request);return {plan:validate(plan),runId:'tiny'};}});
+  assert.equal(oversizedCalls,1);assert(oversizedOut.backendPending);
+  for(const resolved of [false,true]){
+   const semanticStructure=await create(source);let structureCalls=0;
+   const out=await prepareFidelitySourceAssisted(semanticStructure.id,db,{...options,assist:async(request:any,validate:any)=>{
+    structureCalls++;const plan={...answer(request),unresolved:request.repairAttempt&&resolved?[]:[{firstBlock:request.batch.firstBlock,lastBlock:request.batch.lastBlock,kind:'structure',note:'当前集场关系存在结构疑点'}]};
+    if(request.repairAttempt)assert(JSON.stringify(projectP1ReviewRequest(request)).length<=24000);
+    return {plan:validate(plan),runId:`structure-${structureCalls}`};
+   }});
+   assert.equal(structureCalls,2);assert.equal(Boolean(out.backendPending),!resolved);
+   const latest=(await readFidelityReceipt(semanticStructure.id,db))!.receipt;
+   assert.equal(latest.result.validation.issues.length,0,'parser alone cannot resolve model structure uncertainty');
+   assert.equal(latest.p1Review?.status,resolved?'COMPLETE':'PENDING');
+   if(resolved)assert.equal(latest.p1Review?.unresolved?.length,0,'local re-review retires resolved structural questions');
+  }
   // Actual controller starts even when deterministic import cannot identify any episode.
   const unstructured=await create('甲：我到了。\n乙：进来。\n');
   const state=await getFoundationDeliveryState(unstructured.id,db);assert.equal(state.action,'START');
@@ -71,7 +112,7 @@ async function main(){
    const data={...answer(input),unresolved:[{firstBlock:input.batch.firstBlock,lastBlock:input.batch.lastBlock,note:'原文未提供集号，请确认归属'}]};
    return {data,rawOutput:JSON.stringify(data),stdout:'',stderr:'',sessionId:null};
   }});
-  assert.equal(modelCalls,1);assert.equal((await getFoundationDeliveryState(unstructured.id,db)).task?.status,'WAITING_USER');
+  assert.equal(modelCalls,2);assert.equal((await getFoundationDeliveryState(unstructured.id,db)).task?.status,'PARTIAL');
   // The paid F1 response is reusable when a later receipt commit fails.
   const recovery=await create('甲：我到了。\n乙：进来。\n');
   const recoveryTask=await queueFoundationDelivery(recovery.id,{},db);let recoveryCalls=0;let rejectCheckpoint=true;
@@ -84,11 +125,11 @@ async function main(){
   assert.equal(recoveryCalls,1);
   const retry=await queueFoundationDelivery(recovery.id,{},db);
   await executeFoundationDelivery(recovery.id,retry.id,{db,stageRunner:recoveryRunner});
-  assert.equal(recoveryCalls,1,'validated paid response recovered after failed checkpoint without a new request');
+  assert.equal(recoveryCalls,2,'paid full response recovered without repurchase; only one new local repair request');
   // Receipt candidates are consumed by actual P2 request assembly, without changing source labels.
   const alias=await create(source);
   const aliasResult=await prepareFidelitySourceAssisted(alias.id,db,{...options,assist:async(request:any,validate:any)=>{
-   const plan={...answer(request),unresolved:[{firstBlock:request.batch.firstBlock,lastBlock:request.batch.lastBlock,note:'称呼关系待下阶段核对'}],aliases:[{alias:'小甲',canonicalCandidate:'甲',firstBlock:request.batch.firstBlock,lastBlock:request.batch.lastBlock,note:'原文自称候选'}]};validate(plan);return {plan,runId:'alias'};
+   const plan={...answer(request),unresolved:[{firstBlock:request.batch.firstBlock,lastBlock:request.batch.lastBlock,kind:'semantic',note:'称呼关系待下阶段核对'}],aliases:[{alias:'小甲',canonicalCandidate:'甲',firstBlock:request.batch.firstBlock,lastBlock:request.batch.lastBlock,note:'原文自称候选'}]};validate(plan);return {plan,runId:'alias'};
   }});
   assert.equal(aliasResult.unresolved.length,0,'semantic candidates do not block structurally readable source');
   const input=await loadFoundationInputs(alias.id,db),doc=createEmptyDocument(input);

@@ -62,7 +62,7 @@ async function main() {
   });
   await check("程序待办明确阻断模型续作，不再显示继续完成提交", () => {
     const html = renderPanel({ complete: false, action: "BLOCKED", continuationBlocker: "需要程序处理：原文须拆场" });
-    assert.ok(html.includes("待程序处理") && html.includes('href="#foundation-status"'));
+    assert.ok(html.includes("整理已暂停") && html.includes('href="#foundation-status"'));
     assert.equal(buttons(html).filter(button => button.attributes.includes('type="submit"')).length, 0);
   });
   const task: FoundationDeliveryState["task"] = { schema: "FOUNDATION_DELIVERY_TASK_V1", id: "task-current", revision: 1, projectId: "p1", provider: "API", contextFingerprint: "ctx", sourceVersion: "source-1", documentRevision: "doc-1", status: "RUNNING", phase: "EDIT", scope: [1, 2], completedEpisodes: [], totalEpisodes: 2, message: "正在直接编辑", createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), workerPid: null, workerToken: null, addedCalls: 1, repairCalls: 0, repairRounds: 0, maxRepairCalls: 2, maxRepairRounds: 2, unknownOutcome: false, error: null, decisionIds: [], unresolved: [] };

@@ -1,3 +1,4 @@
+import { planFoundationIssueDispatch } from './foundation-issue-dispatch';
 import { assessFoundationWorkerHealth } from './foundation-worker-health';
 import { selectRequestChoices, selectRequestIssues } from './foundation-request-context';
 import { prepareFidelitySourceAssisted } from './fidelity-source-assist';
@@ -40,6 +41,7 @@ import { readSceneParserVersions } from './scene-parser-version';
 import { normalizeLightSceneEdit } from './light-scene-edit-normalization';
 import { readSceneSplitPlans, previewSceneSplitPlans, applySceneSplitPlans } from './scene-split-plan';
 
+type LocalRepairTargets = { episodes: number[]; keys: string[]; sceneKeys?: string[]; todoIds?: string[] };
 type Db = Prisma.TransactionClient;
 type Inputs = Awaited<ReturnType<typeof loadFoundationInputs>>;
 const TASK_KEY = 'FOUNDATION_DELIVERY_TASK';
@@ -52,7 +54,7 @@ const errorText = (error: unknown) => error instanceof Error ? error.message : S
 // Bump only for an actual receiving protocol/validator change, never for prompts, UI or wording.
 const DELIVERY_RECEIVERS = { F1: 'SOURCE_BOUNDARY_ACCEPT_V1', F2: 'LIGHT_CATALOG_ACCEPT_V1', Q1: 'LIGHT_EDITOR_ACCEPT_V2' };
 const LEGACY_DELIVERY_RECEIVERS = { F1: 'SOURCE_BOUNDARY_ACCEPT_V1', F2: 'LIGHT_CATALOG_ACCEPT_V1', Q1: 'LIGHT_EDITOR_ACCEPT_V1' };
-const paidFailureReason = '同一输入的已付费响应仍未满足接收契约，已停止重复请求；格式修复最多一次，继续或重建任务不会重置。请先处理明确的源文、资料或接收程序问题。';
+const paidFailureReason = '同一输入的已付费响应仍未满足接收契约，已停止重复请求；格式修复最多一次，继续或重建任务不会重置。已有资料保留，接收问题由工作流处理。';
 const repairBudgetReason = '当前原文与已定条件的累计自动修正额度已用完，已保存内容保留；继续或重建任务不会重置。只有明确的新来源、决定或接收契约变化才会开启对应的新工作额度。';
 const unknownRetryReason = '上次请求结果未知；请明确确认可能重复计费后再重发未完成部分。';
 const sortedFacts = (values: unknown) => Array.isArray(values) ? values.map(value => stableFacts(value)).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))) : [];
@@ -241,7 +243,7 @@ function sceneEditBases(index: Inputs['sourceIndex'], scenes: LightScene[], inco
   }
   return scenes.map(scene => ({ ...scene, sourceRange: ranges.get(`${scene.episode}:${scene.sceneKey}`) ?? scene.sourceRange }));
 }
-function validateLightEdit(value: unknown, input: Inputs, doc: FoundationDocument, scope: number[], scenes: LightScene[], savedSplits: SceneSplitPlan[], versions: Record<number, SceneParserVersion>, phase: DeliveryPhase, targets?: { episodes: number[]; keys: string[] }) {
+function validateLightEdit(value: unknown, input: Inputs, doc: FoundationDocument, scope: number[], scenes: LightScene[], savedSplits: SceneSplitPlan[], versions: Record<number, SceneParserVersion>, phase: DeliveryPhase, targets?: LocalRepairTargets) {
   currentFormat(value, PRODUCTION_OPTIMIZATION_FORMAT);
   const parsed = requireProductionOptimization(value, input.sourceIndex, scope, doc.f2!.assets);
   const output = normalizeLightSceneEdit(parsed, input.sourceIndex, sceneEditBases(input.sourceIndex, scenes, parsed.changes.sceneSplits ?? [], savedSplits, versions));
@@ -258,7 +260,20 @@ function validateLightEdit(value: unknown, input: Inputs, doc: FoundationDocumen
       if (!affected.length || affected.some(episode => !scope.includes(episode) || !splits.some(plan => plan.episode === episode))) throw new Error('程序待办须提交覆盖其范围的拆场计划，不能只改写说明或清除标记。');
     }
   }
-  guardLocalEdit(output, phase, targets); applyDocumentEdit(doc, output, input.sourceIndex); return output;
+  const allowedScenes = targets?.sceneKeys?.length ? [...targets.sceneKeys, ...expectedScenes.filter(scene => !scenes.some(old => old.episode === scene.episode && old.sceneKey === scene.sceneKey) && splits.some(plan => plan.episode === scene.episode && targets.sceneKeys!.includes(plan.sceneKey))).map(scene => scene.sceneKey)] : undefined;
+  if (targets?.sceneKeys?.length) {
+    for (const patch of output.changes.assets ?? []) {
+      const previous = doc.f2!.assets.find(asset => asset.key === patch.key);
+      if (!previous) continue;
+      const outside = (ref: { episode: number; sceneKey: string }) => scope.includes(ref.episode) && !targets.sceneKeys!.includes(ref.sceneKey);
+      const missing = (refs: { episode: number; sceneKey: string }[] | undefined, retained: { episode: number; sceneKey: string }[] | undefined) => (refs ?? []).filter(outside).some(ref => !(retained ?? []).some(next => next.episode === ref.episode && next.sceneKey === ref.sceneKey));
+      if (missing(previous.sceneRefs, patch.sceneRefs) || previous.variants.some(variant => {
+        const next = patch.variants?.find(item => item.name === variant.name);
+        return missing(variant.sceneRefs, next?.sceneRefs) || (variant.sceneRefs ?? []).some(outside) && !next;
+      })) throw new FoundationContractError('局部素材修订遗漏了目标场外的既有依据，原资料保留。', [{ severity: 'BLOCKER', owner: 'PROGRAM', coordinate: 'changes.assets.sceneRefs', problem: '必须保留同集其他场的素材引用和变体依据', sourceRefs: [] }]);
+    }
+  }
+  guardLocalEdit(output, phase, targets, allowedScenes); applyDocumentEdit(doc, output, input.sourceIndex); return output;
 }
 function assertDeliveryReceipts(output: ProductionOptimization, suggestions: FoundationChoiceView[], decisions: FoundationChoiceView[]) {
   for (const [field, supplied] of [['resolvedSuggestions', suggestions], ['appliedDecisions', decisions]] as const) {
@@ -360,7 +375,8 @@ export async function getFoundationDeliveryState(projectId: string, db: Db = pri
   const codes = Object.fromEntries(assets.flatMap(asset => { const meta = foundationJson(asset.metadata), key = meta.foundationKey ?? meta.foundationVariantKey; return typeof key === 'string' ? [[key, asset.code]] : []; }));
   const currentEdited = loaded.needsContextEdit ? document.contextCoverage?.fingerprint === createEmptyDocument(input).settingsFingerprint ? document.contextCoverage.episodes : [] : document.editorialCoverage;
   const generationFinished = !needsAssetRefresh && availableEpisodes === all.length && all.every(n => currentEdited.includes(n)) && !loaded.needsContextEdit;
-  const blocked = generationFinished && backgroundPending.length ? '本轮资料已整理，仍有作者资料用途未明确；请在来源页面确认这些范围后再继续，已保留生成结果。' : generationFinished && !unapplied.length && !suggestions.length && programTodos(document).length ? `需要程序处理，已停止模型续作：${programTodos(document)[0].note}`
+  const dispatch = planFoundationIssueDispatch({ doc: document, scenes, index: input.sourceIndex, issues });
+  const blocked = generationFinished && backgroundPending.length && !dispatch.targets.length ? '本轮资料已整理，仍有作者资料用途未明确；请在来源页面确认这些范围后再继续，已保留生成结果。' : generationFinished && !unapplied.length && !suggestions.length && !dispatch.targets.length && dispatch.backendItems.length ? `整理遇到技术问题，已暂停重复请求：${dispatch.backendItems[0].problem}`
     : task?.repairHalt && [repairFingerprint(input, document, scenes), legacyRepairFingerprint(input, document, scenes)].includes(task.repairHalt.fingerprint) ? task.repairHalt.reason : null;
   const continuationBlocker = !busy && !unknownOutcome && !requiredChoices.length ? blocked ?? await paidContinuationBlocker(db, input, document, scenes, choices.pending, choices.confirmed, loaded.needsContextEdit) : null;
   return { document, previousDocument: loaded.previousDocument, task, totalEpisodes: all.length, availableEpisodes, editedEpisodes: all.filter(n => currentEdited.includes(n)).length,
@@ -506,7 +522,7 @@ async function knownAssets(db: Db, projectId: string, document: FoundationDocume
   return [...known.values()];
 }
 
-export function buildDeliveryInput(stage: 'F2' | 'Q1', phase: DeliveryPhase, input: Inputs, doc: FoundationDocument, scope: number[], suggestions: FoundationChoiceView[], decisions: FoundationChoiceView[], identities: F2Asset[], scenes: LightScene[], targets?: { episodes: number[]; keys: string[] }) {
+export function buildDeliveryInput(stage: 'F2' | 'Q1', phase: DeliveryPhase, input: Inputs, doc: FoundationDocument, scope: number[], suggestions: FoundationChoiceView[], decisions: FoundationChoiceView[], identities: F2Asset[], scenes: LightScene[], targets?: LocalRepairTargets) {
   const boundaryContext = buildLightBoundaryContext(input.sourceIndex, doc.f2, scenes, scope);
   const selectedFacts = selectFoundationFacts(cachedFoundationFacts(input.sourceIndex, input.sourceContext, doc.f2), input.sourceIndex, scope);
   const { sourceFactIndex: _sourceFactIndex, ...modelFacts } = selectedFacts;
@@ -523,9 +539,9 @@ export function buildDeliveryInput(stage: 'F2' | 'Q1', phase: DeliveryPhase, inp
     registry: registry(identities.filter(asset => !localKeys.has(asset.key))),
     crossBatchVariants: doc.f2!.assets.filter(asset => localKeys.has(asset.key)).map(asset => ({ assetKey: asset.key, variants: asset.variants.filter(v => !v.episodes.some(n => scope.includes(n))).map(v => ({ key: v.key, name: v.name })) })),
     editorialSuggestions: suggestions.filter(choice => scopeEpisodes(readApplicationScope(choice.applicationScope,choice.episodes),scope).some(n=>scope.includes(n))), confirmedDecisions: decisions.filter(choice => scopeEpisodes(readApplicationScope(choice.applicationScope,choice.episodes),scope).some(n=>scope.includes(n))),
-    pendingChoices: doc.editorialTodos.filter(todo => unresolvedOwner(todo) === 'Q1' && overlaps(scope, todo.episodes ?? [])),
-    programTasks: programTodos(doc).filter(todo => overlaps(scope, todo.episodes ?? [])),
-    repairIssues: selectRequestIssues([...collectFoundationPublicationIssues(doc.f2!, input.sourceContext), ...collectLightSceneIssues(doc.f2!, scenes)], scope, doc.f2!.assets.flatMap(asset=>[{key:asset.key,episodes:asset.usageEpisodes},...asset.variants.map(v=>({key:v.key,episodes:v.episodes}))])) };
+    pendingChoices: doc.editorialTodos.filter(todo => unresolvedOwner(todo) === 'Q1' && overlaps(scope, todo.episodes ?? []) && (!targets?.todoIds || targets.todoIds.includes(todo.id))),
+    programTasks: programTodos(doc).filter(todo => overlaps(scope, todo.episodes ?? []) && (!targets?.todoIds || targets.todoIds.includes(todo.id))),
+    repairIssues: selectRequestIssues([...collectFoundationPublicationIssues(doc.f2!, input.sourceContext), ...collectLightSceneIssues(doc.f2!, scenes)], scope, doc.f2!.assets.flatMap(asset=>[{key:asset.key,episodes:asset.usageEpisodes},...asset.variants.map(v=>({key:v.key,episodes:v.episodes}))])).filter(issue => !targets || planFoundationIssueDispatch({ doc, scenes, index: input.sourceIndex, issues: [issue] }).targets.some(target => target.items.some(item => !item.todoId && item.coordinate === issue.coordinate) && target.episodes.some(n => scope.includes(n)) && (!targets.keys.length || target.keys.some(key => targets.keys.includes(key))) && (!targets.sceneKeys?.length || !target.sceneKeys.length || target.sceneKeys.some(key => targets.sceneKeys!.includes(key))))) };
 }
 
 async function paidContinuationBlocker(db: Db, input: Inputs, document: FoundationDocument, scenes: LightScene[], pending: FoundationChoiceView[], confirmed: FoundationChoiceView[], needsContextEdit: boolean) {
@@ -557,7 +573,7 @@ async function paidContinuationBlocker(db: Db, input: Inputs, document: Foundati
     const suggestions = pending.filter(choice => document.reviewedSuggestions[choice.id] !== choice.revision && !document.requiredDecisionIds.includes(choice.id) && scope.some(n => remainingChoiceScope(document, choice, 'suggestionCoverage', all).includes(n)));
     const decisions = confirmed.filter(choice => document.appliedDecisions[choice.id] !== choice.revision && scope.some(n => remainingChoiceScope(document, choice, 'decisionCoverage', all).includes(n)));
     const delivery = isRecord(entry.request.delivery) ? entry.request.delivery : {};
-    const targets = isRecord(delivery.targets) ? delivery.targets as { episodes: number[]; keys: string[] } : undefined;
+    const targets = isRecord(delivery.targets) ? delivery.targets as LocalRepairTargets : undefined;
     const fingerprint = costFingerprint(stage, { ...buildDeliveryInput(stage, entry.queued.phase as DeliveryPhase, input, document, scope, suggestions, decisions, identities, scenes, targets),
       humanChoiceRegistry: selectRequestChoices((await loadFoundationChoices(db, input.project.id, input.sourceVersion, true)).registry,scope) });
     const matches = evidence.filter(item => item.fingerprint === fingerprint && item.receiver === DELIVERY_RECEIVERS[stage] && !document.origins.some(origin => origin.runId === item.run.id));
@@ -583,16 +599,17 @@ async function paidContinuationBlocker(db: Db, input: Inputs, document: Foundati
   return null;
 }
 
-function guardLocalEdit(edit: ProductionOptimization, phase: DeliveryPhase, targets?: { episodes: number[]; keys: string[] }) {
+function guardLocalEdit(edit: ProductionOptimization, phase: DeliveryPhase, targets?: LocalRepairTargets, allowedScenes?: string[]) {
   if (!targets || phase === 'EDIT') return;
   const bad = (coordinate: string) => { throw new FoundationContractError('局部修订越出待办范围，已保留正确内容。', [{ severity: 'BLOCKER', owner: 'PROGRAM', coordinate, problem: '只允许修改delivery.targets指明的对象与集号；不能重写无关内容', sourceRefs: [] }]); };
   if (edit.changes.overview !== undefined) bad('changes.overview');
   if (edit.changes.episodes?.some(e => !targets.episodes.includes(e.number))) bad('changes.episodes');
-  if (edit.changes.scenes?.some(scene => !targets.episodes.includes(scene.episode))) bad('changes.scenes');
-  if (edit.changes.sceneSplits?.some(scene => !targets.episodes.includes(scene.episode))) bad('changes.sceneSplits');
+  if (edit.changes.scenes?.some(scene => !targets.episodes.includes(scene.episode) || !!allowedScenes?.length && !allowedScenes.includes(scene.sceneKey))) bad('changes.scenes');
+  if (edit.changes.sceneSplits?.some(scene => !targets.episodes.includes(scene.episode) || !!targets.sceneKeys?.length && !targets.sceneKeys.includes(scene.sceneKey))) bad('changes.sceneSplits');
   if (edit.changes.assets?.some(asset => (targets.keys.length && (!asset.key || !targets.keys.includes(asset.key))) || asset.episodes.some(n => !targets.episodes.includes(n)))) bad('changes.assets');
   if (edit.changes.removeAssetKeys?.some(key => !targets.keys.includes(key))) bad('changes.removeAssetKeys');
   if (edit.changes.mergeAssets?.length) bad('changes.mergeAssets');
+  if (targets.todoIds && edit.resolvedUnresolved?.some(id => !targets.todoIds!.includes(id))) bad('resolvedUnresolved');
 }
 
 export async function executeFoundationDelivery(projectId: string, taskId: string, options: { db?: PrismaClient; stageRunner?: FoundationStageRunner; workerToken?: string } = {}) {
@@ -664,6 +681,10 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       await checkLease();
       if ((await readSourcePreparation(projectId, db)).sourceInputVersion !== prepared.sourceInputVersion) throw new Error('整理提交后来源又发生变化，未混入新的修改。');
       await update({ sourceInputVersion: prepared.sourceInputVersion });
+      if ('backendPending' in prepared && prepared.backendPending) {
+        await update({status:'PARTIAL',workerPid:null,error:JSON.stringify(prepared.backendPending),message:'原文结构自动校验尚未完成，当前已暂停；原文与已保存结果保留，技术问题由工作流处理。'});
+        return readTask(db,projectId);
+      }
       if (fidelityRecord && prepared.unresolved.length) {
         await update({status:'WAITING_USER',workerPid:null,error:null,message:(prepared.assisted?'已尝试判断来源，仍有 ':'来源疑点超过单次判断范围或需检查，仍有 ')+prepared.unresolved.length+' 项缺少依据，请在来源页面一次确认对应范围。'});
         return readTask(db,projectId);
@@ -720,7 +741,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       return scene && Object.entries(patch).every(([field, value]) => field === 'episode' || field === 'sceneKey' || JSON.stringify(scene[field as keyof LightScene]) === JSON.stringify(value));
     });
     await adoptAuthorSuggestions();
-    const call = async <T>(stage: 'F2' | 'Q1', phase: DeliveryPhase, scope: number[], validate: (value: unknown) => T, targets?: { episodes: number[]; keys: string[] }, fragment?: FoundationFragment): Promise<{ output: T; runId: string; suggestions: FoundationChoiceView[]; decisions: FoundationChoiceView[] }> => {
+    const call = async <T>(stage: 'F2' | 'Q1', phase: DeliveryPhase, scope: number[], validate: (value: unknown) => T, targets?: LocalRepairTargets, fragment?: FoundationFragment): Promise<{ output: T; runId: string; suggestions: FoundationChoiceView[]; decisions: FoundationChoiceView[] }> => {
       await checkCurrent(); await update({ phase, scope, message: phase === 'GENERATE_F1' ? '正在整理分集导航，完成的内容会逐段保存。' : phase === 'GENERATE_F2' ? '正在整理基础资产与必要形象。' : phase === 'REPAIR' ? '正在补齐剩余局部事项。' : phase === 'APPLY_DECISION' ? '正在采用你的选择，只更新受影响内容。' : '正在检查并直接完善已有资料。' });
       const choices = await loadFoundationChoices(db, projectId, input.sourceVersion, true), identities = [...await knownAssets(db, projectId, doc), ...(doc.fragmentProgress?.sourceVersion === input.sourceVersion ? doc.fragmentProgress.f2.flatMap(part => part.output.assets) : [])];
       const all = input.sourceIndex.episodes.map(e => e.number);
@@ -889,7 +910,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
         return input.systemPrompts.Q1.length + buildLightFoundationPrompt('Q1', request).length;
       });
     };
-    const edit = async (scope: number[], phase: DeliveryPhase, targets?: { episodes: number[]; keys: string[] }, fragment?: FoundationFragment) => {
+    const edit = async (scope: number[], phase: DeliveryPhase, targets?: LocalRepairTargets, fragment?: FoundationFragment) => {
       const result = await call('Q1', phase, scope, value => validateLightEdit(value, input, doc, scope, scenes, savedSplits, sceneParserVersions, phase, targets), targets, fragment);
       if (result.output.changes.sceneSplits?.length) await previewSceneSplitPlans(projectId, db, result.output.changes.sceneSplits);
       doc = applyDocumentEdit(doc, result.output, input.sourceIndex);
@@ -949,29 +970,55 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
     repairRounds: for (let round = task!.repairRounds; round < task!.maxRepairRounds; round++) {
       const pending = pendingWork();
       if (!pending.issues.length && !pending.todos.length && !pending.suggestions.length && !pending.decisions.length) break;
-      if (programTodos(doc).length) break; // Hand off program work; do not purchase another editorial attempt.
       if ((task!.repairBudgetUsed ?? 0) >= task!.maxRepairCalls) break;
-      const preparationAssets = doc.f2.assets.flatMap(asset => [asset, ...asset.variants].flatMap(item => pending.issues.some(issue => issue.coordinate === `assets.${item.key}.preparation` || issue.coordinate === `assets.${item.key}.sceneRefs`) ? [{ key: asset.key, episodes: ('usageEpisodes' in item ? item.usageEpisodes : item.episodes).length ? ('usageEpisodes' in item ? item.usageEpisodes : item.episodes) : asset.usageEpisodes.length ? asset.usageEpisodes : all }] : []));
-      const repairEpisodes = union(...(doc.f2.repairItems ?? []).map(item => item.episodes), ...preparationAssets.map(item => item.episodes), ...pending.todos.map(todo => todo.episodes?.length ? todo.episodes : all), ...pending.suggestions.map(choice => remainingChoiceScope(doc, choice, 'suggestionCoverage', all)), ...pending.decisions.map(choice => remainingChoiceScope(doc, choice, 'decisionCoverage', all)));
-      const repairKeys = [...new Set([...(doc.f2.repairItems ?? []).map(item => item.assetKey), ...preparationAssets.map(item => item.key), ...pending.todos.flatMap(todo => todo.key ? [todo.key] : [])])];
-      const relevantScopes = scopes.filter(scope => repairEpisodes.some(n => scope.includes(n)));
-      if (!relevantScopes.length) break; // Source-import defects cannot be repaired by asking the editor to alter the script.
-      for (const scope of relevantScopes) {
-        if ((task!.repairBudgetUsed ?? 0) >= task!.maxRepairCalls) break;
-        const localScope = repairEpisodes.length ? scope.filter(n => repairEpisodes.includes(n)) : scope;
+      const dispatch = planFoundationIssueDispatch({ doc, scenes, index: input.sourceIndex, issues: pending.issues });
+      const jobs = new Map<string, LocalRepairTargets>();
+      for (const target of dispatch.targets) {
+        const id = JSON.stringify([target.episodes, [...target.sceneKeys].sort()]);
+        const prior = jobs.get(id);
+        jobs.set(id, { episodes: target.episodes, keys: [...new Set([...(prior?.keys ?? []), ...target.keys])], sceneKeys: target.sceneKeys,
+          todoIds: [...new Set([...(prior?.todoIds ?? []), ...target.items.flatMap(item => item.todoId ? [item.todoId] : [])])] });
+      }
+      for (const choice of [...pending.suggestions, ...pending.decisions]) {
+        const episodes = remainingChoiceScope(doc, choice, pending.decisions.includes(choice) ? 'decisionCoverage' : 'suggestionCoverage', all);
+        if (!episodes.length) continue;
+        const id = JSON.stringify([episodes, []]);
+        const prior = jobs.get(id);
+        jobs.set(id, { episodes, keys: [...new Set([...(prior?.keys ?? []), ...doc.f2.assets.filter(asset => asset.usageEpisodes.some(n => episodes.includes(n))).map(asset => asset.key)])], todoIds: prior?.todoIds ?? [] });
+      }
+      if (!jobs.size) break;
+      for (const job of jobs.values()) {
+       const pendingScope = [...job.episodes];
+       while (pendingScope.length) {
+        if ((task!.repairBudgetUsed ?? 0) >= task!.maxRepairCalls) break repairRounds;
+        const currentPending = pendingWork();
+        const currentDispatch = planFoundationIssueDispatch({ doc, scenes, index: input.sourceIndex, issues: currentPending.issues });
+        const stillPending = currentDispatch.targets.some(target => target.episodes.some(n => pendingScope.includes(n)) && (!job.sceneKeys?.length || target.sceneKeys.some(key => job.sceneKeys!.includes(key))) && (target.items.some(item => item.todoId && job.todoIds?.includes(item.todoId)) || target.items.some(item => !item.todoId) && (!job.keys.length || target.keys.some(key => job.keys.includes(key)))))
+          || [...currentPending.suggestions, ...currentPending.decisions].some(choice => remainingChoiceScope(doc, choice, currentPending.decisions.includes(choice) ? 'decisionCoverage' : 'suggestionCoverage', all).some(n => pendingScope.includes(n)));
+        if (!stillPending) break;
+        const identities = await knownAssets(db, projectId, doc);
+        // A saved task owns its scope array: consuming the local queue must not
+        // mutate the previous JSON used by storeTask's compare-and-swap.
+        const localScope = job.todoIds?.length ? [...pendingScope] : planFoundationRequestScope(pendingScope, scope => input.systemPrompts.Q1.length + buildLightFoundationPrompt('Q1', buildDeliveryInput('Q1', 'REPAIR', input, doc, scope, pending.suggestions, pending.decisions, identities, scenes, { ...job, episodes: scope })).length);
+        const targets = { ...job, episodes: localScope, todoIds: job.todoIds?.filter(id => doc.editorialTodos.some(todo => todo.id === id && unresolvedEpisodeScope(todo).every(n => localScope.includes(n)))) };
+        if (job.todoIds?.length) {
+          try { assertFoundationRequestBudget(input.systemPrompts.Q1, buildLightFoundationPrompt('Q1', { ...buildDeliveryInput('Q1', 'REPAIR', input, doc, localScope, currentPending.suggestions, currentPending.decisions, identities, scenes, targets), humanChoiceRegistry: selectRequestChoices(choices.registry, localScope) })); }
+          catch (error) { await update({ repairHalt: { fingerprint: repairFingerprint(input, doc, scenes), reason: '局部待办须完整校验，其范围超过当前处理容量，已暂停且未发起新请求。技术诊断：' + errorText(error) } }); break repairRounds; }
+        }
         const previousPending = pendingWork(), before = pendingSignature(doc, previousPending.issues, previousPending.suggestions, previousPending.decisions);
-        const repairRunId = await edit(localScope, 'REPAIR', { episodes: localScope, keys: repairKeys });
+        const repairRunId = await edit(localScope, 'REPAIR', targets);
+        pendingScope.splice(0, localScope.length);
         await update({ repairRounds: round + 1 });
-        if (programTodos(doc).length) break repairRounds;
         const remaining = pendingWork();
         if (pendingSignature(doc, remaining.issues, remaining.suggestions, remaining.decisions) === before) {
-          const repairHalt = { fingerprint: repairFingerprint(input, doc, scenes), reason: '上一轮修正没有减少待处理问题，已停止重复调用。请先修正原文、资料或程序能力，再继续；不会通过点击继续重置费用额度。' };
+          const repairHalt = { fingerprint: repairFingerprint(input, doc, scenes), reason: '上一轮修正没有减少待处理问题，已停止重复调用。已有资料保留，技术问题由工作流处理；不会通过点击继续重置费用额度。' };
           await update({ repairHalt });
           const proof = await db.pipelineRun.findUniqueOrThrow({ where: { id: repairRunId } });
           await checkCurrent();
           await persistIndexedFoundationRunLog(db, repairRunId, { log: JSON.stringify({ ...foundationJson(proof.log), repairHalt }) });
           break repairRounds;
         }
+       }
       }
     }
     if (loaded.needsContextEdit && doc.contextCoverage?.fingerprint === targetSettings && all.every(n => doc.contextCoverage!.episodes.includes(n))) { const fresh = createEmptyDocument(input); doc.sourceContextVersion = fresh.sourceContextVersion; doc.settingsFingerprint = fresh.settingsFingerprint; }
@@ -981,13 +1028,13 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
     if (doc.f2) { const { registerFoundationDocumentAssets } = await import('./foundation-delivery-assets'); await registerFoundationDocumentAssets(db, projectId, doc, state.requiredChoices, checkCurrent); }
     await update({ status: state.requiredChoices.length ? 'WAITING_USER' : state.complete ? 'COMPLETE' : 'PARTIAL', scope: [], workerPid: null,
       message: state.requiredChoices.length ? '其他资料已整理，请完成必要选择；采用后会自动继续。' : state.complete ? '资料已整理完成，可以阅读和使用。'
-        : programTodos(doc).length ? '已有资料已保存；场次结构需要程序处理，不再自动调用Q1。' : task!.repairHalt?.reason ?? '已有资料已保存，剩余局部事项尚未完成，可继续补齐。', error: null });
+        : programTodos(doc).length ? '已有资料已保存；尚有技术问题未完成，当前已暂停自动整理。' : task!.repairHalt?.reason ?? '已有资料已保存，剩余局部事项尚未完成，可继续补齐。', error: null });
   } catch (error) {
     const current = await readTask(db, projectId);
     if (current?.id === taskId && current.status === 'RUNNING' && current.workerToken === task.workerToken) {
       const unknown = error instanceof DeliveryCallError && error.outcome === 'UNKNOWN' || await hasUnknown(db, projectId, current);
       task = current; await update({ status: unknown ? 'INTERRUPTED' : 'PARTIAL', workerPid: null, error: errorText(error), unknownOutcome: unknown,
-        ...await deliveryCounts(db, projectId, taskId), repairBudgetUsed: (await currentRepairBudget()).used, message: unknown ? '连接中断，请求结果尚未确认；已保存资料可读，未自动重发。' : '处理暂时中断，已有资料已保存；请先查看具体原因和可恢复范围。' });
+        ...await deliveryCounts(db, projectId, taskId), repairBudgetUsed: (await currentRepairBudget()).used, message: unknown ? '连接中断，请求结果尚未确认；已保存资料可读，未自动重发。' : '处理暂时中断，已有资料已保存；技术诊断已保留，恢复前不会自动重发。' });
     }
   }
   return readTask(db, projectId);

@@ -321,11 +321,11 @@ async function main() {
         return response({ format: 'FOUNDATION_OPTIMIZATION_V2', coverage: [1], changes: {}, unresolved: [{ owner: 'PROGRAM', episodes: [1], note: `现有sceneKey不能新增独立外景场次，须拆场后补引用。第${calls.length}次说明。` }] });
       } });
       const state = await getFoundationDeliveryState(project.id, db);
-      assert.deepEqual(calls, ['F2', 'Q1'], '程序任务不应触发任何追加模型修正');
+      assert.deepEqual(calls, ['F2', 'Q1', 'Q1'], '可定位拆场自动局部修一次，无进展不能反复购买');
       assert.equal(state.complete, false); assert.equal(state.action, 'BLOCKED');
-      assert.match(state.continuationBlocker ?? '', /程序|拆场/);
+      assert.match(state.continuationBlocker ?? '', /程序|拆场|修复|修正|重复/);
       const runCount = await db.pipelineRun.count({ where: { projectId: project.id } });
-      await assert.rejects(() => queueFoundationDelivery(project.id, {}, db), /程序|拆场|自动重试/);
+      await assert.rejects(() => queueFoundationDelivery(project.id, {}, db), /程序|拆场|自动重试|修复|修正|重复/);
       assert.equal(await db.pipelineRun.count({ where: { projectId: project.id } }), runCount);
       assert.equal((await db.episode.findFirstOrThrow({ where: { projectId: project.id } })).content, source);
       assert.equal(state.availableEpisodes, 1); assert.equal(state.editedEpisodes, 1);
@@ -407,7 +407,7 @@ async function main() {
       assert.equal(queued.status, 'QUEUED');
       const confirmed = await getFoundationDeliveryState(project.id, db);
       assert.equal(confirmed.requiredChoices.length, 0); assert.equal(confirmed.confirmedChoices.length, 1);
-      assert.equal(await db.pipelineRun.count({ where: { projectId: project.id } }), 2, '确认/排队本身不调用模型');
+      assert.equal(await db.pipelineRun.count({ where: { projectId: project.id } }), 3, '前轮仅追加一次局部修复；确认/排队本身不调用模型');
       const { preprocessProjectProduction } = await import('@/lib/workflow');
       const scenesBefore = await db.scriptScene.findMany({ where: { episode: { projectId: project.id } } });
       await assert.rejects(() => preprocessProjectProduction(project.id, db), /处理中|运行|执行|进行中|正在整理/);
