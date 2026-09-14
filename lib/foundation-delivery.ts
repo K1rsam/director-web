@@ -329,6 +329,20 @@ async function hasUnknown(db: Db, projectId: string, task: FoundationDeliveryTas
   });
 }
 
+function currentRegistryComplete(document:FoundationDocument,assets:readonly {id:string;parentId:string|null;metadata:string|null}[]) {
+ if(!document.f2)return false;
+ const entries=document.f2.assets.flatMap(asset=>[{key:asset.key,parentKey:null},...asset.variants.map(variant=>({key:variant.key,parentKey:asset.key}))]);
+ return entries.every(entry=>{
+  const matching=assets.filter(asset=>{const meta=foundationJson(asset.metadata);return meta.foundationKey===entry.key||meta.foundationVariantKey===entry.key;});
+  if(matching.length!==1)return false;
+  const row=matching[0],meta=foundationJson(row.metadata),foundation=isRecord(meta.foundation)?meta.foundation:{};
+  if(meta.foundationCurrent!==true||foundation.documentRevision!==document.revision||foundation.sourceVersion!==document.sourceVersion||foundation.sourceContextVersion!==document.sourceContextVersion)return false;
+  if(entry.parentKey===null)return !row.parentId&&meta.foundationKey===entry.key&&meta.foundationVariantKey===undefined;
+  const parent=assets.find(asset=>foundationJson(asset.metadata).foundationKey===entry.parentKey);
+  return !!parent&&row.parentId===parent.id&&meta.foundationVariantKey===entry.key&&meta.foundationKey===undefined&&meta.foundationParentKey===entry.parentKey;
+ });
+}
+
 /** Reading this state never changes jobs, answers, documents or starts a provider request. */
 export async function getFoundationDeliveryState(projectId: string, db: Db = prisma): Promise<FoundationDeliveryState> {
   const project = await db.project.findUnique({ where: { id: projectId }, select: { id: true, _count: { select: { episodes: true } } } });
@@ -375,19 +389,19 @@ export async function getFoundationDeliveryState(projectId: string, db: Db = pri
   const methodUpdateAvailable = !needsAssetRefresh && document.assetMethodVersion !== LIGHT_ASSET_METHOD_VERSION;
   const availableEpisodes = all.filter(n => document.f2?.coverage.includes(n)).length;
   const documentReady = !needsAssetRefresh && availableEpisodes === all.length && all.every(n => document.editorialCoverage.includes(n)) && !loaded.needsContextEdit && !issues.length && !requiredChoices.length && !unapplied.length && !suggestions.length && !currentTodos(document).length;
-  const complete = !unknownOutcome && (!task || task.status === 'RUNNING' || task.status === 'COMPLETE') && documentReady;
   const activeRuns = await db.pipelineRun.findMany({ where: { projectId, status: { in: ['QUEUED', 'RUNNING'] } }, select: { inputSummary: true, startedAt: true }, orderBy: {createdAt:'desc'} });
   const busy = active(task) || activeRuns.some(run => {
     const input = foundationJson(run.inputSummary);
     return !(storedTask && workerGone && input.deliveryTaskId === storedTask.id && input.workerToken === storedTask.workerToken);
   });
+  const complete = documentReady && currentRegistryComplete(document,assets) && !busy && !unknownOutcome;
   const codes = Object.fromEntries(assets.flatMap(asset => { const meta = foundationJson(asset.metadata), key = meta.foundationKey ?? meta.foundationVariantKey; return typeof key === 'string' ? [[key, asset.code]] : []; }));
   const currentEdited = loaded.needsContextEdit ? document.contextCoverage?.fingerprint === createEmptyDocument(input).settingsFingerprint ? document.contextCoverage.episodes : [] : document.editorialCoverage;
   const generationFinished = !needsAssetRefresh && availableEpisodes === all.length && all.every(n => currentEdited.includes(n)) && !loaded.needsContextEdit;
   const dispatch = planFoundationIssueDispatch({ doc: document, scenes, index: input.sourceIndex, issues });
   const blocked = generationFinished && !unapplied.length && !suggestions.length && !dispatch.targets.length && dispatch.backendItems.length ? `整理遇到技术问题，已暂停重复请求：${dispatch.backendItems[0].problem}`
     : task?.repairHalt && [repairFingerprint(input, document, scenes), legacyRepairFingerprint(input, document, scenes)].includes(task.repairHalt.fingerprint) ? task.repairHalt.reason : null;
-  const continuationBlocker = !busy && !unknownOutcome && !requiredChoices.length ? blocked ?? await paidContinuationBlocker(db, input, document, scenes, choices.pending, choices.confirmed, loaded.needsContextEdit) : null;
+  const continuationBlocker = !complete && !documentReady && !busy && !unknownOutcome && !requiredChoices.length ? blocked ?? await paidContinuationBlocker(db, input, document, scenes, choices.pending, choices.confirmed, loaded.needsContextEdit) : null;
   return { document, previousDocument: loaded.previousDocument, task, totalEpisodes: all.length, availableEpisodes, editedEpisodes: all.filter(n => currentEdited.includes(n)).length,
     busy, complete, documentReady, needsContextEdit: loaded.needsContextEdit, needsAssetRefresh, methodUpdateAvailable, continuationBlocker, action: busy ? 'NONE' : unknownOutcome ? 'UNKNOWN_CONFIRM' : continuationBlocker ? 'BLOCKED' : complete ? 'NONE' : document.f1 || document.f2 ? 'CONTINUE' : 'START',
     activeCallStartedAt: busy ? activeRuns.find(run => foundationJson(run.inputSummary).workerToken === task?.workerToken)?.startedAt?.toISOString() ?? null : null,
@@ -1089,8 +1103,8 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
     const state = await getFoundationDeliveryState(projectId, db);
     // Registry publication is independent of historical approval snapshots and cannot erase manual material.
     if (doc.f2) { const { registerFoundationDocumentAssets } = await import('./foundation-delivery-assets'); await registerFoundationDocumentAssets(db, projectId, doc, state.requiredChoices, checkCurrent); }
-    await update({ status: state.requiredChoices.length ? 'WAITING_USER' : state.complete ? 'COMPLETE' : 'PARTIAL', scope: [], workerPid: null,
-      message: state.requiredChoices.length ? '其他资料已整理，请连续保存剩余选择，全部确认后自动继续。' : state.complete ? '资料已整理完成，可以阅读和使用。'
+    await update({ status: state.requiredChoices.length ? 'WAITING_USER' : state.documentReady ? 'COMPLETE' : 'PARTIAL', scope: [], workerPid: null,
+      message: state.requiredChoices.length ? '其他资料已整理，请连续保存剩余选择，全部确认后自动继续。' : state.documentReady ? '资料已整理完成，可以阅读和使用。'
         : programTodos(doc).length ? '已有资料已保存；尚有技术问题未完成，当前已暂停自动整理。' : task!.repairHalt?.reason ?? '已有资料已保存，剩余局部事项尚未完成，可继续补齐。', error: null });
   } catch (error) {
     const current = await readTask(db, projectId);

@@ -82,6 +82,13 @@ check("首次整理与完成态", () => {
   const complete = render({ ...base, availableEpisodes: 3, editedEpisodes: 3, complete: true, action: "NONE" });
   assert.ok(complete.includes("资料已整理") && buttons(complete).length === 0);
   const staleAction = render({ ...base, availableEpisodes: 3, editedEpisodes: 3, complete: true, action: "CONTINUE" });
+  for(const status of ['PARTIAL','STOPPED','WAITING_USER'] as const){
+    const reconciled={...base,availableEpisodes:3,editedEpisodes:3,complete:true,action:'NONE' as const,task:task({status,error:'历史停止原因'})};
+    const html=render(reconciled);
+    assert.ok(html.includes('资料已整理')&&buttons(html).length===0,'Ready delivery does not inherit a historical resume button');
+    const rail=renderToStaticMarkup(createElement(FoundationWorkflowStatus,{projectId:'project-1',state:reconciled,sourceReady:true,sceneCount:3,remaining:[]}));
+    assert.ok(!rail.includes('待整理完成')&&!rail.includes('系统处理问题'),'P4 and technical pause agree with current complete state');
+  }
   assert.ok(staleAction.includes("资料已整理") && buttons(staleAction).length === 0);
   assert.doesNotMatch(complete + staleAction, /再完善一次|继续完善（可选）/);
   const empty = render({ ...base, document: { ...document, f1: null, f2: null }, totalEpisodes: 0, availableEpisodes: 0, action: "NONE" });

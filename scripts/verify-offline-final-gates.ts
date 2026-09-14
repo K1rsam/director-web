@@ -26,7 +26,7 @@ async function main(){
    const catalog=requireProductionCatalogAuthor(real?f2.data:{format:'ASSET_CATALOG_V2',coverage:scope,assets:[{name:text.includes('张三：')?'张三':'甲',type:'CH',episodes:scope,sceneRefs:[{episode:1,sceneKey:'1-1'}],preparation:{mode:'REFERENCE'}}]},input.sourceIndex,scope);
    let document=mergeDocumentF2({...empty,workflow:'LIGHT_STAGE1_V1',assetMethodVersion:LIGHT_ASSET_METHOD_VERSION},catalog,input.sourceIndex);
    document=applyDocumentEdit(document,requireProductionOptimization(real?q1.data:{format:'FOUNDATION_OPTIMIZATION_V2',coverage:scope,changes:{}},input.sourceIndex,scope,document.f2!.assets),input.sourceIndex);
-   await saveFoundationDocument(db,project.id,empty.revision,document,'offline saved-response gate test');return project.id;
+   document=await saveFoundationDocument(db,project.id,empty.revision,document,'offline saved-response gate test');const {registerFoundationDocumentAssets}=await import('../lib/foundation-delivery-assets');await registerFoundationDocumentAssets(db,project.id,document,[]);return project.id;
   }
   const real=await prepare(source,'真实响应离线复验',true);const state=await getFoundationDeliveryState(real,db),handoff=await readLightEpisodeFoundation(real,1,db);
   results.physical={complete:state.complete,documentReady:state.documentReady,issues:state.issues,readiness:handoff.readiness,reasons:handoff.reasons,catalogIssues:state.document.f2?.issues};
