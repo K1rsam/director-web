@@ -3,7 +3,101 @@ import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {createSource,proposePlan,validatePlan,normalize} from './fidelity.mjs';
+import {normalize as normalizeV2} from '../../../../lib/fidelity-v2.mjs';
 const copy=o=>JSON.parse(JSON.stringify(o));
+
+test('同集连续未归场正文只报一个区间，保留每行正文及说话者',()=>{
+ const text='第一集\r\n'+'甲乙：原文 é😀。  \r\n'.repeat(120),result=normalize(text);
+ const issues=result.validation.issues.filter(issue=>issue.code==='SCENE_BOUNDARY_UNCONFIRMED');
+ assert.equal(issues.length,1);assert.equal(issues[0].start,'第一集\r\n'.length);assert.equal(issues[0].end,text.length);
+ assert.equal(result.segments.length,121);assert.equal(result.segments.map(segment=>segment.text).join(''),text);
+ assert(result.segments.slice(1).every(segment=>segment.kind==='body'&&segment.sceneId===null&&segment.speakerLabels.includes('甲乙')));
+ assert.equal(result.episodes[0].scenes.length,0,'诊断合并不能猜造整集一场');
+ for(const segment of result.segments)assert.equal(segment.text,text.slice(segment.start,segment.end));
+});
+
+test('无所属集的连续正文也合并诊断，不猜集场且不跨资料或不同错误',()=>{
+ const text='匿名正文甲\r\n匿名正文乙😀\r\n\r\n孤立正文\n作者资料\n背景\n第一集\n未归场甲\n未归场乙\n',source=createSource(text),result=normalize(source);
+ assert.deepEqual(result.validation.issues.map(issue=>[issue.code,text.slice(issue.start,issue.end)]),[['BOUNDARY_UNCONFIRMED','匿名正文甲\r\n匿名正文乙😀\r\n'],['BOUNDARY_UNCONFIRMED','孤立正文\n'],['SCENE_BOUNDARY_UNCONFIRMED','未归场甲\n未归场乙\n']]);
+ assert.equal(result.segments[0].episodeId,null);assert.equal(result.segments[0].sceneId,null);
+ const legacy=copy(result.plan);legacy.issues=legacy.issues.flatMap(issue=>legacy.segments.filter(segment=>segment.start>=issue.start&&segment.end<=issue.end).map(segment=>({...issue,start:segment.start,end:segment.end})));
+ assert.equal(validatePlan(source,legacy).ok,true);assert.deepEqual(normalize(source,{plan:legacy}).plan.issues,result.plan.issues);
+ assert.equal(result.segments.map(segment=>segment.text).join(''),text);
+});
+
+test('诊断范围不跨集、明确场、资料、格式空行或其它错误',()=>{
+ const text='无集正文\n第一集\n甲段\n乙段\n\n丙段\n丁段\n1-1 日 外 门口\n已归场正文\n第二集\n戊段\n己段\n作者资料\n背景原文\n第三集\n庚段\n辛段\n第一集\n壬段\n癸段\n';
+ const result=normalize(text),issues=result.validation.issues.filter(issue=>issue.code==='SCENE_BOUNDARY_UNCONFIRMED');
+ assert.deepEqual(issues.map(issue=>text.slice(issue.start,issue.end)),['甲段\n乙段\n','丙段\n丁段\n','戊段\n己段\n','庚段\n辛段\n','壬段\n癸段\n']);
+ assert.equal(result.validation.issues.filter(issue=>issue.code==='BOUNDARY_UNCONFIRMED').length,1);
+ assert.equal(result.validation.issues.filter(issue=>issue.code==='DUPLICATE_EPISODE_NUMBER').length,1);
+ assert.equal(result.segments.map(segment=>segment.text).join(''),text);
+ for(const issue of issues){const covered=result.segments.filter(segment=>segment.start>=issue.start&&segment.end<=issue.end);assert(covered.every(segment=>segment.kind==='body'&&segment.episodeId===covered[0].episodeId&&segment.sceneId===null));}
+});
+
+test('同契约逐行诊断精确验真，输出规范化为区间，提交计划不被改写',()=>{
+ const source=createSource('第一集\n甲段\n乙段\n\n丙段\n丁段\n第二集\n戊段\n己段\n');
+ const fresh=proposePlan(source),legacy=copy(fresh);
+ legacy.issues=legacy.issues.flatMap(issue=>issue.code==='SCENE_BOUNDARY_UNCONFIRMED'?legacy.segments.filter(segment=>segment.start>=issue.start&&segment.end<=issue.end).map(segment=>({...issue,start:segment.start,end:segment.end})):[issue]);
+ const before=copy(legacy);
+ assert.equal(legacy.issues.length,6);assert.equal(fresh.issues.length,3);
+ assert.equal(validatePlan(source,legacy).ok,true);
+ const normalized=normalize(source,{plan:legacy});
+ assert.deepEqual(normalized.plan.issues,fresh.issues);assert.deepEqual(normalized.validation.issues,fresh.issues);
+ assert.deepEqual(normalized.plan.segments,legacy.segments);assert.deepEqual(legacy,before);
+ for(const mutate of [
+  plan=>plan.issues.splice(1,1),
+  plan=>plan.issues[0].message='已经解决',
+  plan=>plan.issues[0].end=plan.issues.at(-1).end,
+  plan=>plan.issues.reverse(),
+  plan=>plan.issues.push(copy(plan.issues[0])),
+  plan=>plan.issues[0].start++,
+ ]){const bad=copy(legacy);mutate(bad);assert.equal(validatePlan(source,bad).ok,false);}
+ const mixed=copy(legacy);mixed.issues.splice(0,2,copy(fresh.issues[0]));assert.equal(validatePlan(source,mixed).ok,false,'只接受完整旧或完整新规范，不允许任意拼接');
+});
+
+test('冻结v2仍保留旧场标题漏识别语义，不能以v3宽松验真',()=>{
+ const text='第一集\n'+'场1-2 日 内 门口 甲乙：到了。\n\n'.repeat(4);
+ const result=normalizeV2(text);
+ assert.equal(result.validation.issues.filter(issue=>issue.code==='SCENE_BOUNDARY_UNCONFIRMED').length,4);
+ assert.equal(result.episodes[0].scenes.length,0,'本修复不改现有场标题识别');
+ assert.equal(result.segments.map(segment=>segment.text).join(''),text);
+});
+
+test('v3行首场N-M及同行集场正文不改行块，单行整场也可生产',()=>{
+ const text='第1集 归来 场1-1 日 外 门口 人物：甲 △甲停步。甲：到了。\r\n场1-2 夜 内 大厅 人物：乙 乙：进来。\r\n第2集 后续 场2-1 日 外 街道 人物：甲 △甲离开。\n';
+ const result=normalize(text),old=normalizeV2(text);
+ assert.equal(result.contractVersion,'fidelity/3');assert.equal(result.episodes.length,2);
+ assert.deepEqual(result.episodes.map(e=>e.scenes.length),[2,1]);assert.equal(result.validation.issues.length,0);
+ assert(result.segments.every(s=>s.kind==='body'&&s.productionEligible&&s.sceneId));
+ assert.deepEqual(result.segments.map(s=>[s.id,s.start,s.end,s.text,s.textHash,s.speakerLabels]),old.segments.map(s=>[s.id,s.start,s.end,s.text,s.textHash,s.speakerLabels]));
+ assert.equal(result.segments.map(s=>s.text).join(''),text);assert.equal(result.source.sourceVersion,old.source.sourceVersion);
+ assert(result.episodes.every(e=>e.productionEligible));
+});
+
+test('v3错集场标题不继承前场，不将对白或无元数据数字当场',()=>{
+ const wrong=normalize('第一集\n场1-1 日 内 大厅\n甲：原场。\n场2-2 日 外 门口 人物：乙 △乙停步。\n');
+ assert.equal(wrong.episodes[0].scenes.length,1);assert.equal(wrong.segments.at(-1).sceneId,null);
+ assert(wrong.validation.issues.some(i=>i.code==='SCENE_EPISODE_MISMATCH'));
+ for(const line of ['甲：场1-1 日 外 门口','△甲念出场1-1 日 内 大厅','场1-1','场1-1 价格1.5万元','第1集 甲说：场1-1 日 外 门口','第1集 标题 场2-1 日 外 门口 人物：甲']) {
+  const result=normalize(`第一集\n${line}\n甲：继续。\n`);assert.equal(result.episodes.reduce((n,e)=>n+e.scenes.length,0),0,line);
+ }
+});
+
+test('v3同集双行场头跨空行绑定，元数据格式行不被当作正文',()=>{
+ const text='第21集\r\n21-1\r\n\r\n林家卧房 夜 / 内\r\n\r\n人物：甲\r\n△甲坐下。\r\n场21-2\r\n门外 日／外\r\n甲：走。\r\n第22集\n22-1\n走廊 日 内\n乙：来。\n';
+ const result=normalize(text),old=normalizeV2(text);
+ assert.deepEqual(result.episodes.map(e=>e.scenes.length),[2,1]);assert.equal(result.validation.issues.length,0);
+ assert.equal(result.episodes[0].scenes[0].start,text.indexOf('21-1'));
+ const header=result.segments.find(s=>s.text.includes('林家卧房'));
+ assert.equal(header.kind,'format');assert.equal(header.sceneId,result.episodes[0].scenes[0].id);
+ assert.deepEqual(result.segments.map(s=>[s.id,s.start,s.end,s.text]),old.segments.map(s=>[s.id,s.start,s.end,s.text]));
+ assert.equal(normalize('第21集\n21-1\n卧房 夜 / 内\n').episodes[0].productionEligible,false);
+ for(const [number,metadata] of [['21-1','甲：夜 / 内'],['21-1','△甲在夜 / 内行动'],['21-1','卧房 夜'],['21-1','卧房 内'],['21-1','比分 夜 / 内！'],['3.14','卧房 夜 / 内'],['22-1','卧房 夜 / 内']]) {
+  const rejected=normalize(`第21集\n${number}\n\n${metadata}\n甲：原文。\n`);
+  assert.equal(rejected.episodes[0].scenes.length,0,number+' '+metadata);
+ }
+});
 test('完整覆盖含CRLF emoji组合字 空格和假完成词',()=>{
  const text='第一集\r\n1-1\r\n张三（OS）：  é😀\r\n字幕：完\n【步骤1输出完毕】\n尾段 ';const r=normalize(text);
  assert.equal(r.segments.map(s=>s.text).join(''),text);assert.equal(r.validation.ok,true);

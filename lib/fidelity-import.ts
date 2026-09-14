@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { parseScriptBuffer, type ImportedScript, type SourceSection } from "@/lib/import-script";
 import { CONTRACT_VERSION, createSource, normalize } from "../.agents/skills/screenplay-fidelity/scripts/fidelity.mjs";
 import { validatePlan as validateLegacyPlan } from './fidelity-legacy.mjs';
+import { validatePlan as validateV2Plan } from './fidelity-v2.mjs';
 import { readFidelityArchive } from './fidelity-package';
 import { isFidelityExternalText, parseFidelityExternalResult, type ExternalReviewMetadata } from './fidelity-external';
 import { coalesceFidelityDecisions } from './fidelity-decision-ranges';
@@ -27,8 +28,8 @@ export async function prepareFidelityImport(name:string,bytes:Buffer,mode:"fidel
    if (!decisions.length) decisions=external.plan.decisions;
   }
   if(original){imported=await readPairedOriginal(original,external.source.text);}
-  if (external.plan.contractVersion === 'fidelity/1' && CONTRACT_VERSION !== 'fidelity/1') {
-   const validation=validateLegacyPlan(external.source,external.plan,{decisions});
+  if (['fidelity/1','fidelity/2'].includes(external.plan.contractVersion) && external.plan.contractVersion !== CONTRACT_VERSION) {
+   const validation=(external.plan.contractVersion === 'fidelity/1' ? validateLegacyPlan : validateV2Plan)(external.source,external.plan,{decisions});
    if(!validation.ok)throw new Error('旧清洗包的来源或计划被修改，无法升级：'+validation.errors[0]?.message);
    candidate=undefined;
    imported.readingView.warnings.push('已核验旧清洗包，按新版规则重新识别集场；原文和已采用决定保留。');

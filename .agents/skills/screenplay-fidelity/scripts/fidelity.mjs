@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-export const CONTRACT_VERSION = 'fidelity/2';
+export const CONTRACT_VERSION = 'fidelity/3';
 const hash = text => createHash('sha256').update(text, 'utf8').digest('hex');
 const same = (a,b) => JSON.stringify(a) === JSON.stringify(b);
 export function createSource(text) {
@@ -16,7 +16,7 @@ function labels(text) {
   return [...text.matchAll(/(?:^|[\s；;])([\p{L}·・]{1,24}(?:[（(][^\r\n()（）:：]{1,24}[）)])?)\s*[：:]/gu)]
     .map(m=>m[1]).filter(label=>!['时间','时刻','场景','地点','人物','道具'].includes(label));
 }
-function canonical(source, options={}) {
+function canonical(source, options={}, groupBoundaryIssues=true) {
   const decisions = options.decisions ?? [];
   if (!Array.isArray(decisions)) throw new Error('decisions 必须为数组');
   const decisionsCopy = decisions.map(d=>{
@@ -48,7 +48,8 @@ function canonical(source, options={}) {
     return `episode:${source.sourceVersion}:decision:${decisionsCopy.find(p=>p.episodeNumber===d.episodeNumber).start}`;
   };
   let episodeId=null,sceneId=null,sourceNumber=null,context=false;
-  const issues=[],segments=[],seen=new Set(),decisionScenes=new Map();
+  const issues=[],segments=[],seen=new Set(),decisionScenes=new Map(),continuedSceneHeaders=new Set();
+  let openBoundaryIssue=null;
   for (const [rowIndex,row] of rows.entries()) {
     const t=row.text.replace(/[\r\n]+$/,'').trim();
     const ep=t.match(/^(?:#{1,6}\s*)?第\s*([零〇一二三四五六七八九十百千万两\d]+)\s*集(?:\s|[：:｜|—-]|$)(.*)$/);
@@ -59,7 +60,27 @@ function canonical(source, options={}) {
     // Numeric pairs require scene metadata; bare scores and prices remain body text.
     const pair=t.match(/^(?:#{1,6}\s*)?\d+\s*[-－.．]\s*\d+(?![\d.．])(.*)$/);
     const sceneMetadata=pair && /(?:^|\s)(?:日|夜|昼|晨|黄昏|清晨|凌晨|傍晚|白天|夜晚|内|外|内景|外景|INT\.?|EXT\.?)(?=\s|$)/i.test(pair[1]);
-    const scene=sceneMetadata || t.match(/^(?:#{1,6}\s*)?(?:第\s*([零〇一二三四五六七八九十百\d]+)\s*场(?:\s|[：:｜|]|$)|([零〇一二三四五六七八九十百\d]+)[.．、]\s+(?!\d)\S)/);
+    // A combined episode/scene declaration still owns one complete source line.
+    // Search only a short, non-dialogue episode title prefix, never arbitrary body text.
+    const combined=ep?.[2].match(/^(.*?)\s*场\s*(\d+)\s*[-－.．]\s*(\d+)(?![\d.．])(.*)$/);
+    const inlineTagged=combined&&combined[1].length<=80&&!/[。！？!?“”「」△:：]/.test(combined[1])?[combined[0],combined[2],combined[3],combined[4]]:null;
+    const tagged=ep?inlineTagged:t.match(/^(?:#{1,6}\s*)?场\s*(\d+)\s*[-－.．]\s*(\d+)(?![\d.．])(.*)$/);
+    const taggedMetadata=tagged&&Number(tagged[2])>0&&/(?:^|\s)(?:日|夜|昼|晨|黄昏|清晨|凌晨|傍晚|白天|夜晚|内|外|内景|外景|INT\.?|EXT\.?)(?=\s|$)/i.test(tagged[3]);
+    const currentNumber=ep?numberValue(ep[1]):sourceNumber===null?NaN:numberValue(sourceNumber);
+    // Bare hyphen scene numbers require a separate, explicit metadata-only line.
+    // Keep both complete source lines intact; decimals/scores and dialogue are not evidence.
+    const bare=t.match(/^(?:#{1,6}\s*)?(?:场\s*)?(\d+)\s*[-－]\s*(\d+)\s*[:：]?$/);
+    const following=bare?rows.slice(rowIndex+1).find(r=>r.text.trim()):null;
+    const followingText=following?.text.trim()??'';
+    const separateMetadata=bare&&Number(bare[2])>0&&followingText.length<=160&&!/[：:△▲。！？!?“”「」]/.test(followingText)&&!episodePattern.test(followingText)
+      &&/(?:^|[\s/／|｜])(?:日|夜|昼|晨|黄昏|清晨|凌晨|傍晚|白天|夜晚)(?=$|[\s/／|｜])/.test(followingText)
+      &&/(?:^|[\s/／|｜])(?:内|外|内景|外景|INT\.?|EXT\.?)(?=$|[\s/／|｜])/i.test(followingText);
+    const separateScene=separateMetadata&&Number(bare[1])===currentNumber;
+    if(separateScene)continuedSceneHeaders.add(following.start);
+    const taggedMismatch=(taggedMetadata&&Number.isFinite(currentNumber)&&Number(tagged[1])!==currentNumber)||(separateMetadata&&Number.isFinite(currentNumber)&&Number(bare[1])!==currentNumber);
+    const taggedScene=taggedMetadata&&Number(tagged[1])===currentNumber;
+    const inlineBody=taggedScene&&(/(?:人物|出场人物)\s*[:：]|[△▲]/.test(tagged[3])||labels(tagged[3]).length>0);
+    const scene=separateScene || taggedScene || sceneMetadata || t.match(/^(?:#{1,6}\s*)?(?:第\s*([零〇一二三四五六七八九十百\d]+)\s*场(?:\s|[：:｜|]|$)|([零〇一二三四五六七八九十百\d]+)[.．、]\s+(?!\d)\S)/);
     let kind='body',reason='locked_source_line';
     if (ep || prologue) {
       episodeId=`episode:${source.sourceVersion}:${row.start}`;sceneId=null;sourceNumber=ep?ep[1]:'序章';context=ctx;
@@ -68,16 +89,26 @@ function canonical(source, options={}) {
     }
     if(ctx){context=true;episodeId=null;sceneId=null;sourceNumber=null;kind='context';reason='explicit_context_heading';}
     else if(context){kind='context';reason='context_section';}
-    else if(scene){sceneId=`scene:${source.sourceVersion}:${row.start}`;kind='format';reason='explicit_scene_heading';}
+    else if(scene){sceneId=`scene:${source.sourceVersion}:${row.start}`;kind=inlineBody?'body':'format';reason=inlineBody?'inline_scene_body':'explicit_scene_heading';}
+    if(taggedMismatch&&!context){sceneId=null;kind='body';reason='scene_episode_mismatch';issues.push({code:'SCENE_EPISODE_MISMATCH',start:row.start,end:row.end,message:'场号所属集与当前集标题不一致；原文保留，未将错集场号自动归入当前集'});}
     if(!t&&!context){kind='format';reason='source_whitespace';}
+    if(continuedSceneHeaders.has(row.start)&&!context){kind='format';reason='continued_scene_metadata';}
     if(titleBeforeContext && row.start===nonempty[0].start){kind='context';reason='document_title_before_context';}
     const decision=decisionsCopy.find(d=>d.start<=row.start&&d.end>=row.end);
     if(decision?.sceneNumber!==undefined && scene && row.start===decision.start && sceneId)decisionScenes.set(decision.start,sceneId);
     if(decision){kind=decision.kind;reason='user_boundary_decision';}
     const effectiveEpisode=decision?.episodeNumber!==undefined?decisionEpisode(decision):episodeId;
     const effectiveScene=decision?.sceneNumber!==undefined?(decisionScenes.get(decision.start)??`scene:${source.sourceVersion}:decision:${decision.start}`):sceneId;
-    if(kind==='body'&&!effectiveEpisode) issues.push({code:'BOUNDARY_UNCONFIRMED',start:row.start,end:row.end,message:'正文已保留；所属集场待确认'});
-    if(kind==='body'&&effectiveEpisode&&!effectiveScene) issues.push({code:'SCENE_BOUNDARY_UNCONFIRMED',start:row.start,end:row.end,message:'正文已保留并属于当前集；尚无明确场界，请确认场范围或采用整集一场'});
+    if(kind==='body'&&(!effectiveEpisode||!effectiveScene)) {
+      // Report one continuous unassigned body range, not one identical error per
+      // source line. Any non-body row, episode change or different issue breaks it.
+      const code=effectiveEpisode?'SCENE_BOUNDARY_UNCONFIRMED':'BOUNDARY_UNCONFIRMED';
+      if(groupBoundaryIssues&&openBoundaryIssue?.episodeId===effectiveEpisode&&openBoundaryIssue.issue.code===code&&openBoundaryIssue.issue.end===row.start&&issues.at(-1)===openBoundaryIssue.issue)openBoundaryIssue.issue.end=row.end;
+      else {
+        const issue={code,start:row.start,end:row.end,message:effectiveEpisode?'正文已保留并属于当前集；尚无明确场界，请确认场范围或采用整集一场':'正文已保留；所属集场待确认'};
+        issues.push(issue);openBoundaryIssue={episodeId:effectiveEpisode,issue};
+      }
+    } else openBoundaryIssue=null;
     if(ep&&/^[0零〇]+$/.test(ep[1])&&!ctx&&!ep[2].trim()&&!decision)issues.push({code:'ZERO_EPISODE_UNCONFIRMED',start:row.start,end:row.end,message:'第0集无类型说明，暂保留正文，需确认资料或序章剧情'});
     segments.push({id:id(source,row.start,row.end),start:row.start,end:row.end,kind,episodeId:kind==='context'?null:effectiveEpisode,sceneId:kind==='context'?null:effectiveScene,sourceNumber:decision?.episodeNumber===undefined?sourceNumber:String(decision.episodeNumber),productionEligible:kind==='body',reason,speakerLabels:labels(row.text)});
   }
@@ -99,7 +130,10 @@ export function validatePlan(source,plan,options={}) {
     if(!same(s,expected.segments[i]))fail('SOURCE_BINDING_CHANGED','来源位置、分类、说话者或结构字段不符合当前固定解析/用户决定',i);
   });
   if(cursor!==fresh.length||items.length!==expected.segments.length)fail('INCOMPLETE_COVERAGE','必须完整覆盖源文到结尾，且每个来源行恰好一次');
-  if(!same(plan.issues,expected.issues))fail('ISSUES_CHANGED','疑点不得删改，须通过新的用户决定解决');
+  // For this contract's exact source bindings, accept only the fully recomputed
+  // grouped or per-line diagnostic representation. Older contracts are verified
+  // by frozen validators before upgrade; segment semantics never use this fallback.
+  if(!same(plan.issues,expected.issues)&&!same(plan.issues,canonical(fresh,options,false).issues))fail('ISSUES_CHANGED','疑点不得删改，须通过新的用户决定解决');
   return {ok:errors.length===0,errors,issues:expected.issues,coverage:{length:fresh.length,covered:cursor}};
 }
 export function renderNormalized(source,plan,options={}) {
@@ -117,8 +151,9 @@ export function renderNormalized(source,plan,options={}) {
 }
 export function normalize(source,options={}) {
   if(typeof source==='string')source=createSource(source);
-  const plan=options.plan??proposePlan(source,options);const validation=validatePlan(source,plan,options);
+  const submitted=options.plan??proposePlan(source,options);const validation=validatePlan(source,submitted,options);
   if(!validation.ok)throw Object.assign(new Error('保真校验失败'),{validation});
+  const plan=same(submitted.issues,validation.issues)?submitted:{...submitted,issues:validation.issues};
   const segments=plan.segments.map(s=>({...s,text:source.text.slice(s.start,s.end),textHash:hash(source.text.slice(s.start,s.end))}));
   let productionNumber=0;
   const episodes=[...new Set(segments.filter(s=>s.episodeId).map(s=>s.episodeId))].map((episodeId,index)=>{

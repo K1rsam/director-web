@@ -1,4 +1,4 @@
-"""Transport adapter only. Node fidelity/2 validates/materializes every decision."""
+"""Transport adapter only. Node fidelity/3 validates/materializes every decision."""
 import hashlib, json, re, sys
 
 def utf16(s):
