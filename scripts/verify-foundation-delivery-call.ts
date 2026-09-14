@@ -66,6 +66,33 @@ async function main() {
     assert.deepEqual(result.attempts.map(attempt => [attempt.kind, attempt.sequence, attempt.providerCallCount]), [['FORMAT_REPAIR', 1, 1]]);
     assert.ok(JSON.parse(fake.calls[0].prompt.split('INPUT_JSON:\n').at(-1)!).repairRequest);
   });
+  await check('a persisted patch survives interruption before normalization with zero calls', async () => {
+    const patch = response({ format: 'FIELD_REPAIR_V1', patches: [{ path: 'episodes.0.summary', value: '有效摘要' }] });
+    const fake = queued(response(invalid), patch); let checkpoint: DeliveryAttempt | undefined;
+    await failed(() => run({ stage: 'F1', prompt, context, validate, runner: fake.runner, takeRepairBudget: async () => true,
+      onAttempt: async attempt => { if (attempt.kind === 'FORMAT_REPAIR' && attempt.requestOutcome === 'RESPONDED' && !attempt.normalization) { checkpoint = structuredClone(attempt); throw new Error('simulated hard interruption'); } } }));
+    assert.ok(checkpoint?.repairBase); assert.equal(checkpoint.normalization, undefined);
+    assert.deepEqual(checkpoint.response, patch); assert.equal(checkpoint.repairBase.sourceVersion, context.sourceVersion);
+    const replay = queued(); const result = await run({ stage: 'F1', prompt, context, validate, runner: replay.runner, resumeFrom: checkpoint, maxRepairAttempts: 0 });
+    assert.deepEqual(result.output, valid); assert.equal(replay.calls.length, 0);
+    await failed(() => run({ stage: 'F1', prompt, context: { ...context, inputVersion: 'changed' }, validate, runner: replay.runner, resumeFrom: checkpoint, maxRepairAttempts: 0 }));
+    const { recoverSavedDeliveryAttempts, validateSavedDeliveryAttempt } = await import('@/lib/foundation-delivery-call');
+    assert.throws(() => validateSavedDeliveryAttempt(recoverSavedDeliveryAttempts([checkpoint!], 'Q1')[0], validate), /阶段/);
+    const legacyPatch = { ...checkpoint, repairBase: undefined };
+    const legacy = recoverSavedDeliveryAttempts([savedAttempt({ model: checkpoint.model }), legacyPatch], 'F1');
+    assert.deepEqual(validateSavedDeliveryAttempt(legacy[1], validate), valid);
+    assert.equal(legacyPatch.repairBase, undefined);
+    for (const value of [
+      { ...legacyPatch, requestOutcome: 'UNKNOWN' as const },
+      { ...legacyPatch, response: response({ format: 'FIELD_REPAIR_V1', patches: [{ path: 'overview', value: '越界' }] }) },
+      { ...legacyPatch, scope: [3] }
+    ]) {
+      const rejected = recoverSavedDeliveryAttempts([savedAttempt({ model: checkpoint.model }), value], 'F1');
+      assert.throws(() => validateSavedDeliveryAttempt(rejected[1], validate));
+    }
+    const ambiguous = recoverSavedDeliveryAttempts([savedAttempt(), savedAttempt(), legacyPatch], 'F1');
+    assert.equal(ambiguous[2].repairBase, undefined);
+  });
   await check('an exhausted saved failure cannot fall back to a fresh initial request', async () => {
     const fake = queued();
     const error = await failed(() => run({ stage: 'F1', prompt, context, validate, runner: fake.runner, resumeFrom: savedAttempt(), maxRepairAttempts: 0 }));
@@ -229,16 +256,10 @@ async function main() {
     }
   });
 
-  await check("invalid JSON repairs current task without injecting another INPUT_JSON marker", async () => {
-    const fake = queued(Object.assign(new Error("CLI返回内容不是合法JSON"), { requestOutcome: "RESPONDED", rawOutput: '{"coverage":[' }), response(valid));
-    const result = await run({ stage: "F1", prompt, context, validate, runner: fake.runner, takeRepairBudget: async () => true });
-    assert.deepEqual(result.output, valid);
-    assert.equal(fake.calls.length, 2);
-    const taskText = fake.calls[1].prompt.slice(fake.calls[1].prompt.indexOf("\nINPUT_JSON:\n") + "\nINPUT_JSON:\n".length);
-    const parsed = JSON.parse(taskText);
-    assert.deepEqual(parsed.source, task.source);
-    assert.deepEqual(parsed.registry, task.registry);
-    assert.deepEqual(parsed.scope, [2]);
+  await check("damaged JSON stops without creative input or another paid call", async () => {
+    const fake = queued(Object.assign(new Error("CLI返回内容不是合法JSON"), { requestOutcome: "RESPONDED", rawOutput: '{"coverage":[' }));
+    const error = await failed(() => run({ stage: "F1", prompt, context, validate, runner: fake.runner, takeRepairBudget: async () => assert.fail('no unsafe syntax repair budget') }));
+    assert.equal(fake.calls.length, 1); assert.equal(error.attempts[0].response?.rawOutput, '{"coverage":[');
   });
 
   await check("legacy prompt gets an explicit parseable current-task repair envelope", async () => {

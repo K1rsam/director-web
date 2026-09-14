@@ -31,3 +31,5 @@ node --env-file=.env --import tsx scripts/verify-foundation-repair-budget.ts
 node --env-file=.env --import tsx scripts/verify-foundation-delivery-call.ts
 node --env-file=.env --import tsx scripts/verify-light-scene-edit-normalization.ts
 ```
+
+后续变更：2026-09-14 起，无法安全解析的 JSON 不再发送旧修复包；详情见 [风险修复与主控复检](3008-RISK-FIXES-20260914.md)。

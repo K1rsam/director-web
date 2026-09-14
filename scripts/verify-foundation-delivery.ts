@@ -84,7 +84,7 @@ async function main() {
     // Format repair is bounded; old V1 Q1 output cannot bypass the V2 transport boundary.
     const format = await create('safe V2 format'); let formatCalls = 0; const formatStages: string[] = []; const formatTask = await api.queueFoundationDelivery(format.id, {}, db);
     await api.executeFoundationDelivery(format.id, formatTask.id, { db, stageRunner: async (stage, prompt) => { const value = input(prompt); formatCalls++; formatStages.push(stage); if (formatCalls === 1) return { rawOutput: '{bad json', stdout: '', stderr: '' } as RoleRunResult; return out(stage === 'F2' ? f2(value.scope) : q1(value.scope)); } });
-    state = await api.getFoundationDeliveryState(format.id, db); assert.equal(state.task?.status, 'COMPLETE'); assert.deepEqual(formatStages, ['F2', 'F2', 'Q1']); assert.equal(state.task?.addedCalls, 3); assert.equal(state.task?.repairCalls, 1);
+    state = await api.getFoundationDeliveryState(format.id, db); assert.equal(state.task?.status, 'PARTIAL'); assert.deepEqual(formatStages, ['F2']); assert.equal(state.task?.addedCalls, 1); assert.equal(state.task?.repairCalls, 0);
     const oldWire = await create('old V1 wire'); await seed(oldWire.id); const oldWireTask = await api.queueFoundationDelivery(oldWire.id, {}, db); await api.executeFoundationDelivery(oldWire.id, oldWireTask.id, { db, stageRunner: async (_stage, prompt) => out({ format: 'FOUNDATION_OPTIMIZATION_V1', coverage: input(prompt).scope, changes: {} }) }); state = await api.getFoundationDeliveryState(oldWire.id, db); assert.equal(state.complete, false); assert.equal(state.task?.status, 'PARTIAL');
 
     // Source/style drift, stop, successor and exited worker safety are controller protections, not mocks.

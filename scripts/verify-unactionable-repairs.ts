@@ -20,6 +20,7 @@ async function main() {
   async function check(name: string, run: () => Promise<void>) { try { await run(); } catch (error) { failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`); } }
   const create = (title: string) => db.project.create({ data: { title, episodes: { create: [{ number: 1, title: '第一集', content: source }] } } });
   const catalog = { format: 'ASSET_CATALOG_V2', coverage: [1], assets: [{ name: '云台', type: 'LOC', episodes: [1], sceneRefs: [{ episode: 1, sceneKey: '1-1' }], preparation: { mode: 'REFERENCE' } }] };
+  const invalidCatalog = (scope: number[] = [1], assets: unknown[] = []) => ({ format: 'ASSET_CATALOG_V2', coverage: JSON.stringify(scope), assets });
   try {
     await check('响应日志瞬时保存失败不能阻断有效F1/F2/Q1的本地复验', async () => {
       for (const failedStage of ['F2', 'Q1', 'F1']) {
@@ -57,7 +58,7 @@ async function main() {
     await check('只给第2集新增确认决定不能解锁第1集已耗尽的格式请求', async () => {
       const project = await db.project.create({ data: { title: '决定不能越范围刷新成本', episodes: { create: [1, 2].map(number => ({ number, content: `第${number}集\n${number}-1 客厅 日 内\n人物：甲\n${'甲：沉默。\n'.repeat(3100)}` })) } } });
       const task = await queueFoundationDelivery(project.id, {}, db); let calls = 0;
-      const fail = async (_stage: 'F1' | 'F2' | 'Q1', prompt: string) => { assert.deepEqual(JSON.parse(prompt.split('INPUT_JSON:\n').at(-1)!).scope, [1]); calls++; throw Object.assign(new Error('CLI返回内容不是合法JSON'), { requestOutcome: 'RESPONDED', rawOutput: '{坏JSON' }); };
+      const fail = async (_stage: 'F1' | 'F2' | 'Q1', prompt: string) => { assert.deepEqual(JSON.parse(prompt.split('INPUT_JSON:\n').at(-1)!).scope, [1]); calls++; return response(invalidCatalog()); };
       await executeFoundationDelivery(project.id, task.id, { db, stageRunner: fail });
       const { loadFoundationInputs } = await import('@/lib/foundation-state'), input = await loadFoundationInputs(project.id, db);
       await db.presentationContract.create({ data: { projectId: project.id, category: 'VISUAL', question: '仅第2集灰衣颜色', options: '[]', userAnswer: '灰色', status: 'CONFIRMED',
@@ -70,7 +71,7 @@ async function main() {
       for (const identityRelevantToFourth of [false, true]) {
       const project = await db.project.create({ data: { title: '旧失败不能领无关新预算', episodes: { create: [1, 2, 3, 4].map(number => ({ number, content: `第${number}集\n${number}-1 客厅 日 内\n人物：甲\n${identityRelevantToFourth && number === 4 ? '△甲听见铜铃一响。\n' : ''}${'甲：沉默。\n'.repeat(3100)}` })) } } });
       const task = await queueFoundationDelivery(project.id, {}, db);
-      await executeFoundationDelivery(project.id, task.id, { db, stageRunner: async (_stage, prompt) => { const input = JSON.parse(prompt.split('INPUT_JSON:\n').at(-1)!); if (!input.repairRequest) throw Object.assign(new Error('CLI返回内容不是合法JSON'), { requestOutcome: 'RESPONDED', rawOutput: '{坏JSON' }); return response({ format: 'ASSET_CATALOG_V2', coverage: input.scope, assets: [] }); } });
+      await executeFoundationDelivery(project.id, task.id, { db, stageRunner: async (_stage, prompt) => { const input = JSON.parse(prompt.split('INPUT_JSON:\n').at(-1)!); if (!input.repairRequest) return response(invalidCatalog(input.scope)); return response({ format: 'ASSET_CATALOG_V2', coverage: input.scope, assets: [] }); } });
       assert.equal((await getFoundationDeliveryState(project.id, db)).task?.repairBudgetUsed, 3);
       const first = await db.episode.findFirstOrThrow({ where: { projectId: project.id, number: 1 } }); await db.episode.update({ where: { id: first.id }, data: { content: first.content.replace('人物：甲\n', '人物：甲\n△甲拿出一枚仅在本场出现的铜铃。\n') } });
       const { preprocessProject } = await import('@/lib/project-preprocess'); await preprocessProject(project.id, db);
@@ -160,10 +161,10 @@ async function main() {
       assert.deepEqual(adopted.document.editorialCoverage, older.editorialCoverage); assert.deepEqual(adopted.document.origins, older.origins);
       assert.equal(await db.pipelineRun.count({ where: { projectId: project.id } }), count);
     });
-    await check('已付费非法JSON跨继续最多一次格式修复，重建任务也不能重置', async () => {
+    await check('已付费机械字段错误跨继续最多一次格式修复，重建任务也不能重置', async () => {
       const project = await create('跨任务持久格式额度'), task = await queueFoundationDelivery(project.id, {}, db);
       let calls = 0;
-      await executeFoundationDelivery(project.id, task.id, { db, stageRunner: async () => { calls++; throw Object.assign(new Error('CLI返回内容不是合法JSON'), { requestOutcome: 'RESPONDED', rawOutput: '{坏JSON' }); } });
+      await executeFoundationDelivery(project.id, task.id, { db, stageRunner: async () => { calls++; return response(invalidCatalog()); } });
       assert.equal(calls, 2, '初次请求加最多一次格式修复');
       let state = await getFoundationDeliveryState(project.id, db);
       assert.equal(state.action, 'BLOCKED'); assert.match(state.continuationBlocker ?? '', /已付费|格式|重复|额度/);
@@ -239,15 +240,16 @@ async function main() {
       const { project } = await importProjectFromText({ ownerUserId: owner.id, title: 'F1边界失败额度', sourceName: 'source.txt', sourceText: '第1集\n甲片。\n第2集\n乙片。\n第1集\n丙片。\n' }, db);
       const task = await queueFoundationDelivery(project.id, {}, db); let calls = 0;
       await executeFoundationDelivery(project.id, task.id, { db, stageRunner: async stage => { assert.equal(stage, 'F1'); calls++; throw Object.assign(new Error('CLI返回内容不是合法JSON'), { requestOutcome: 'RESPONDED', rawOutput: '{坏JSON' }); } });
-      assert.equal(calls, 2);
-      const state = await getFoundationDeliveryState(project.id, db); assert.equal(state.action, 'BLOCKED');
+      assert.equal(calls, 1, '坏JSON无法安全补全时只保留首轮证据');
+      const state = await getFoundationDeliveryState(project.id, db); assert.equal(state.action, 'BLOCKED'); assert.equal(state.task?.repairBudgetUsed, 0);
       await assert.rejects(queueFoundationDelivery(project.id, { allowUnknownRetry: true }, db), /已付费|格式|重复|额度/);
     });
     await check('格式修复NOT_SENT不消费额度，继续只发送尚未发出的修复', async () => {
       const project = await create('未发送不是已消费'), task = await queueFoundationDelivery(project.id, {}, db), attempts: string[] = [];
       await executeFoundationDelivery(project.id, task.id, { db, stageRunner: async (stage, prompt) => {
         const input = JSON.parse(prompt.split('INPUT_JSON:\n').at(-1)!); attempts.push(input.repairRequest ? 'FORMAT_REPAIR' : stage);
-        throw Object.assign(new Error(input.repairRequest ? '本地预检失败' : 'CLI返回内容不是合法JSON'), { requestOutcome: input.repairRequest ? 'NOT_SENT' : 'RESPONDED', rawOutput: '{坏JSON' });
+        if (!input.repairRequest) return response(invalidCatalog(input.scope, catalog.assets));
+        throw Object.assign(new Error('本地预检失败'), { requestOutcome: 'NOT_SENT' });
       } });
       let state = await getFoundationDeliveryState(project.id, db); assert.equal(state.task?.addedCalls, 1); assert.notEqual(state.action, 'BLOCKED');
       const retry = await queueFoundationDelivery(project.id, {}, db);
@@ -263,7 +265,8 @@ async function main() {
       const project = await create('未知格式请求保留同意边界'), task = await queueFoundationDelivery(project.id, {}, db); let calls = 0;
       await executeFoundationDelivery(project.id, task.id, { db, stageRunner: async (_stage, prompt) => {
         const input = JSON.parse(prompt.split('INPUT_JSON:\n').at(-1)!); calls++;
-        throw Object.assign(new Error(input.repairRequest ? '发送后连接中断' : 'CLI返回内容不是合法JSON'), { requestOutcome: input.repairRequest ? 'UNKNOWN' : 'RESPONDED', rawOutput: '{坏JSON' });
+        if (!input.repairRequest) return response(invalidCatalog(input.scope, catalog.assets));
+        throw Object.assign(new Error('发送后连接中断'), { requestOutcome: 'UNKNOWN' });
       } });
       let state = await getFoundationDeliveryState(project.id, db); assert.equal(state.action, 'UNKNOWN_CONFIRM');
       await assert.rejects(queueFoundationDelivery(project.id, {}, db), /未知|确认|重发/);
@@ -282,8 +285,8 @@ async function main() {
       await db.sceneSnapshot.update({ where: { id: `foundation-delivery-${project.id}` }, data: { content: JSON.stringify({ ...task, maxRepairCalls: 4 }) } });
       await executeFoundationDelivery(project.id, task.id, { db, stageRunner: async (stage, prompt) => {
         const input = JSON.parse(prompt.split('INPUT_JSON:\n').at(-1)!); requests.push([stage, input.scope]);
-        if (input.scope[0] > 1) assert.ok(input.boundaryContext, '后批须收到已有边界事实，而不是空上下文');
-        if (stage === 'F2' && !input.repairRequest) throw Object.assign(new Error('CLI返回内容不是合法JSON'), { requestOutcome: 'RESPONDED', rawOutput: '{坏JSON' });
+        if (input.scope[0] > 1 && !input.repairRequest) assert.ok(input.boundaryContext, '后批须收到已有边界事实，而不是空上下文');
+        if (stage === 'F2' && !input.repairRequest) return response(invalidCatalog(input.scope));
         return response(stage === 'F2' ? { format: 'ASSET_CATALOG_V2', coverage: input.scope, assets: [] } : { format: 'FOUNDATION_OPTIMIZATION_V2', coverage: input.scope, changes: {} });
       } });
       const state = await getFoundationDeliveryState(project.id, db);
@@ -298,7 +301,7 @@ async function main() {
       const task = await queueFoundationDelivery(project.id, {}, db), requests: number[][] = [];
       await executeFoundationDelivery(project.id, task.id, { db, stageRunner: async (stage, prompt) => {
         const input = JSON.parse(prompt.split('INPUT_JSON:\n').at(-1)!); requests.push(input.scope);
-        if (!input.repairRequest) throw Object.assign(new Error('CLI返回内容不是合法JSON'), { requestOutcome: 'RESPONDED', rawOutput: '{坏JSON' });
+        if (!input.repairRequest) return response(invalidCatalog(input.scope));
         return response({ format: 'ASSET_CATALOG_V2', coverage: input.scope, assets: [] });
       } });
       const state = await getFoundationDeliveryState(project.id, db);

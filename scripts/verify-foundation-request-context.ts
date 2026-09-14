@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import {selectRequestChoices,selectRequestIssues} from '../lib/foundation-request-context';
+import {buildDeliveryInput,costFingerprint} from '../lib/foundation-delivery';
+import {buildSourceIndex} from '../lib/project-foundation-contracts';
+const choices:any[]=Array.from({length:100},(_,i)=>({decisionKey:'d'+i,episodes:[2],applicationScope:{kind:'EPISODES',episodes:[2]},question:'other'.repeat(200),answer:'other'.repeat(200),status:'CONFIRMED'}));
+const global:any={decisionKey:'g',episodes:[],applicationScope:{kind:'GLOBAL',reason:'explicit'},answer:'global'};
+assert.deepEqual(selectRequestChoices([...choices,global,{episodes:[],applicationScope:{kind:'UNRESOLVED'}}],[1]),[global]);
+assert.equal(selectRequestChoices([{episodes:[1],applicationScope:{kind:'SCENES',scenes:[{episode:1,sceneKey:'1-2'}]}}],[1],[{episode:1,sceneKey:'1-1'}]).length,0);
+const issue=(coordinate:string,sourceRefs:any[]=[])=>({coordinate,sourceRefs});
+assert.deepEqual(selectRequestIssues([issue('assets.a'),issue('unknown'),issue('located',[{episode:2}])],[1],[{key:'a',episodes:[2]}]),[issue('unknown')]);
+const index=buildSourceIndex([1,2].map(number=>({number,title:null,content:'正文\n'})));
+const input:any={sourceIndex:index,projectConditions:{},sourceContext:{version:'test',background:[],issues:[],notices:[]},presentationConditions:[],choiceRegistry:choices};
+const doc:any={revision:'test',f2:{format:'ASSET_CATALOG_V2',coverage:[1,2],assets:[],episodes:[],issues:[]},editorialTodos:[]};
+const result=buildDeliveryInput('Q1','EDIT',input,doc,[1],[],[],[],[]);
+assert.equal(result.humanChoiceRegistry.length,0);assert.equal(result.source.episodes.length,1);
+assert.equal(costFingerprint('Q1',result),costFingerprint('Q1',{...result,humanChoiceRegistry:choices}),'legacy irrelevant choices must not force repurchase');
+console.log('PASS scoped choice and issue input, explicit globals, unresolved nonbroadcast, legacy paid fingerprint parity');

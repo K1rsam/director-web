@@ -6,9 +6,12 @@ def utf16(s):
 
 def parse(source, reply):
     version = hashlib.sha256(source.encode('utf-8')).hexdigest()
-    reply = reply.replace('\r\n', '\n').lstrip()
+    # Only transport padding is removed; | prefixed source text is untouched.
+    reply = reply.replace('\r\n', '\n').lstrip(' \t\r\n\ufeff')
     if reply.startswith('```'):
         lines = reply.split('\n')
+        while lines and not lines[-1].strip():
+            lines.pop()
         if lines[0] not in ('```', '```text', '```txt', '```md') or lines[-1].strip() != '```':
             raise ValueError('代码围栏必须完整且仅包住协议')
         reply = '\n'.join(lines[1:-1])

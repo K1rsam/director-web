@@ -53,8 +53,8 @@ async function main() {
     await assert.rejects(runFoundationDeliveryCall({ stage: 'Q1', prompt, context, validate, resumeFrom: saved, takeRepairBudget: async () => true, runner: async () => response({ format: 'FIELD_REPAIR_V1', patches }) }), DeliveryCallError);
   }
   let syntaxCalls = 0;
-  await assert.rejects(runFoundationDeliveryCall({ stage: 'Q1', prompt, context, validate, resumeFrom: { ...saved, response: { rawOutput: '{"invalid":' + ' '.repeat(30000) } }, takeRepairBudget: async () => true, runner: async () => { syntaxCalls++; return response(patch); } }), /应用请求预算/);
+  await assert.rejects(runFoundationDeliveryCall({ stage: 'Q1', prompt, context, validate, resumeFrom: { ...saved, response: { rawOutput: '{"invalid":' + ' '.repeat(30000) } }, takeRepairBudget: async () => assert.fail('unsafe syntax repair must not reserve budget'), runner: async () => { syntaxCalls++; return response(patch); } }), /JSON损坏且无法安全机械解析/);
   assert.equal(syntaxCalls, 0);
-  console.log('PASS large initial request, bounded field repair, paid-response resume, unauthorized paths and syntax fallback budget');
+  console.log('PASS large initial request, bounded field repair, paid-response resume, unauthorized paths and damaged JSON stops before repair budget');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

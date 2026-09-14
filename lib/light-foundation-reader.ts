@@ -15,7 +15,7 @@ export async function readLightEpisodeFoundation(projectId: string, episodeNumbe
   if (!episode) throw new Error('交接集号不存在。');
   const input = await loadFoundationInputs(projectId, db);
   const { document, needsContextEdit } = await loadFoundationDocument(db, projectId, input);
-  const [packet] = await buildLightEpisodePackets(projectId, document, db, [episodeNumber]);
+  const [packet] = await buildLightEpisodePackets(projectId, document, db, [episodeNumber], input);
   const choices = await loadFoundationChoices(db, projectId, input.sourceVersion, true);
   const currentContext = !needsContextEdit || document.contextCoverage?.fingerprint === createEmptyDocument(input).settingsFingerprint && document.contextCoverage.episodes.includes(episodeNumber);
   const contextPending = !input.sourceContext.complete || !currentContext;

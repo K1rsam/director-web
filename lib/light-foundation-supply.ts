@@ -1,9 +1,11 @@
 import { readApplicationScope, scopeApplies } from './foundation-application-scope';
 import { loadFoundationChoices } from './foundation-choice-store';
-import { buildFoundationFacts, selectFoundationFacts } from './foundation-facts';
+import { selectFoundationFacts } from './foundation-facts';
 /** Deterministic source/scene/asset supply. No synopsis generation or provider call. */
 import { createHash } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
+import { cachedFoundationFacts } from './foundation-fact-cache';
+import type { loadFoundationInputs } from './foundation-state';
 import { foundationJson } from './foundation-state';
 import { loadFoundationSourceContext } from './foundation-source';
 import { assertSourceVersion, buildNumberedSource, buildSourceIndex, FoundationContractError, type SourceIndex, type FoundationIssue } from './project-foundation-contracts';
@@ -103,13 +105,14 @@ export function buildLightBoundaryContext(index: SourceIndex, catalog: Productio
 
 type LightAssetIdentity = { key: string; baseKey: string; name: string; type: ProductionCatalog['assets'][number]['type']; kind: 'BASE' | 'VARIANT'; preparation?: Preparation };
 
-export async function buildLightEpisodePackets(projectId: string, document: FoundationDocument, db: Db, scope?: number[]) {
-  const [episodes, sourceContext] = await Promise.all([db.episode.findMany({ where: { projectId }, orderBy: { number: 'asc' } }), loadFoundationSourceContext(projectId, db)]);
+export async function buildLightEpisodePackets(projectId: string, document: FoundationDocument, db: Db, scope?: number[], input?: Awaited<ReturnType<typeof loadFoundationInputs>>) {
+  if (input && input.project.id !== projectId) throw new Error('交接输入不属于当前项目。');
+  const [episodes, sourceContext] = input ? [input.project.episodes, input.sourceContext] : await Promise.all([db.episode.findMany({ where: { projectId }, orderBy: { number: 'asc' } }), loadFoundationSourceContext(projectId, db)]);
   if (scope?.some(number => !Number.isSafeInteger(number) || !episodes.some(episode => episode.number === number))) throw new Error('交接集号不存在。');
-  const index = buildSourceIndex(episodes);
-  const factStore = buildFoundationFacts(index, sourceContext, document.f2);
-  const choices = await loadFoundationChoices(db, projectId, index.version);
+  const index = input?.sourceIndex ?? buildSourceIndex(episodes);
   assertSourceVersion(index, document.sourceVersion);
+  const factStore = cachedFoundationFacts(index, sourceContext, document.f2);
+  const choices = await loadFoundationChoices(db, projectId, index.version);
   if (document.editorialTodos.some(todo=>todo.applicationScope || todo.evidenceRefs?.length)) {
     const sceneRefs = await db.scriptScene.findMany({where:{episode:{projectId}},select:{sceneKey:true,episode:{select:{number:true}}}});
     assertUnresolvedSourceScopes({unresolved:document.editorialTodos},index,index.episodes.map(e=>e.number),sceneRefs.map(s=>({episode:s.episode.number,sceneKey:s.sceneKey})));

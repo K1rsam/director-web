@@ -1,3 +1,5 @@
+import { assessFoundationWorkerHealth } from './foundation-worker-health';
+import { selectRequestChoices, selectRequestIssues } from './foundation-request-context';
 import { prepareFidelitySourceAssisted } from './fidelity-source-assist';
 import { loadIndexedFoundationRuns, persistIndexedFoundationRunLog } from './foundation-evidence-index';
 import { isP1ReviewRequest, P1_REVIEW_PROMPT, projectP1ReviewRequest, projectP1ReviewEvidenceRequest } from './fidelity-p1-review';
@@ -23,7 +25,7 @@ import { foundationJson, loadFoundationInputs, collectFoundationPublicationIssue
 import { createEmptyDocument, loadFoundationDocument, loadLatestStoredFoundationDocument, saveFoundationDocument, mergeDocumentF2, applyDocumentEdit, type FoundationDocument } from './foundation-document';
 import { loadFoundationSourceContext } from './foundation-source';
 import { loadFoundationChoices, syncFoundationChoices, confirmFoundationChoiceInTransaction, FoundationChoiceError, type FoundationChoiceView } from './foundation-choice-store';
-import { runFoundationDeliveryCall, DeliveryCallError, hasSafeDeliveryFormatRepair, validateSavedDeliveryAttempt, type DeliveryAttempt } from './foundation-delivery-call';
+import { runFoundationDeliveryCall, recoverSavedDeliveryAttempts, DeliveryCallError, hasSafeDeliveryFormatRepair, validateSavedDeliveryAttempt, type DeliveryAttempt } from './foundation-delivery-call';
 import { buildLightFoundationPrompt, LIGHT_ASSET_METHOD_VERSION, PRODUCTION_FOUNDATION_VERSION } from './foundation-production-prompts';
 import { mergeProductionCatalogs, requireProductionCatalogAuthor, requireProductionOptimization, projectProductionCatalog, PRODUCTION_CATALOG_FORMAT, PRODUCTION_OPTIMIZATION_FORMAT, unresolvedOwner, unresolvedEpisodeScope, type ProductionOptimization, type SceneFieldPatch } from './foundation-production-contracts';
 import { buildFoundationChunks, buildNumberedSource, buildSourceIndex, PROJECT_FOUNDATION_STAGES, FoundationContractError, isRecord, type F2Asset, type FoundationStageCode } from './project-foundation-contracts';
@@ -131,8 +133,8 @@ function parseDeliveryEvidence(run:{stageCode:string;inputSummary:string|null;lo
  const queued=foundationJson(run.inputSummary),log=foundationJson(run.log),calls=log.calls;
  if(typeof queued.deliveryTaskId!=='string'||!Array.isArray(calls))return null;
  const stage=run.stageCode as FoundationStageCode,original=calls.find(call=>call.kind==='INITIAL')??calls[0],request=structuredCallInput(original?.taskPrompt);
- return {queued,calls:calls as DeliveryAttempt[],request,repairHalt:isRecord(log.repairHalt)?log.repairHalt:null,
-  fingerprint:stage==='F1'&&queued.receiverVersion==='FIDELITY_SOURCE_ACCEPT_V2'&&request?hash({receiver:'FIDELITY_SOURCE_ACCEPT_V2',request:projectP1ReviewEvidenceRequest(request as unknown as Record<string,unknown>)}):request?costFingerprint(stage,request):typeof queued.workFingerprint==='string'?queued.workFingerprint:null,
+ return {queued,calls:recoverSavedDeliveryAttempts(calls as DeliveryAttempt[],stage),request,repairHalt:isRecord(log.repairHalt)?log.repairHalt:null,
+  fingerprint:!calls.some(call=>call.kind==='INITIAL')&&calls.some(call=>call.kind==='FORMAT_REPAIR')&&typeof queued.workFingerprint==='string'?queued.workFingerprint:stage==='F1'&&queued.receiverVersion==='FIDELITY_SOURCE_ACCEPT_V2'&&request?hash({receiver:'FIDELITY_SOURCE_ACCEPT_V2',request:projectP1ReviewEvidenceRequest(request as unknown as Record<string,unknown>)}):request?costFingerprint(stage,request):typeof queued.workFingerprint==='string'?queued.workFingerprint:null,
   receiver:typeof queued.receiverVersion==='string'?queued.receiverVersion:LEGACY_DELIVERY_RECEIVERS[stage]};
 }
 async function deliveryEvidence(db: Db, projectId: string, fresh = true) {
@@ -278,10 +280,6 @@ async function storeTask(db: Db, previous: FoundationDeliveryTask | null, task: 
   } else await db.sceneSnapshot.create({ data: { id: taskRowId(task.projectId), projectId: task.projectId, sceneKey: TASK_KEY, title: '资料整理任务', content: JSON.stringify(next) } });
   return next;
 }
-function processGone(pid: number | null) {
-  if (!pid || !Number.isSafeInteger(pid) || pid <= 1) return false;
-  try { process.kill(pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH'; }
-}
 async function taskRuns(db: Db, projectId: string, taskId: string) {
   return (await db.pipelineRun.findMany({ where: { projectId, episodeId: null, inputSummary: { contains: taskId } }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] })).filter(run => foundationJson(run.inputSummary).deliveryTaskId === taskId);
 }
@@ -311,7 +309,8 @@ export async function getFoundationDeliveryState(projectId: string, db: Db = pri
   const project = await db.project.findUnique({ where: { id: projectId }, select: { id: true, _count: { select: { episodes: true } } } });
   if (!project) throw new Error('没有找到项目。');
   if (!project._count.episodes) {
-    const sourceContext = await loadFoundationSourceContext(projectId, db), task = await readTask(db, projectId), source = await readSourcePreparation(projectId, db);
+    const sourceContext = await loadFoundationSourceContext(projectId, db), storedTask = await readTask(db, projectId), source = await readSourcePreparation(projectId, db);
+    const task = active(storedTask) && await assessFoundationWorkerHealth(storedTask!) === 'GONE' ? {...storedTask!,status:'INTERRUPTED' as const} : storedTask;
     const history = await deliveryEvidence(db, projectId, false), unknown = outstandingUnknown(history, task), unknownOutcome = Boolean(task?.unknownOutcome || unknown.length);
     const evidence = history.filter(entry => entry.run.stageCode === 'F1' && (entry.queued.sourceTextFingerprint ? entry.queued.sourceTextFingerprint === hash(source.sourceText) : entry.queued.sourceInputVersion === source.sourceInputVersion) && entry.receiver === DELIVERY_RECEIVERS.F1);
     const continuationBlocker = exhaustedResponse(evidence, 'F1', task) && !canRestoreSourceResponse(evidence, source) ? paidFailureReason : null;
@@ -327,7 +326,8 @@ export async function getFoundationDeliveryState(projectId: string, db: Db = pri
   let task = storedTask ? { ...storedTask, ...await deliveryCounts(db, projectId, storedTask.id) } : null;
   const unknown = outstandingUnknown(await deliveryEvidence(db, projectId, false), task), unknownOutcome = Boolean(task?.unknownOutcome || unknown.length);
   if (task && unknownOutcome) task.unknownOutcome = true;
-  if (active(task) && processGone(task!.workerPid)) task = { ...task!, status: 'INTERRUPTED', unknownOutcome: task!.unknownOutcome || await hasUnknown(db, projectId, task!), message: '处理已中断，已保存的资料可继续阅读。' };
+  const workerGone = !!storedTask && active(storedTask) && await assessFoundationWorkerHealth(storedTask) === 'GONE';
+  if (active(task) && workerGone) task = { ...task!, status: 'INTERRUPTED', unknownOutcome: task!.unknownOutcome || await hasUnknown(db, projectId, task!), message: '处理已中断，已保存的资料可继续阅读。' };
   // Presentation only: retain the historical task row and its original stop reason.
   if (task?.status === 'WAITING_USER' && !unknownOutcome && input.sourceContext.complete && input.sourceIndex.episodes.length > 0
     && task.message === '保真来源仍有待确认边界或读取问题，请在来源与清洗页面明确范围后继续；不会让旧F1自动重分原稿。') {
@@ -355,7 +355,7 @@ export async function getFoundationDeliveryState(projectId: string, db: Db = pri
   const activeRuns = await db.pipelineRun.findMany({ where: { projectId, status: { in: ['QUEUED', 'RUNNING'] } }, select: { inputSummary: true } });
   const busy = active(task) || activeRuns.some(run => {
     const input = foundationJson(run.inputSummary);
-    return !(storedTask && processGone(storedTask.workerPid) && input.deliveryTaskId === storedTask.id && input.workerToken === storedTask.workerToken);
+    return !(storedTask && workerGone && input.deliveryTaskId === storedTask.id && input.workerToken === storedTask.workerToken);
   });
   const codes = Object.fromEntries(assets.flatMap(asset => { const meta = foundationJson(asset.metadata), key = meta.foundationKey ?? meta.foundationVariantKey; return typeof key === 'string' ? [[key, asset.code]] : []; }));
   const currentEdited = loaded.needsContextEdit ? document.contextCoverage?.fingerprint === createEmptyDocument(input).settingsFingerprint ? document.contextCoverage.episodes : [] : document.editorialCoverage;
@@ -376,7 +376,7 @@ async function queueInTransaction(projectId: string, options: QueueOptions, db: 
   if (shown.continuationBlocker) throw new Error(shown.continuationBlocker);
   const previous = await readTask(db, projectId);
   // Only a known exited worker may be reconciled automatically. A live or unclaimed worker is not guessed dead.
-  if (active(previous) && processGone(previous!.workerPid)) {
+  if (active(previous) && await assessFoundationWorkerHealth(previous!) === 'GONE') {
     await storeTask(db, previous, { ...previous!, status: 'INTERRUPTED', unknownOutcome: previous!.unknownOutcome || await hasUnknown(db, projectId, previous!) });
     for (const run of await taskRuns(db, projectId, previous!.id)) if (foundationJson(run.inputSummary).workerToken === previous!.workerToken && (run.status === 'RUNNING' || run.status === 'QUEUED')) await db.pipelineRun.updateMany({ where: { id: run.id, status: run.status }, data: { status: 'FAILED', finishedAt: new Date(), error: '资料工作进程已退出；已保存响应和工作稿保留。' } });
   }
@@ -514,7 +514,7 @@ export function buildDeliveryInput(stage: 'F2' | 'Q1', phase: DeliveryPhase, inp
   const base = { workflow: 'LIGHT_STAGE1_V1', scope, project: input.projectConditions, source: buildNumberedSource(input.sourceIndex, scope), scenes: lightSceneInput(input.sourceIndex, scenes, scope),
     ...(boundaryContext ? { boundaryContext } : {}),
     presentationConditions: input.presentationConditions.filter(condition => !condition.episodes?.length ? condition.episode === null || scope.includes(condition.episode) : overlaps(scope, condition.episodes)),
-    humanChoiceRegistry: input.choiceRegistry, facts: modelFacts,
+    humanChoiceRegistry: selectRequestChoices(input.choiceRegistry, scope), facts: modelFacts,
     ...(sourceReviewCandidates.length?{sourceReviewCandidates,candidateRules:'P1称呼和疑问是有原文位置的候选，不是已确认身份或用户决定；只核对本批相关内容，禁止因此改写原台词标签。'}:{}),
     delivery: { mode: phase, documentRevision: doc.revision, ...(targets ? { targets } : {}), instructions: '这是一份持续工作稿：保留正确内容，直接修改实际问题。前岗humanChoices只是待编辑判断的建议；能据上下文理解或可留到表现设计的事项，用中性表述与notes处理，原文照留，不强造独立实体或提前锁死特效。完成建议判断后须交resolvedSuggestions的准确id与依据；省略不等于已处理。只有原文确实无法决定且本阶段必需才提出humanChoices；不把默认值写成用户确认。已定决定实际采用后须交appliedDecisions准确id与说明；现稿本已满足也说明，不以收到决定冒充已采用。APPLY_DECISION只改已定决定的影响范围；REPAIR只改targets与待办，不重写正确分片。' } };
   if (stage === 'F2') return { ...base, registry: registry(identities) };
@@ -525,7 +525,7 @@ export function buildDeliveryInput(stage: 'F2' | 'Q1', phase: DeliveryPhase, inp
     editorialSuggestions: suggestions.filter(choice => scopeEpisodes(readApplicationScope(choice.applicationScope,choice.episodes),scope).some(n=>scope.includes(n))), confirmedDecisions: decisions.filter(choice => scopeEpisodes(readApplicationScope(choice.applicationScope,choice.episodes),scope).some(n=>scope.includes(n))),
     pendingChoices: doc.editorialTodos.filter(todo => unresolvedOwner(todo) === 'Q1' && overlaps(scope, todo.episodes ?? [])),
     programTasks: programTodos(doc).filter(todo => overlaps(scope, todo.episodes ?? [])),
-    repairIssues: [...collectFoundationPublicationIssues(doc.f2!, input.sourceContext), ...collectLightSceneIssues(doc.f2!, scenes)] };
+    repairIssues: selectRequestIssues([...collectFoundationPublicationIssues(doc.f2!, input.sourceContext), ...collectLightSceneIssues(doc.f2!, scenes)], scope, doc.f2!.assets.flatMap(asset=>[{key:asset.key,episodes:asset.usageEpisodes},...asset.variants.map(v=>({key:v.key,episodes:v.episodes}))])) };
 }
 
 async function paidContinuationBlocker(db: Db, input: Inputs, document: FoundationDocument, scenes: LightScene[], pending: FoundationChoiceView[], confirmed: FoundationChoiceView[], needsContextEdit: boolean) {
@@ -559,7 +559,7 @@ async function paidContinuationBlocker(db: Db, input: Inputs, document: Foundati
     const delivery = isRecord(entry.request.delivery) ? entry.request.delivery : {};
     const targets = isRecord(delivery.targets) ? delivery.targets as { episodes: number[]; keys: string[] } : undefined;
     const fingerprint = costFingerprint(stage, { ...buildDeliveryInput(stage, entry.queued.phase as DeliveryPhase, input, document, scope, suggestions, decisions, identities, scenes, targets),
-      humanChoiceRegistry: (await loadFoundationChoices(db, input.project.id, input.sourceVersion, true)).registry });
+      humanChoiceRegistry: selectRequestChoices((await loadFoundationChoices(db, input.project.id, input.sourceVersion, true)).registry,scope) });
     const matches = evidence.filter(item => item.fingerprint === fingerprint && item.receiver === DELIVERY_RECEIVERS[stage] && !document.origins.some(origin => origin.runId === item.run.id));
     let canRestore = false;
     const savedSplits = stage === 'Q1' && matches.length ? await readSceneSplitPlans(input.project.id, db) : [];
@@ -753,7 +753,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
         }
         return output;
       };
-      const fullInput = { ...buildDeliveryInput(stage, phase, input, doc, scope, suggestions, decisions, identities, scenes, targets), humanChoiceRegistry: choices.registry };
+      const fullInput = { ...buildDeliveryInput(stage, phase, input, doc, scope, suggestions, decisions, identities, scenes, targets), humanChoiceRegistry: selectRequestChoices(choices.registry, scope) };
       const callInput = fragment ? { ...fullInput, source: fragmentSource(input.sourceIndex, fragment), fragment,
         scenes: fullInput.scenes.filter(scene => scenes.some(original => original.episode === scene.episode && original.sceneKey === scene.sceneKey && original.sourceRange.start < fragment.end && original.sourceRange.end > fragment.start)),
         facts: { ...fullInput.facts, current: fullInput.facts.current.filter(fact => fact.evidence.episode === fragment.episode && fact.evidence.start < fragment.end && fact.evidence.end > fragment.start) },
@@ -824,7 +824,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
         const currentChoices=await loadFoundationChoices(db,projectId,input.sourceVersion,true);
         const retained=(await deliveryEvidence(db,projectId)).find(entry=>entry.run.stageCode==='F2'&&!entry.request?.fragment&&!doc.origins.some(o=>o.runId===entry.run.id)&&foundationJson(entry.run.inputSummary).sourceVersion===input.sourceVersion&&entry.calls.some(a=>(a.requestOutcome==='RESPONDED'||a.requestOutcome==='UNKNOWN')&&a.scope.some(n=>pending.includes(n))));
         const sourceBatch=buildFoundationChunks(buildSourceIndex(input.sourceIndex.episodes.filter(e=>orderedGroup.includes(e.number)))).map(chunk=>chunk.episodes.filter(n=>pending.includes(n))).find(scope=>scope.length)!;
-        const scope=retained?.calls.find(a=>a.scope.some(n=>pending.includes(n)))?.scope??planFoundationRequestScope(sourceBatch,scope=>input.systemPrompts.F2.length+buildLightFoundationPrompt('F2',{...buildDeliveryInput('F2','GENERATE_F2',input,doc,scope,[],[],identities,scenes),humanChoiceRegistry:currentChoices.registry}).length);
+        const scope=retained?.calls.find(a=>a.scope.some(n=>pending.includes(n)))?.scope??planFoundationRequestScope(sourceBatch,scope=>input.systemPrompts.F2.length+buildLightFoundationPrompt('F2',{...buildDeliveryInput('F2','GENERATE_F2',input,doc,scope,[],[],identities,scenes),humanChoiceRegistry:selectRequestChoices(currentChoices.registry,scope)}).length);
         if(scope.some(n=>!orderedGroup.includes(n)))throw new Error('历史已付费请求跨越长集边界，原响应已保留；需校核前接资料后恢复，未自动重购。');
         const result = await call('F2', 'GENERATE_F2', scope, value => validateLightCatalog(value, input, scope, identities));
         doc = mergeDocumentF2(doc, result.output, input.sourceIndex); doc.origins.push({ stage: 'F2', runId: result.runId, scope, kind: 'delivery' });
@@ -885,7 +885,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       if (retained) {const scope=retained.calls.find(attempt => attempt.scope.some(n => pending.includes(n)))!.scope;const group=orderedGroups.find(group=>group.includes(pending[0]))!;if(scope.some(n=>!group.includes(n)))throw new Error('历史已付费核对范围跨越长集边界，原响应已保留；需校核前接资料后恢复，未自动重购。');return scope;}
       return planFoundationRequestScope(pending, scope => {
         const work = buildEditWork(scope, currentChoices);
-        const request = { ...buildDeliveryInput('Q1', work.phase, input, doc, work.scope, work.localSuggestions, work.localDecisions, identities, scenes, work.targets), humanChoiceRegistry: currentChoices.registry };
+        const request = { ...buildDeliveryInput('Q1', work.phase, input, doc, work.scope, work.localSuggestions, work.localDecisions, identities, scenes, work.targets), humanChoiceRegistry: selectRequestChoices(currentChoices.registry,work.scope) };
         return input.systemPrompts.Q1.length + buildLightFoundationPrompt('Q1', request).length;
       });
     };

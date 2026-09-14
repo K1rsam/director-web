@@ -43,6 +43,24 @@ async function main() {
     const before = { episodes: await db.episode.findMany({ where: { projectId: project.id }, orderBy: { number: 'asc' } }), snapshots: await db.sceneSnapshot.count(), runs: await db.pipelineRun.count() };
     const failures: string[] = [];
     async function check(name: string, test: () => Promise<void> | void) { try { await test(); } catch (error) { failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`); } }
+    await check('共享输入避免重复全剧加载，缓存依赖变更失效', async () => {
+      const { cachedFoundationFacts } = await import('@/lib/foundation-fact-cache');
+      const facts=cachedFoundationFacts(input.sourceIndex,input.sourceContext,doc.f2);
+      assert.equal(cachedFoundationFacts(input.sourceIndex,input.sourceContext,doc.f2),facts);
+      assert.notEqual(cachedFoundationFacts(buildSourceIndex(episodes.map(e=>({...e,content:e.content+'\n'}))),input.sourceContext,doc.f2),facts);
+      assert.notEqual(cachedFoundationFacts(input.sourceIndex,{...input.sourceContext,version:'changed-context'},doc.f2),facts);
+      const renamed=structuredClone(doc.f2)!;renamed.assets[0].aliases.push('新称呼');
+      assert.notEqual(cachedFoundationFacts(input.sourceIndex,input.sourceContext,renamed),facts);
+      const guarded=new Proxy(db,{get(target,key){
+        if(key==='episode')return new Proxy(target.episode,{get(delegate,method){if(method==='findMany')return (args: { select?: { id?: boolean; number?: boolean; content?: boolean } })=>{if(!args.select||args.select.content)throw new Error('重复读取全剧正文');return delegate.findMany(args);};return Reflect.get(delegate,method);}});
+        return Reflect.get(target,key);
+      }});
+      const shared=(await supply.buildLightEpisodePackets(project.id,doc,guarded,[8],input))[0];
+      assert.deepEqual(shared,(await supply.buildLightEpisodePackets(project.id,doc,db,[8]))[0]);
+      assert.equal(shared.boundaryContext?.previousSource.episode,7);
+      await assert.rejects(supply.buildLightEpisodePackets(project.id,{...doc,sourceVersion:'stale'},guarded,[8],input));
+      await assert.rejects(supply.buildLightEpisodePackets('other-project',doc,guarded,[8],input));
+    });
     await check('一场直接拿到基础与适用变体，不混入其它集', async () => {
       const packets = await supply.buildLightEpisodePackets(project.id, doc, db, [8]);
       assert.equal(packets.length, 1, '只读取所选集');

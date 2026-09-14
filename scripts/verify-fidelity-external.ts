@@ -15,6 +15,17 @@ async function main(){
   assert.equal(result.imported.sourceText,source);assert.equal(result.imported.episodes[0].content,source);assert.equal(result.receipt.externalReview?.protocol,'FIDELITY-TEXT/1');assert.equal(result.receipt.result.validation.ok,true);
  }
  const draft='FIDELITY-DRAFT/1\nSOURCE -\nBODY 1 1\n'+source.split('\n').map(t=>'|'+t).join('\n')+'\nTEXT-END NONE\nEND';
+ for(const ext of ['txt','md','docx']) {
+  for(const protocol of [response,draft]) for(const wrapped of ['\ufeff'+protocol,'\ufeff```text\n'+protocol+'\n```\n\n  \n']) {
+   const result=await prepareFidelityImport('wrapped.'+ext,ext==='docx'?await docx(wrapped):Buffer.from(wrapped),'direct',[],false,original);
+   assert.equal(result.imported.sourceText,source);assert.equal(result.imported.episodes[0].content,source);
+  }
+  for(const bad of ['```text\n'+draft.replace('aaa','aba')+'\n```\n','```text\n'+draft+'\n```\nextra','\ufeff'+draft.replace('|甲：aaa😀','| 甲：aaa😀')])await assert.rejects(prepareFidelityImport('bad.'+ext,ext==='docx'?await docx(bad):Buffer.from(bad),'direct',[],false,original));
+ }
+ const spaced='第一集\n  甲：空白保留。  \n\n';
+ const spacedDraft='FIDELITY-DRAFT/1\nSOURCE -\nBODY 1 1\n|第一集\n|  甲：空白保留。  \n|\nTEXT-END LF\nEND';
+ assert.equal((await parseFidelityExternalResult(spaced,'\ufeff```md\n'+spacedDraft+'\n```\n')).decisions[0].end,spaced.length);
+ await assert.rejects(parseFidelityExternalResult(spaced,spacedDraft.replace('保留。  ','保留。')));
  const paired=await prepareFidelityImport('draft.txt',Buffer.from(draft),'direct',[],false,original);assert.equal(paired.imported.episodes[0].content,source);
  for(const bad of [draft.replace('aaa','aba'),draft.replace('|甲：aaa😀\n',''),draft.replace('|END','|END\n|END'),draft.replace('|甲：aaa😀','|乙：aaa😀')])await assert.rejects(prepareFidelityImport('bad.txt',Buffer.from(bad),'direct',[],false,original),/不一致/);
  for(const bad of [response.replace(material.sourceVersion,'old'),response.replace('B000001','B000002'),response.replace('B000006','B000005'),response.replace('END','BODY B000001 B000006 1 2\nEND'),response.replace('\nEND',''),response+'\nextra'])await assert.rejects(parseFidelityExternalResult(source,bad));
