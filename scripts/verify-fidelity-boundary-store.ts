@@ -14,11 +14,27 @@ async function main(){
   const user=await db.user.create({data:{email:'fidelity-audit@example.test',username:'fidelity-audit',passwordHash:'isolated-test-no-login'}});
   const text='  张三（OS）：他转身离开。😀\r\n\r\n  他转身离开。  \r\n';
   const prepared=await prepareFidelityImport('原稿.txt',Buffer.from(text),'fidelity');
+  prepared.receipt.p1Review={status:'PENDING'};
   const {project}=await importParsedProject({ownerUserId:user.id,title:'边界确认',sourceName:'原稿.txt',fidelityReceipt:prepared.receipt},prepared.imported,db);
-  const {queueFoundationDelivery,executeFoundationDelivery}=await import('../lib/foundation-delivery');
+  const {queueFoundationDelivery,executeFoundationDelivery,getFoundationDeliveryState}=await import('../lib/foundation-delivery');
   const pendingTask=await queueFoundationDelivery(project.id,{},db);let calls=0;
-  await executeFoundationDelivery(project.id,pendingTask.id,{db,stageRunner:async(stage,prompt)=>{calls++;assert.equal(stage,'F1');const input=JSON.parse(prompt.split('INPUT_JSON:\n').at(-1)!);const data={sourceVersion:input.sourceVersion,decisions:[],unresolved:['无法判断该段所属集']};return {data,rawOutput:JSON.stringify(data),stdout:'',stderr:'',sessionId:null};}});
-  assert.equal(calls,1);assert.equal(JSON.parse((await db.sceneSnapshot.findUniqueOrThrow({where:{id:'foundation-delivery-'+project.id}})).content).status,'WAITING_USER');
+  const reviewAttempts:number[]=[];
+  await executeFoundationDelivery(project.id,pendingTask.id,{db,stageRunner:async(stage,prompt)=>{
+   calls++;assert.equal(stage,'F1','Unresolved structural input must not reach downstream generation');
+   const input=JSON.parse(prompt.split('INPUT_JSON:\n').at(-1)!);assert.equal(input.reviewMode,'FULL_STRUCTURE_BLOCKS_V1');
+   reviewAttempts.push(input.repairAttempt??0);assert(input.blocks.every((b:[string,string])=>text.includes(b[1])),'P1 receives exact source blocks');
+   const data={sourceVersion:input.sourceVersion,reviewed:{firstBlock:input.batch.firstBlock,lastBlock:input.batch.lastBlock},assignments:[],unresolved:[{firstBlock:input.batch.firstBlock,lastBlock:input.batch.lastBlock,kind:'structure',note:'没有足够依据确定该段所属集'}],aliases:[]};
+   return {data,rawOutput:JSON.stringify(data),stdout:'',stderr:'',sessionId:null};
+  }});
+  // Structural ownership failure belongs to the workflow. One full review and
+  // one bounded repair must finish before a technical pause, never WAITING_USER.
+  assert.equal(calls,2);assert.deepEqual(reviewAttempts,[0,1]);
+  const technicalTask=JSON.parse((await db.sceneSnapshot.findUniqueOrThrow({where:{id:'foundation-delivery-'+project.id}})).content);
+  assert.equal(technicalTask.status,'PARTIAL');assert.equal(technicalTask.phase,'PREPARE_SOURCE');assert.equal(technicalTask.unknownOutcome,false);
+  const diagnosis=JSON.parse(technicalTask.error);assert.equal(diagnosis.kind,'BACKEND_STRUCTURE_PENDING');assert.equal(diagnosis.reason,'BOUNDED_REPAIR_EXHAUSTED');assert(diagnosis.codes.length>0);
+  const paused=await getFoundationDeliveryState(project.id,db);assert.equal(paused.complete,false);assert.equal(paused.requiredChoices.length,0);
+  assert.equal(await db.presentationContract.count({where:{projectId:project.id}}),0,'Technical uncertainty must not fabricate a creative choice');
+  assert.equal(await db.episode.count({where:{projectId:project.id}}),0,'Unresolved ownership cannot fabricate an episode');
   assert.equal(await db.sceneSnapshot.count({where:{projectId:project.id,sceneKey:'SOURCE_STRUCTURE_RESOLUTION'}}),0);
   const current=(await readFidelityReceipt(project.id,db))!;
   const request={projectId:project.id,revision:current.snapshot.id,sourceRevision:current.sourceSnapshot!.id,sourceVersion:current.receipt.readingHash,decisionVersion:String(current.receipt.result.plan.decisionVersion),firstLine:1,lastLine:3,kind:'body' as const,episodeNumber:0,sceneNumber:1};
@@ -60,11 +76,12 @@ async function main(){
   const dc=(await readFidelityReceipt(docProject.project.id,db))!;await applyFidelityDecision({projectId:docProject.project.id,revision:dc.snapshot.id,sourceRevision:dc.sourceSnapshot!.id,sourceVersion:dc.receipt.readingHash,decisionVersion:String(dc.receipt.result.plan.decisionVersion),firstLine:1,lastLine:2,kind:'body',episodeNumber:1,sceneNumber:1},db);
   const da=(await readFidelityReceipt(docProject.project.id,db))!;assert.equal(JSON.parse(da.sourceSnapshot!.content).originalFile.base64,docx.imported.originalFile!.base64);assert.deepEqual(da.receipt.reader,docx.receipt.reader);
   const autoPrepared=await prepareFidelityImport('自动范围.txt',Buffer.from(text),'fidelity');
+  autoPrepared.receipt.p1Review={status:'PENDING'};
   const auto=await importParsedProject({ownerUserId:user.id,title:'有界来源判断',sourceName:'自动范围.txt',fidelityReceipt:autoPrepared.receipt},autoPrepared.imported,db);
   const autoTask=await queueFoundationDelivery(auto.project.id,{},db);const stages:string[]=[];
   await executeFoundationDelivery(auto.project.id,autoTask.id,{db,stageRunner:async(stage,prompt)=>{
    stages.push(stage);const input=JSON.parse(prompt.split('INPUT_JSON:\n').at(-1)!);
-   if(stage==='F1'){const data={sourceVersion:input.sourceVersion,decisions:[{start:0,end:text.length,kind:'body',episodeNumber:1,sceneNumber:1,note:'测试明确完整范围'}],unresolved:[]};return {data,rawOutput:JSON.stringify(data),stdout:'',stderr:'',sessionId:null};}
+   if(stage==='F1'){assert.equal(input.reviewMode,'FULL_STRUCTURE_BLOCKS_V1');const data={sourceVersion:input.sourceVersion,reviewed:{firstBlock:input.batch.firstBlock,lastBlock:input.batch.lastBlock},assignments:[{firstBlock:input.batch.firstBlock,lastBlock:input.batch.lastBlock,kind:'body',episodeNumber:1,sceneNumber:1,note:'测试明确完整范围'}],unresolved:[],aliases:[]};return {data,rawOutput:JSON.stringify(data),stdout:'',stderr:'',sessionId:null};}
    throw Object.assign(new Error('bounded first F2 reached'),{requestOutcome:'NOT_SENT'});
   }});
   assert.deepEqual(stages,['F1','F2'],JSON.parse((await db.sceneSnapshot.findUniqueOrThrow({where:{id:'foundation-delivery-'+auto.project.id}})).content).error);assert.equal((await db.episode.findFirstOrThrow({where:{projectId:auto.project.id}})).content,text);
@@ -76,8 +93,9 @@ async function main(){
   let leaseChecked=false;
   await assert.rejects(()=>refreshFidelitySource(lost.project.id,db,{checkCurrent:async()=>{},checkAfterCommit:async()=>{leaseChecked=true;throw new Error('lease lost');},decisions:[{start:0,end:text.length,kind:'body',episodeNumber:1,sceneNumber:1,note:'test'}]}),/lease lost/);
   assert(leaseChecked);assert.equal(await db.scriptScene.count({where:{episode:{projectId:lost.project.id}}}),0,'lost lease must prevent post-commit scene writes');
-  assert.equal(await db.pipelineRun.count(),3,'two source judgments and one stopped F2; no actual provider calls');
-  console.log('PASS isolated fidelity boundary store: source+decision CAS, original bytes/hash/read warnings, CRLF/blank/emoji, Python equality, no removal, authorized JSON validator, DOCX table warning, real prologue zero, bounded source assist and first F2');
+  assert.equal(await db.pipelineRun.count(),4,'full review + bounded repair + successful current-protocol review + stopped F2; no actual provider calls');
+  assert.equal(await db.pipelineRun.count({where:{stageCode:'F1',status:'SUCCEEDED'}}),3,'Technical pause must follow accepted review responses, not malformed legacy protocol');
+  console.log('PASS isolated fidelity boundary store: source+decision CAS, original bytes/hash/read warnings, CRLF/blank/emoji, Python equality, no removal, authorized JSON validator, DOCX table warning, real prologue zero, current block protocol, bounded technical pause without author questions, successful source assist and first F2');
  }finally{await db.$disconnect();const resolved=path.resolve(directory);if(!resolved.startsWith(path.resolve(tmpdir())+path.sep))throw Error('cleanup boundary');rmSync(resolved,{recursive:true,force:true});}
 }
 void main().catch(e=>{console.error(e);process.exitCode=1;});

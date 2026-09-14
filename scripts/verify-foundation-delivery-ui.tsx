@@ -115,7 +115,7 @@ check("未知结果必须显式勾选重复计费确认", () => {
 });
 check("部分完成和停止保留正文并给明确续作", () => {
   for (const status of ["PARTIAL", "INTERRUPTED", "STOPPED"] as const) {
-    const html = render({ ...base, task: task({ status, error: "<script>错误明细</script>" }) });
+    const html = render({ ...base, task: task({ status }) });
     assert.ok(html.includes("已保留") && html.includes("继续完成"));
     assert.ok(!html.includes("<script>错误明细"));
   }
@@ -248,7 +248,7 @@ check("刷新只读且局部样式可键盘和窄屏使用", () => {
   assert.ok(!panel.includes("setInterval(() => startFoundationDeliveryAction"));
   assert.ok(css.includes(":focus-visible") && css.includes("overflow-wrap: anywhere") && css.includes("@media"));
 });
-check("技术故障折叠诊断，正文不转交底层修复，未知结果优先", () => {
+check("技术故障展开诊断，正文不转交底层修复，未知结果优先", () => {
   const technical = "请修 JSON sceneKey，再缩减资料 <script>诊断</script>";
   const failed = { ...base, action: "BLOCKED" as const, continuationBlocker: technical, task: task({ status: "PARTIAL", message: technical, error: technical }) };
   const rail = (state: FoundationDeliveryState) => renderToStaticMarkup(createElement(FoundationWorkflowStatus, { projectId: "project-1", state, sourceReady: true, sceneCount: 3, remaining: ["人物身份需创作确认"] }));
@@ -261,7 +261,7 @@ check("技术故障折叠诊断，正文不转交底层修复，未知结果优�
     assert.doesNotMatch(html, /<script>诊断/);
   }
   const diagnostic = rail(failed).match(/<details[^>]*><summary>技术诊断与处理记录<\/summary>/)?.[0];
-  assert.ok(diagnostic && !diagnostic.includes("open"));
+  assert.ok(diagnostic && diagnostic.includes("open"));
   assert.ok(rail(failed).includes("人物身份需创作确认"), "内容待办不得隐藏或替代");
   const unknownState = { ...failed, task: task({ status: "INTERRUPTED", unknownOutcome: true, error: technical }) };
   assert.ok(render(unknownState).includes("确认重发并继续") && rail(unknownState).includes("重发可能重复计费"));
@@ -351,6 +351,32 @@ check("客户端保留轮询直到服务回报非busy，然后清理计时器", 
   }
 });
 
+check("来源技术失败显示岗位暂停，同时尊重后端恢复许可", () => {
+  for (const action of ['START', 'CONTINUE', 'NONE', 'BLOCKED'] as const) {
+    const failed = {...base, action, totalEpisodes: 0, availableEpisodes: 0, task: task({status:'PARTIAL',phase:'PREPARE_SOURCE',error:'重新识别会移除已有集 <script>诊断</script>'})};
+    const compact = renderToStaticMarkup(createElement(FoundationDeliveryPanel,{projectId:'project-1',state:failed,requiredChoiceCount:0,compact:true}));
+    const rail = renderToStaticMarkup(createElement(FoundationWorkflowStatus,{projectId:'project-1',state:failed,sourceReady:true,sceneCount:0,remaining:[]}));
+    assert.ok(compact.includes('原文结构检查已暂停'));
+    for (const html of [compact,render(failed)]) {
+      if (action === 'START' || action === 'CONTINUE') {
+        assert.ok(html.includes(action === 'START' ? '重试整理' : '继续整理'));
+        assert.ok(html.includes('name="expectedState"'));
+      } else { assert.ok(html.includes('查看整理状态')); assert.equal(buttons(html).length,0); }
+    }
+    assert.doesNotMatch(compact,/资料待整理|>整理资料<|>继续完成</);
+    assert.ok(rail.includes('系统处理问题') && rail.includes('无需修改来源范围或原文'));
+    assert.match(rail,/<details[^>]*open=""[^>]*><summary>技术诊断与处理记录/);
+    assert.ok(rail.includes('重新识别会移除已有集') && rail.includes('&lt;script&gt;诊断&lt;/script&gt;'));
+    assert.doesNotMatch(rail,/选择执行渠道后|正在工作|<script>诊断/);
+    assert.ok(rail.includes('已停止计时'));
+  }
+});
+check("技术暂停不依赖中文错误内容，后续运行不被历史错误假暂停", () => {
+  const failed = {...base,task:task({status:'PARTIAL',phase:'EDIT',error:'ANY_ERROR_CODE'})};
+  assert.ok(render(failed).includes('资料核对已暂停'));
+  assert.ok(render({...failed,busy:true,task:task({error:'旧错误'})}).includes('正在补充资产目录'));
+  assert.ok(render({...failed,complete:true,action:'NONE',task:task({status:'COMPLETE',error:'旧错误'})}).includes('资料已整理'));
+});
 check("SSR无提交且不改输入", () => { assert.equal(actionCalls, 0); assert.equal(JSON.stringify(base), before); });
 
 for (const failure of failures) console.error(`FAIL ${failure}`);

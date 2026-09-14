@@ -9,6 +9,23 @@ import styles from "./foundation-delivery.module.css";
 
 type PanelState = Pick<FoundationDeliveryState, "task" | "totalEpisodes" | "availableEpisodes" | "editedEpisodes" | "busy" | "complete" | "needsContextEdit" | "action" | "expectedState" | "suggestionsCount" | "continuationBlocker" | "methodUpdateAvailable" | "activeCallStartedAt">;
 
+function technicalPause(state: PanelState) {
+  return !state.busy && !state.complete && state.action !== "UNKNOWN_CONFIRM" && !state.task?.unknownOutcome &&
+    (state.action === "BLOCKED" || Boolean(state.task?.error && ["PARTIAL", "INTERRUPTED"].includes(state.task.status)));
+}
+
+function pausedWork(state: PanelState) {
+  switch (state.task?.phase) {
+    case "PREPARE_SOURCE": return "原文结构检查已暂停";
+    case "GENERATE_F1": return "拆集分场已暂停";
+    case "GENERATE_F2": return "素材整理已暂停";
+    case "EDIT": return "资料核对已暂停";
+    case "REPAIR": return "局部修复已暂停";
+    case "APPLY_DECISION": return "应用选择已暂停";
+    default: return "整理已暂停";
+  }
+}
+
 function currentWork(state: PanelState) {
   if (!state.busy) return state.complete ? "P4 · 交接就绪" : null;
   switch (state.task?.phase) {
@@ -69,12 +86,12 @@ export function FoundationDeliveryPanel({ projectId, state, requiredChoiceCount,
 
   const task = state.task;
   const unknown = state.action === "UNKNOWN_CONFIRM" || Boolean(task?.unknownOutcome);
-  const waiting = requiredChoiceCount > 0 && !state.busy && !unknown && state.action !== "BLOCKED";
-  const blocked = !state.busy && !unknown && state.action === "BLOCKED";
-  const noSource = state.action === "NONE" && !state.busy && !state.complete && state.totalEpisodes === 0;
+  const blocked = technicalPause(state);
+  const waiting = requiredChoiceCount > 0 && !state.busy && !unknown && !blocked;
+  const noSource = state.action === "NONE" && !state.busy && !state.complete && !blocked && state.totalEpisodes === 0;
   const phase = task?.phase === "PREPARE_SOURCE" ? "正在检查原文结构" : task?.phase === "GENERATE_F1" ? "正在整理分集内容" : task?.phase === "GENERATE_F2" ? "正在补充资产目录"
     : task?.phase === "REPAIR" ? "正在局部修复资料" : task?.phase === "APPLY_DECISION" ? "正在应用你的决定" : task?.phase === "EDIT" ? "正在自动校验资料" : "正在整理，阶段待确认";
-  const title = state.busy ? phase : noSource ? "原文暂未就绪" : blocked ? "整理已暂停" : waiting ? "需要你确认" : unknown ? task?.status === "INTERRUPTED" ? "处理已中断，请求结果尚未确认" : "上次请求结果尚未确认" : state.complete ? "资料已整理"
+  const title = state.busy ? phase : noSource ? "原文暂未就绪" : blocked ? pausedWork(state) : waiting ? "需要你确认" : unknown ? task?.status === "INTERRUPTED" ? "处理已中断，请求结果尚未确认" : "上次请求结果尚未确认" : state.complete ? "资料已整理"
     : task?.status === "STOPPED" ? "已停止，资料已保留" : task?.status === "INTERRUPTED" ? "处理已中断，资料已保留"
       : state.availableEpisodes > 0 || task?.status === "PARTIAL" ? "已生成的资料已保留" : "从剧本开始整理资料";
   const description = state.busy ? "你可以继续阅读下方资料；处理进度与正文会自动更新。"
@@ -92,17 +109,17 @@ export function FoundationDeliveryPanel({ projectId, state, requiredChoiceCount,
       <input type="checkbox" name="allowUnknownRetry" value="yes" required />
       <span>我理解结果尚未确认，重发可能重复计费，同意重发并继续。</span>
     </label> : null}
-    <SubmitButton label={unknown ? "确认重发并继续" : state.action === "START" ? "整理资料" : "继续完成"} pendingLabel="正在提交…" compact={compact} />
+    <SubmitButton label={unknown ? "确认重发并继续" : blocked ? state.action === "START" ? "重试整理" : "继续整理" : state.action === "START" ? "整理资料" : "继续完成"} pendingLabel="正在提交…" compact={compact} />
   </form>;
   if (compact) return <div className="cardHeaderActions" id="foundation-delivery" aria-busy={state.busy}>
-    <span className="topbarStatus" role="status" aria-live="polite"><i className={state.busy ? "live" : ""} />{state.busy ? currentWork(state) : blocked ? "整理已暂停" : noSource ? "原文暂未就绪" : waiting ? "需要你确认" : unknown ? task?.status === "INTERRUPTED" ? "处理中断 · 请求结果待确认" : "请求结果待确认" : state.complete ? "资料已整理" : task?.status === "STOPPED" ? "已停止" : task?.status === "INTERRUPTED" ? "处理中断" : "资料待整理"}</span>
+    <span className="topbarStatus" role="status" aria-live="polite"><i className={state.busy ? "live" : ""} />{state.busy ? currentWork(state) : blocked ? pausedWork(state) : noSource ? "原文暂未就绪" : waiting ? "需要你确认" : unknown ? task?.status === "INTERRUPTED" ? "处理中断 · 请求结果待确认" : "请求结果待确认" : state.complete ? "资料已整理" : task?.status === "STOPPED" ? "已停止" : task?.status === "INTERRUPTED" ? "处理中断" : "资料待整理"}</span>
     {state.busy ? <>
       <button className="topbarPrimary" type="button" disabled>正在整理…</button>
       {task ? <form action={stopFoundationDeliveryAction} className="topbarStopForm">
         <input name="projectId" type="hidden" value={projectId} /><input name="taskId" type="hidden" value={task.id} />
         <SubmitButton label="停止" pendingLabel="停止中…" stop compact />
       </form> : null}
-    </> : blocked ? <a href="#foundation-status" className="quietButton">查看整理状态</a> : noSource ? null : waiting ? <a href="#presentation-contracts" className="quietButton">查看必要取舍</a> : canContinue ? unknown ? <details className="bibleSection">
+    </> : blocked ? canContinue ? startForm : <a href="#foundation-status" className="quietButton">查看整理状态</a> : noSource ? null : waiting ? <a href="#presentation-contracts" className="quietButton">查看必要取舍</a> : canContinue ? unknown ? <details className="bibleSection">
       <summary className="quietButton">请求恢复</summary>
       <p className="biblePlaceholder">上次结果尚未确认；重发可能重复计费。</p>
       {startForm}
@@ -119,7 +136,7 @@ export function FoundationDeliveryPanel({ projectId, state, requiredChoiceCount,
             <input name="taskId" type="hidden" value={task.id} />
             <SubmitButton label="停止" pendingLabel="停止中…" stop />
           </form> : null}
-        </> : blocked ? <a href="#foundation-status" className={styles.primary}>查看整理状态</a> : noSource ? null : waiting ? <a href="#presentation-contracts" className={styles.primary}>查看需要确认的事项</a> : canContinue ? startForm : null}
+        </> : blocked ? canContinue ? startForm : <a href="#foundation-status" className={styles.primary}>查看整理状态</a> : noSource ? null : waiting ? <a href="#presentation-contracts" className={styles.primary}>查看需要确认的事项</a> : canContinue ? startForm : null}
       </div>
     </div>
     <p role="status" aria-live="polite" className={unknown ? styles.warning : styles.description}>{description}</p>
@@ -130,7 +147,7 @@ export function FoundationDeliveryPanel({ projectId, state, requiredChoiceCount,
     {state.needsContextEdit ? <p className={styles.note}>原文或制作条件已有变化；继续时会更新受影响的资料，旧修订保留可读。</p> : null}
     {state.methodUpdateAvailable ? <p className={styles.note}>规则有更新，未自动重跑；当前资料保留原核对版本。</p> : null}
     {state.suggestionsCount ? <p className={styles.note}>另有 {state.suggestionsCount} 条建议已保留，不阻挡当前资料整理。</p> : null}
-    <details className={styles.processing}>
+    <details className={styles.processing} open={blocked || undefined}>
       <summary>处理与调用说明</summary>
       <p>当前原文与已定条件累计最多 {task?.maxRepairCalls ?? 3} 次自动修正（格式与内容合计）、最多 {task?.maxRepairRounds ?? 2} 轮；同一输入最多一次格式修复，未知结果须另行明确同意。继续或重建任务不会重置已消费额度，已保存响应优先本地恢复。</p>
       {state.continuationBlocker ? <p>{state.continuationBlocker}</p> : null}
@@ -149,7 +166,7 @@ export function FoundationWorkflowStatus({ projectId, state, sourceReady, sceneC
   projectId: string; state: PanelState; sourceReady: boolean; sceneCount: number; remaining: string[];
 }) {
   const unknown = state.action === "UNKNOWN_CONFIRM" || Boolean(state.task?.unknownOutcome);
-  const blocked = !state.busy && !unknown && state.action === "BLOCKED";
+  const blocked = technicalPause(state);
   const message = state.busy ? "正在按当前步骤整理资料，自动校验和局部修复的进度会在这里更新。已有内容可继续阅读。"
     : unknown ? `${state.task?.status === "INTERRUPTED" ? "处理已中断。" : ""}上次请求结果尚未确认，当前不会自动重发；重发可能重复计费，需要你明确同意。`
       : blocked ? "整理遇到技术问题，当前已暂停，已保存资料仍可阅读。这类问题由工作流处理，无需你修改剧本格式；恢复前不会继续请求。"
@@ -179,11 +196,12 @@ export function FoundationWorkflowStatus({ projectId, state, sourceReady, sceneC
     })}</div>
     {state.task ? <p className={styles.operationMessage}><FoundationTaskElapsed task={state.task} active={live} activeCallStartedAt={state.activeCallStartedAt} /></p> : null}
     {currentWork(state) ? <p className={styles.operationMessage} role="status" aria-live="polite"><strong>当前工作：{currentWork(state)}</strong>{state.busy ? ` · 处理范围：${episodeScope(state.task?.scope ?? [])}` : null}</p> : null}
+    {blocked ? <p className={styles.operationError} role="status"><strong>{pausedWork(state)} · 系统处理问题</strong>。不是待填写的创作选择，无需修改来源范围或原文来绕过；请查看下方处理记录。</p> : null}
     <p className={styles.operationMessage}>已保存 {state.availableEpisodes} / {state.totalEpisodes} 集 · 已核对 {state.editedEpisodes} / {state.totalEpisodes} 集</p>
     <p className={styles.operationMessage} role="status" aria-live="polite">{message}</p>
     {state.task ? <p className={styles.operationMessage}>任务最近记录：<time dateTime={state.task.updatedAt}>{new Date(state.task.updatedAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</time>（北京时间）</p> : null}
     {state.busy ? <p className={styles.operationMessage}>状态每 3 秒自动刷新；单次模型请求等待返回期间，阶段和记录时间可能保持不变，不能仅凭这一点判断卡死。</p> : null}
-    {state.task || state.continuationBlocker ? <details className={styles.processing}>
+    {state.task || state.continuationBlocker ? <details className={styles.processing} open={blocked || undefined}>
       <summary>技术诊断与处理记录</summary>
       {state.continuationBlocker ? <p>{state.continuationBlocker}</p> : null}
       {state.task?.message ? <p>{state.task.message}</p> : null}
