@@ -79,7 +79,7 @@ export function FoundationDeliveryPanel({ projectId, state, requiredChoiceCount,
       : state.availableEpisodes > 0 || task?.status === "PARTIAL" ? "已生成的资料已保留" : "从剧本开始整理资料";
   const description = state.busy ? "你可以继续阅读下方资料；处理进度与正文会自动更新。"
     : blocked ? "整理遇到技术问题，当前已暂停，已保存资料仍可阅读。这类问题由工作流处理，无需你修改剧本格式；恢复前不会继续请求。" : noSource ? "尚未取得可整理的原文内容，暂时不能开始。原文读取状态与已有内容可在来源页查看。"
-      : waiting ? `有 ${requiredChoiceCount} 项确实需要你的取舍。确认后会自动接着完成，其余资料仍可阅读。`
+      : waiting ? `有 ${requiredChoiceCount} 项确实需要你的取舍。可逐项保存选择，全部完成后自动整理；其余资料仍可阅读。`
       : unknown ? "已有内容仍保留。普通继续不会重发；只有你明确接受可能重复计费后，才会再次请求。"
         : state.complete ? "当前范围的分集导航与资产目录已整理。图片和后续分镜尚未制作。"
           : state.action === "START" ? "一次开始，持续补齐分集导航与资产目录；只有必要取舍才会请你确认。"

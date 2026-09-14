@@ -183,7 +183,17 @@ check("提交按钮展示保存中且防止本次重复提交", () => {
 check("页面传递确认反馈和真实请求开始时间", () => {
   const page = read('app/projects/[projectId]/page.tsx');
   assert.ok(page.includes('decisionContinued={foundationNotice === "decision-continued"}'));
+  assert.ok(page.includes('decisionCollected={foundationNotice === "decision-collected"}'));
   assert.ok(page.includes('activeCallStartedAt: delivery.activeCallStartedAt'));
+});
+check("逐项收集保留已保存计数，不暗示每次立即运行", () => {
+  const collected = renderToStaticMarkup(createElement(PresentationContracts, {projectId: 'project-safe', pending: [choice({id: 'remaining'})], confirmed: [choice({userAnswer: '选择已保存'})], mode: 'delivery', decisionCollected: true}));
+  assert.ok(collected.includes('1 项待确认 · 1 项已保存'));
+  assert.ok(collected.includes('本次选择已保存，仍有 1 项待确认'));
+  assert.ok(collected.includes('全部必要选择保存后，系统才会自动整理'));
+  assert.ok(collected.includes('保存选择') && collected.includes('保存自定义方案'));
+  assert.ok(!collected.includes('确认并继续') && !collected.includes('本轮处理已结束'));
+  assert.ok(buttons(collected).every(button => !button.attributes.includes('disabled=""')));
 });
 
 for (const failure of failures) console.error(`FAIL ${failure}`);

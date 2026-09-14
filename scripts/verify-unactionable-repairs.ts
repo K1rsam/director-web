@@ -404,6 +404,7 @@ async function main() {
       const state = await getFoundationDeliveryState(project.id, db), choice = state.requiredChoices[0];
       assert.ok(choice);
       const queued = await confirmAndContinueFoundationDelivery(db, { projectId: project.id, contractId: choice.id, revision: choice.revision, expectedTaskId: task.id, optionIndex: '0' });
+      assert.ok(queued, 'the only required choice queues continuation');
       assert.equal(queued.status, 'QUEUED');
       const confirmed = await getFoundationDeliveryState(project.id, db);
       assert.equal(confirmed.requiredChoices.length, 0); assert.equal(confirmed.confirmedChoices.length, 1);

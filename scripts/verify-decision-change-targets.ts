@@ -38,6 +38,7 @@ async function main() {
     const expectedTargets = sceneOnly ? { assetKeys: [], assetFields: [], sceneFields: ['weather'] } : { assetKeys: [target.key], assetFields: ['preparation'], sceneFields: [] };
     assert.deepEqual(choice.changeTargets, expectedTargets, 'permissions survive choice persistence');
     const resumed = await api.confirmAndContinueFoundationDelivery(db, { projectId: project.id, contractId: choice.id, revision: choice.revision, optionIndex: '1' });
+    assert.ok(resumed, 'the only required choice queues continuation');
     return { project, task: resumed, choice, before, target, other, expectedTargets, scenes: await db.scriptScene.findMany({ where: { episode: { projectId: project.id } }, orderBy: { sortOrder: 'asc' } }) };
   };
   const cases = [

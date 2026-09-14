@@ -35,7 +35,8 @@ export default async function ProjectStudioPage({ params, searchParams }: { para
     : foundationNotice === "decision-invalid" ? "请选择有效方案，或填写具体的自定义决定；本次尚未保存。"
       : foundationNotice === "decision-running" ? "资料仍在处理中，本次未保存；请等待本轮处理结束。"
         : foundationNotice === "decision-required" ? "还有必要决定未确认，本次未发起新调用；请查看下方选项。"
-          : foundationNotice === "decision-continued" ? delivery.busy ? "决定已保存，正在接着处理；页面会自动更新。" : delivery.requiredChoices.length ? `决定已保存，当前还有 ${delivery.requiredChoices.length} 项待确认，请继续查看确认区。` : "决定已保存，请查看当前整理状态。"
+          : foundationNotice === "decision-collected" ? delivery.busy ? "选择已保存，正在整理资料；页面会自动更新。" : delivery.requiredChoices.length ? `本次选择已保存，仍有 ${delivery.requiredChoices.length} 项待确认；全部完成后会自动整理。` : "选择已保存，请查看当前整理状态。"
+          : foundationNotice === "decision-continued" ? delivery.busy ? "必要选择已保存，正在统一应用并整理；页面会自动更新。" : delivery.requiredChoices.length ? `选择已保存，当前还有 ${delivery.requiredChoices.length} 项待确认，请继续查看确认区。` : "选择已保存，请查看当前整理状态。"
             : foundationNotice === "decision-saved" ? "决定已保存；继续完成时会应用这一决定。" : null;
   const notice = foundationNotice === "state-changed" ? "页面状态已更新，本次未发起新调用；请核对当前资料后再继续。"
     : foundationNotice === "call-unknown" ? "上次请求结果尚未确认，本次没有重发。已有资料仍保留；如接受可能重复计费，请明确勾选后继续。"
@@ -55,6 +56,7 @@ export default async function ProjectStudioPage({ params, searchParams }: { para
         <PresentationContracts projectId={projectId} pending={delivery.requiredChoices} confirmed={delivery.confirmedChoices}
           active={delivery.busy || unknownOutcome} mode="delivery" expectedTaskId={delivery.task?.id}
           decisionContinued={foundationNotice === "decision-continued"}
+          decisionCollected={foundationNotice === "decision-collected"}
           blockedReason={unknownOutcome ? "请先处理上方的请求恢复，再确认这些决定。" : undefined} />
         <div className="sectionHeading">
           <div><span className="sectionIndex">01</span><h2>全剧基础工程</h2></div>

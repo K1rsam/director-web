@@ -213,9 +213,9 @@ check("新增就绪判断不修改工作稿或接入服务端运行时", () => {
   const source = read("app/projects/[projectId]/foundation-document-viewer.tsx");
   assert.doesNotMatch(source, /import (?!type )[^\n]*(?:foundation-delivery-assets|foundation-document|foundation-delivery-types)/);
 });
-check("确认按钮直接采纳并续作，不另需岗位操作", () => {
+check("确认按钮逐项保存，全部完成后整理", () => {
   const html = renderToStaticMarkup(createElement(PresentationContracts, { projectId: "project-1", pending: [choice], confirmed: [], mode: "delivery", expectedTaskId: "task-1" }));
-  assert.ok(html.includes("确认并继续") && html.includes('name="expectedTaskId"') && html.includes('value="task-1"'));
+  assert.ok(html.includes("保存选择") && html.includes("全部必要选择保存后") && html.includes('name="expectedTaskId"') && html.includes('value="task-1"'));
   assert.ok(html.includes('name="revision"') && html.includes("choice-revision") && html.includes("&lt;script&gt;原文依据&lt;/script&gt;"));
   assert.ok(!html.includes("只保存决定，不自动运行") && !html.includes('checked=""'));
   const confirmed = renderToStaticMarkup(createElement(PresentationContracts, { projectId: "project-1", pending: [], confirmed: [{ ...choice, userAnswer: "保留两人", decidedAt: new Date(0) }], mode: "delivery" }));

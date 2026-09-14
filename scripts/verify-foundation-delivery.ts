@@ -57,7 +57,7 @@ async function main() {
     const decision = await create('choice local resume'); await seed(decision.id); const decisionTask = await api.queueFoundationDelivery(decision.id, {}, db);
     await api.executeFoundationDelivery(decision.id, decisionTask.id, { db, stageRunner: async (_stage, prompt) => out(q1(input(prompt).scope, {}, { humanChoices: [choice] })) });
     state = await api.getFoundationDeliveryState(decision.id, db); const required = state.requiredChoices[0]; assert.ok(required); assert.equal(state.task?.status, 'WAITING_USER');
-    const resumed = await api.confirmAndContinueFoundationDelivery(db, { projectId: decision.id, contractId: required.id, revision: required.revision, optionIndex: '1' }); assert.equal(resumed.id, decisionTask.id);
+    const resumed = await api.confirmAndContinueFoundationDelivery(db, { projectId: decision.id, contractId: required.id, revision: required.revision, optionIndex: '1' }); assert.ok(resumed, 'the only required choice queues continuation'); assert.equal(resumed.id, decisionTask.id);
     await api.executeFoundationDelivery(decision.id, resumed.id, { db, stageRunner: async (_stage, prompt) => { const value = input(prompt); assert.deepEqual(value.scope, [1]); return out(q1(value.scope, { scenes: [{ episode: 1, sceneKey: '1-1', characters: ['甲'] }] }, { appliedDecisions: value.confirmedDecisions.map((c: { id: string }) => ({ id: c.id, note: '已在实际场次采用用户方案。' })) })); } });
     state = await api.getFoundationDeliveryState(decision.id, db); assert.equal(state.task?.status, 'COMPLETE'); assert.ok(state.document.appliedDecisions[required.id]); assert.equal(state.confirmedChoices[0].userAnswer, '采用乙');
 

@@ -30,6 +30,7 @@ async function main() {
     assert.equal(state.requiredChoices.length, 1);
     assert.equal(state.requiredChoices[0].applicationScope?.kind, 'SCENES');
     const resumed = await api.confirmAndContinueFoundationDelivery(db, { projectId: project.id, contractId: state.requiredChoices[0].id, revision: state.requiredChoices[0].revision, optionIndex: '1' });
+    assert.ok(resumed, 'the only required choice queues continuation');
     return { project, task: resumed, unrelated: await db.scriptScene.findFirstOrThrow({ where: { episode: { projectId: project.id }, sceneKey: '23-2' } }) };
   };
   const patch = (value: ReturnType<typeof input>, sceneKey: string) => optimization(value.scope, { scenes: [{ episode: 23, sceneKey, weather: '雨后' }] }, { appliedDecisions: value.confirmedDecisions.map((row: { id: string }) => ({ id: row.id, note: '采用本场决定。' })) });

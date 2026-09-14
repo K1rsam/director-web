@@ -501,13 +501,17 @@ export async function applyFoundationProgramRepair(projectId: string, correction
   return getFoundationDeliveryState(projectId, db);
 }
 
-export async function confirmAndContinueFoundationDelivery(db: PrismaClient, args: { projectId: string; contractId: string; revision: string; optionIndex?: string; customAnswer?: string; expectedTaskId?: string }) {
+export async function confirmAndContinueFoundationDelivery(db: PrismaClient, args: { projectId: string; contractId: string; revision: string; optionIndex?: string; customAnswer?: string; expectedTaskId?: string }): Promise<FoundationDeliveryTask | null> {
   return db.$transaction(async tx => {
     const state = await getFoundationDeliveryState(args.projectId, tx);
     if (state.busy) throw new FoundationChoiceError('decision-running');
     if (args.expectedTaskId !== undefined && args.expectedTaskId !== state.task?.id) throw new FoundationChoiceError('decision-changed');
     if (!state.requiredChoices.some(choice => choice.id === args.contractId)) throw new FoundationChoiceError('decision-changed');
     await confirmFoundationChoiceInTransaction(tx, args);
+    // Collect every required answer before creating work. Re-read in the same
+    // transaction so stale or concurrent submissions cannot bypass this gate.
+    const after = await getFoundationDeliveryState(args.projectId, tx);
+    if (after.requiredChoices.length) return null;
     return queueInTransaction(args.projectId, {}, tx);
   }, { timeout: 20_000 });
 }
@@ -1068,7 +1072,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
     // Registry publication is independent of historical approval snapshots and cannot erase manual material.
     if (doc.f2) { const { registerFoundationDocumentAssets } = await import('./foundation-delivery-assets'); await registerFoundationDocumentAssets(db, projectId, doc, state.requiredChoices, checkCurrent); }
     await update({ status: state.requiredChoices.length ? 'WAITING_USER' : state.complete ? 'COMPLETE' : 'PARTIAL', scope: [], workerPid: null,
-      message: state.requiredChoices.length ? '其他资料已整理，请完成必要选择；采用后会自动继续。' : state.complete ? '资料已整理完成，可以阅读和使用。'
+      message: state.requiredChoices.length ? '其他资料已整理，请连续保存剩余选择，全部确认后自动继续。' : state.complete ? '资料已整理完成，可以阅读和使用。'
         : programTodos(doc).length ? '已有资料已保存；尚有技术问题未完成，当前已暂停自动整理。' : task!.repairHalt?.reason ?? '已有资料已保存，剩余局部事项尚未完成，可继续补齐。', error: null });
   } catch (error) {
     const current = await readTask(db, projectId);

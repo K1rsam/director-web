@@ -483,7 +483,8 @@ export async function confirmFoundationDeliveryChoiceAction(formData: FormData) 
   try {
     const task = await confirmAndContinueFoundationDelivery(prisma, { projectId, contractId: String(formData.get('contractId') ?? ''), revision: String(formData.get('revision') ?? ''), expectedTaskId: String(formData.get('expectedTaskId') ?? ''),
       ...(formData.has('optionIndex') ? { optionIndex: String(formData.get('optionIndex')) } : {}), ...(formData.has('customAnswer') ? { customAnswer: String(formData.get('customAnswer')) } : {}) });
-    await launchFoundationDelivery(task);
+    if (task) await launchFoundationDelivery(task);
+    else notice = 'decision-collected';
   } catch (error) { notice = error instanceof FoundationChoiceError ? error.notice : error instanceof Error && /状态已变化/.test(error.message) ? 'state-changed' : 'delivery-unavailable'; }
   revalidatePath(`/projects/${projectId}`); revalidatePath('/');
   redirect(`/projects/${encodeURIComponent(projectId)}?foundationNotice=${notice}#presentation-contracts`);
