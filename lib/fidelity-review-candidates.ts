@@ -13,7 +13,7 @@ export function fidelityReviewCandidates(receipt:FidelityReceipt):SourceReviewCa
  const review=receipt.p1Review as P1ReviewState|undefined;
  if(review?.status==='COMPLETE'&&review.reviewedSourceVersion===receipt.readingHash){
   for(const a of review.aliases??[])add('ALIAS',[a],{names:[a.alias,a.canonicalCandidate],note:a.note});
-  for(const q of review.unresolved??[])add('QUESTION',[q],{question:q.note});
+  for(const q of review.unresolved??[])add('QUESTION',[q],{question:q.note,...(q.routing?.kind==='QUESTION'&&q.routing.sourceVersion===receipt.readingHash?{structureStatus:'EXPLICIT_SOURCE_OWNERSHIP_VERIFIED',questionStatus:'OPEN',originalKind:q.kind}: {})});
  }
  const external=receipt.externalReview;
  if(external?.sourceVersion===receipt.readingHash){

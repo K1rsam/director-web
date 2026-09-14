@@ -97,11 +97,12 @@ async function main(){
     if(request.repairAttempt)assert(JSON.stringify(projectP1ReviewRequest(request)).length<=24000);
     return {plan:validate(plan),runId:`structure-${structureCalls}`};
    }});
-   assert.equal(structureCalls,2);assert.equal(Boolean(out.backendPending),!resolved);
+   assert.equal(structureCalls,1,'independent complete source ownership avoids redundant structural review');assert.equal(Boolean(out.backendPending),false);
    const latest=(await readFidelityReceipt(semanticStructure.id,db))!.receipt;
-   assert.equal(latest.result.validation.issues.length,0,'parser alone cannot resolve model structure uncertainty');
-   assert.equal(latest.p1Review?.status,resolved?'COMPLETE':'PENDING');
-   if(resolved)assert.equal(latest.p1Review?.unresolved?.length,0,'local re-review retires resolved structural questions');
+   assert.equal(latest.result.validation.issues.length,0);
+   assert.equal(latest.p1Review?.status,'COMPLETE');
+   assert.equal(latest.p1Review?.unresolved?.length,1,'ownership verification does not erase the original question');
+   assert(fidelityReviewCandidates(latest).some(row=>row.kind==='QUESTION'&&row.detail.question==='当前集场关系存在结构疑点'&&row.detail.questionStatus==='OPEN'),'the unresolved question is handed downstream with its original scope');
   }
   // Actual controller starts even when deterministic import cannot identify any episode.
   const unstructured=await create('甲：我到了。\n乙：进来。\n');
