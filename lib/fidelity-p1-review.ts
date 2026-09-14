@@ -14,10 +14,24 @@ type Block = ReturnType<typeof createFidelityExternalMaterial>['blocks'][number]
 export type P1ReviewRequest = SourceAssistRequest & {reviewMode:'FULL_STRUCTURE_V1';repairAttempt?:number;batch:{firstBlock:string;lastBlock:string;index:number;total:number};baseline:unknown[]};
 export function isP1ReviewRequest(request:SourceAssistRequest):request is P1ReviewRequest {return 'reviewMode' in request && request.reviewMode==='FULL_STRUCTURE_V1';}
 export type P1ReviewWireRequest={reviewMode:'FULL_STRUCTURE_BLOCKS_V1';repairAttempt?:number;context?:Array<{block:string;before:string;after:string}>;issues?:SourceAssistRequest['issues'];sourceVersion:string;batch:P1ReviewRequest['batch'];blocks:Array<[string,string]>;before:string;baseline:Array<{episodeNumber:unknown;firstBlock:string;lastBlock:string}>};
+/** One diagnostic may cover many blocks. Repeating its code/message per line is
+ * transport duplication, not additional evidence. Preserve every block binding,
+ * distinct message, unlocated issue and any future fields without truncation. */
+export function compactP1ReviewIssues(issues:SourceAssistRequest['issues']):SourceAssistRequest['issues'] {
+ const result:SourceAssistRequest['issues']=[],groups=new Map<string,{at:number;keys:Set<string>}>();
+ for(const issue of issues){
+  if(!issue||typeof issue.code!=='string'||typeof issue.message!=='string'||!Array.isArray(issue.sectionKeys)||issue.sectionKeys.some(key=>typeof key!=='string')||Object.keys(issue).some(key=>!['code','message','sectionKeys'].includes(key))){result.push(structuredClone(issue));continue;}
+  const key=JSON.stringify([issue.code,issue.message,issue.sectionKeys.length?'SCOPED':'UNLOCATED']),group=groups.get(key);
+  if(!group){groups.set(key,{at:result.length,keys:new Set(issue.sectionKeys)});result.push({...issue,sectionKeys:[]});}
+  else for(const sectionKey of issue.sectionKeys)group.keys.add(sectionKey);
+ }
+ for(const group of groups.values())result[group.at].sectionKeys=[...group.keys];
+ return result;
+}
 /** Provider transport only. Full source coordinates remain in the local request and validator. */
 export function projectP1ReviewRequest(request:P1ReviewRequest):P1ReviewWireRequest {
  return {reviewMode:'FULL_STRUCTURE_BLOCKS_V1',sourceVersion:request.sourceVersion,batch:request.batch,
-  ...(request.repairAttempt?{repairAttempt:request.repairAttempt,context:request.sections.filter(s=>s.before||s.after).map(s=>({block:s.key,before:s.before??'',after:s.after??''}))}:{}),...(request.issues.length?{issues:request.issues}:{}),
+  ...(request.repairAttempt?{repairAttempt:request.repairAttempt,context:request.sections.filter(s=>s.before||s.after).map(s=>({block:s.key,before:s.before??'',after:s.after??''}))}:{}),...(request.issues.length?{issues:compactP1ReviewIssues(request.issues)}:{}),
   blocks:request.sections.map(s=>[s.key,s.text]),before:request.repairAttempt?'':request.sections[0]?.before??'',
   baseline:request.baseline.flatMap(value=>{
    const row=value as {episodeNumber:unknown;start:number;end:number};
@@ -27,7 +41,10 @@ export function projectP1ReviewRequest(request:P1ReviewRequest):P1ReviewWireRequ
 }
 /** Old full-request logs and new compact logs must enter the identical paid-work fingerprint. */
 export function projectP1ReviewEvidenceRequest(request:Record<string,unknown>):Record<string,unknown>{
- return request.reviewMode==='FULL_STRUCTURE_V1'?projectP1ReviewRequest(request as unknown as P1ReviewRequest):request;
+ if(request.reviewMode==='FULL_STRUCTURE_V1')return projectP1ReviewRequest(request as unknown as P1ReviewRequest);
+ // Normalize old compact logs too: changing transport density never creates
+ // new paid work for an identical source/batch/diagnostic relation.
+ return request.reviewMode==='FULL_STRUCTURE_BLOCKS_V1'&&Array.isArray(request.issues)?{...request,issues:compactP1ReviewIssues(request.issues)}:request;
 }
 /** Adjacent selected blocks share one pair of neighboring excerpts. */
 export function p1RepairSections(text:string,blocks:Block[]):SourceAssistRequest['sections']{
