@@ -45,14 +45,16 @@ async function main() {
   const cases = [
     { name: 'allowed asset preparation', sceneOnly: false, allowed: true, change: (key: string, _other: string) => ({ assets: [{ key, preparation: { mode: 'REFERENCE', note: '已确认方案乙' } }] }) },
     { name: 'authorized rename preserves omitted aliases', sceneOnly: false, allowed: true, change: (key: string) => ({ assets: [{ key, name: '南桥值守人员', preparation: { mode: 'REFERENCE', note: '已确认方案乙' } }] }) },
-    { name: 'authorized rename cannot authorize explicit aliases', sceneOnly: false, allowed: false, change: (key: string) => ({ assets: [{ key, name: '南桥值守人员', aliases: ['未经确认别名'], preparation: { mode: 'REFERENCE', note: '已确认方案乙' } }] }) },
+    { name: 'authorized rename preserves original aliases after projection', sceneOnly: false, allowed: true, change: (key: string) => ({ assets: [{ key, name: '南桥值守人员', aliases: ['未经确认别名'], preparation: { mode: 'REFERENCE', note: '已确认方案乙' } }] }) },
     { name: 'other asset in same scene', sceneOnly: false, allowed: false, change: (_key: string, other: string) => ({ assets: [{ key: other, preparation: { mode: 'REFERENCE', note: '越权方案' } }] }) },
     { name: 'same asset role', sceneOnly: false, allowed: false, change: (key: string) => ({ assets: [{ key, role: '主角' }] }) },
     { name: 'same asset aliases', sceneOnly: false, allowed: false, change: (key: string) => ({ assets: [{ key, aliases: ['未经确认别名'] }] }) },
     { name: 'restore aliases preserving authorized preparation', sceneOnly: false, allowed: true, change: (key: string) => ({ assets: [{ key, aliases: ['未经确认别名'], preparation: { mode: 'REFERENCE', note: '已确认方案乙' } }] }) },
     { name: 'alias dependency cannot be discarded', sceneOnly: false, allowed: false, change: (key: string) => ({ assets: [{ key, aliases: ['未经确认别名'], preparation: { mode: 'REFERENCE', note: '采用未经确认别名形象' } }] }) },
-    { name: 'alias correction cannot mask unauthorized role', sceneOnly: false, allowed: false, change: (key: string) => ({ assets: [{ key, aliases: ['未经确认别名'], role: '主角', preparation: { mode: 'REFERENCE', note: '已确认方案乙' } }] }) },
+    { name: 'authorized preparation preserves original role and aliases', sceneOnly: false, allowed: true, change: (key: string) => ({ assets: [{ key, aliases: ['未经确认别名'], role: '主角', preparation: { mode: 'REFERENCE', note: '已确认方案乙' } }] }) },
+    { name: 'authorized preparation preserves other asset', sceneOnly: false, allowed: true, change: (key: string, other: string) => ({ assets: [{ key, preparation: { mode: 'REFERENCE', note: '已确认方案乙' } }, { key: other, role: '主角', preparation: { mode: 'AUDIO', note: '越权方案' } }] }) },
     { name: 'allowed scene weather', sceneOnly: true, allowed: true, change: () => ({ scenes: [{ episode: 7, sceneKey: '7-1', weather: '雨后' }] }) },
+    { name: 'authorized weather preserves wrong field and other scene', sceneOnly: true, allowed: true, change: () => ({ scenes: [{ episode: 7, sceneKey: '7-1', weather: '雨后', location: '未经确认地点' }, { episode: 7, sceneKey: '7-2', weather: '雨后' }] }) },
     { name: 'scene-only cannot modify asset', sceneOnly: true, allowed: false, change: (key: string) => ({ assets: [{ key, preparation: { mode: 'REFERENCE', note: '越权方案' } }] }) },
     { name: 'scene-only wrong field', sceneOnly: true, allowed: false, change: () => ({ scenes: [{ episode: 7, sceneKey: '7-1', location: '未经确认地点' }] }) },
     { name: 'scene-only wrong scene', sceneOnly: true, allowed: false, change: () => ({ scenes: [{ episode: 7, sceneKey: '7-2', weather: '雨后' }] }) },
@@ -145,12 +147,15 @@ async function main() {
         if (test.sceneOnly) {
           assert.deepEqual(result.document.f2!.assets, fixture.before.f2!.assets);
           assert.equal(scenes[0].weather, '雨后');
+          assert.equal(scenes[0].location, fixture.scenes[0].location);
           assert.deepEqual(scenes[1], fixture.scenes[1]);
         } else {
           assert.equal(result.document.f2!.assets.find(asset => asset.key === fixture.target.key)!.preparation?.note, '已确认方案乙');
+          assert.equal(result.document.f2!.assets.find(asset => asset.key === fixture.target.key)!.role,fixture.target.role);
+          assert.deepEqual(result.document.f2!.assets.find(asset => asset.key === fixture.target.key)!.aliases,fixture.target.aliases);
           assert.deepEqual(result.document.f2!.assets.find(asset => asset.key === fixture.other.key), fixture.other);
           assert.deepEqual(scenes, fixture.scenes);
-          if(test.name==='authorized rename preserves omitted aliases') {
+          if(test.name.includes('authorized rename')) {
             const renamed=result.document.f2!.assets.find(asset=>asset.key===fixture.target.key)!;
             assert.equal(renamed.name,'南桥值守人员');
             assert.deepEqual(renamed.aliases,fixture.target.aliases,'omitted aliases do not acquire the previous name');

@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import {normalizeStageRecords,validateStageRecords} from '../lib/foundation-stage-repair';
+const a={key:'A',name:'甲',type:'CH'},bad={key:'B',name:'乙',type:'invalid'};
+const raw={format:'ASSET_CATALOG_V2',assets:[a,a,bad]};
+const saved=structuredClone(raw);
+assert.deepEqual((normalizeStageRecords(raw) as typeof raw).assets,[a,bad]);
+assert.deepEqual(raw,saved);
+const result=validateStageRecords({...raw,assets:[a,a]},v=>{assert.equal((v as typeof raw).assets.length,1);return 'ok';});assert.equal(result,'ok');
+assert.throws(()=>validateStageRecords(raw,v=>{const index=(v as typeof raw).assets.findIndex(a=>a.type==='invalid');throw Error(`assets.${index}.type`);}),/assets.2.type/,'failed normalization must diagnose original row indices');
+assert.deepEqual(normalizeStageRecords({source:['台词','台词']}),{source:['台词','台词']},'source text duplicates are never removed');
+assert.equal((normalizeStageRecords({...raw,assets:[a,{...a,name:'异名'}]}) as typeof raw).assets.length,2,'conflicting identity records cannot be silently deduped');
+console.log('PASS duplicate exact records only; original source, conflicting records and failure coordinates retained');

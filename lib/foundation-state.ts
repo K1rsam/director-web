@@ -1,6 +1,7 @@
 /** Current-version reads and deterministic episode supply. No model calls or publication. */
 import crypto from "node:crypto";
 import { readFidelityReceipt } from './fidelity-store';
+import {collectPhysicalEvidenceIssues} from './foundation-physical-evidence';
 import { fidelityReviewCandidates } from './fidelity-review-candidates';
 import type { Prisma, SceneSnapshot } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -120,7 +121,10 @@ export async function loadFoundationInputs(projectId: string, db: FoundationDb =
 }
 
 /** Structural readiness only; semantic omissions still need the independent editor. */
-export function collectFoundationPublicationIssues(output: F2Output, sourceContext?: FoundationSourceContext): FoundationIssue[] {
+export function collectFoundationPublicationIssues(output: F2Output, sourceContext?: FoundationSourceContext, sourceIndex?: SourceIndex): FoundationIssue[] {
+  // Derived diagnostics are not immutable author facts. Re-evaluate them against
+  // current source/rules rather than demanding AI rewrite correct prose to clear history.
+  if(sourceIndex&&isProductionCatalog(output))output={...output,issues:[...output.issues.filter(issue=>!issue.problem.includes('明确实体交互')),...collectPhysicalEvidenceIssues(output.assets,sourceIndex)]};
   const issues = collectF2DataIssues(output);
   if (isProductionCatalog(output) && output.format === PRODUCTION_CATALOG_FORMAT) {
     issues.push(...collectProductionRepairIssues(output));

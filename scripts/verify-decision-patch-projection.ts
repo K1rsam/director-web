@@ -1,0 +1,54 @@
+import assert from 'node:assert/strict';
+import {buildSourceIndex} from '../lib/project-foundation-contracts';
+import {requireProductionCatalogAuthor,requireProductionOptimization} from '../lib/foundation-production-contracts';
+import {applyDocumentEdit,type FoundationDocument} from '../lib/foundation-document';
+import {projectDecisionChanges} from '../lib/foundation-decision-patch';
+import type {FoundationChoiceView} from '../lib/foundation-choice-store';
+const index=buildSourceIndex([{number:1,title:null,content:'第1集\n1-1 日 外 广场\n甲：来了。\n1-2 夜 内 客厅\n乙：回家。\n'}]);
+const f2=requireProductionCatalogAuthor({format:'ASSET_CATALOG_V2',coverage:[1],assets:['甲','乙'].map(name=>({name,type:'CH',role:'配角',aliases:[],episodes:[1],sceneRefs:[{episode:1,sceneKey:'1-1'}],preparation:{mode:'REFERENCE',note:'原方案'}}))},index,[1]);
+const before:FoundationDocument={schema:'FOUNDATION_DOCUMENT_V1',revision:'before',sourceVersion:index.version,sourceContextVersion:'context',sourceHashes:{},settingsFingerprint:'settings',f1:null,f2,overviewParts:[],editorialCoverage:[],editorialTodos:[],notes:[],appliedDecisions:{},reviewedSuggestions:{},requiredDecisionIds:[],origins:[]};
+const [a,b]=f2.assets;
+const choice={id:'choice-1',revision:'v1',episodes:[1],applicationScope:{kind:'SCENES',scenes:[{episode:1,sceneKey:'1-1'}]},changeTargets:{assetKeys:[a.key],assetFields:['preparation'],sceneFields:[]}} as unknown as FoundationChoiceView;
+const scenes=[{episode:1,sceneKey:'1-1',weather:'晴',location:'广场'},{episode:1,sceneKey:'1-2',weather:'晴',location:'客厅'}];
+let validations=0;
+const run=(changes:object,choices=[choice],extra={})=>{
+ const raw={format:'FOUNDATION_OPTIMIZATION_V2',coverage:[1],changes,...extra};
+ const output=requireProductionOptimization(raw,index,[1],f2.assets),after=applyDocumentEdit(before,output,index);
+ const rawBefore=structuredClone(raw),beforeCopy=structuredClone(before);
+ const result=projectDecisionChanges({choices,scope:[1],output,before,after,beforeScenes:scenes,validateAndApply:projected=>{
+  validations++;const checked=requireProductionOptimization(projected,index,[1],f2.assets);return {output:checked,after:applyDocumentEdit(before,checked,index)};
+ }});
+ assert.deepEqual(raw,rawBefore);assert.deepEqual(before,beforeCopy);return result;
+};
+const prep={mode:'REFERENCE',note:'合法新方案'};
+const projected=run({assets:[{key:a.key,role:'主角',relationNote:'额外关系',aliases:['额外别名'],preparation:prep},{key:b.key,role:'主角',preparation:{mode:'AUDIO',note:'无权改动'}}]},[choice],{appliedDecisions:[{id:choice.id,note:'采用方案'}]});
+assert.equal(projected.after.f2!.assets[0].preparation?.note,'合法新方案');
+assert.equal(projected.after.f2!.assets[0].role,a.role);assert.deepEqual(projected.after.f2!.assets[0].aliases,a.aliases);assert.deepEqual(projected.after.f2!.assets[1],b);
+assert.ok(projected.correctedFields.includes(`assets.${b.key}.preparation`));assert.equal(validations,1);
+const weather={...choice,changeTargets:{assetKeys:[],assetFields:[],sceneFields:['weather' as const]}};
+const scoped=run({scenes:[{episode:1,sceneKey:'1-1',weather:'雨',location:'擅改场地'},{episode:1,sceneKey:'1-2',weather:'雪'}]},[weather],{appliedDecisions:[{id:weather.id,note:'采用雨景'}]});
+assert.deepEqual(scoped.output.changes.scenes,[{episode:1,sceneKey:'1-1',weather:'雨'}]);
+const variantsChoice={...choice,changeTargets:{assetKeys:[a.key],assetFields:['variants' as const],sceneFields:[]}};
+const variantResult=run({assets:[{key:a.key,role:'主角',variants:[{name:'已授权雨衣',episodes:[1],sceneRefs:[{episode:1,sceneKey:'1-1'}],preparation:{mode:'REFERENCE'}}]}]},[variantsChoice]);
+assert.equal(variantResult.after.f2!.assets[0].variants[0].name,'已授权雨衣');assert.equal(variantResult.after.f2!.assets[0].role,a.role);
+const sameFieldOtherScene={...weather,id:'weather-other',applicationScope:{kind:'SCENES' as const,scenes:[{episode:1,sceneKey:'1-2'}]},changeTargets:{assetKeys:[],assetFields:[],sceneFields:['location' as const]}};
+const noCrossing=run({scenes:[{episode:1,sceneKey:'1-1',weather:'雨',location:'不得借用另一场权限'}]},[weather,sameFieldOtherScene]);
+assert.deepEqual(noCrossing.output.changes.scenes,[{episode:1,sceneKey:'1-1',weather:'雨'}]);
+assert.throws(()=>run({assets:[{key:a.key,role:'主角'}]}),/没有可证实/,'all-unauthorized output cannot fake successful adoption');
+assert.throws(()=>run({assets:[{key:a.key,aliases:['新称呼'],preparation:{...prep,note:'依照新称呼身份'}}]}),/仍被其它/);
+assert.throws(()=>run({assets:[{key:a.key,variants:[{name:'未授权状态',episodes:[1],sceneRefs:[{episode:1,sceneKey:'1-1'}],preparation:{mode:'REFERENCE'}}],preparation:prep}]}),/引用依赖/);
+assert.throws(()=>run({removeAssetKeys:[b.key],assets:[{key:a.key,preparation:prep}]}),/新增、删除/);
+assert.throws(()=>run({assets:[{name:'新人物',type:'CH',episodes:[1],preparation:{mode:'REFERENCE'}}]}),/身份集合/);
+const other={...choice,id:'choice-other',changeTargets:{assetKeys:[b.key],assetFields:['preparation' as const],sceneFields:[]}};
+assert.throws(()=>run({assets:[{key:a.key,preparation:prep,role:'主角'},{key:b.key,role:'主角'}]},[choice,other],{appliedDecisions:[{id:other.id,note:'被裁掉的修改不能声称完成'}]}),/没有保留/);
+// Projection only tightens receipts for targets whose actual changes were cut.
+// An unaffected choice retains the existing no-change receipt contract.
+const knownDesiredB={mode:'REFERENCE',note:'原方案'};
+assert.deepEqual(before.f2!.assets[1].preparation,knownDesiredB);
+const alreadySatisfied={...other,userAnswer:'保持原方案'};
+const mixed=run({assets:[{key:a.key,preparation:prep,role:'主角'},{key:b.key,preparation:knownDesiredB}]},[choice,alreadySatisfied],{appliedDecisions:[{id:choice.id,note:'修改完成'},{id:other.id,note:'原稿已满足，无需修改'}]});
+assert.equal(mixed.output.appliedDecisions?.length,2);assert.deepEqual(mixed.after.f2!.assets[1],before.f2!.assets[1]);
+assert.throws(()=>run({scenes:[{episode:1,sceneKey:'1-1',weather:'晴',location:'被剔除'}]},[weather]),/没有可证实/,'unchanged authorized scene value is not progress');
+assert.throws(()=>run({assets:[{key:a.key,type:'PROP',preparation:prep}]}),/引用依赖/,'unauthorized identity type changes are not silently filtered');
+assert.throws(()=>run({assets:[{key:a.key,preparation:prep},{key:b.key,preparation:{mode:'DERIVE',fromKey:a.key,note:'新增依赖'}}]}),/来源依赖/);
+console.log('PASS generic field projection preserves original values and scope, validates full production output, and blocks identity dependencies/no-op/false receipts');

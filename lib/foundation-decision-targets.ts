@@ -15,6 +15,25 @@ export function decisionAssetKeys(choices: FoundationChoiceView[]): string[] | u
  return [...new Set(choices.flatMap(c=>c.changeTargets!.assetKeys))];
 }
 
+/** A field and its complete before/after usage must belong to one same choice. */
+export function decisionAssetFieldAllowed(choices: FoundationChoiceView[], key:string, field:string, old:NonNullable<FoundationDocument['f2']>['assets'][number], next:NonNullable<FoundationDocument['f2']>['assets'][number]):boolean {
+ const equal=(a:unknown,b:unknown)=>JSON.stringify(a)===JSON.stringify(b);
+ const owns=(choice:FoundationChoiceView)=>!choice.changeTargets||choice.changeTargets.assetKeys.includes(key)&&choice.changeTargets.assetFields.some(allowed=>allowed===field);
+ const covers=(choice:FoundationChoiceView,episodes:number[],refs:{episode:number;sceneKey:string}[]=[])=>{
+  const scope=readApplicationScope(choice.applicationScope,choice.episodes);
+  return (episodes.length>0||scope.kind==='GLOBAL')&&episodes.every(episode=>scopeApplies(scope,episode))&&(scope.kind!=='SCENES'||episodes.every(episode=>refs.some(ref=>ref.episode===episode))&&refs.every(ref=>scopeApplies(scope,ref.episode,ref.sceneKey)));
+ };
+ if(field==='sceneRefs'){
+  const changed=[...(old.sceneRefs??[]).filter(ref=>!(next.sceneRefs??[]).some(row=>equal(ref,row))),...(next.sceneRefs??[]).filter(ref=>!(old.sceneRefs??[]).some(row=>equal(ref,row)))];
+  return changed.length>0&&changed.every(ref=>choices.some(choice=>owns(choice)&&scopeApplies(readApplicationScope(choice.applicationScope,choice.episodes),ref.episode,ref.sceneKey)));
+ }
+ if(field==='variants')return [...new Set([...old.variants,...next.variants].map(variant=>variant.key))].every(key=>{
+  const previous=old.variants.find(variant=>variant.key===key),replacement=next.variants.find(variant=>variant.key===key);
+  return equal(previous,replacement)||choices.some(choice=>owns(choice)&&(!previous||covers(choice,previous.episodes,previous.sceneRefs))&&(!replacement||covers(choice,replacement.episodes,replacement.sceneRefs)));
+ });
+ return choices.some(choice=>owns(choice)&&covers(choice,old.usageEpisodes,old.sceneRefs)&&covers(choice,next.usageEpisodes,next.sceneRefs));
+}
+
 /** Validate the resulting document as well as patches, so omitted/copied fields cannot bypass permission. */
 export function assertDecisionChanges(choices: FoundationChoiceView[], scope: number[], output: ProductionOptimization, before: FoundationDocument, after: FoundationDocument): void {
  if (!choices.some(c=>c.changeTargets)) return; // Legacy consent retains its declared scope; never guess object bindings.
@@ -36,7 +55,7 @@ export function assertDecisionChanges(choices: FoundationChoiceView[], scope: nu
   const fields=new Set([...Object.keys(old!),...Object.keys(next!)]);
   for(const field of fields) {
    if(['variants','sceneRefs'].includes(field)||equal((old as unknown as Record<string,unknown>)[field],(next as unknown as Record<string,unknown>)[field]))continue;
-   if(!choices.some(c=>owns(c,key,field)&&coversRefs(c,old!.usageEpisodes,old!.sceneRefs)&&coversRefs(c,next!.usageEpisodes,next!.sceneRefs)))fail(`assets.${key}.${field}`);
+   if(!decisionAssetFieldAllowed(choices,key,field,old!,next!))fail(`assets.${key}.${field}`);
   }
   if(!equal(old!.sceneRefs,next!.sceneRefs)) {
    const changed=[...(old!.sceneRefs??[]).filter(r=>!(next!.sceneRefs??[]).some(n=>equal(r,n))),...(next!.sceneRefs??[]).filter(r=>!(old!.sceneRefs??[]).some(n=>equal(r,n)))];

@@ -1,6 +1,8 @@
 import { actionableFoundationIssues } from './foundation-decision-wait';
 import { snapshotFoundationPendingProgress, foundationPendingProgress } from './foundation-pending-progress';
-import { decisionSceneKeys, decisionAssetKeys, assertDecisionChanges, restoreUnauthorizedDecisionAliases } from './foundation-decision-targets';
+import { decisionSceneKeys, decisionAssetKeys } from './foundation-decision-targets';
+import {projectDecisionChanges} from './foundation-decision-patch';
+import {normalizeStageRecords,validateStageRecords,stageRepairPlanner} from './foundation-stage-repair';
 import { planFoundationIssueDispatch } from './foundation-issue-dispatch';
 import { assessFoundationWorkerHealth } from './foundation-worker-health';
 import { selectRequestChoices, selectRequestIssues } from './foundation-request-context';
@@ -187,11 +189,11 @@ function resolveWorkRepairBudget(evidence: DeliveryEvidence, work: DeliveryEvide
   const origin = work.find(entry => paidAttempts([entry]).length && typeof entry.queued.repairBudgetKey === 'string');
   return origin ? resolveRepairBudget(evidence, String(origin.queued.repairBudgetContext ?? context), null, String(origin.queued.repairBudgetKey)) : resolveRepairBudget(evidence, context, task);
 }
-function exhaustedResponse(entries: DeliveryEvidence, stage: FoundationStageCode, task?: FoundationDeliveryTask | null) {
+function exhaustedResponse(entries: DeliveryEvidence, stage: FoundationStageCode, task?: FoundationDeliveryTask | null, planner?: Parameters<typeof hasSafeDeliveryFormatRepair>[2]) {
   const paid = formatGuardAttempts(entries, task), responded = paid.filter(call => call.requestOutcome === 'RESPONDED');
   if (!responded.length || responded.some(call => call.status === 'SUCCEEDED')) return false;
   const last = responded.at(-1)!;
-  return paid.some(call => call.kind === 'FORMAT_REPAIR') || !hasSafeDeliveryFormatRepair(last, stage);
+  return paid.some(call => call.kind === 'FORMAT_REPAIR') || !hasSafeDeliveryFormatRepair(last, stage, planner);
 }
 function canRestoreSourceResponse(evidence: DeliveryEvidence, source: Awaited<ReturnType<typeof readSourcePreparation>>) {
   if (!source.sourceText) return false;
@@ -359,7 +361,7 @@ export async function getFoundationDeliveryState(projectId: string, db: Db = pri
   const suggestions = choices.pending.filter(choice => !document.requiredDecisionIds.includes(choice.id) && document.reviewedSuggestions[choice.id] !== choice.revision);
   const all = input.sourceIndex.episodes.map(episode => episode.number);
   const unapplied = choices.confirmed.filter(choice => document.appliedDecisions[choice.id] !== choice.revision && remainingChoiceScope(document, choice, 'decisionCoverage', all).length);
-  const issues = document.f2 ? collectFoundationPublicationIssues(document.f2, input.sourceContext) : [];
+  const issues = document.f2 ? collectFoundationPublicationIssues(document.f2, input.sourceContext,input.sourceIndex) : [];
   // Keep handoff readiness honest, but let F2/Q1 inspect these candidates first.
   const backgroundPending = selectFoundationFacts(cachedFoundationFacts(input.sourceIndex,input.sourceContext,document.f2),input.sourceIndex,all).unlinkedBackground;
   for (const fact of backgroundPending) issues.push({severity:'MAJOR',owner:'PROGRAM',coordinate:'source.background.'+fact.id,problem:'作者资料用途尚未明确；原文保留为候选，完成本轮整理后再确认仍影响交接的范围。',sourceRefs:[]});
@@ -560,7 +562,7 @@ export function buildDeliveryInput(stage: 'F2' | 'Q1', phase: DeliveryPhase, inp
     editorialSuggestions: suggestions.filter(choice => scopeEpisodes(readApplicationScope(choice.applicationScope,choice.episodes),scope).some(n=>scope.includes(n))), confirmedDecisions: decisions.filter(choice => scopeEpisodes(readApplicationScope(choice.applicationScope,choice.episodes),scope).some(n=>scope.includes(n))),
     pendingChoices: doc.editorialTodos.filter(todo => unresolvedOwner(todo) === 'Q1' && overlaps(scope, todo.episodes ?? []) && (!targets?.todoIds || targets.todoIds.includes(todo.id))),
     programTasks: programTodos(doc).filter(todo => overlaps(scope, todo.episodes ?? []) && (!targets?.todoIds || targets.todoIds.includes(todo.id))),
-    repairIssues: selectRequestIssues(actionableFoundationIssues(doc, [...collectFoundationPublicationIssues(doc.f2!, input.sourceContext), ...collectLightSceneIssues(doc.f2!, scenes)], phase === 'REPAIR' ? requiredChoices : []), scope, doc.f2!.assets.flatMap(asset=>[{key:asset.key,episodes:asset.usageEpisodes},...asset.variants.map(v=>({key:v.key,episodes:v.episodes}))])).filter(issue => !targets || planFoundationIssueDispatch({ doc, scenes, index: input.sourceIndex, issues: [issue] }).targets.some(target => target.items.some(item => !item.todoId && item.coordinate === issue.coordinate) && target.episodes.some(n => scope.includes(n)) && (!targets.keys.length || target.keys.some(key => targets.keys.includes(key))) && (!targets.sceneKeys?.length || !target.sceneKeys.length || target.sceneKeys.some(key => targets.sceneKeys!.includes(key))))) };
+    repairIssues: selectRequestIssues(actionableFoundationIssues(doc, [...collectFoundationPublicationIssues(doc.f2!, input.sourceContext,input.sourceIndex), ...collectLightSceneIssues(doc.f2!, scenes)], phase === 'REPAIR' ? requiredChoices : []), scope, doc.f2!.assets.flatMap(asset=>[{key:asset.key,episodes:asset.usageEpisodes},...asset.variants.map(v=>({key:v.key,episodes:v.episodes}))])).filter(issue => !targets || planFoundationIssueDispatch({ doc, scenes, index: input.sourceIndex, issues: [issue] }).targets.some(target => target.items.some(item => !item.todoId && item.coordinate === issue.coordinate) && target.episodes.some(n => scope.includes(n)) && (!targets.keys.length || target.keys.some(key => targets.keys.includes(key))) && (!targets.sceneKeys?.length || !target.sceneKeys.length || target.sceneKeys.some(key => targets.sceneKeys!.includes(key))))) };
 }
 
 async function paidContinuationBlocker(db: Db, input: Inputs, document: FoundationDocument, scenes: LightScene[], pending: FoundationChoiceView[], confirmed: FoundationChoiceView[], needsContextEdit: boolean) {
@@ -593,15 +595,16 @@ async function paidContinuationBlocker(db: Db, input: Inputs, document: Foundati
     const decisions = confirmed.filter(choice => document.appliedDecisions[choice.id] !== choice.revision && scope.some(n => remainingChoiceScope(document, choice, 'decisionCoverage', all).includes(n)));
     const delivery = isRecord(entry.request.delivery) ? entry.request.delivery : {};
     const targets = isRecord(delivery.targets) ? delivery.targets as LocalRepairTargets : undefined;
-    const fingerprint = costFingerprint(stage, { ...buildDeliveryInput(stage, entry.queued.phase as DeliveryPhase, input, document, scope, suggestions, decisions, identities, scenes, targets, pending.filter(choice => document.requiredDecisionIds.includes(choice.id))),
-      humanChoiceRegistry: selectRequestChoices((await loadFoundationChoices(db, input.project.id, input.sourceVersion, true)).registry,scope) },input.sourceContext.background);
+    const repairInput = { ...buildDeliveryInput(stage, entry.queued.phase as DeliveryPhase, input, document, scope, suggestions, decisions, identities, scenes, targets, pending.filter(choice => document.requiredDecisionIds.includes(choice.id))),
+      humanChoiceRegistry: selectRequestChoices((await loadFoundationChoices(db, input.project.id, input.sourceVersion, true)).registry,scope) };
+    const fingerprint = costFingerprint(stage, repairInput,input.sourceContext.background);
     const matches = evidence.filter(item => item.fingerprint === fingerprint && item.receiver === DELIVERY_RECEIVERS[stage] && !document.origins.some(origin => origin.runId === item.run.id));
     let canRestore = false;
     const savedSplits = stage === 'Q1' && matches.length ? await readSceneSplitPlans(input.project.id, db) : [];
     for (const saved of matches.flatMap(entry => entry.calls).reverse()) {
       try {
         validateSavedDeliveryAttempt(saved, value => {
-          value = normalizeFoundationSceneRefWire(value);
+          value = normalizeStageRecords(normalizeFoundationSceneRefWire(value));
           if (stage === 'F2') return validateLightCatalog(value, input, scope, identities);
           const output = validateLightEdit(value, input, document, scope, scenes, savedSplits, sceneParserVersions, entry.queued.phase as DeliveryPhase, targets);
           assertDeliveryReceipts(output, suggestions, decisions); return output;
@@ -610,7 +613,7 @@ async function paidContinuationBlocker(db: Db, input: Inputs, document: Foundati
       } catch { /* The same current receiver, not old status/issues, decides whether paid content is usable. */ }
     }
     if (canRestore) continue;
-    if (exhaustedResponse(matches, stage, task)) return paidFailureReason;
+    if (exhaustedResponse(matches, stage, task,stageRepairPlanner(repairInput,input.systemPrompts[stage]))) return paidFailureReason;
     const workBudget = resolveWorkRepairBudget(evidence, matches, inputBudgetFingerprint(input), task);
     if (workBudget.used >= (task?.maxRepairCalls ?? 3) && paidAttempts(matches).some(call => call.requestOutcome === 'RESPONDED')) return repairBudgetReason;
   }
@@ -780,7 +783,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       const suggestions = choices.pending.filter(choice => doc.reviewedSuggestions[choice.id] !== choice.revision && !doc.requiredDecisionIds.includes(choice.id) && scope.some(n => remainingChoiceScope(doc, choice, 'suggestionCoverage', all).includes(n)));
       const decisions = choices.confirmed.filter(choice => doc.appliedDecisions[choice.id] !== choice.revision && scope.some(n => remainingChoiceScope(doc, choice, 'decisionCoverage', all).includes(n)));
       const validateBound = (value: unknown) => {
-        const output = validate(normalizeFoundationSceneRefWire(value));
+        const output = validateStageRecords(normalizeFoundationSceneRefWire(value),validate);
         if (stage === 'Q1') {
           const edit = output as ProductionOptimization;
           assertDeliveryReceipts(edit, suggestions, decisions);
@@ -819,6 +822,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       const prompt = buildLightFoundationPrompt(stage, callInput);
       const stageConfig = PROJECT_FOUNDATION_STAGES.find(item => item.code === stage)!;
       const role = { code: stage, skill: '', systemPrompt: input.systemPrompts[stage], model: stageConfig.model, reasoningEffort: stageConfig.reasoningEffort, apiReasoner: stageConfig.apiReasoner };
+      const repairPlan = stageRepairPlanner(callInput,role.systemPrompt);
       const workFingerprint = costFingerprint(stage, callInput,input.sourceContext.background), receiverVersion = DELIVERY_RECEIVERS[stage];
       const matchingEvidence = async () => (await deliveryEvidence(db, projectId,true,input)).filter(entry => entry.fingerprint === workFingerprint && !doc.origins.some(origin => origin.runId === entry.run.id));
       const evidence = await matchingEvidence();
@@ -834,7 +838,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       }
       const currentEvidence = evidence.filter(entry => entry.receiver === receiverVersion), paid = formatGuardAttempts(currentEvidence, task);
       const resumeFrom = [...paid].reverse().find(attempt => attempt.requestOutcome === 'RESPONDED' && attempt.response);
-      if (resumeFrom && (paid.some(attempt => attempt.kind === 'FORMAT_REPAIR') || !hasSafeDeliveryFormatRepair(resumeFrom, stage))) throw new Error(paidFailureReason);
+      if (resumeFrom && (paid.some(attempt => attempt.kind === 'FORMAT_REPAIR') || !hasSafeDeliveryFormatRepair(resumeFrom, stage,repairPlan))) throw new Error(paidFailureReason);
       const callBudget = await currentRepairBudget(currentEvidence);
       if (resumeFrom && callBudget.used >= task!.maxRepairCalls) throw new Error(repairBudgetReason);
       const beforeRequest = async (attempt: DeliveryAttempt) => {
@@ -853,7 +857,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
         log: JSON.stringify({ schema: 'FOUNDATION_RUN_EVIDENCE_V1', workflow: PRODUCTION_FOUNDATION_VERSION, deliveryTaskId: taskId, runId: run.id, stageCode: stage, sourceVersion: input.sourceVersion, inputVersion: input.inputVersion, calls: attempts }) }); };
       try {
         const result = await runFoundationDeliveryCall({ stage, prompt, context: { projectId, provider: task!.provider, role, sessionMode: 'ephemeral', runId: run.id, batchToken: taskId, sourceVersion: input.sourceVersion, inputVersion: input.inputVersion, chunkIndex: 1, scope }, runner: options.stageRunner, validate: validateBound, checkCurrent,
-          resumeFrom, beforeRequest,
+          resumeFrom, beforeRequest, repairPlan,
           takeRepairBudget: async () => (await currentRepairBudget((await matchingEvidence()).filter(entry => entry.receiver === receiverVersion))).used < task!.maxRepairCalls && !formatGuardAttempts((await matchingEvidence()).filter(entry => entry.receiver === receiverVersion), task).some(attempt => attempt.kind === 'FORMAT_REPAIR'),
           onAttempt: async attempt => { if (attempt.requestOutcome === 'NOT_SENT') assertFoundationRequestBudget(attempt.systemPrompt, attempt.taskPrompt); attempts[attempt.sequence - 1] = structuredClone(attempt); await persist(); } });
         await db.pipelineRun.update({ where: { id: run.id }, data: { status: 'SUCCEEDED', finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime(), outputSummary: JSON.stringify({ deliveryTaskId: taskId, documentBasis: doc.revision, coverage: scope }) } });
@@ -956,13 +960,15 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       let correctedDecisionFields: string[] = [];
       const result = await call('Q1', phase, scope, value => {
         correctedDecisionFields = [];
-        let output=validateLightEdit(value, input, doc, scope, scenes, savedSplits, sceneParserVersions, phase, validationTargets);
+        let output:ProductionOptimization;
         if(phase==='APPLY_DECISION') {
-          const restored=restoreUnauthorizedDecisionAliases(currentDecisions,scope,output,doc,applyDocumentEdit(doc,output,input.sourceIndex));
-          if(restored.correctedFields.length) output=validateLightEdit(restored.output,input,doc,scope,scenes,savedSplits,sceneParserVersions,phase,validationTargets);
-          assertDecisionChanges(currentDecisions,scope,output,doc,applyDocumentEdit(doc,output,input.sourceIndex));
+          currentFormat(value,PRODUCTION_OPTIMIZATION_FORMAT);
+          const parsed=requireProductionOptimization(value,input.sourceIndex,scope,doc.f2!.assets);
+          const restored=projectDecisionChanges({choices:currentDecisions,scope,output:parsed,before:doc,after:applyDocumentEdit(doc,parsed,input.sourceIndex),beforeScenes:scenes,
+            validateAndApply: candidate=>{const checked=validateLightEdit(candidate,input,doc,scope,scenes,savedSplits,sceneParserVersions,phase,validationTargets);return {output:checked,after:applyDocumentEdit(doc,checked,input.sourceIndex)};}});
+          output=restored.output;
           correctedDecisionFields=restored.correctedFields;
-        }
+        } else output=validateLightEdit(value, input, doc, scope, scenes, savedSplits, sceneParserVersions, phase, validationTargets);
         return output;
       }, targets, fragment);
       if (result.output.changes.sceneSplits?.length) await previewSceneSplitPlans(projectId, db, result.output.changes.sceneSplits);
@@ -1018,7 +1024,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       }
       for (const number of work.scope) { const at = remainingEdit.indexOf(number); if (at >= 0) remainingEdit.splice(at,1); }
     }
-    const pendingWork = () => ({ issues: actionableFoundationIssues(doc, [...collectFoundationPublicationIssues(doc.f2!, input.sourceContext), ...collectLightSceneIssues(doc.f2!, scenes)], choices.pending.filter(choice => doc.requiredDecisionIds.includes(choice.id))), todos: currentTodos(doc),
+    const pendingWork = () => ({ issues: actionableFoundationIssues(doc, [...collectFoundationPublicationIssues(doc.f2!, input.sourceContext,input.sourceIndex), ...collectLightSceneIssues(doc.f2!, scenes)], choices.pending.filter(choice => doc.requiredDecisionIds.includes(choice.id))), todos: currentTodos(doc),
       suggestions: choices.pending.filter(choice => !doc.requiredDecisionIds.includes(choice.id) && doc.reviewedSuggestions[choice.id] !== choice.revision),
       decisions: choices.confirmed.filter(choice => doc.appliedDecisions[choice.id] !== choice.revision && remainingChoiceScope(doc, choice, 'decisionCoverage', all).length) });
     repairRounds: for (let round = task!.repairRounds; round < task!.maxRepairRounds; round++) {

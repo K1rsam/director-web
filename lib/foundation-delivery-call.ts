@@ -1,9 +1,13 @@
+import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from "node:util";
 import { FoundationContractError, type FoundationIssue, type FoundationStageCode } from "@/lib/project-foundation-contracts";
 import { resolveApiModel, resolveCliModel, resolveCliReasoning, runRoleByProvider, type RoleRunResult } from "@/lib/role-runner";
 import type { FoundationCallContext, FoundationStageRunner } from "@/lib/project-foundation";
 import { assertFoundationRequestBudget } from "@/lib/project-foundation";
 
+export type DeliveryLocalRepairPlan = { paths: string[]; systemPrompt: string; prompt: string; evidence: unknown };
+export type DeliveryRepairPlanner = (input: { stage: FoundationStageCode; candidate: unknown; issues: FoundationIssue[] }) => DeliveryLocalRepairPlan | null;
+type SavedLocalRepairPlan = DeliveryLocalRepairPlan & { fingerprint: string };
 type RequestOutcome = "NOT_SENT" | "RESPONDED" | "UNKNOWN";
 export type DeliveryAttempt = {
   sequence: number;
@@ -24,7 +28,7 @@ export type DeliveryAttempt = {
   issues?: FoundationIssue[];
   /** Program-derived candidate, separate from the unmodified provider response. */
   repairBase?: { version: 1; stage: FoundationStageCode; sourceVersion: string; inputVersion: string;
-    response: Partial<RoleRunResult>; data: unknown; issues: FoundationIssue[]; paths: string[] };
+    response: Partial<RoleRunResult>; data: unknown; issues: FoundationIssue[]; paths: string[]; mode?: "LOCAL_OBJECT"; localPlan?: SavedLocalRepairPlan };
   recoveryError?: string;
   normalization?: { operations: string[]; paths?: string[]; data: unknown };
 };
@@ -104,6 +108,13 @@ function savedCandidate(attempt: DeliveryAttempt): unknown {
     if (base.version !== 1) throw new Error('未知字段修复证据版本。');
     const original = savedCandidate({ ...attempt, kind: 'INITIAL', response: base.response, repairBase: undefined, normalization: undefined });
     if (!isDeepStrictEqual(original, base.data)) throw new Error('字段修复原响应与基准不一致。');
+    if (base.mode === 'LOCAL_OBJECT') {
+      const plan = base.localPlan;
+      if (!plan || !isDeepStrictEqual(checkedLocalPlan(plan, base.data, base.stage), plan) || !isDeepStrictEqual(base.paths, plan.paths) || attempt.systemPrompt !== plan.systemPrompt || attempt.taskPrompt !== plan.prompt) throw new Error('局部修复计划证据不一致。');
+      const raw = savedCandidate({ ...attempt, kind: 'INITIAL', repairBase: undefined, normalization: undefined });
+      return localRepair(base.data, raw, base.issues, base.stage, plan.paths).data;
+    }
+    if (base.localPlan) throw new Error('局部修复计划缺少类型。');
     const paths = mechanicalRepairIssues(base.issues, base.data).map(issue => safeRepairPath(issue, base.data, base.stage)).filter((path): path is JsonPath => path !== null).map(path => path.join('.'));
     if (!isDeepStrictEqual(paths, base.paths)) throw new Error('字段修复允许路径证据不一致。');
     const raw = savedCandidate({ ...attempt, kind: 'INITIAL', repairBase: undefined, normalization: undefined });
@@ -192,18 +203,39 @@ function safeRepairPath(issue: FoundationIssue, original: unknown, stage: Founda
   return path;
 }
 
-/** Paid evidence may only receive a mechanical, locatable format correction. */
-export function hasSafeDeliveryFormatRepair(attempt: DeliveryAttempt, stage: FoundationStageCode): boolean {
+/** Only program-selected object/field paths, never source or a whole stage result. */
+function checkedLocalPlan(plan: DeliveryLocalRepairPlan, candidate: unknown, stage: FoundationStageCode): SavedLocalRepairPlan {
+  if (!plan.paths.length || !plan.systemPrompt.trim() || !plan.prompt.trim() || plan.evidence === undefined) throw new Error('局部修复计划缺少范围或依据。');
+  const paths = plan.paths.map(value => {
+    const path = coordinatePath(value, candidate, stage);
+    const allowed = stage === 'F2' ? /^assets\.\d+(?:\.[\w]+)*$/ : stage === 'Q1' ? /^changes\.(?:assets|scenes|sceneSplits)\.\d+(?:\.[\w]+)*$/ : /$a/;
+    if (!path || path.join('.') !== value || !allowed.test(value) || !atPath(candidate, path).found) throw new Error('局部修复只允许明确的现有对象或字段。');
+    return value;
+  });
+  if (new Set(paths).size !== paths.length || paths.some((path,i) => paths.some((other,j) => i !== j && path.startsWith(other+'.')))) throw new Error('局部修复路径重复或重叠。');
+  const basis = { paths, systemPrompt: plan.systemPrompt, prompt: plan.prompt, evidence: structuredClone(plan.evidence) };
+  return { ...basis, fingerprint: createHash('sha256').update(JSON.stringify(basis)).digest('hex') };
+}
+function localPlanFor(planner: DeliveryRepairPlanner | undefined, candidate: unknown, issues: FoundationIssue[], stage: FoundationStageCode) {
+  const plan = planner?.({ stage, candidate: structuredClone(candidate), issues: structuredClone(issues) });
+  return plan ? checkedLocalPlan(plan, candidate, stage) : undefined;
+}
+
+/** Paid evidence can receive one mechanical field or program-planned local correction. */
+export function hasSafeDeliveryFormatRepair(attempt: DeliveryAttempt, stage: FoundationStageCode, repairPlan?: DeliveryRepairPlanner): boolean {
   if (attempt.requestOutcome !== 'RESPONDED' || !attempt.response) return false;
   let candidate: unknown;
   try { candidate = savedCandidate(attempt); } catch { return false; }
+  if (attempt.kind === 'FORMAT_REPAIR') return false;
+  try { if (localPlanFor(repairPlan, candidate, attempt.issues ?? [], stage)) return true; } catch { return false; }
   return mechanicalRepairIssues(attempt.issues ?? [], candidate).some(issue => safeRepairPath(issue, candidate, stage) !== null);
 }
 
-function localRepair(original: unknown, repaired: unknown, issues: FoundationIssue[], stage: FoundationStageCode) {
+function localRepair(original: unknown, repaired: unknown, issues: FoundationIssue[], stage: FoundationStageCode, authorizedPaths?: string[]) {
   if (original === undefined) throw new Error('JSON损坏且无法安全机械解析；已保留原响应并停止，禁止截断或补造内容。');
-  const paths = mechanicalRepairIssues(issues, original).map(issue => safeRepairPath(issue, original, stage)).filter((path): path is JsonPath => path !== null);
+  const paths = authorizedPaths ? authorizedPaths.map(path => path.split('.')) : mechanicalRepairIssues(issues, original).map(issue => safeRepairPath(issue, original, stage)).filter((path): path is JsonPath => path !== null);
   if (!paths.length) throw new FoundationContractError("无法安全定位结构修复字段，已保留原工作稿。", issues);
+  if (authorizedPaths && (!object(repaired) || repaired.format !== 'FIELD_REPAIR_V1' || !Array.isArray(repaired.patches))) throw new FoundationContractError('局部修复必须只返回允许路径的FIELD_REPAIR_V1补丁。', issues);
   const patches = object(repaired) && repaired.format === 'FIELD_REPAIR_V1' ? repaired.patches : undefined;
   if (patches !== undefined) {
     if (!Array.isArray(patches)) throw new FoundationContractError('字段修复须提供patches数组。', issues);
@@ -254,12 +286,13 @@ export async function runFoundationDeliveryCall<T>(input: {
   prompt: string;
   context: FoundationCallContext;
   validate: (data: unknown) => T;
+  repairPlan?: DeliveryRepairPlanner;
   runner?: FoundationStageRunner;
   onAttempt?: (attempt: DeliveryAttempt) => Promise<void>;
   checkCurrent?: () => Promise<void>;
   takeRepairBudget?: () => Promise<boolean>;
   maxRepairAttempts?: number;
-  /** Revalidate paid evidence first; at most its still-available format repair may be dispatched. */
+  /** Revalidate paid evidence first; at most its still-available bounded repair may be dispatched. */
   resumeFrom?: DeliveryAttempt;
   beforeRequest?: (attempt: DeliveryAttempt) => Promise<void>;
 }): Promise<{ output: T; response: RoleRunResult; attempts: DeliveryAttempt[] }> {
@@ -282,6 +315,7 @@ export async function runFoundationDeliveryCall<T>(input: {
     const maximum = Number.isFinite(input.maxRepairAttempts ?? 1) && (input.maxRepairAttempts ?? 1) >= 1 ? 1 : 0;
     let taskPrompt = input.prompt, original: unknown, originalIssues: FoundationIssue[] = [], firstIndex = 0;
     let baseResponse: Partial<RoleRunResult> | undefined;
+    let localPlan: SavedLocalRepairPlan | undefined;
     if (input.resumeFrom) {
       const saved = input.resumeFrom;
       if (saved.requestOutcome !== 'RESPONDED' || !saved.response) throw new DeliveryCallError('尚无可本地恢复的已确认响应。', saved.requestOutcome, []);
@@ -297,24 +331,26 @@ export async function runFoundationDeliveryCall<T>(input: {
       } catch (error) { failure = error instanceof SyntaxError ? new Error('JSON损坏且无法安全机械解析；已保留原响应并停止，禁止截断或补造内容。') : error; }
       const issues = failure instanceof FoundationContractError ? failure.issues : [formatIssue(message(failure))];
       const repairable = candidate !== undefined && failure instanceof FoundationContractError;
+      if (saved.kind === 'FORMAT_REPAIR') throw new DeliveryCallError(message(failure), 'RESPONDED', [], issues);
+      if (repairable) localPlan = localPlanFor(input.repairPlan, candidate, issues, input.stage);
       const repairIssues = mechanicalRepairIssues(issues, candidate).filter(issue => candidate === undefined || safeRepairPath(issue, candidate, input.stage) !== null);
-      if (!maximum || !repairable || !repairIssues.length || !input.takeRepairBudget) throw new DeliveryCallError(message(failure), 'RESPONDED', [], issues);
+      if (!maximum || !repairable || !repairIssues.length && !localPlan || !input.takeRepairBudget) throw new DeliveryCallError(message(failure), 'RESPONDED', [], issues);
       await check();
       if (!await input.takeRepairBudget()) throw new DeliveryCallError('同一输入的已付费响应仍未满足格式；修复额度已用完，已停止重复请求。', 'RESPONDED', [], issues);
       await check();
-      original = structuredClone(candidate); originalIssues = structuredClone(repairIssues); baseResponse = structuredClone(saved.response);
-      taskPrompt = repairPrompt(input.context.scope, saved, repairIssues, input.stage); firstIndex = 1;
+      original = structuredClone(candidate); originalIssues = structuredClone(localPlan ? issues : repairIssues); baseResponse = structuredClone(saved.response);
+      taskPrompt = localPlan?.prompt ?? repairPrompt(input.context.scope, saved, repairIssues, input.stage); firstIndex = 1;
     }
     for (let index = firstIndex; index <= maximum; index++) {
       invoked = false;
-      const requestRole = index && original !== undefined ? { ...role, systemPrompt: FIELD_REPAIR_SYSTEM_PROMPT } : role;
+      const requestRole = index && original !== undefined ? { ...role, systemPrompt: localPlan?.systemPrompt ?? FIELD_REPAIR_SYSTEM_PROMPT } : role;
       const requestContext = { ...input.context, role: requestRole };
       current = { sequence: attempts.length + 1, kind: index ? "FORMAT_REPAIR" : "INITIAL", scope: [...input.context.scope],
         systemPrompt: requestRole.systemPrompt ?? "", taskPrompt, provider, model, reasoningEffort, startedAt: new Date().toISOString(),
         status: "RUNNING", requestOutcome: "NOT_SENT", providerCallCount: 0 };
       if (index && baseResponse) current.repairBase = { version: 1, stage: input.stage, sourceVersion: input.context.sourceVersion,
         inputVersion: input.context.inputVersion, response: structuredClone(baseResponse), data: structuredClone(original), issues: structuredClone(originalIssues),
-        paths: originalIssues.map(issue => safeRepairPath(issue, original, input.stage)).filter((path): path is JsonPath => path !== null).map(path => path.join('.')) };
+        paths: localPlan?.paths ?? originalIssues.map(issue => safeRepairPath(issue, original, input.stage)).filter((path): path is JsonPath => path !== null).map(path => path.join('.')), ...(localPlan ? { mode: 'LOCAL_OBJECT' as const, localPlan: structuredClone(localPlan) } : {}) };
       attempts.push(current);
       if (index) assertFoundationRequestBudget(current.systemPrompt, current.taskPrompt);
       await persist();
@@ -361,7 +397,7 @@ export async function runFoundationDeliveryCall<T>(input: {
           candidate = normalized.data; operations = ["PARSED_RAW_OUTPUT", ...normalized.operations];
         }
         if (index) {
-          const merged = localRepair(original, candidate, originalIssues, input.stage);
+          const merged = localRepair(original, candidate, originalIssues, input.stage, localPlan?.paths);
           candidate = merged.data;
           if (merged.paths) current.normalization = { operations: [...operations, "ISSUE_PATH_MERGE"], paths: merged.paths, data: structuredClone(candidate) };
           if (isDeepStrictEqual(candidate, original)) throw new FoundationContractError("结构修复无进展，已保留工作稿。", originalIssues);
@@ -382,12 +418,13 @@ export async function runFoundationDeliveryCall<T>(input: {
       const repairable = candidate !== undefined && validationError instanceof FoundationContractError;
       if (!repairable || index >= maximum || !content || !input.takeRepairBudget) throw fail();
       const repairIssues = mechanicalRepairIssues(issues, candidate).filter(issue => candidate === undefined || safeRepairPath(issue, candidate, input.stage) !== null);
-      if (!repairIssues.length) throw fail();
+      localPlan = localPlanFor(input.repairPlan, candidate, issues, input.stage);
+      if (!repairIssues.length && !localPlan) throw fail();
       await check();
       if (!await input.takeRepairBudget()) throw fail();
       await check();
-      original = structuredClone(candidate); originalIssues = structuredClone(repairIssues); baseResponse = structuredClone(current.response);
-      taskPrompt = repairPrompt(input.context.scope, current, repairIssues, input.stage);
+      original = structuredClone(candidate); originalIssues = structuredClone(localPlan ? issues : repairIssues); baseResponse = structuredClone(current.response);
+      taskPrompt = localPlan?.prompt ?? repairPrompt(input.context.scope, current, repairIssues, input.stage);
     }
     throw fail();
   } catch (error) {
