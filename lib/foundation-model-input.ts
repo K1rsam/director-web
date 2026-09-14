@@ -13,12 +13,38 @@ export function compactFoundationSceneRefs(value: unknown): unknown {
       : compactFoundationSceneRefs(child)]));
 }
 
+const SCENE_TABLE_FORMAT = 'SCENE_TABLE_V1';
+const sceneTableGuide = 'columns按顺序对应每行rows，逐行等价于原scenes对象；null是显式空值，不是缺字段。人物、原文行号、场景键及未知附加字段均原样保留。输出仍使用原changes.scenes对象格式。';
+const jsonValue = (value: unknown): boolean => value === null || typeof value === 'string' || typeof value === 'boolean'
+  || typeof value === 'number' && Number.isFinite(value)
+  || Array.isArray(value) && Object.keys(value).length === value.length && value.every(jsonValue)
+  || record(value) && Object.getPrototypeOf(value) === Object.prototype && Object.values(value).every(jsonValue);
+
+/** Transport-only and opt-in by actual savings. Heterogeneous/missing fields stay objects. */
+export function compactFoundationSceneTable(value: unknown): unknown {
+  if (!Array.isArray(value) || value.length < 2 || !value.every(record) || !jsonValue(value)) return value;
+  const columns = Object.keys(value[0]);
+  if (!columns.length || !value.every(row => Object.keys(row).length === columns.length && columns.every(key => Object.hasOwn(row, key)))) return value;
+  const table = { format: SCENE_TABLE_FORMAT, columns, interpretation: sceneTableGuide, rows: value.map(row => columns.map(key => row[key])) };
+  return JSON.stringify(table).length < JSON.stringify(value).length ? table : value;
+}
+
+/** Restore the original semantic input before hashing or supplying local repair evidence. */
+export function expandFoundationSceneTable(value: unknown): unknown {
+  if (!record(value) || value.format !== SCENE_TABLE_FORMAT) return value;
+  const { columns, rows } = value;
+  if (Object.keys(value).some(key => !['format','columns','interpretation','rows'].includes(key)) || value.interpretation !== sceneTableGuide
+    || !Array.isArray(columns) || !columns.length || columns.some(key => typeof key !== 'string') || new Set(columns).size !== columns.length
+    || !Array.isArray(rows) || !rows.every(row => Array.isArray(row) && row.length === columns.length && jsonValue(row))) throw new Error('场表传输结构无效，未猜测或丢弃字段。');
+  return rows.map(row => Object.fromEntries(columns.map((key,index) => [key,row[index]])));
+}
+
 export function projectFoundationModelInput(input: unknown): unknown {
   if (!record(input)) return input;
   const compactInput = Object.fromEntries(Object.entries(input).map(([key, value]) => [key,
     key === 'crossBatchVariants' && Array.isArray(value)
       ? value.filter(row => !record(row) || Object.keys(row).some(field => !['assetKey','variants'].includes(field)) || !Array.isArray(row.variants) || row.variants.length > 0)
-      : key === 'source' || key === 'scenes' ? value : compactFoundationSceneRefs(value)]));
+      : key === 'scenes' ? compactFoundationSceneTable(value) : key === 'source' ? value : compactFoundationSceneRefs(value)]));
   if (!record(input.facts)) return compactInput;
   const facts = input.facts;
   if (facts.format === 'FACT_TABLE_V1') return compactInput;

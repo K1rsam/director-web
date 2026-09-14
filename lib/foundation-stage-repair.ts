@@ -1,3 +1,4 @@
+import {expandFoundationSceneTable} from './foundation-model-input';
 import {isDeepStrictEqual} from 'node:util';
 import type {DeliveryRepairPlanner} from './foundation-delivery-call';
 
@@ -59,7 +60,8 @@ export function stageRepairPlanner(request:Record<string,unknown>,systemPrompt:s
   if([...episodes].some(n=>!scope.includes(n)))return null;
   const source=record(request.source)&&Array.isArray(request.source.episodes)?request.source.episodes.filter(e=>record(e)&&episodes.has(Number(e.number))):[];
   if(!source.length)return null;
-  const scenes=Array.isArray(request.scenes)?request.scenes.filter(s=>record(s)&&episodes.has(Number(s.episode))):[];
+  const restoredScenes=expandFoundationSceneTable(request.scenes);
+  const scenes=Array.isArray(restoredScenes)?restoredScenes.filter(s=>record(s)&&episodes.has(Number(s.episode))):[];
   const values=objects.map(o=>o.value).filter(record),keys=new Set(values.flatMap(v=>[v.key,record(v.preparation)?v.preparation.fromKey:undefined]).filter((x):x is string=>typeof x==='string'));
   const catalog=record(request.candidates)&&record(request.candidates.f2)?request.candidates.f2:null;
   const assets=catalog&&Array.isArray(catalog.assets)?catalog.assets.filter(a=>record(a)&&(keys.has(String(a.key))||Array.isArray(a.usageEpisodes)&&a.usageEpisodes.some(n=>episodes.has(Number(n))))):[];

@@ -30,7 +30,8 @@ export async function readLightEpisodeFoundation(projectId: string, episodeNumbe
   ].filter(choice => choice.episodes.length);
   const reasons = [
     ...packet.gaps,
-    ...(packet.facts.unlinkedBackgroundCount ? [`作者资料有${packet.facts.unlinkedBackgroundCount}条证据尚未明确用途；请到接收与清洗页面查看对应原文，核对用途后处理。`] : []),
+    // Unlinked background stays in packet evidence; only actual source gaps or
+    // scoped production decisions below affect this episode's readiness.
     // A bounded excerpt is intentional; missing or nonadjacent source is a real handoff gap.
     ...(packet.boundaryContext && (!packet.boundaryContext.previousSource.sceneKey || !packet.boundaryContext.previousSource.adjacentEpisode) ? packet.boundaryContext.gaps : []),
     ...(!document.f2?.coverage.includes(episodeNumber) ? ['本集资产尚未编目。'] : []),
@@ -39,7 +40,7 @@ export async function readLightEpisodeFoundation(projectId: string, episodeNumbe
     ...(contextPending ? ['来源或制作条件仍有待处理内容。'] : []),
     ...outstanding.filter(choice => choice.episodes.includes(episodeNumber)).map(choice => `尚未采用或处理：${choice.question}`),
     ...document.editorialTodos.filter(todo => { const scope = readApplicationScope(todo.applicationScope, unresolvedEpisodeScope(todo)); return unresolvedOwner(todo) !== 'STAGE2' && scopeApplies(scope, episodeNumber); }).map(todo => todo.note),
-    ...(document.f2 ? collectFoundationPublicationIssues(document.f2,input.sourceContext).filter(issue => {
+    ...(document.f2 ? collectFoundationPublicationIssues(document.f2,input.sourceContext,input.sourceIndex).filter(issue => {
       if (!['BLOCKER','MAJOR'].includes(issue.severity)) return false;
       if (issue.sourceRefs.length) return issue.sourceRefs.some(ref=>ref.episode===episodeNumber);
       // Unlocated asset issues follow the actual identity/variant scope, not the whole project.

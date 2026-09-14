@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { PrismaClient } from '@prisma/client';
 import { writeFile } from 'node:fs/promises';
-import { projectFoundationModelInput } from '../lib/foundation-model-input';
+import { projectFoundationModelInput, expandFoundationSceneTable } from '../lib/foundation-model-input';
 import { buildLightFoundationPrompt } from '../lib/foundation-production-prompts';
 
 function restoreSceneRefs(value: any): any {
@@ -56,14 +56,14 @@ async function main() {
         if (position < 0) return [];
         let parsed: any; try { parsed = JSON.parse(prompt.slice(position + marker.length)); } catch { return []; }
         const projected: any = projectFoundationModelInput(parsed);
-        for (const key of Object.keys(parsed).filter(key => key !== 'facts')) assert.deepEqual(restoreSceneRefs(projected[key]), restoreSceneRefs(parsed[key]));
+        for (const key of Object.keys(parsed).filter(key => key !== 'facts')) assert.deepEqual(restoreSceneRefs(key === 'scenes' ? expandFoundationSceneTable(projected[key]) : projected[key]), restoreSceneRefs(key === 'scenes' ? expandFoundationSceneTable(parsed[key]) : parsed[key]));
         const oldSize = JSON.stringify(parsed).length, newSize = JSON.stringify(projected).length;
         const freshPrompt = buildLightFoundationPrompt(run.stageCode as 'F2' | 'Q1', parsed);
         return [{ runId: run.id, stage: run.stageCode, sequence: call.sequence, scope: parsed.scope, inputBefore: oldSize, inputAfter: newSize,
           factsBefore: JSON.stringify(parsed.facts).length, factsAfter: JSON.stringify(projected.facts).length,
           requestBefore: prompt.length + (call.systemPrompt?.length ?? 0), requestAfter: freshPrompt.length + (call.systemPrompt?.length ?? 0),
           savedInputChars: oldSize - newSize, savedRequestChars: prompt.length - freshPrompt.length, nonFactSemanticsRestoredExactly: true,
-          sourceAndScenesIdentical: JSON.stringify(projected.source) === JSON.stringify(parsed.source) && JSON.stringify(projected.scenes) === JSON.stringify(parsed.scenes) }];
+          sourceAndScenesRestoredExactly: JSON.stringify(projected.source) === JSON.stringify(parsed.source) && JSON.stringify(expandFoundationSceneTable(projected.scenes)) === JSON.stringify(expandFoundationSceneTable(parsed.scenes)) }];
       });
     });
     await writeFile('runtime-3008/payload-wire-projection.json', JSON.stringify({ unit: 'UTF-16 characters; offline saved-request replay, not measured model tokens', report }, null, 2));

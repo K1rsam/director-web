@@ -12,7 +12,7 @@ import { isP1ReviewRequest, P1_REVIEW_PROMPT, projectP1ReviewRequest, projectP1R
 import { selectSourceReviewCandidates } from './fidelity-review-candidates';
 import { planFoundationRequestScope } from './foundation-request-plan';
 import { normalizeFoundationSceneRefWire } from './foundation-scene-ref-wire';
-import { projectFoundationModelInput } from './foundation-model-input';
+import { projectFoundationModelInput, expandFoundationSceneTable } from './foundation-model-input';
 import { refreshFidelitySource } from './fidelity-refresh';
 import { buildFoundationFragments, fragmentSource, fragmentsComplete, type FoundationFragment } from './foundation-fragments';
 import { partitionFoundationSource, fragmentDependency, changedFragmentIds } from './foundation-fragment-work';
@@ -80,6 +80,7 @@ export function costFingerprint(stage: FoundationStageCode, input: Record<string
   // Transport compaction must not turn the same paid work into a fresh request.
   // Both legacy object inputs and the new tables are compared in the same semantic representation.
   input = normalizeFoundationSceneRefWire(projectFoundationModelInput(input)) as Record<string, unknown>;
+  if (Object.hasOwn(input, 'scenes')) input = { ...input, scenes: expandFoundationSceneTable(input.scenes) };
   const catalog = isRecord(input.candidates) && isRecord(input.candidates.f2) ? input.candidates.f2 : null;
   const { issues: _issues, humanChoices: _choices, repairItems, ...catalogFacts } = catalog ?? {};
   const scopedCost = (item: Record<string,unknown>) => isRecord(item.applicationScope) && ['SCENES','UNRESOLVED'].includes(String(item.applicationScope.kind)) ? { applicationScope:item.applicationScope } : {};
@@ -362,9 +363,8 @@ export async function getFoundationDeliveryState(projectId: string, db: Db = pri
   const all = input.sourceIndex.episodes.map(episode => episode.number);
   const unapplied = choices.confirmed.filter(choice => document.appliedDecisions[choice.id] !== choice.revision && remainingChoiceScope(document, choice, 'decisionCoverage', all).length);
   const issues = document.f2 ? collectFoundationPublicationIssues(document.f2, input.sourceContext,input.sourceIndex) : [];
-  // Keep handoff readiness honest, but let F2/Q1 inspect these candidates first.
-  const backgroundPending = selectFoundationFacts(cachedFoundationFacts(input.sourceIndex,input.sourceContext,document.f2),input.sourceIndex,all).unlinkedBackground;
-  for (const fact of backgroundPending) issues.push({severity:'MAJOR',owner:'PROGRAM',coordinate:'source.background.'+fact.id,problem:'作者资料用途尚未明确；原文保留为候选，完成本轮整理后再确认仍影响交接的范围。',sourceRefs:[]});
+  // An unlinked retrieval candidate is retained evidence, not a production
+  // decision. Real source gaps, editorial issues and choices below own blocking.
   let scenes: LightScene[] = [];
   if (document.workflow === 'LIGHT_STAGE1_V1' || !document.f2) {
     try { scenes = await loadLightScenes(projectId, db); if (document.f2) issues.push(...collectLightSceneIssues(document.f2, scenes)); }
@@ -385,7 +385,7 @@ export async function getFoundationDeliveryState(projectId: string, db: Db = pri
   const currentEdited = loaded.needsContextEdit ? document.contextCoverage?.fingerprint === createEmptyDocument(input).settingsFingerprint ? document.contextCoverage.episodes : [] : document.editorialCoverage;
   const generationFinished = !needsAssetRefresh && availableEpisodes === all.length && all.every(n => currentEdited.includes(n)) && !loaded.needsContextEdit;
   const dispatch = planFoundationIssueDispatch({ doc: document, scenes, index: input.sourceIndex, issues });
-  const blocked = generationFinished && backgroundPending.length && !dispatch.targets.length ? '本轮资料已整理，仍有作者资料用途未明确；请在来源页面确认这些范围后再继续，已保留生成结果。' : generationFinished && !unapplied.length && !suggestions.length && !dispatch.targets.length && dispatch.backendItems.length ? `整理遇到技术问题，已暂停重复请求：${dispatch.backendItems[0].problem}`
+  const blocked = generationFinished && !unapplied.length && !suggestions.length && !dispatch.targets.length && dispatch.backendItems.length ? `整理遇到技术问题，已暂停重复请求：${dispatch.backendItems[0].problem}`
     : task?.repairHalt && [repairFingerprint(input, document, scenes), legacyRepairFingerprint(input, document, scenes)].includes(task.repairHalt.fingerprint) ? task.repairHalt.reason : null;
   const continuationBlocker = !busy && !unknownOutcome && !requiredChoices.length ? blocked ?? await paidContinuationBlocker(db, input, document, scenes, choices.pending, choices.confirmed, loaded.needsContextEdit) : null;
   return { document, previousDocument: loaded.previousDocument, task, totalEpisodes: all.length, availableEpisodes, editedEpisodes: all.filter(n => currentEdited.includes(n)).length,

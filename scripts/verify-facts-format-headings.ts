@@ -12,7 +12,7 @@ const background = facts.facts.filter(fact => fact.evidence.domain === 'CONTEXT'
 assert.deepEqual(background.filter(fact => fact.kind === 'FORMAT').map(fact => fact.statement.trim()), headings, 'only exact standalone format headings are excluded from unresolved facts');
 for (const text of prose) assert.notEqual(background.find(fact => fact.statement.trim() === text)!.kind, 'FORMAT', text);
 const selected = selectFoundationFacts(facts, index, [1]);
-assert(selected.unlinkedBackgroundCount > 0, 'real anonymous background still blocks unresolved handoff');
+assert(selected.unlinkedBackgroundCount > 0, 'real anonymous background remains available as unlinked evidence');
 assert(selected.backgroundCandidates.some(fact => fact.statement.includes('蓝色笔记')));
 assert(selected.backgroundCandidates.some(fact => fact.statement.includes('尚未关联的匿名背景')));
 assert(selected.backgroundCandidates.every(fact => !headings.includes(fact.statement.trim())));
