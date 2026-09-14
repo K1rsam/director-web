@@ -67,6 +67,20 @@ roles.assets[0].aliases = ['小主'];
 roles.assets[0].variants = [{ key: 'wound', name: '伤态参考', episodes: [2], note: '第二集起受伤', preparation: { mode: 'DERIVE', fromKey: '主角本人' } }, { key: 'inline-wound', name: '临时伤态', episodes: [1], note: '当场擦伤', preparation: { mode: 'INLINE' } }];
 freeze(roles);
 const roleBefore = JSON.stringify(roles);
+const { buildSourceIndex } = require('../lib/project-foundation-contracts') as typeof import('../lib/project-foundation-contracts');
+const { requireProductionCatalogAuthor, projectProductionCatalog } = require('../lib/foundation-production-contracts') as typeof import('../lib/foundation-production-contracts');
+const plannedIndex = buildSourceIndex([{ number: 1, title: '准备', content: '1-1 日 内 家中\n甲准备次日潜水，随后仍穿日常装出门。' }]);
+const planned = requireProductionCatalogAuthor({ format: 'ASSET_CATALOG_V2', coverage: [1], assets: [{
+  name: '甲', type: 'CH', role: '男主', episodes: [1], sceneRefs: [{ episode: 1, sceneKey: '1-1' }], preparation: { mode: 'REFERENCE' },
+  variants: [{ name: '潜水用途', episodes: [], sceneRefs: [], note: '准备用途；原文尚未出现实际穿戴，不绑定使用场。', preparation: { mode: 'DERIVE' } }]
+}] }, plannedIndex, [1]);
+const plannedVersion = planned.assets[0].variants[0];
+assert.deepEqual(plannedVersion.episodes, []);
+assert.deepEqual(plannedVersion.sceneRefs, []);
+assert.deepEqual(projectProductionCatalog(planned, [1]).assets[0].variants[0].sceneRefs, [], '交接投影不把准备证据变成实际场引用');
+assert.equal(filterAssetCatalog(planned, { query: '', episode: '', type: '', view: 'all', layer: 'variant' }).length, 1, '准备用途保留可查看');
+assert.equal(filterAssetCatalog(planned, { query: '', episode: '1', type: '', view: 'all', layer: 'variant' }).length, 0, '准备造型不冒充本集实际使用');
+assert.equal(filterAssetCatalog(planned, { query: '', episode: '', type: '', view: 'queue', layer: 'variant' }).length, 0, '未定位准备不自动列入必备图队列');
 const leads = { ...catalog, assets: ['男主', '女主', '主角', '配角'].map((role, i) => ({
   ...asset(`lead-${i}`, 'CH', 'REFERENCE'), role,
   variants: [{ key: `lead-${i}-v`, name: '工作服', episodes: [1], note: '', preparation: { mode: 'INLINE' as const } }]
