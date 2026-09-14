@@ -55,3 +55,44 @@ export function assertDecisionChanges(choices: FoundationChoiceView[], scope: nu
  }
  if(scope.some(n=>!choices.some(c=>scopeEpisodes(readApplicationScope(c.applicationScope,c.episodes),scope).includes(n))))fail('coverage');
 }
+
+/** Only aliases are independently reversible. Every other permission failure is
+ * still fatal, and validation must run again on the complete corrected output. */
+export function restoreUnauthorizedDecisionAliases(choices: FoundationChoiceView[], scope: number[], output: ProductionOptimization, before: FoundationDocument, after: FoundationDocument): { output: ProductionOptimization; correctedFields: string[] } {
+ const unchanged={output,correctedFields:[] as string[]};
+ if(!choices.length||choices.some(c=>!c.changeTargets)||!before.f2||!after.f2)return unchanged;
+ if(output.changes.removeAssetKeys?.length||output.changes.mergeAssets?.length||output.changes.sceneSplits?.length)return unchanged;
+ const equal=(a:unknown,b:unknown)=>JSON.stringify(a)===JSON.stringify(b);
+ // Identity changes/new entities can depend on aliases. Never filter these.
+ if(after.f2.assets.length!==before.f2.assets.length||after.f2.assets.some(asset=>{
+  const old=before.f2!.assets.find(a=>a.key===asset.key);
+  return !old||old.name!==asset.name||old.type!==asset.type;
+ }))return unchanged;
+ const corrected=structuredClone(output),fields:string[]=[];
+ for(const asset of after.f2.assets){
+  const old=before.f2.assets.find(a=>a.key===asset.key)!;
+  if(equal(old.aliases,asset.aliases))continue;
+  const aliasOnly=structuredClone(before);
+  aliasOnly.f2!.assets.find(a=>a.key===asset.key)!.aliases=structuredClone(asset.aliases);
+  try { assertDecisionChanges(choices,scope,{...output,changes:{}} as ProductionOptimization,before,aliasOnly); continue; } catch { /* This alias edit is not authorized. */ }
+  const patch=corrected.changes.assets?.find(a=>a.key===asset.key);
+  if(!patch||patch.aliases===undefined)return unchanged;
+  const added=asset.aliases.filter(alias=>!old.aliases.includes(alias));
+  const otherChanges=structuredClone(output.changes);
+  // Ignore only the candidate alias field itself. References anywhere else,
+  // including other aliases, are conservatively treated as dependencies.
+  const samePatch=otherChanges.assets?.find(a=>a.key===asset.key);
+  if(samePatch)delete samePatch.aliases;
+  const mentions=(value:unknown):boolean=>typeof value==='string'?added.some(alias=>alias.length>0&&value.includes(alias)):Array.isArray(value)?value.some(mentions):!!value&&typeof value==='object'&&Object.values(value).some(mentions);
+  if(mentions(otherChanges))return unchanged;
+  patch.aliases=structuredClone(old.aliases);
+  fields.push(`assets.${asset.key}.aliases`);
+ }
+ if(fields.length){
+  const remaining=structuredClone(after.f2.assets);
+  for(const asset of remaining)if(fields.includes(`assets.${asset.key}.aliases`))asset.aliases=structuredClone(before.f2.assets.find(a=>a.key===asset.key)!.aliases);
+  // Do not turn an entirely unauthorized answer into a successful no-op receipt.
+  if(equal(remaining,before.f2.assets))return unchanged;
+ }
+ return fields.length?{output:corrected,correctedFields:fields}:unchanged;
+}

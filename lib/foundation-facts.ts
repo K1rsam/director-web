@@ -14,19 +14,39 @@ const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(va
 // Whole-line format markers only: an episode number followed by narrative text
 // remains evidence, including anonymous background and episode-zero prose.
 const PURE_EPISODE_HEADING = /^(?:#{1,6}\s*)?(?:(?:第\s*)?(?:[0-9０-９]+|[零〇一二两三四五六七八九十百千]+)\s*集|(?:episode\s+|ep\.?\s*)(?:[0-9０-９]+|zero|one|two|three|four|five|six|seven|eight|nine|ten))\s*[:：｜|－—-]*\s*$/i;
-const CONTEXT_SECTION_HEADING = /^(?:#{1,6}\s*)?(?:第\s*[0零〇]\s*集[\s｜|:：-]*)?(?:作者资料|人物小传|人物设定|世界观设定|背景资料|附录)[\s:：｜|]*$/;
+const CONTEXT_SECTION_HEADING = /^(?:#{1,6}\s*)?(?:第\s*[0零〇]\s*集[\s｜|:：-]*)?(?:作者资料|人物小传|人物设定|世界观设定|背景资料|附录|故事梗概|(?:[0-9０-９零〇一二两三四五六七八九十百千]+\s*集\s*)?段纲)[\s:：｜|]*$/;
+const sectionHeading = (text: string) => {
+  const value = text.replace(/^#{1,6}\s*/, '').trim();
+  const wrapped = value.match(/^(?:【([^【】]+)】|\[([^\[\]]+)\]|（([^（）]+)）|\(([^()]+)\))$/);
+  return CONTEXT_SECTION_HEADING.test(wrapped ? wrapped.slice(1).find(part => part !== undefined)!.trim() : value);
+};
+/** A title is formatting only with explicit title-field evidence elsewhere in
+ * the same source section; never infer it from a short first narrative line. */
+const declaredSourceTitles = (text: string) => new Set([...text.matchAll(/^\s*(?:剧名|剧本名称|剧本名|作品名称|上线备用剧名|备用剧名)\s*[:：]\s*([^\r\n]+)$/gm)].flatMap(match => {
+  const value=match[1].trim(), quoted=[...value.matchAll(/《([^《》\r\n]+)》/g)].map(item=>item[1]);
+  return quoted.length ? quoted : [value];
+}).filter(title=>title.length<=60&&!/[：:△▲。！？!?“”「」]/.test(title)));
+export function isFoundationSourceFormatLine(text: string, start: number, end: number): boolean {
+  if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<0||end<=start||end>text.length)return false;
+  const line=[...text.matchAll(/[^\r\n]+(?:\r\n|\r|\n)?/g)].find(match=>match.index===start&&start+match[0].length===end);
+  if(!line)return false;
+  const statement=line[0].trim(),first=text.search(/\S/);
+  return PURE_EPISODE_HEADING.test(statement)||sectionHeading(statement)||start<=first&&first<end&&declaredSourceTitles(text).has(statement);
+}
 /** Includes every nonempty source line, regardless of whether an image asset exists. */
 export function buildFoundationFacts(index: SourceIndex, context: FoundationSourceContext, catalog: ProductionCatalog | null) {
   const sourceTexts = [...context.background.map(s => s.text), ...index.episodes.map(e => e.content)];
   const names = [...new Set([...(catalog?.assets ?? []).flatMap(a => [a.name, ...a.aliases]), ...sourceTexts.flatMap(text => [...text.matchAll(/(?:^|[\r\n])\s*([^：:\r\n]{1,20}?)(?:[（(](?:OS|VO|旁白|画外音)[）)])?\s*[：:]/gi)].map(m => m[1].trim()))])].filter(Boolean);
   const facts: FoundationFact[] = [];
   const scan = (text: string, origin: Pick<FoundationFact['evidence'], 'domain' | 'episode' | 'sectionKey'>) => {
+    const titles=origin.domain==='CONTEXT'?declaredSourceTitles(text):new Set<string>();
+    const firstNonempty=text.search(/\S/);
     for (const match of text.matchAll(/[^\r\n]+(?:\r\n|\r|\n)?/g)) {
       const statement = match[0], start = match.index, end = start + statement.length;
       if (!statement.trim()) continue;
       const speaker = statement.match(/^\s*([^：:\r\n]{1,30}?)(?:[（(](?:OS|VO|旁白|画外音)[）)])?\s*[：:]/i)?.[1]?.trim();
       const subjects = [...new Set([...names.filter(name => statement.includes(name)), ...(speaker ? [speaker] : [])])];
-      const formatHeading = origin.domain === 'CONTEXT' && (PURE_EPISODE_HEADING.test(statement.trim()) || CONTEXT_SECTION_HEADING.test(statement.trim()));
+      const formatHeading = origin.domain === 'CONTEXT' && (PURE_EPISODE_HEADING.test(statement.trim()) || sectionHeading(statement.trim()) || start<=firstNonempty && firstNonempty<end && titles.has(statement.trim()));
       const globalRule = !formatHeading && origin.domain === 'CONTEXT' && /世界|规则|设定|所有|任何|不得|禁止|只有|必须|每逢|每当|无法|不能|永远/.test(statement);
       const kind = formatHeading ? 'FORMAT' : globalRule ? 'SETTING' : speaker ? 'UTTERANCE' : /受伤|伤口|绷带|骨折|换上|换下|脱下|穿着|痊愈|恢复|交给|递给|归还/.test(statement) ? 'STATE'
         : /父亲|母亲|兄弟|姐妹|夫妻|师父|师徒|父子|母子/.test(statement) ? 'RELATION' : origin.domain === 'CONTEXT' ? 'CONTEXT' : 'SETTING';

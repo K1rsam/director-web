@@ -1,6 +1,6 @@
 import { actionableFoundationIssues } from './foundation-decision-wait';
 import { snapshotFoundationPendingProgress, foundationPendingProgress } from './foundation-pending-progress';
-import { decisionSceneKeys, decisionAssetKeys, assertDecisionChanges } from './foundation-decision-targets';
+import { decisionSceneKeys, decisionAssetKeys, assertDecisionChanges, restoreUnauthorizedDecisionAliases } from './foundation-decision-targets';
 import { planFoundationIssueDispatch } from './foundation-issue-dispatch';
 import { assessFoundationWorkerHealth } from './foundation-worker-health';
 import { selectRequestChoices, selectRequestIssues } from './foundation-request-context';
@@ -28,6 +28,7 @@ import { prisma } from './prisma';
 import { foundationJson, loadFoundationInputs, collectFoundationPublicationIssues } from './foundation-state';
 import { createEmptyDocument, loadFoundationDocument, loadLatestStoredFoundationDocument, saveFoundationDocument, mergeDocumentF2, applyDocumentEdit, type FoundationDocument } from './foundation-document';
 import { loadFoundationSourceContext } from './foundation-source';
+import { comparableFoundationFactRows, type FactSourceEvidence } from './foundation-fact-fingerprint';
 import { loadFoundationChoices, syncFoundationChoices, confirmFoundationChoiceInTransaction, FoundationChoiceError, type FoundationChoiceView } from './foundation-choice-store';
 import { runFoundationDeliveryCall, recoverSavedDeliveryAttempts, DeliveryCallError, hasSafeDeliveryFormatRepair, validateSavedDeliveryAttempt, type DeliveryAttempt } from './foundation-delivery-call';
 import { buildLightFoundationPrompt, LIGHT_ASSET_METHOD_VERSION, PRODUCTION_FOUNDATION_VERSION } from './foundation-production-prompts';
@@ -72,7 +73,7 @@ function structuredCallInput(prompt: unknown): Record<string, unknown> | null {
   }
   return null;
 }
-export function costFingerprint(stage: FoundationStageCode, input: Record<string, unknown>): string {
+export function costFingerprint(stage: FoundationStageCode, input: Record<string, unknown>, sourceEvidence: readonly FactSourceEvidence[] = []): string {
   if (stage === 'F1') return hash(stableFacts({ stage, sections: input.sections, sourceLength: input.sourceLength }));
   // Transport compaction must not turn the same paid work into a fresh request.
   // Both legacy object inputs and the new tables are compared in the same semantic representation.
@@ -111,8 +112,9 @@ export function costFingerprint(stage: FoundationStageCode, input: Record<string
   const factInput = isRecord(input.facts) ? input.facts : {};
   const factRows = Array.isArray(factInput.rows) ? factInput.rows : [];
   const factGroups = isRecord(factInput.groups) ? factInput.groups : {};
+  const backgroundEvidence = Array.isArray(input.backgroundSources) ? input.backgroundSources.filter((part): part is FactSourceEvidence => isRecord(part)&&typeof part.key==='string'&&typeof part.text==='string') : sourceEvidence;
   const comparableFacts = Object.fromEntries(['current','background','backgroundCandidates','historicalStates'].map(key => [key,
-    Array.isArray(factGroups[key]) ? (factGroups[key] as number[]).map(index=>factRows[index]) : []]));
+    comparableFoundationFactRows(Array.isArray(factGroups[key]) ? (factGroups[key] as number[]).map(index=>factRows[index]) : [],backgroundEvidence)]));
   return hash(stableFacts({ stage, scope: sortedFacts(input.scope), source: isRecord(input.source) ? input.source.episodes : input.source, scenes: input.scenes, project,
     ...(Array.isArray(input.sourceReviewCandidates)&&input.sourceReviewCandidates.length?{sourceReviewCandidates:sortedFacts(input.sourceReviewCandidates)}:{}),
     facts: comparableFacts, fragment: isRecord(input.fragment) ? { episode: input.fragment.episode, start: input.fragment.start, end: input.fragment.end } : undefined, backgroundSources: Array.isArray(input.backgroundSources) ? input.backgroundSources.map(part => isRecord(part) ? part.text : part) : [], boundaryContext: input.boundaryContext, registry: sortedFacts(registry),
@@ -134,25 +136,27 @@ function inputBudgetFingerprint(input: Inputs) {
 }
 // Cache parsing only after exact persisted strings match; running/UNKNOWN evidence is never time-cached.
 const evidenceParseCache=new Map<string,{inputSummary:string|null;log:string|null;parsed:ReturnType<typeof parseDeliveryEvidence>}>();
-function parseDeliveryEvidence(run:{stageCode:string;inputSummary:string|null;log:string|null}){
+function parseDeliveryEvidence(run:{stageCode:string;inputSummary:string|null;log:string|null},background:readonly FactSourceEvidence[]=[]){
  const queued=foundationJson(run.inputSummary),log=foundationJson(run.log),calls=log.calls;
  if(typeof queued.deliveryTaskId!=='string'||!Array.isArray(calls))return null;
  const stage=run.stageCode as FoundationStageCode,original=calls.find(call=>call.kind==='INITIAL')??calls[0],request=structuredCallInput(original?.taskPrompt);
  return {queued,calls:recoverSavedDeliveryAttempts(calls as DeliveryAttempt[],stage),request,repairHalt:isRecord(log.repairHalt)?log.repairHalt:null,
   repairRoundCompleted:Number.isSafeInteger(log.repairRoundCompleted)&&Number(log.repairRoundCompleted)>0?Number(log.repairRoundCompleted):0,
-  fingerprint:!calls.some(call=>call.kind==='INITIAL')&&calls.some(call=>call.kind==='FORMAT_REPAIR')&&typeof queued.workFingerprint==='string'?queued.workFingerprint:stage==='F1'&&queued.receiverVersion==='FIDELITY_SOURCE_ACCEPT_V2'&&request?hash({receiver:'FIDELITY_SOURCE_ACCEPT_V2',request:projectP1ReviewEvidenceRequest(request as unknown as Record<string,unknown>)}):request?costFingerprint(stage,request):typeof queued.workFingerprint==='string'?queued.workFingerprint:null,
+  fingerprint:!calls.some(call=>call.kind==='INITIAL')&&calls.some(call=>call.kind==='FORMAT_REPAIR')&&typeof queued.workFingerprint==='string'?queued.workFingerprint:stage==='F1'&&queued.receiverVersion==='FIDELITY_SOURCE_ACCEPT_V2'&&request?hash({receiver:'FIDELITY_SOURCE_ACCEPT_V2',request:projectP1ReviewEvidenceRequest(request as unknown as Record<string,unknown>)}):request?costFingerprint(stage,request,background):typeof queued.workFingerprint==='string'?queued.workFingerprint:null,
   receiver:typeof queued.receiverVersion==='string'?queued.receiverVersion:LEGACY_DELIVERY_RECEIVERS[stage]};
 }
-async function deliveryEvidence(db: Db, projectId: string, fresh = true) {
+async function deliveryEvidence(db: Db, projectId: string, fresh = true, context?: Pick<Inputs,'sourceVersion'|'sourceContext'>) {
   return (await loadIndexedFoundationRuns(db, projectId, { fresh }))
     .flatMap(run => {
-      const key=`P1_BLOCKS_V1:${projectId}:${run.id}:${run.stageCode}`,cached=evidenceParseCache.get(key);
+      const key=`FORMAT_FACTS_V1:${projectId}:${run.id}:${run.stageCode}`,cached=evidenceParseCache.get(key);
       const parsed=cached&&cached.inputSummary===run.inputSummary&&cached.log===run.log?cached.parsed:parseDeliveryEvidence(run);
       if(!cached||cached.inputSummary!==run.inputSummary||cached.log!==run.log){
        if(evidenceParseCache.size>=32)evidenceParseCache.delete(evidenceParseCache.keys().next().value!);
        evidenceParseCache.set(key,{inputSummary:run.inputSummary,log:run.log,parsed});
       }
-      return parsed?[{run,...parsed}]:[];
+      const contextual=parsed&&context&&parsed.queued.sourceVersion===context.sourceVersion&&parsed.request&&run.stageCode!=='F1'&&parsed.calls.some(call=>call.kind==='INITIAL')
+        ? {...parsed,fingerprint:costFingerprint(run.stageCode as FoundationStageCode,parsed.request,context.sourceContext.background)}:parsed;
+      return contextual?[{run,...contextual}]:[];
     });
 }
 type DeliveryEvidence = Awaited<ReturnType<typeof deliveryEvidence>>;
@@ -560,7 +564,7 @@ export function buildDeliveryInput(stage: 'F2' | 'Q1', phase: DeliveryPhase, inp
 }
 
 async function paidContinuationBlocker(db: Db, input: Inputs, document: FoundationDocument, scenes: LightScene[], pending: FoundationChoiceView[], confirmed: FoundationChoiceView[], needsContextEdit: boolean) {
-  const evidence = await deliveryEvidence(db, input.project.id), all = input.sourceIndex.episodes.map(episode => episode.number);
+  const evidence = await deliveryEvidence(db, input.project.id,true,input), all = input.sourceIndex.episodes.map(episode => episode.number);
   const sceneParserVersions = await readSceneParserVersions(input.project.id, db, input.sourceIndex.episodes);
   const halted = evidence.find(entry => entry.repairHalt && [repairFingerprint(input, document, scenes), legacyRepairFingerprint(input, document, scenes)].includes(String(entry.repairHalt.fingerprint)));
   if (typeof halted?.repairHalt?.reason === 'string') return halted.repairHalt.reason;
@@ -590,7 +594,7 @@ async function paidContinuationBlocker(db: Db, input: Inputs, document: Foundati
     const delivery = isRecord(entry.request.delivery) ? entry.request.delivery : {};
     const targets = isRecord(delivery.targets) ? delivery.targets as LocalRepairTargets : undefined;
     const fingerprint = costFingerprint(stage, { ...buildDeliveryInput(stage, entry.queued.phase as DeliveryPhase, input, document, scope, suggestions, decisions, identities, scenes, targets, pending.filter(choice => document.requiredDecisionIds.includes(choice.id))),
-      humanChoiceRegistry: selectRequestChoices((await loadFoundationChoices(db, input.project.id, input.sourceVersion, true)).registry,scope) });
+      humanChoiceRegistry: selectRequestChoices((await loadFoundationChoices(db, input.project.id, input.sourceVersion, true)).registry,scope) },input.sourceContext.background);
     const matches = evidence.filter(item => item.fingerprint === fingerprint && item.receiver === DELIVERY_RECEIVERS[stage] && !document.origins.some(origin => origin.runId === item.run.id));
     let canRestore = false;
     const savedSplits = stage === 'Q1' && matches.length ? await readSceneSplitPlans(input.project.id, db) : [];
@@ -815,8 +819,8 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       const prompt = buildLightFoundationPrompt(stage, callInput);
       const stageConfig = PROJECT_FOUNDATION_STAGES.find(item => item.code === stage)!;
       const role = { code: stage, skill: '', systemPrompt: input.systemPrompts[stage], model: stageConfig.model, reasoningEffort: stageConfig.reasoningEffort, apiReasoner: stageConfig.apiReasoner };
-      const workFingerprint = costFingerprint(stage, callInput), receiverVersion = DELIVERY_RECEIVERS[stage];
-      const matchingEvidence = async () => (await deliveryEvidence(db, projectId)).filter(entry => entry.fingerprint === workFingerprint && !doc.origins.some(origin => origin.runId === entry.run.id));
+      const workFingerprint = costFingerprint(stage, callInput,input.sourceContext.background), receiverVersion = DELIVERY_RECEIVERS[stage];
+      const matchingEvidence = async () => (await deliveryEvidence(db, projectId,true,input)).filter(entry => entry.fingerprint === workFingerprint && !doc.origins.some(origin => origin.runId === entry.run.id));
       const evidence = await matchingEvidence();
       const unknownRetry = evidence.some(entry => entry.run.id === task!.unknownRetry?.runId) ? task!.unknownRetry : undefined;
       // Task ids, document-only revisions and prompt wording never make the same paid response new work.
@@ -949,9 +953,16 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       const currentDecisions = phase === 'APPLY_DECISION' ? choices.confirmed.filter(choice => doc.appliedDecisions[choice.id] !== choice.revision && scope.some(n => remainingChoiceScope(doc, choice, 'decisionCoverage', all).includes(n))) : [];
       const currentDecisionScenes = phase === 'APPLY_DECISION' ? decisionSceneKeys(currentDecisions, scope) : undefined;
       const validationTargets = targets && currentDecisionScenes?.length ? {...targets, sceneKeys: currentDecisionScenes} : targets;
+      let correctedDecisionFields: string[] = [];
       const result = await call('Q1', phase, scope, value => {
-        const output=validateLightEdit(value, input, doc, scope, scenes, savedSplits, sceneParserVersions, phase, validationTargets);
-        if(phase==='APPLY_DECISION') assertDecisionChanges(currentDecisions,scope,output,doc,applyDocumentEdit(doc,output,input.sourceIndex));
+        correctedDecisionFields = [];
+        let output=validateLightEdit(value, input, doc, scope, scenes, savedSplits, sceneParserVersions, phase, validationTargets);
+        if(phase==='APPLY_DECISION') {
+          const restored=restoreUnauthorizedDecisionAliases(currentDecisions,scope,output,doc,applyDocumentEdit(doc,output,input.sourceIndex));
+          if(restored.correctedFields.length) output=validateLightEdit(restored.output,input,doc,scope,scenes,savedSplits,sceneParserVersions,phase,validationTargets);
+          assertDecisionChanges(currentDecisions,scope,output,doc,applyDocumentEdit(doc,output,input.sourceIndex));
+          correctedDecisionFields=restored.correctedFields;
+        }
         return output;
       }, targets, fragment);
       if (result.output.changes.sceneSplits?.length) await previewSceneSplitPlans(projectId, db, result.output.changes.sceneSplits);
@@ -962,6 +973,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
         if (!fragmentsComplete(input.sourceIndex, fragments, progress().q1).includes(fragment.episode)) doc.editorialCoverage = doc.editorialCoverage.filter(n => n !== fragment.episode);
       }
       doc.origins.push({ stage: 'Q1', runId: result.runId, scope, kind: 'delivery' });
+      if(correctedDecisionFields.length) doc.notes.push(`程序纠正（原始响应保留，runId=${result.runId}）：还原未授权字段 ${correctedDecisionFields.join('、')}；授权修改已重新完整校验。`);
       pendingSplits = result.output.changes.sceneSplits ?? []; pendingPatches = result.output.changes.scenes ?? [];
       if (loaded.needsContextEdit && phase === 'EDIT' && (!fragment || doc.editorialCoverage.includes(fragment.episode))) doc.contextCoverage = { fingerprint: targetSettings, episodes: union(doc.contextCoverage?.fingerprint === targetSettings ? doc.contextCoverage.episodes : [], scope) };
       const refreshed = await syncChoices('Q1', result.output.humanChoices ?? []);

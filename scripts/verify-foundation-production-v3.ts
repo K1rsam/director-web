@@ -141,7 +141,7 @@ check('identity merges preserve useful preparation and both notes; explicit conf
   const fixed = apply(f1, conflictBase, [q({ mergeAssets: operation, assets: [asset('甲', [1], { key: operation[0].keepKey, preparation: { mode: 'AUDIO', note: '明确改用' }, variants: [{ name: '共同变体', episodes: [1], note: '明确说明', preparation: { mode: 'AUDIO' } }] })] })], index).f2.assets[0];
   assert.deepEqual(fixed.preparation, { mode: 'AUDIO', note: '明确改用' }); assert.equal(fixed.variants[0].note, '明确说明');
 });
-check('V2 reveals and Q1 renames preserve prior names and aliases without self alias', () => {
+check('V2 author history remains compatible; Q1 omitted aliases preserve the existing field', () => {
   const first = author(wire([1], [asset('编号144', [1], { aliases: ['鼠王'] })]), index, [1]);
   const key = first.assets[0].key;
   const second = author(wire([2, 3], [asset('费仲', [2, 3], { key, aliases: ['费仲', '老人'] })]), index, [2, 3], first.assets);
@@ -149,7 +149,9 @@ check('V2 reveals and Q1 renames preserve prior names and aliases without self a
   assert.equal(merged.assets[0].name, '费仲');
   assert.deepEqual(new Set(merged.assets[0].aliases), new Set(['编号144', '鼠王', '老人']));
   const updated = apply(f1, merged, [q({ assets: [asset('真名', [1], { key })] })], index).f2.assets[0];
-  assert.equal(updated.name, '真名'); assert.ok(updated.aliases.includes('费仲') && updated.aliases.includes('编号144')); assert.ok(!updated.aliases.includes('真名'));
+  assert.equal(updated.name, '真名'); assert.deepEqual(updated.aliases, merged.assets[0].aliases); assert.ok(!updated.aliases.includes('真名'));
+  const explicit = apply(f1, merged, [q({ assets: [asset('真名', [1], { key, aliases: ['明确别名'] })] })], index).f2.assets[0];
+  assert.ok(explicit.aliases.includes('明确别名') && explicit.aliases.includes('费仲'), 'explicit alias authoring retains the existing V2 semantics and remains subject to caller permissions');
 });
 check('merge compares equivalent redirected parent sources before deciding a conflict', () => {
   const variants = [{ name: '同一伤态', episodes: [1], preparation: { mode: 'DERIVE' } }];

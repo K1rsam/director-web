@@ -542,6 +542,9 @@ export function applyProductionOptimizations(f1: F1Output | null, f2: Production
       const key = asset.key ?? prior?.key ?? (v2 ? scopedKey(changedScope, i, [...assets.values()], asset, index.version) : assetKey(asset.type, asset.name));
       const name = asset.key === undefined ? prior?.name ?? asset.name : asset.name;
       const updated = v2 ? canonicalV2(asset, key, prior) : canonical(asset, key, name, asset.aliases ?? prior?.aliases ?? []);
+      // An optimization patch that omits aliases preserves that field, including
+      // during an authorized rename. Historical names remain in document history.
+      if (v2 && prior && asset.aliases === undefined) updated.aliases = [...prior.aliases];
       const keepVisualBasis = (previous: Preparation | undefined, proposed: Preparation | undefined, episodes: number[]) => {
         if (proposed?.mode !== 'AUDIO' || !previous || !['REFERENCE', 'DERIVE'].includes(previous.mode) || !episodes.some(episode => !changedScope.includes(episode))) return proposed;
         return { ...previous, note: joinNotes(previous.note, '本批声音出现不撤销其它集的可视备图基线；仅完整适用范围核对后可改为纯声音。') };
