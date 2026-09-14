@@ -699,7 +699,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
               if (attempt.kind === 'INITIAL' ? previous.some(call => call.requestOutcome === 'RESPONDED') : previous.some(call => call.kind === 'FORMAT_REPAIR')) throw new Error(paidFailureReason);
               if (attempt.kind === 'FORMAT_REPAIR') await checkRepairBudget((await matchingEvidence()).filter(entry => entry.receiver === receiverVersion));
             }, takeRepairBudget: async () => (await currentRepairBudget((await matchingEvidence()).filter(entry => entry.receiver === receiverVersion))).used < task!.maxRepairCalls && !formatGuardAttempts((await matchingEvidence()).filter(entry => entry.receiver === receiverVersion), task).some(attempt => attempt.kind === 'FORMAT_REPAIR') });
-          await db.pipelineRun.updateMany({ where: { id: run.id, status: 'RUNNING' }, data: { status: 'SUCCEEDED', finishedAt: new Date(), outputSummary: JSON.stringify({ plan: result.output }) } });
+          await db.pipelineRun.updateMany({ where: { id: run.id, status: 'RUNNING' }, data: { status: 'SUCCEEDED', finishedAt: new Date(), durationMs: Date.now() - (run.startedAt ?? run.createdAt).getTime(), outputSummary: JSON.stringify({ plan: result.output }) } });
           await update({ ...await deliveryCounts(db, projectId, taskId), repairBudgetUsed: (await currentRepairBudget()).used }); return { plan: result.output, runId: run.id };
         } catch (error) {
           if (error instanceof DeliveryCallError) attempts = error.attempts;

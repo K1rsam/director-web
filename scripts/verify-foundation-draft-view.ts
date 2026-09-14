@@ -37,7 +37,7 @@ function fixture(data: unknown = draftData(), rawOutput = "完整原始输出尾
       f2: { ...common, id: "old-f2", runId: "old-F2-run", stageCode: "F2", upstreamSnapshotIds: { f1: "old-f1" }, output: { coverage: [1], assets: [], episodes: [{ number: 1, context: "旧候选正文独立保留", assetKeys: [] }], issues: [] } }
     },
     review: null, approved: null,
-    latestRuns: { f1: run("F1"), f2: { ...run("F2"), status: "FAILED", log: JSON.stringify({
+    historyRuns: [], latestRuns: { f1: run("F1"), f2: { ...run("F2"), status: "FAILED", log: JSON.stringify({
       schema: "FOUNDATION_RUN_EVIDENCE_V1", runId: "F2-run", stageCode: "F2", sourceVersion: "source", inputVersion: "input", upstreamSnapshotIds: { f1: "f1" },
       calls: [{ sequence: 1, scope: Array.from({ length: 28 }, (_, index) => index + 1), status: "FAILED", response: { data, rawOutput, stdout: privateText, stderr: privateText } }],
       stdout: privateText, stderr: privateText

@@ -33,23 +33,23 @@ function displayFixture(): Parameters<typeof buildFoundationStageViews>[0] {
       f2: { ...common, id: "f2", runId: "F2-run", stageCode: "F2", upstreamSnapshotIds: { f1: "f1" }, output: { coverage: [1], assets: [{ key: "hero", name: "人物一", type: "CH", aliases: [], description: "后台身份说明", sourceRefs: [], appearances: [] }], episodes: [{ number: 1, context: "F2消费者上下文", assetKeys: ["hero"] }], issues: [] } }
     },
     review: { ...common, id: "q1", runId: "Q1-run", stageCode: "Q1", upstreamSnapshotIds: { f1: "f1", f2: "f2" }, output: { coverage: [1], verdict: "READY", summary: "独审结论正文", issues: [] } },
-    approved: null, latestRuns: { f1: run("F1"), f2: run("F2"), q1: run("Q1") }
+    approved: null, historyRuns: [], latestRuns: { f1: run("F1"), f2: run("F2"), q1: run("Q1") }
   };
 }
 
 check("运行、失败、拒收与同源旧Q1不会显示当前通过", async () => {
   const state = displayFixture();
   const views = (value: typeof state) => buildFoundationStageViews(value);
-  assert.deepEqual(views(state).map((stage) => stage.status), ["当前候选就绪", "当前候选就绪", "当前已批准"]);
+  assert.deepEqual(views(state).map((stage) => stage.status), ["执行成功", "执行成功", "执行成功"]);
   const stale = { ...state, planningReady: false, assetsReady: false, reviewReady: false, ready: false };
-  assert.ok(views(stale).every((stage) => stage.status === "旧版／待重跑"));
-  assert.equal(views({ ...stale, latestRuns: { ...state.latestRuns, f1: { ...state.latestRuns.f1!, status: "RUNNING" } } })[0].status, "进行中");
-  assert.equal(views({ ...stale, latestRuns: { ...state.latestRuns, f1: { ...state.latestRuns.f1!, status: "FAILED", error: "模型失败" } } })[0].status, "失败");
-  assert.equal(views({ ...stale, latestRuns: { ...state.latestRuns, f1: { ...state.latestRuns.f1!, status: "CANCELED" } } })[0].status, "已停止");
+  assert.ok(views(stale).every((stage) => stage.status === "执行成功"), "批准链未就绪不能把成功记录变成待重跑");
+  assert.equal(views({ ...stale, historyRuns: [], latestRuns: { ...state.latestRuns, f1: { ...state.latestRuns.f1!, status: "RUNNING" } } })[0].status, "进行中");
+  assert.equal(views({ ...stale, historyRuns: [], latestRuns: { ...state.latestRuns, f1: { ...state.latestRuns.f1!, status: "FAILED", error: "模型失败" } } })[0].status, "失败");
+  assert.equal(views({ ...stale, historyRuns: [], latestRuns: { ...state.latestRuns, f1: { ...state.latestRuns.f1!, status: "CANCELED" } } })[0].status, "已停止");
   const rejected = { ...state, reviewReady: false, ready: false, review: { ...state.review!, output: { ...state.review!.output, verdict: "BLOCKED" as const } } };
-  assert.equal(views(rejected)[2].status, "拒收");
+  assert.equal(views(rejected)[2].status, "执行成功", "运行成功与成果是否批准分别表达");
   const rerunF2 = { ...rejected, candidates: { ...state.candidates, f2: { ...state.candidates.f2!, id: "new-f2" } } };
-  assert.equal(views(rerunF2)[2].status, "旧版／待重跑", "同源重跑F2后，旧Q1不再是当前拒收");
+  assert.equal(views(rerunF2)[2].status, "执行成功", "没有运行版本不匹配证据时，不因批准链变化要求重跑");
   const { FoundationViewer } = await import("@/app/projects/[projectId]/foundation-viewer");
   const html = renderToStaticMarkup(createElement(FoundationViewer, { state: rerunF2 }));
   for (const text of ["后台全剧理解", "F1消费者上下文", "后台身份说明", "F2消费者上下文", "独审结论正文", "历史审查"]) assert.ok(html.includes(text), `未呈现${text}`);
@@ -70,7 +70,7 @@ check("上游重跑后的旧错误标为历史，当前失败和活动执行仍�
   state.latestRuns.f2!.createdAt = new Date(2000);
   state.latestRuns.q1 = { ...state.latestRuns.q1!, createdAt: new Date(1000), status: "CANCELED", error: "旧F1整数错误", inputSummary: JSON.stringify({ sourceVersion: "source", inputVersion: "input" }) };
   const old = buildFoundationStageViews(state)[2];
-  assert.equal(old.status, "旧版／待重跑");
+  assert.equal(old.status, "已停止 · 历史版本");
   assert.equal(old.error, "旧F1整数错误", "历史错误正文不能删掉");
   assert.equal(old.errorHistorical, true);
   assert.equal(old.errorCreatedAt, new Date(1000).toISOString());
@@ -93,8 +93,8 @@ check("F2描述来源并存及资料缺口不能被Q1 READY掩盖", async () => 
   ];
   state.candidates.f2!.output.episodes[0].backgroundRefs = [{ key: "hero", purpose: "只供背景理解，不声称在场", sourceRefs: [{ episode: 0, startLine: 1, endLine: 2 }] }];
   const views = buildFoundationStageViews(state);
-  assert.match(views.find((view) => view.stageCode === "F2")!.status, /待补/);
-  assert.match(views.find((view) => view.stageCode === "Q1")!.status, /未发布/);
+  assert.equal(views.find((view) => view.stageCode === "F2")!.status, "执行成功");
+  assert.equal(views.find((view) => view.stageCode === "Q1")!.status, "执行成功");
   const { FoundationViewer } = await import("@/app/projects/[projectId]/foundation-viewer");
   const html = renderToStaticMarkup(createElement(FoundationViewer, { state }));
   for (const text of ["第一批完整身份说明", "后续片段新增依据", "第2集 L3–4", "只供背景理解，不声称在场", "必须补本集状态", "资料缺口（程序检查）"]) assert.ok(html.includes(text), `遗漏${text}`);

@@ -6,8 +6,9 @@ import { composeShotCells, normalizeDialogueEntriesForSource } from "@/lib/shot-
 import { buildSourcePackage, PIPELINE_STAGE_CONFIGS } from "@/lib/episode-pipeline-contracts";
 import { foundationJson, getFoundationState } from "@/lib/foundation-state";
 import { isRecord, PROJECT_FOUNDATION_STAGES } from "@/lib/project-foundation-contracts";
-import { summarizeFoundationRunUsage } from "@/lib/foundation-run-usage";
+import { aggregateFoundationUsage, summarizeFoundationRunUsage } from "@/lib/foundation-run-usage";
 
+import {foundationHistoryRuns,foundationHistoryDuration} from "./foundation-run-history";
 /** 岗位条与流水线契约同源，避免手工维护漂移（E0 叙事节奏 → E5 审查总控）。 */
 export const ROLE_STAGES = PIPELINE_STAGE_CONFIGS.map((stage) => [stage.code, stage.name] as const);
 
@@ -259,24 +260,19 @@ export function buildFoundationStageViews(state: Awaited<ReturnType<typeof getFo
       || (stage.code === "Q1" && state.candidates.f2 && typeof upstreamIds.f2 === "string" && upstreamIds.f2 !== state.candidates.f2.id)
       || upstreamRuns.some((upstream) => upstream && upstream.createdAt.getTime() > run.createdAt.getTime())
     ));
-    const reviewCurrent = state.assetsReady && run?.status === "SUCCEEDED" && state.review?.runId === run.id
-      && state.review?.sourceVersion === state.sourceVersion && state.review?.inputVersion === state.inputVersion
-      && state.review?.upstreamSnapshotIds.f1 === state.candidates.f1?.id && state.review?.upstreamSnapshotIds.f2 === state.candidates.f2?.id;
+    // This table reports execution evidence. Approval/readiness flags do not turn
+    // a successful execution into stale work or a requirement to purchase a rerun.
+    const recordedStatus = run?.status === "SUCCEEDED" ? "执行成功"
+      : run?.status === "CANCELED" ? "已停止" : run?.status === "FAILED" ? "失败" : run ? "状态未识别" : "未开始";
     const status = run?.status === "RUNNING" ? "进行中" : run?.status === "QUEUED" ? "排队中"
-      : staleRun ? "旧版／待重跑"
-      : run?.status === "CANCELED" ? "已停止" : run?.status === "FAILED" ? "失败"
-        : stage.code === "F2" && state.assetsReady && !state.dataReady ? "候选待补资料"
-          : stage.code === "Q1" && reviewCurrent && state.review?.output.verdict === "READY" && !state.dataReady ? "资料待补，未发布"
-        : stage.code === "Q1" && reviewCurrent && state.review?.output.verdict === "REPAIR" ? state.finalOutput ? "已整理 · 有待定项" : "需返修"
-          : stage.code === "Q1" && reviewCurrent && state.review?.output.verdict === "BLOCKED" ? "拒收"
-            : current ? stage.code === "Q1" ? state.finalOutput ? "已完成优化" : "当前已批准" : state.candidates.f1?.workflow ? "已整理" : "当前候选就绪"
-              : stage.code === "Q1" && state.reviewReady ? "已审待发布"
-                : run ? "旧版／待重跑" : "未开始";
-    const calls = foundationJson(run?.log).calls;
+      : staleRun ? `${recordedStatus} · 历史版本` : recordedStatus;
+    const history = foundationHistoryRuns(run, "historyRuns" in state ? state.historyRuns : []);
+    const durationMs = foundationHistoryDuration(history);
+    const calls = history.flatMap(row => { const calls=foundationJson(row.log).calls; return Array.isArray(calls)?calls:[]; });
     const efforts = Array.isArray(calls) ? [...new Set(calls.filter(isRecord).map(call => call.reasoningEffort).filter((effort): effort is string => typeof effort === "string" && effort.length > 0))] : [];
     return { stageCode: stage.code, uiStage: stage.uiStage, name: stage.name, current, status,
-      usage: summarizeFoundationRunUsage(run?.log), durationMs: run?.durationMs ?? null, reasoningEffort: efforts.length ? efforts.join(" / ") : null,
-      model: run?.model ?? "默认模型", duration: displayDuration(run?.durationMs ?? null), error: run?.error ?? null,
+      usage: aggregateFoundationUsage(history.map(row=>summarizeFoundationRunUsage(row.log))), durationMs, reasoningEffort: efforts.length ? efforts.join(" / ") : null,
+      model: run?.model ?? "默认模型", duration: displayDuration(durationMs), error: run?.error ?? null,
       errorHistorical: staleRun, errorCreatedAt: run?.createdAt.toISOString() ?? null };
   });
 }

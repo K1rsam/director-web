@@ -164,3 +164,5 @@ P1 合入修复：[整集归属覆盖纯标题](3008-P1-OWNERSHIP-MERGE-FIX.md)�
 岗位交接补修：[P1 派生集索引迁移](3008-P1-DERIVED-INDEX-MIGRATION.md)。验收覆盖隔离数据库的结构保存、连续刷新、历史保留和人工资料保护，并修正技术暂停的状态显示。
 
 正式导入契约补修：[P1 精简来源快照兼容](3008-P1-COMPACT-SOURCE-FIX.md)。新增从正式 importParsedProject 创建项目开始的组合回归，避免手工测试快照与实际存储格式不一致。
+
+历史显示：[运行状态与岗位耗时](3008-HISTORY-STATUS-DURATION.md)。成功执行与工作稿就绪分开，同任务内分批耗时和用量一致汇总。

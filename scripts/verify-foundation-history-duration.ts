@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {foundationHistoryRuns,foundationRunDuration,foundationHistoryDuration} from '../lib/foundation-run-history';
+const run=(id:string,task='task-a')=>({id,stageCode:'F1',status:'SUCCEEDED',inputSummary:JSON.stringify({deliveryTaskId:task}),log:null,durationMs:null,startedAt:new Date(1000),finishedAt:new Date(11000)});
+const first=run('one'),last={...run('two'),startedAt:new Date(20000),finishedAt:new Date(55000)};
+const grouped=foundationHistoryRuns(last,[first,last,run('old','old-task'),{...run('other-role'),stageCode:'F2'},first]);
+assert.equal(grouped.length,2);assert.equal(foundationHistoryDuration(grouped),45000);
+assert.deepEqual(foundationHistoryRuns({...first,inputSummary:'{}'},[last]),[{...first,inputSummary:'{}'}]);
+assert.equal(foundationRunDuration({...first,durationMs:4321}),4321);
+assert.equal(foundationRunDuration({...first,status:'RUNNING'}),null);
+assert.equal(foundationRunDuration({...first,finishedAt:new Date(0)}),null);
+assert.equal(foundationRunDuration({...first,startedAt:null,finishedAt:null,log:JSON.stringify({calls:[{startedAt:'2026-01-01T00:00:00Z',finishedAt:'2026-01-01T00:00:03Z'},{startedAt:'2026-01-01T00:00:04Z',finishedAt:'2026-01-01T00:00:05Z'}]})}),5000);
+assert.equal(foundationHistoryDuration([first,{...last,status:'RUNNING'}]),null);
+assert.equal(foundationRunDuration({...first,startedAt:null,log:'bad'}),null);
+assert.equal(foundationHistoryDuration([]),null);
+console.log('PASS stage/task batch grouping, duplicate ID exclusion, stored/date/log duration fallback, incomplete/active records remain unknown');

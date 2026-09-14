@@ -80,15 +80,20 @@ async function main() {
     message: "fixture", sourceVersion: "", inputVersion: "", methodVersions: { F1: "fixture", F2: "fixture", Q1: "fixture" },
     sourceContext: { version: "fixture", background: [], unresolved: [], issues: [], complete: true, notices: [], coverage: "COMPLETE" },
     recoveries: { F1: null, F2: null, Q1: null }, candidates: { f1: null, f2: null }, review: null, finalOutput: null, approved: null,
-    latestRuns: { f1: savedRun, f2: null, q1: null }, f2Recovery: null
+    historyRuns: [], latestRuns: { f1: savedRun, f2: null, q1: null }, f2Recovery: null
   };
   const runs = buildFoundationStageViews(state);
+  const batchOne={...savedRun,id:'batch-1',inputSummary:JSON.stringify({deliveryTaskId:'one-task'}),durationMs:null,startedAt:new Date(0),finishedAt:new Date(45000)};
+  const batchTwo={...batchOne,id:'batch-2',startedAt:new Date(46000),finishedAt:new Date(82000)};
+  const grouped=buildFoundationStageViews({...state,historyRuns:[batchOne,batchTwo,{...batchOne,id:'old-task',inputSummary:JSON.stringify({deliveryTaskId:'older'})}],latestRuns:{...state.latestRuns,f1:batchTwo}})[0];
+  assert.equal(grouped.durationMs,81000);assert.equal(grouped.duration,'1分21秒');
+  assert.equal(grouped.usage.newRequests,partial.newRequests!*2,'tokens and duration use the same task batches');
   assert.deepEqual(runs[0].usage, partial);
   assert.equal(runs[0].reasoningEffort, "high");
   assert.equal(runs[0].model, "recorded-model");
   assert.ok(!JSON.stringify(runs).includes("stdout"));
   const html = renderToStaticMarkup(createElement(FoundationUsage, { runs }));
-  for (const label of ["输入", "其中缓存", "输出", "其中推理", "总量", "新请求尝试", "复用", "耗时", "部分用量未返回", "已记录合计", "上方显示的岗位记录合计，不是全部历史重试/账户账单"]) assert.ok(html.includes(label), label);
+  for (const label of ["输入", "其中缓存", "输出", "其中推理", "总量", "新请求尝试", "复用", "耗时", "部分用量未返回", "已记录合计", "每个岗位汇总其最近任务内的所有已记录批次"]) assert.ok(html.includes(label), label);
   assert.ok(!html.includes("stdout"));
   const unknownHtml = renderToStaticMarkup(createElement(FoundationUsage, { runs: [{ ...runs[0], usage: optional }] }));
   assert.ok(unknownHtml.includes("未返回"));

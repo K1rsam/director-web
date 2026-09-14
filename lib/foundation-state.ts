@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { readFidelityReceipt } from './fidelity-store';
 import {collectPhysicalEvidenceIssues} from './foundation-physical-evidence';
 import { fidelityReviewCandidates } from './fidelity-review-candidates';
-import type { Prisma, SceneSnapshot } from "@prisma/client";
+import type { Prisma, SceneSnapshot, PipelineRun } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { FOUNDATION_CLI_INSTRUCTION_PROFILE } from "@/lib/codex-cli";
 import { foundationChoiceCondition, loadFoundationChoices } from "@/lib/foundation-choice-store";
@@ -154,7 +154,7 @@ export async function getFoundationState(projectId: string, db: FoundationDb = p
     return { preprocessReady: false, planningReady: false, assetsReady: false, dataReady: false, dataIssues: [] as FoundationIssue[], reviewReady: false, ready: false, draftComplete: false,
       message: `原文资料尚不可用：${error.message}`, sourceVersion: "", inputVersion: "", methodVersions: {} as Record<FoundationStageCode, string>,
       sourceContext, recoveries: { F1: null, F2: null, Q1: null } as FoundationRecoveries,
-      candidates: { f1: null, f2: null }, review: null, finalOutput: null as { f1: F1Output; f2: ProductionCatalog } | null, approved: null, latestRuns: { f1: null, f2: null, q1: null }, f2Recovery: null as F2RecoveryPreview | null };
+      candidates: { f1: null, f2: null }, review: null, finalOutput: null as { f1: F1Output; f2: ProductionCatalog } | null, approved: null, latestRuns: { f1: null, f2: null, q1: null }, historyRuns:[] as PipelineRun[], f2Recovery: null as F2RecoveryPreview | null };
   }
   const [snapshots, runs] = await Promise.all([
     db.sceneSnapshot.findMany({ where: { projectId, sceneKey: { in: ["FOUNDATION_SOURCE", "FOUNDATION_F1", "FOUNDATION_F2", "FOUNDATION_Q1", "FOUNDATION_APPROVED"] } }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] }),
@@ -205,7 +205,7 @@ export async function getFoundationState(projectId: string, db: FoundationDb = p
   const recoveries = await (await import("@/lib/project-foundation")).previewFoundationRecoveries(projectId, input,
     { ...(planningReady && f1 ? { f1 } : {}), ...(assetsReady && f2 ? { f2 } : {}) }, runs, db);
   const f2Recovery = recoveries.F2;
-  return { preprocessReady, planningReady, assetsReady, dataReady, dataIssues, reviewReady, ready, draftComplete, message, sourceVersion: input.sourceVersion, inputVersion: input.inputVersion, methodVersions: input.methodVersions, sourceContext: input.sourceContext, recoveries, candidates: { f1, f2 }, review, finalOutput, approved, latestRuns, f2Recovery };
+  return { preprocessReady, planningReady, assetsReady, dataReady, dataIssues, reviewReady, ready, draftComplete, message, sourceVersion: input.sourceVersion, inputVersion: input.inputVersion, methodVersions: input.methodVersions, sourceContext: input.sourceContext, recoveries, candidates: { f1, f2 }, review, finalOutput, approved, latestRuns, historyRuns:runs, f2Recovery };
 }
 
 export async function requireApprovedFoundation(projectId: string, db: FoundationDb = prisma): Promise<FoundationApproval> {

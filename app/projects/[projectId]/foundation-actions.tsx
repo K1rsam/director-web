@@ -45,7 +45,7 @@ export function FoundationUsage({ runs }: { runs: FoundationRunView[] }) {
         <tfoot><tr><th scope="row">已记录合计</th>{cells(aggregate)}<td>{duration}</td><td>{status(aggregate)}</td></tr></tfoot>
       </table>
     </div>
-    <p>上方显示的岗位记录合计，不是全部历史重试/账户账单；岗位可能来自不同批次。耗时为岗位运行时间之和，不是整批墙钟时间。</p>
+    <p>每个岗位汇总其最近任务内的所有已记录批次；不同岗位可能来自不同任务，旧任务不混入。耗时为批次运行时间之和，不是整剧墙钟时间；运行中或记录不全时不显示完整耗时。</p>
     <p>缓存包含在输入中，推理包含在输出中；总量＝输入＋输出。复用不重计原请求；新请求尝试指外层岗位调用，不是内部 HTTP 次数。未返回不代表未收费，已记录 0 不保证存储没有遗漏。</p>
     {runs.some(run => run.reasoningEffort) ? <p>已记录推理强度：{runs.filter(run => run.reasoningEffort).map(run => `${run.name} ${run.reasoningEffort}`).join(" · ")}</p> : null}
   </details>;
