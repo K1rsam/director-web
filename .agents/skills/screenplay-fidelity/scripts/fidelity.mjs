@@ -31,8 +31,15 @@ function canonical(source, options={}) {
   const contextPattern=/^(?:#{1,6}\s*)?(?:【)?(?:作者资料|故事大纲|人物小传|人物设定|世界观设定|背景资料|附录)(?:】)?(?:\s|[：:｜|]|$)/;
   const nonempty=rows.filter(r=>r.text.trim());
   const firstText=nonempty[0]?.text.trim()??'';
-  const nextHeading=nonempty[1]?.text.trim().match(episodePattern);
-  const titleBeforeContext=firstText.length<=60 && !/[。！？!?“”「」△]/.test(firstText) && !episodePattern.test(firstText) && !contextPattern.test(firstText) && !!(nextHeading && /^[零〇0]+$/.test(nextHeading[1]) && !nextHeading[2].trim() && contextPattern.test(nonempty[2]?.text.trim()??''));
+  let afterZeroHeadings=1;
+  while(afterZeroHeadings<nonempty.length){
+    const heading=nonempty[afterZeroHeadings].text.trim().match(episodePattern);
+    if(!heading || !/^[零〇0]+$/.test(heading[1]) || heading[2].trim())break;
+    afterZeroHeadings++;
+  }
+  const contextStart=nonempty[1],contextField=nonempty[afterZeroHeadings];
+  const confirmedContext=!!(contextStart && contextField && decisionsCopy.some(d=>d.kind==='context' && d.start<=contextStart.start && d.end>=contextField.end));
+  const titleBeforeContext=firstText.length<=60 && !/[。！？!?“”「」△]/.test(firstText) && !episodePattern.test(firstText) && !contextPattern.test(firstText) && afterZeroHeadings>1 && (contextPattern.test(contextField?.text.trim()??'') || confirmedContext);
   const numberValue=value=>{if(/^\d+$/.test(value))return Number(value);let total=0,digit=0;for(const c of value){const n='零一二三四五六七八九'.indexOf(c);if(n>=0)digit=n;else if(c==='〇')digit=0;else if(c==='两')digit=2;else if(c==='十'||c==='百'||c==='千'){total+=(digit||1)*({十:10,百:100,千:1000}[c]);digit=0;}else return NaN;}return total+digit;};
   const headings=rows.flatMap(row=>{const ep=row.text.trim().match(episodePattern);return ep?[{start:row.start,number:numberValue(ep[1])}]:[];});
   const decisionEpisode=d=>{

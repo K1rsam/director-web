@@ -55,3 +55,24 @@ test('资料前短文档标题归资料，动作对白长稿不能整体吞掉',
  const r=normalize('山海图鉴：收容所开局\n\n第零集\n故事大纲：\n资料\n第一集\n1-1门厅 夜 内\n甲：走。');assert.equal(r.validation.issues.length,0);assert.match(r.contextText,/山海图鉴/);
  for(const opening of ['△他推门而入。','张三：走！','正文'.repeat(80)]){const text=`${opening}\n第零集\n故事大纲：\n资料\n`;const x=normalize(text);assert.equal(x.segments[0].kind,'body');assert.equal(x.segments.map(s=>s.text).join(''),text);assert.ok(x.validation.issues.length);}
 });
+
+test('短标题跨连续等价零集只在明确资料证据前归资料',()=>{
+ for(const headings of ['第 0 集\n\n第零集','第零集\n第〇集\n第0集']){
+  const text=`山海图鉴\n\n${headings}\n故事大纲：\n资料\n第一集\n1-1门厅 夜 内\n甲：走。`;
+  const r=normalize(text);assert.equal(r.segments[0].kind,'context');assert.equal(r.segments.map(s=>s.text).join(''),text);
+ }
+ for(const heading of ['第零集\n第0集','第零集\n第一集','第零集\n第0集 序章']){
+  const text=`山海图鉴\n${heading}\n0-1门厅 夜 内\n甲：走。`;
+  const r=normalize(text);assert.equal(r.segments[0].kind,'body');assert.ok(r.segments.some(s=>s.kind==='body'&&s.text.includes('甲：走。')));assert.equal(r.segments.map(s=>s.text).join(''),text);
+ }
+});
+
+test('已采纳资料决定须完整覆盖连续零集和下一字段才能识别标题',()=>{
+ const text='山海图鉴\n\n第 0 集\n\n第零集\n\n剧本类型（题材）：\n都市\n第一集\n1-1门厅 夜 内\n甲：走。';
+ const start=text.indexOf('第 0 集'),field=text.indexOf('剧本类型'),fieldEnd=text.indexOf('\n',field)+1,end=text.indexOf('第一集');
+ for(const [a,b,expected] of [[start,end,'context'],[start,fieldEnd,'context'],[text.indexOf('第零集'),end,'body'],[start,field,'body']]){
+  const r=normalize(text,{decisions:[{start:a,end:b,kind:'context',note:'已采纳资料归属'}]});
+  assert.equal(r.segments[0].kind,expected);assert.equal(r.segments.map(s=>s.text).join(''),text);
+ }
+ const r=normalize(text,{decisions:[{start,end,kind:'body',episodeNumber:0,note:'真实序章'}]});assert.equal(r.segments[0].kind,'body');
+});

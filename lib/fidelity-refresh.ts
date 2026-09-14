@@ -14,11 +14,13 @@ export async function refreshFidelitySource(projectId:string, db:PrismaClient, o
  if(!current){if(options.expectedReceiptId||options.expectedSourceId)throw new Error('来源凭据已变化，未保存旧判断。');return {changed:false};}
  if(options.expectedReceiptId&&current.snapshot.id!==options.expectedReceiptId||options.expectedSourceId&&current.sourceSnapshot?.id!==options.expectedSourceId)throw new Error('来源或决定已变化，未保存旧判断。');
  if(!current.sourceSnapshot || current.receipt.sourceImportId && current.receipt.sourceImportId!==current.sourceSnapshot.id)throw new Error('保真来源与凭据版本不一致，未覆盖原文。');
- if(current.receipt.result.contractVersion===CONTRACT_VERSION&&!options.decisions&&!options.p1Review)return {changed:false};
+ const retryLeadingBoundary=current.receipt.result.validation.issues.some(issue=>issue.code==='BOUNDARY_UNCONFIRMED'&&issue.start===0);
+ if(current.receipt.result.contractVersion===CONTRACT_VERSION&&!options.decisions&&!options.p1Review&&!retryLeadingBoundary)return {changed:false};
  const original=JSON.parse(current.sourceSnapshot.content) as ImportedScript;
  if(original.sourceText!==current.receipt.result.source.text||hash(original.sourceText)!==current.receipt.readingHash)throw new Error('保真来源校验失败，未覆盖原文。');
  const decisions=options.decisions??current.receipt.decisions;
  const prepared=prepareFidelityReading({...original,readingView:current.receipt.reader},current.receipt.mode,decisions,current.receipt.originalHash);
+ if(!options.decisions&&!options.p1Review&&JSON.stringify(prepared.receipt.result)===JSON.stringify(current.receipt.result))return {changed:false};
  prepared.receipt={...current.receipt,...prepared.receipt,...(options.p1Review?{p1Review:options.p1Review}:{})};
  prepared.receipt.guarantee=current.receipt.guarantee;prepared.receipt.externalPackage=current.receipt.externalPackage;
  const pinned=(latest:Awaited<ReturnType<typeof readFidelityReceipt>>)=>latest?.snapshot.id===current.snapshot.id&&latest.sourceSnapshot?.id===current.sourceSnapshot!.id&&latest.receipt.readingHash===current.receipt.readingHash&&latest.receipt.result.plan.decisionVersion===current.receipt.result.plan.decisionVersion;
