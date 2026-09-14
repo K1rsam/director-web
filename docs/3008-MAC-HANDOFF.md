@@ -170,3 +170,5 @@ P1 合入修复：[整集归属覆盖纯标题](3008-P1-OWNERSHIP-MERGE-FIX.md)�
 交接规则纠偏：[检索未关联与生产阻断分离](3008-RETRIEVAL-HANDOFF-FIX.md)。匿名背景保留供岗位阅读，只有实际来源缺口或有据制作问题影响就绪，且总态与分集一致。
 
 完成状态：[第一阶段收口](3008-COMPLETION-RECONCILIATION.md)。P4不等待第二阶段；当前交付就绪与历史任务状态分离。
+
+角色子形象方法更新见 [必要角色造型覆盖与数量控制](3008-CHARACTER-VARIANT-COVERAGE.md)。
