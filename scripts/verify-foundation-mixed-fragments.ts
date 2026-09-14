@@ -21,7 +21,7 @@ async function main(){
    if(scope.includes(3)){assert.deepEqual(scope,[3,4]);const historical=input.facts.format==='FACT_TABLE_V1'?input.facts.groups.historicalStates.map((i:number)=>input.facts.rows[i]):input.facts.historicalStates;assert.match(JSON.stringify(historical),/受伤|伤口/,'后短集必须收到中间长集的受伤状态');assert.ok(input.boundaryContext,'后短集必须收到长集前接上下文');if(stage==='F2'){const saved=await getFoundationDeliveryState(project.id,db);assert.ok(saved.document.f2?.coverage.includes(2),'先完成中间长集再生成后短批');}}
    seen.push({stage,scope,fragment:input.fragment,text:input.source.episodes.map((e:{lines:[number,string][]})=>e.lines.map(([,text])=>text).join('')).join('')});
    const key=input.registry?.find((a:{name:string})=>a.name==='张三')?.key;
-   const data=stage==='F2'?{format:'ASSET_CATALOG_V2',coverage:scope,assets:[{...(key?{key}:{}),name:'张三',type:'CH',episodes:scope,sceneRefs:input.scenes.map((s:{episode:number;sceneKey:string})=>({episode:s.episode,sceneKey:s.sceneKey})),preparation:{mode:'REFERENCE'}}]}:{format:'FOUNDATION_OPTIMIZATION_V2',coverage:scope,changes:{}};
+   const data=stage==='F2'?{format:'ASSET_CATALOG_V2',coverage:scope,assets:[{...(key?{key}:{}),name:'张三',type:'CH',episodes:scope,sceneRefs:input.scenes.map((s:{episode:number;sceneKey:string})=>({episode:s.episode,sceneKey:s.sceneKey})),preparation:{mode:'REFERENCE'}}]}:{format:'FOUNDATION_OPTIMIZATION_V2',coverage:scope,changes:input.fragment?{scenes:input.scenes.map((s:{episode:number;sceneKey:string})=>({episode:s.episode,sceneKey:s.sceneKey,weather:'晴'}))}:{}};
    if(stage==='F2'&&input.fragment&&!injected){injected=true;failSave=true;}
    return {data,rawOutput:JSON.stringify(data),stdout:'',stderr:'',sessionId:null};
   };
@@ -31,7 +31,14 @@ async function main(){
   const state=await getFoundationDeliveryState(project.id,db);assert.equal(state.task?.status,'COMPLETE',state.task?.error??'');
   for(const stage of ['F2','Q1']){const calls=seen.filter(c=>c.stage===stage);const short=calls.filter(c=>!c.fragment);assert.equal(short.length,2);assert.deepEqual(short.map(c=>c.scope),[[1],[3,4]]);const long=calls.filter(c=>c.fragment);assert.ok(long.length>1);assert.ok(long.every(c=>c.scope.length===1&&c.scope[0]===2));assert.equal(long.map(c=>c.text).join(''),episodes[1].content);assert.ok(calls.indexOf(short[1])>calls.indexOf(long.at(-1)!),'短/长按源顺序执行');}
   assert.deepEqual(state.document.editorialCoverage,[1,2,3,4]);
-  const {syncFoundationChoices}=await import('../lib/foundation-choice-store');
+  const {loadFoundationChoices,syncFoundationChoices}=await import('../lib/foundation-choice-store');
+  const {loadLightScenes}=await import('../lib/light-foundation-supply');
+  const {loadFoundationInputs}=await import('../lib/foundation-state');
+  const {partitionFoundationSource,fragmentDependency,changedFragmentIds}=await import('../lib/foundation-fragment-work');
+  const {createEmptyDocument}=await import('../lib/foundation-document');
+  const loaded=await loadFoundationInputs(project.id,db), savedScenes=await loadLightScenes(project.id,db), choices=await loadFoundationChoices(db,project.id,loaded.sourceVersion,true);
+  const dependencies=Object.fromEntries(partitionFoundationSource(loaded.sourceIndex).fragments.map(f=>[f.id,fragmentDependency(f,loaded.sourceIndex,choices.registry,savedScenes,state.document.f2?.assets??[],createEmptyDocument(loaded).settingsFingerprint)]));
+  assert.deepEqual(changedFragmentIds(state.document.fragmentProgress!.q1,state.document.fragmentProgress!.q1Dependencies,dependencies),[],'刚完成的场字段修订不能让自身片段缓存立即过期');
   await syncFoundationChoices(db,project.id,state.document.sourceVersion,'Q1',[{decisionKey:'local-key',kind:'PRODUCTION_CHOICE',question:'第一场制作采用哪种方向',reason:'第一场制作取舍',episodes:[2],applicationScope:{kind:'SCENES',scenes:[{episode:2,sceneKey:'2-1'}]},options:['保持原文','另作备注'],recommended:'保持原文',recommendationReason:'不改正文',evidence:'第一场'}]);
   const choice=await db.presentationContract.findFirstOrThrow({where:{projectId:project.id}});await db.presentationContract.update({where:{id:choice.id},data:{status:'CONFIRMED',userAnswer:'保持原文',decidedAt:new Date()}});
   const continued=await queueFoundationDelivery(project.id,{},db);const localCalls:{stage:string;start:number;end:number}[]=[];

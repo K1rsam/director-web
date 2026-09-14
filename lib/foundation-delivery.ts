@@ -1,4 +1,5 @@
 import { actionableFoundationIssues } from './foundation-decision-wait';
+import { snapshotFoundationPendingProgress, foundationPendingProgress } from './foundation-pending-progress';
 import { decisionSceneKeys, decisionAssetKeys, assertDecisionChanges } from './foundation-decision-targets';
 import { planFoundationIssueDispatch } from './foundation-issue-dispatch';
 import { assessFoundationWorkerHealth } from './foundation-worker-health';
@@ -138,6 +139,7 @@ function parseDeliveryEvidence(run:{stageCode:string;inputSummary:string|null;lo
  if(typeof queued.deliveryTaskId!=='string'||!Array.isArray(calls))return null;
  const stage=run.stageCode as FoundationStageCode,original=calls.find(call=>call.kind==='INITIAL')??calls[0],request=structuredCallInput(original?.taskPrompt);
  return {queued,calls:recoverSavedDeliveryAttempts(calls as DeliveryAttempt[],stage),request,repairHalt:isRecord(log.repairHalt)?log.repairHalt:null,
+  repairRoundCompleted:Number.isSafeInteger(log.repairRoundCompleted)&&Number(log.repairRoundCompleted)>0?Number(log.repairRoundCompleted):0,
   fingerprint:!calls.some(call=>call.kind==='INITIAL')&&calls.some(call=>call.kind==='FORMAT_REPAIR')&&typeof queued.workFingerprint==='string'?queued.workFingerprint:stage==='F1'&&queued.receiverVersion==='FIDELITY_SOURCE_ACCEPT_V2'&&request?hash({receiver:'FIDELITY_SOURCE_ACCEPT_V2',request:projectP1ReviewEvidenceRequest(request as unknown as Record<string,unknown>)}):request?costFingerprint(stage,request):typeof queued.workFingerprint==='string'?queued.workFingerprint:null,
   receiver:typeof queued.receiverVersion==='string'?queued.receiverVersion:LEGACY_DELIVERY_RECEIVERS[stage]};
 }
@@ -198,12 +200,6 @@ function canRestoreSourceResponse(evidence: DeliveryEvidence, source: Awaited<Re
 const contextFingerprint = (input: Inputs) => hash({ sourceVersion: input.sourceVersion, sourceContext: input.sourceContext.version, settings: createEmptyDocument(input).settingsFingerprint, conditions: input.presentationConditions, provider: resolveProvider(input.project.executionMode), ...(input.sourceReviewCandidates?.length?{sourceReviewCandidates:input.sourceReviewCandidates}:{}) });
 const currentTodos = (doc: FoundationDocument) => doc.editorialTodos.filter(todo => unresolvedOwner(todo) !== 'STAGE2');
 const programTodos = (doc: FoundationDocument) => doc.editorialTodos.filter(todo => unresolvedOwner(todo) === 'PROGRAM');
-function pendingSignature(doc: FoundationDocument, issues: { coordinate: string; problem: string }[], suggestions: FoundationChoiceView[], decisions: FoundationChoiceView[]) {
-  // Different wording/ids for the same unresolved target is not editing progress.
-  return hash({ issues: [...new Set(issues.map(issue => `${issue.coordinate}:${issue.problem}`))].sort(),
-    todos: [...new Set(currentTodos(doc).map(todo => JSON.stringify([unresolvedOwner(todo), todo.key ?? '', [...(todo.episodes ?? [])].sort((a, b) => a - b)])))].sort(),
-    suggestions: suggestions.map(choice => choice.revision).sort(), decisions: decisions.map(choice => choice.revision).sort() });
-}
 function legacyRepairFingerprint(input: Inputs, doc: FoundationDocument, scenes: LightScene[]) {
   return hash({ context: contextFingerprint(input), catalog: doc.f2, scenes, todos: currentTodos(doc).map(todo => [unresolvedOwner(todo), todo.key, todo.episodes]),
     decisions: doc.appliedDecisions, suggestions: doc.reviewedSuggestions });
@@ -610,7 +606,13 @@ async function paidContinuationBlocker(db: Db, input: Inputs, document: Foundati
     const workBudget = resolveWorkRepairBudget(evidence, matches, inputBudgetFingerprint(input), task);
     if (workBudget.used >= (task?.maxRepairCalls ?? 3) && paidAttempts(matches).some(call => call.requestOutcome === 'RESPONDED')) return repairBudgetReason;
   }
-  if (budget.used >= (task?.maxRepairCalls ?? 3) && document.f2 && all.every(episode => document.f2!.coverage.includes(episode) && document.editorialCoverage.includes(episode)) && currentTodos(document).length) return repairBudgetReason;
+  const completedReview = document.f2 && all.every(episode => document.f2!.coverage.includes(episode) && document.editorialCoverage.includes(episode));
+  const savedRounds=Math.max(0,...evidence.filter(entry=>entry.queued.repairBudgetKey===budget.key).map(entry=>entry.repairRoundCompleted));
+  const exhaustedRounds = Math.max(savedRounds,task?.repairBudgetKey===budget.key?task.repairRounds:0) >= (task?.maxRepairRounds??2);
+  // Missing receipts are unfinished work too. They must not return through EDIT /
+  // APPLY_DECISION as unmetered INITIAL calls after the repair loop is exhausted.
+  if (completedReview && (currentTodos(document).length || nextEditEpisodes.length)
+    && (budget.used >= (task?.maxRepairCalls ?? 3) || exhaustedRounds)) return repairBudgetReason;
   return null;
 }
 
@@ -720,14 +722,21 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       if (contextFingerprint(await loadFoundationInputs(projectId, checkDb)) !== task!.contextFingerprint) throw new Error('整理期间原文或项目条件改变，旧结果不覆盖当前工作稿。');
     };
     let pendingSplits: SceneSplitPlan[] = [], pendingPatches: SceneFieldPatch[] = [];
+    let pendingCompletedFragment: FoundationFragment | null = null;
     const save = async (reason: string) => {
       doc = await saveFoundationDocument(db, projectId, doc.revision, doc, reason, async tx => {
         await checkCurrent(tx);
         if (pendingSplits.length) await applySceneSplitPlans(projectId, tx, pendingSplits);
         if (pendingPatches.length) await applyLightScenePatches(projectId, tx, pendingPatches, await loadLightScenes(projectId, tx));
+        // Commit the accepted slice and its post-edit dependency together. Its own
+        // scene edits must not immediately invalidate the paid completion marker.
+        if(pendingCompletedFragment) {
+          const acceptedScenes=await loadLightScenes(projectId,tx);
+          progress().q1Dependencies={...progress().q1Dependencies,[pendingCompletedFragment.id]:fragmentDependency(pendingCompletedFragment,input.sourceIndex,choices.registry,acceptedScenes,doc.f2?.assets??[],targetSettings)};
+        }
       });
       if (pendingSplits.length || pendingPatches.length) scenes = await loadLightScenes(projectId, db);
-      pendingSplits = []; pendingPatches = [];
+      pendingSplits = []; pendingPatches = []; pendingCompletedFragment = null;
       await update({ documentRevision: doc.revision, completedEpisodes: doc.editorialCoverage, unresolved: currentTodos(doc) });
     };
     const adoptAuthorSuggestions = async () => db.$transaction(async tx => {
@@ -945,7 +954,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       doc = applyDocumentEdit(doc, result.output, input.sourceIndex);
       if (fragment) {
         progress().q1 = [...new Set([...progress().q1, fragment.id])];
-        progress().q1Dependencies={...progress().q1Dependencies,[fragment.id]:fragmentDependency(fragment,input.sourceIndex,choices.registry,scenes,doc.f2?.assets??[],targetSettings)};
+        pendingCompletedFragment=fragment;
         if (!fragmentsComplete(input.sourceIndex, fragments, progress().q1).includes(fragment.episode)) doc.editorialCoverage = doc.editorialCoverage.filter(n => n !== fragment.episode);
       }
       doc.origins.push({ stage: 'Q1', runId: result.runId, scope, kind: 'delivery' });
@@ -1034,12 +1043,15 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
           try { assertFoundationRequestBudget(input.systemPrompts.Q1, buildLightFoundationPrompt('Q1', { ...buildDeliveryInput('Q1', 'REPAIR', input, doc, localScope, currentPending.suggestions, currentPending.decisions, identities, scenes, targets, choices.pending.filter(choice => doc.requiredDecisionIds.includes(choice.id))), humanChoiceRegistry: selectRequestChoices(choices.registry, localScope) })); }
           catch (error) { await update({ repairHalt: { fingerprint: repairFingerprint(input, doc, scenes), reason: '局部待办须完整校验，其范围超过当前处理容量，已暂停且未发起新请求。技术诊断：' + errorText(error) } }); break repairRounds; }
         }
-        const previousPending = pendingWork(), before = pendingSignature(doc, previousPending.issues, previousPending.suggestions, previousPending.decisions);
+        const previousPending = pendingWork(), before = snapshotFoundationPendingProgress({doc,scenes,index:input.sourceIndex,...previousPending});
         const repairRunId = await edit(localScope, 'REPAIR', targets);
         pendingScope.splice(0, localScope.length);
         await update({ repairRounds: round + 1 });
+        const completedRepair = await db.pipelineRun.findUniqueOrThrow({where:{id:repairRunId}});
+        await checkCurrent();
+        await persistIndexedFoundationRunLog(db,repairRunId,{log:JSON.stringify({...foundationJson(completedRepair.log),repairRoundCompleted:round+1})});
         const remaining = pendingWork();
-        if (pendingSignature(doc, remaining.issues, remaining.suggestions, remaining.decisions) === before) {
+        if (!foundationPendingProgress(before,snapshotFoundationPendingProgress({doc,scenes,index:input.sourceIndex,...remaining})).progressed) {
           const repairHalt = { fingerprint: repairFingerprint(input, doc, scenes), reason: '上一轮修正没有减少待处理问题，已停止重复调用。已有资料保留，技术问题由工作流处理；不会通过点击继续重置费用额度。' };
           await update({ repairHalt });
           const proof = await db.pipelineRun.findUniqueOrThrow({ where: { id: repairRunId } });
