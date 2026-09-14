@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { startFoundationDeliveryAction, stopFoundationDeliveryAction, preprocessProjectAction } from "@/app/actions";
 import type { FoundationDeliveryState } from "@/lib/foundation-delivery-types";
 import styles from "./foundation-delivery.module.css";
 
-type PanelState = Pick<FoundationDeliveryState, "task" | "totalEpisodes" | "availableEpisodes" | "editedEpisodes" | "busy" | "complete" | "needsContextEdit" | "action" | "expectedState" | "suggestionsCount" | "continuationBlocker" | "methodUpdateAvailable">;
+type PanelState = Pick<FoundationDeliveryState, "task" | "totalEpisodes" | "availableEpisodes" | "editedEpisodes" | "busy" | "complete" | "needsContextEdit" | "action" | "expectedState" | "suggestionsCount" | "continuationBlocker" | "methodUpdateAvailable" | "activeCallStartedAt">;
 
 function currentWork(state: PanelState) {
   if (!state.busy) return state.complete ? "P4 · 交接就绪" : null;
@@ -20,6 +20,26 @@ function currentWork(state: PanelState) {
     case "APPLY_DECISION": return "P3 · 应用决定";
     default: return "正在整理 · 阶段待确认";
   }
+}
+
+/** Use the live request's persisted start when known; never invent pure execution duration. */
+export function FoundationTaskElapsed({ task, active, activeCallStartedAt }: { task: PanelState["task"]; active: boolean; activeCallStartedAt?: string | null }) {
+  const [now, setNow] = useState<number | null>(null);
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active, task?.id, activeCallStartedAt]);
+  if (!task) return null;
+  const requestStart = active && activeCallStartedAt ? Date.parse(activeCallStartedAt) : NaN;
+  const currentRequest = Number.isFinite(requestStart);
+  const start = currentRequest ? requestStart : Date.parse(task.createdAt);
+  const recorded = Date.parse(task.updatedAt);
+  const end = active ? Math.max(start, recorded, now ?? recorded) : recorded;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  const seconds = Math.floor((end - start) / 1000);
+  const duration = `${Math.floor(seconds / 3600) ? `${Math.floor(seconds / 3600)}小时 ` : ""}${Math.floor(seconds / 60) % 60}分 ${seconds % 60}秒`;
+  return <span className={styles.elapsed} data-clock={active ? "running" : "stopped"}>{currentRequest ? "当前请求已等待：" : "本任务历时（含等待）："}{duration}{active ? "" : " · 已停止计时"}</span>;
 }
 
 function episodeScope(scope: number[]) {
@@ -54,7 +74,7 @@ export function FoundationDeliveryPanel({ projectId, state, requiredChoiceCount,
   const noSource = state.action === "NONE" && !state.busy && !state.complete && state.totalEpisodes === 0;
   const phase = task?.phase === "PREPARE_SOURCE" ? "正在检查原文结构" : task?.phase === "GENERATE_F1" ? "正在整理分集内容" : task?.phase === "GENERATE_F2" ? "正在补充资产目录"
     : task?.phase === "REPAIR" ? "正在局部修复资料" : task?.phase === "APPLY_DECISION" ? "正在应用你的决定" : task?.phase === "EDIT" ? "正在自动校验资料" : "正在整理，阶段待确认";
-  const title = state.busy ? phase : noSource ? "原文暂未就绪" : blocked ? "整理已暂停" : waiting ? "需要你确认" : unknown ? "上次请求结果尚未确认" : state.complete ? "资料已整理"
+  const title = state.busy ? phase : noSource ? "原文暂未就绪" : blocked ? "整理已暂停" : waiting ? "需要你确认" : unknown ? task?.status === "INTERRUPTED" ? "处理已中断，请求结果尚未确认" : "上次请求结果尚未确认" : state.complete ? "资料已整理"
     : task?.status === "STOPPED" ? "已停止，资料已保留" : task?.status === "INTERRUPTED" ? "处理已中断，资料已保留"
       : state.availableEpisodes > 0 || task?.status === "PARTIAL" ? "已生成的资料已保留" : "从剧本开始整理资料";
   const description = state.busy ? "你可以继续阅读下方资料；处理进度与正文会自动更新。"
@@ -75,7 +95,7 @@ export function FoundationDeliveryPanel({ projectId, state, requiredChoiceCount,
     <SubmitButton label={unknown ? "确认重发并继续" : state.action === "START" ? "整理资料" : "继续完成"} pendingLabel="正在提交…" compact={compact} />
   </form>;
   if (compact) return <div className="cardHeaderActions" id="foundation-delivery" aria-busy={state.busy}>
-    <span className="topbarStatus" role="status" aria-live="polite"><i className={state.busy ? "live" : ""} />{state.busy ? currentWork(state) : blocked ? "整理已暂停" : noSource ? "原文暂未就绪" : waiting ? "需要你确认" : unknown ? "请求结果待确认" : state.complete ? "资料已整理" : task?.status === "STOPPED" ? "已停止" : task?.status === "INTERRUPTED" ? "处理中断" : "资料待整理"}</span>
+    <span className="topbarStatus" role="status" aria-live="polite"><i className={state.busy ? "live" : ""} />{state.busy ? currentWork(state) : blocked ? "整理已暂停" : noSource ? "原文暂未就绪" : waiting ? "需要你确认" : unknown ? task?.status === "INTERRUPTED" ? "处理中断 · 请求结果待确认" : "请求结果待确认" : state.complete ? "资料已整理" : task?.status === "STOPPED" ? "已停止" : task?.status === "INTERRUPTED" ? "处理中断" : "资料待整理"}</span>
     {state.busy ? <>
       <button className="topbarPrimary" type="button" disabled>正在整理…</button>
       {task ? <form action={stopFoundationDeliveryAction} className="topbarStopForm">
@@ -131,12 +151,16 @@ export function FoundationWorkflowStatus({ projectId, state, sourceReady, sceneC
   const unknown = state.action === "UNKNOWN_CONFIRM" || Boolean(state.task?.unknownOutcome);
   const blocked = !state.busy && !unknown && state.action === "BLOCKED";
   const message = state.busy ? "正在按当前步骤整理资料，自动校验和局部修复的进度会在这里更新。已有内容可继续阅读。"
-    : unknown ? "上次请求结果尚未确认，当前不会自动重发；重发可能重复计费，需要你明确同意。"
+    : unknown ? `${state.task?.status === "INTERRUPTED" ? "处理已中断。" : ""}上次请求结果尚未确认，当前不会自动重发；重发可能重复计费，需要你明确同意。`
       : blocked ? "整理遇到技术问题，当前已暂停，已保存资料仍可阅读。这类问题由工作流处理，无需你修改剧本格式；恢复前不会继续请求。"
         : state.complete ? "资料已整理，可查看原文、资产与场次。"
           : state.task?.status === "WAITING_USER" ? "有内容需要你作创作取舍，请在必要取舍中确认；已有资料仍可阅读。"
             : state.action === "CONTINUE" ? "已有资料保留；继续仅处理未完成部分，可能新增模型调用费用。"
               : "选择执行渠道后，点击右上角“整理资料”。系统会接收原文、统一结构并整理资料，只有必要的内容取舍才需要你确认。";
+  const live = state.busy && !unknown && !state.complete && (state.task?.status === "RUNNING" || state.task?.status === "QUEUED");
+  const phaseCard = state.task?.phase === "PREPARE_SOURCE" ? "P1" : state.task?.phase === "GENERATE_F1" ? "P2" : state.task && ["GENERATE_F2", "EDIT", "REPAIR", "APPLY_DECISION"].includes(state.task.phase) ? "P3" : null;
+  const activity = state.task?.status === "QUEUED" ? "排队中" : "正在工作";
+  const paused = unknown ? "结果待确认" : blocked ? "已暂停" : state.task?.status === "WAITING_USER" ? "等待你的确认" : state.task?.status === "STOPPED" ? "已停止" : state.task?.status === "INTERRUPTED" ? "已中断" : null;
   const cards = [
     { code: "P1", name: "接收与清洗", note: "保留原文 · 程序初检，按需 AI 辅助", status: sourceReady ? "原文已接收" : "待检查", href: "/projects/"+encodeURIComponent(projectId)+"/source", link: "查看原文与提示" },
     { code: "P2", name: "拆集分场与必要事实", note: "按原文整理场次、背景与身份", status: sourceReady ? state.totalEpisodes+"集 / "+sceneCount+"场" : "待拆分", href: "#foundation-scenes", link: "查看场次" },
@@ -145,10 +169,15 @@ export function FoundationWorkflowStatus({ projectId, state, sourceReady, sceneC
   ];
   return <section className="foundationControlRoom" id="foundation-status" aria-label="第一阶段操作与状态">
     <div className="sectionHeading"><div><h2>资料整理 · P1–P4</h2></div><p>一次开始，自动整理与核对；创作取舍和处理状态分别显示。</p></div>
-    <div className="foundationRail">{cards.map(card => <article className="foundationRole automatic" key={card.code}>
-      <span>{card.code}</span><div><strong>{card.name}</strong><small>{card.note}</small></div><em>{card.status}</em>
-      <a className="foundationCardAction" href={card.href}>{card.link}</a>
-    </article>)}</div>
+    <div className="foundationRail">{cards.map(card => {
+      const selected = card.code === phaseCard && !state.complete;
+      const running = selected && live;
+      return <article className={`foundationRole automatic ${running ? `${styles.activeCard} ${state.task?.status === "QUEUED" ? "queued" : "running"}` : selected && paused ? styles.pausedCard : ""}`} key={card.code} aria-current={running ? "step" : undefined} aria-busy={running || undefined}>
+        <span>{card.code}</span><div><strong>{card.name}</strong><small>{card.note}</small></div><em>{running ? <><i className={state.task?.status === "QUEUED" ? styles.queuedDot : styles.workSpinner} aria-hidden="true" />{activity}</> : selected && paused ? paused : card.status}</em>
+        <a className="foundationCardAction" href={card.href}>{card.link}</a>
+      </article>;
+    })}</div>
+    {state.task ? <p className={styles.operationMessage}><FoundationTaskElapsed task={state.task} active={live} activeCallStartedAt={state.activeCallStartedAt} /></p> : null}
     {currentWork(state) ? <p className={styles.operationMessage} role="status" aria-live="polite"><strong>当前工作：{currentWork(state)}</strong>{state.busy ? ` · 处理范围：${episodeScope(state.task?.scope ?? [])}` : null}</p> : null}
     <p className={styles.operationMessage}>已保存 {state.availableEpisodes} / {state.totalEpisodes} 集 · 已核对 {state.editedEpisodes} / {state.totalEpisodes} 集</p>
     <p className={styles.operationMessage} role="status" aria-live="polite">{message}</p>

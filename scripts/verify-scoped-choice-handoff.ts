@@ -88,6 +88,47 @@ async function main() {
     const multi = await buildTaskSchemaV4Payload({projectName:'scope',episodeNumber:9,episodeText:episodes[2].content,sceneId:'9-1',scopedDecisions,existingAssets:[]});
     assert.equal((multi['任务范围']['按场接收决定'] as unknown[]).length,2);
     assert.equal((await scopeStore.loadFoundationChoices(db,project.id,'stale')).confirmed.length,2,'旧来源的模型决定不供给');
+    // Different issues in different episode/scene positions retain exact mutation permissions.
+    const { readChoiceChangeTargets } = await import('@/lib/foundation-choice-change-targets');
+    const assetTargets = readChoiceChangeTargets({ assetKeys: [catalog.assets[0].key], assetFields: ['preparation'], sceneFields: [] })!;
+    const sceneTargets = readChoiceChangeTargets({ assetKeys: [], assetFields: [], sceneFields: ['weather'] })!;
+    const localIssues = [
+      { ...baseChoice, decisionKey: 'generic-material-issue', question: '本场素材采用哪种方式？', changeTargets: assetTargets, episodes: [8], applicationScope: { kind: 'SCENES' as const, scenes: [{ episode: 8, sceneKey: '8-1' }] } },
+      { ...baseChoice, decisionKey: 'generic-weather-issue', question: '本场天气采用哪种口径？', changeTargets: sceneTargets, episodes: [9], applicationScope: { kind: 'SCENES' as const, scenes: [{ episode: 9, sceneKey: '9-1' }] }, evidenceRefs: [{ sourceVersion: input.sourceVersion, episode: 9, sceneKey: '9-1', startLine: 1, endLine: 1 }] }
+    ];
+    await scopeStore.syncFoundationChoices(db, project.id, input.sourceVersion, 'Q1', localIssues);
+    let issueRows = (await scopeStore.loadFoundationChoices(db, project.id, input.sourceVersion)).pending;
+    assert.equal(issueRows.length, 2);
+    for (const issue of issueRows) await scopeStore.confirmFoundationChoice(db, { projectId: project.id, contractId: issue.id, revision: issue.revision, optionIndex: '0' });
+    const current = await scopeStore.loadFoundationChoices(db, project.id, input.sourceVersion);
+    issueRows = current.confirmed.filter(row => issueRows.some(issue => issue.id === row.id));
+    const scopedAgain = await supply.buildLightEpisodePackets(project.id, doc, db);
+    const localOnly = (rows: typeof issueRows) => rows.filter(row => issueRows.some(issue => issue.id === row.id));
+    const packet8 = scopedAgain.find(packet => packet.episode === 8)!, packet9 = scopedAgain.find(packet => packet.episode === 9)!;
+    assert.deepEqual(localOnly(packet8.decisions).map(row => row.changeTargets), [assetTargets]);
+    assert.deepEqual(localOnly(packet8.scenes.find(scene => scene.sceneKey === '8-1')!.decisions).map(row => row.changeTargets), [assetTargets]);
+    assert.equal(localOnly(packet8.scenes.find(scene => scene.sceneKey === '8-2')!.decisions).length, 0);
+    assert.deepEqual(localOnly(packet9.scenes[0].decisions).map(row => row.changeTargets), [sceneTargets]);
+    assert.equal(localOnly(scopedAgain.find(packet => packet.episode === 7)!.decisions).length, 0);
+    for (const [episodeNumber, sceneId, expected] of [[8, '8-1', assetTargets], [8, '8-2', null], [9, '9-1', sceneTargets]] as const) {
+      const packageInput = await buildTaskSchemaV4Payload({ projectName: 'permission handoff', episodeNumber, episodeText: episodes.find(row => row.number === episodeNumber)!.content, sceneId, scopedDecisions: issueRows, existingAssets: [] });
+      const received = packageInput['任务范围']['按场接收决定'] as typeof issueRows;
+      assert.deepEqual(received.map(row => row.changeTargets), expected ? [expected] : []);
+      assert.ok(received.every(row => row.applicationScope?.kind === 'SCENES'), '不能升级为全剧口径');
+    }
+    const wholeEpisodeTask = await buildTaskSchemaV4Payload({ projectName: 'whole episode', episodeNumber: 8, episodeText: episodes[1].content, scopedDecisions: issueRows, existingAssets: [] });
+    assert.deepEqual(wholeEpisodeTask['任务范围']['已确认决定'], [], '场级事项不能上提成整集通用决定');
+    assert.deepEqual((wholeEpisodeTask['任务范围']['按场接收决定'] as typeof issueRows).map(row => row.changeTargets), [assetTargets]);
+    const { loadPipelineContext } = await import('@/lib/episode-pipeline');
+    for (const number of [8, 9]) {
+      const episode = await db.episode.findFirstOrThrow({ where: { projectId: project.id, number } });
+      const context = await loadPipelineContext(project.id, episode.id);
+      const actual = context.contracts.filter(contract => localIssues.some(issue => issue.question === contract.question));
+      assert.equal(actual.length, 1);
+      assert.deepEqual(actual[0].changeTargets, number === 8 ? assetTargets : sceneTargets);
+      assert.deepEqual(actual[0].applicationScope, { kind: 'SCENES', scenes: [{ episode: number, sceneKey: `${number}-1` }] });
+    }
+    await (await import('@/lib/prisma')).prisma.$disconnect();
     await db.presentationContract.deleteMany({where:{projectId:project.id}});
     const before = { episodes: await db.episode.findMany({ where: { projectId: project.id }, orderBy: { number: 'asc' } }), snapshots: await db.sceneSnapshot.count(), runs: await db.pipelineRun.count() };
     const failures: string[] = [];

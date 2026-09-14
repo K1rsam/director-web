@@ -32,6 +32,7 @@ export type FoundationDeliveryState = {
   continuationBlocker?: string | null;
   requiredChoices: FoundationChoiceView[]; confirmedChoices: FoundationChoiceView[];
   suggestionsCount: number; sourceContext: FoundationSourceContext; codes: Record<string, string>;
+  activeCallStartedAt?: string | null;
   issues: FoundationIssue[]; expectedState: string;
 };
 

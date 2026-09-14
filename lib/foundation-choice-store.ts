@@ -6,21 +6,25 @@ import type { PresentationContract, Prisma, PrismaClient } from "@prisma/client"
 import { buildSourceIndex, type FoundationStageCode } from "@/lib/project-foundation-contracts";
 import { mergeHumanChoices, normalizeDecisionKey, type HumanChoice } from "@/lib/foundation-human-choices";
 
+import { readChoiceChangeTargets, changeTargetsIdentity, type ChoiceChangeTargets } from './foundation-choice-change-targets';
+
 type Db = Prisma.TransactionClient;
 const VERSION = "FOUNDATION_HUMAN_CHOICE_V1";
-type Metadata = { applicationScope?: ApplicationScope; evidenceRefs?: ChoiceEvidenceRef[]; receivingUses?: string[]; schema: typeof VERSION; sourceVersion: string; decisionKey: string; episodes: number[]; sourceStages: FoundationStageCode[]; reason: string; recommended: string; recommendationReason: string };
-export type FoundationChoiceView = { applicationScope?: ApplicationScope; evidenceRefs?: ChoiceEvidenceRef[]; receivingUses?: string[]; sourceVersion?: string; id: string; category: string; question: string; options: string[]; evidence: string | null; userAnswer: string | null; episodes: number[]; sourceStages: FoundationStageCode[]; reason: string | null; recommended: string | null; recommendationReason: string | null; revision: string; round: number; decidedAt: Date | null };
-export type FoundationChoiceRegistry = { applicationScope?: ApplicationScope; options?: string[]; decisionKey: string; status: "PENDING" | "CONFIRMED"; question: string; episodes: number[]; answer?: string }[];
+type Metadata = { changeTargets?: ChoiceChangeTargets; applicationScope?: ApplicationScope; evidenceRefs?: ChoiceEvidenceRef[]; receivingUses?: string[]; schema: typeof VERSION; sourceVersion: string; decisionKey: string; episodes: number[]; sourceStages: FoundationStageCode[]; reason: string; recommended: string; recommendationReason: string };
+export type FoundationChoiceView = { changeTargets?: ChoiceChangeTargets; applicationScope?: ApplicationScope; evidenceRefs?: ChoiceEvidenceRef[]; receivingUses?: string[]; sourceVersion?: string; id: string; category: string; question: string; options: string[]; evidence: string | null; userAnswer: string | null; episodes: number[]; sourceStages: FoundationStageCode[]; reason: string | null; recommended: string | null; recommendationReason: string | null; revision: string; round: number; decidedAt: Date | null };
+export type FoundationChoiceRegistry = { changeTargets?: ChoiceChangeTargets; applicationScope?: ApplicationScope; options?: string[]; decisionKey: string; status: "PENDING" | "CONFIRMED"; question: string; episodes: number[]; answer?: string }[];
 export class FoundationChoiceError extends Error {
   constructor(public readonly notice: "decision-changed" | "decision-running" | "decision-required" | "decision-invalid", message = "确认事项已更新，请刷新后重新确认。") { super(message); this.name = "FoundationChoiceError"; }
 }
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 function metadata(row: PresentationContract): Metadata | null {
+  let value: Metadata | null;
   try {
-    const value = JSON.parse(row.note ?? "null");
-    return value?.schema === VERSION && typeof value.sourceVersion === "string" && typeof value.decisionKey === "string"
-      && Array.isArray(value.episodes) && Array.isArray(value.sourceStages) ? value as Metadata : null;
+    value = JSON.parse(row.note ?? "null");
   } catch { return null; }
+  if (value?.schema !== VERSION || typeof value.sourceVersion !== 'string' || typeof value.decisionKey !== 'string' || !Array.isArray(value.episodes) || !Array.isArray(value.sourceStages)) return null;
+  // Explicit invalid permissions cannot silently fall back to broad legacy consent.
+  return { ...value, ...(value.changeTargets === undefined ? {} : { changeTargets: readChoiceChangeTargets(value.changeTargets) }) };
 }
 function options(row: PresentationContract): string[] {
   try { const value: unknown = JSON.parse(row.options); return Array.isArray(value) && value.every(item => typeof item === "string") ? value : []; }
@@ -49,12 +53,12 @@ export async function loadFoundationChoices(db: Db, projectId: string, sourceVer
   const visible = rows.filter(row => !metadata(row) || metadata(row)!.sourceVersion === sourceVersion);
   const view = (row: PresentationContract): FoundationChoiceView => {
     const meta = metadata(row), scope = foundationChoiceCondition(row, episodes);
-    return { applicationScope: scope.applicationScope, evidenceRefs: meta?.evidenceRefs ?? [], receivingUses: meta?.receivingUses ?? [], sourceVersion: meta?.sourceVersion, id: row.id, category: row.category, question: row.question, options: options(row), evidence: row.evidence, userAnswer: row.userAnswer,
+    return { changeTargets: meta?.changeTargets, applicationScope: scope.applicationScope, evidenceRefs: meta?.evidenceRefs ?? [], receivingUses: meta?.receivingUses ?? [], sourceVersion: meta?.sourceVersion, id: row.id, category: row.category, question: row.question, options: options(row), evidence: row.evidence, userAnswer: row.userAnswer,
       episodes: scope.episodes, sourceStages: meta?.sourceStages ?? [], reason: scope.scopeResolved ? meta?.reason ?? null : "适用范围无法确认，当前答案未供给到任何集；请在范围编辑中明确指定适用集或全剧。",
       recommended: meta?.recommended ?? null, recommendationReason: meta?.recommendationReason ?? null, revision: revisionOf(row, sourceVersion), round: row.round, decidedAt: row.decidedAt };
   };
   return { pending: visible.filter(row => row.status === "PENDING" || row.status === 'SUGGESTED').map(view), confirmed: visible.filter(row => row.status === "CONFIRMED").map(view),
-    registry: visible.filter(row => row.status !== "CONFIRMED" || foundationChoiceCondition(row, episodes).scopeResolved).map(row => ({ decisionKey: keyOf(row), status: row.status === 'CONFIRMED' ? 'CONFIRMED' : 'PENDING', question: row.question, episodes: view(row).episodes, applicationScope: view(row).applicationScope, options: options(row), ...(row.status === "CONFIRMED" ? { answer: row.userAnswer ?? "" } : {}) })) };
+    registry: visible.filter(row => row.status !== "CONFIRMED" || foundationChoiceCondition(row, episodes).scopeResolved).map(row => ({ decisionKey: keyOf(row), status: row.status === 'CONFIRMED' ? 'CONFIRMED' : 'PENDING', question: row.question, episodes: view(row).episodes, applicationScope: view(row).applicationScope, changeTargets: view(row).changeTargets, options: options(row), ...(row.status === "CONFIRMED" ? { answer: row.userAnswer ?? "" } : {}) })) };
 }
 export async function assertNoFoundationChoices(db: Db, projectId: string, sourceVersion: string) {
   if ((await loadFoundationChoices(db, projectId, sourceVersion)).pending.length) throw new FoundationChoiceError("decision-required", "请先完成上方必要确认；当前资料和调用记录已保留。");
@@ -72,13 +76,14 @@ export function appendFoundationChoiceRegistry(registry: FoundationChoiceRegistr
   const result = structuredClone(registry);
   for (const choice of mergeHumanChoices([choices])) {
     const proposed = readApplicationScope(choice.applicationScope, choice.episodes);
-    const compatible = result.filter(item=>normalizeDecisionKey(item.decisionKey) === normalizeDecisionKey(choice.decisionKey) && (!item.options || JSON.stringify(item.options) === JSON.stringify(choice.options)));
+    const compatible = result.filter(item=>normalizeDecisionKey(item.decisionKey) === normalizeDecisionKey(choice.decisionKey) && changeTargetsIdentity(item.changeTargets) === changeTargetsIdentity(choice.changeTargets) && (!item.options || JSON.stringify(item.options) === JSON.stringify(choice.options)));
     const applicationScope = uncoveredApplicationScope(proposed,compatible.filter(item=>item.status === 'CONFIRMED').map(item=>readApplicationScope(item.applicationScope,item.episodes)),allEpisodes);
     if (!applicationScope) continue;
     const matching = result.filter(item => normalizeDecisionKey(item.decisionKey) === normalizeDecisionKey(choice.decisionKey)
+      && changeTargetsIdentity(item.changeTargets) === changeTargetsIdentity(choice.changeTargets)
       && JSON.stringify(item.options) === JSON.stringify(choice.options)
       && JSON.stringify(readApplicationScope(item.applicationScope, item.episodes)) === JSON.stringify(applicationScope));
-    if (!matching.length) result.push({ decisionKey: choice.decisionKey, status: 'PENDING', question: choice.question, episodes: scopeEpisodes(applicationScope), applicationScope, options: [...choice.options] });
+    if (!matching.length) result.push({ decisionKey: choice.decisionKey, status: 'PENDING', question: choice.question, episodes: scopeEpisodes(applicationScope), applicationScope, ...(choice.changeTargets === undefined ? {} : { changeTargets: readChoiceChangeTargets(choice.changeTargets) }), options: [...choice.options] });
   }
   return result;
 }
@@ -89,10 +94,10 @@ export async function syncFoundationChoices(db: Db, projectId: string, sourceVer
   const sourceEpisodes = await db.episode.findMany({ where: { projectId }, select: { id: true, number: true } });
   for (const choice of mergeHumanChoices([choices])) {
     const decisionKey = normalizeDecisionKey(choice.decisionKey);
-    const compatible = rows.filter(row=>normalizeDecisionKey(keyOf(row)) === decisionKey && JSON.stringify(options(row)) === JSON.stringify(choice.options) && (!metadata(row) || metadata(row)?.sourceVersion === sourceVersion));
+    const compatible = rows.filter(row=>normalizeDecisionKey(keyOf(row)) === decisionKey && changeTargetsIdentity(metadata(row)?.changeTargets) === changeTargetsIdentity(choice.changeTargets) && JSON.stringify(options(row)) === JSON.stringify(choice.options) && (!metadata(row) || metadata(row)?.sourceVersion === sourceVersion));
     const proposedScope = uncoveredApplicationScope(readApplicationScope(choice.applicationScope, choice.episodes),compatible.filter(row=>row.status === 'CONFIRMED').map(row=>foundationChoiceCondition(row,sourceEpisodes).applicationScope),sourceEpisodes.map(ep=>ep.number));
     if (!proposedScope) continue;
-    const matching = rows.filter(row => normalizeDecisionKey(keyOf(row)) === decisionKey && JSON.stringify(options(row)) === JSON.stringify(choice.options) && JSON.stringify(foundationChoiceCondition(row, sourceEpisodes).applicationScope) === JSON.stringify(proposedScope));
+    const matching = rows.filter(row => normalizeDecisionKey(keyOf(row)) === decisionKey && changeTargetsIdentity(metadata(row)?.changeTargets) === changeTargetsIdentity(choice.changeTargets) && JSON.stringify(options(row)) === JSON.stringify(choice.options) && JSON.stringify(foundationChoiceCondition(row, sourceEpisodes).applicationScope) === JSON.stringify(proposedScope));
     if (scopeEpisodes(proposedScope).some(n => !sourceEpisodes.some(ep=>ep.number === n))) throw new Error('问题适用集不在当前来源中。');
     if (proposedScope.kind === 'SCENES') for (const ref of proposedScope.scenes) {
       if (!await db.scriptScene.findFirst({ where: { episode: { projectId, number: ref.episode }, sceneKey: ref.sceneKey }, select: { id: true } })) throw new Error('问题适用场次不存在。');
@@ -119,7 +124,7 @@ export async function syncFoundationChoices(db: Db, projectId: string, sourceVer
     const sameSource = old && metadata(old)?.sourceVersion === sourceVersion;
     const previous = sameSource ? metadata(old!) : null;
     const reason = confirmed.length ? `${choice.reason}\n本题仅确认本卡列出的新增适用范围；原已确认范围和答案保持不变。` : choice.reason;
-    const meta: Metadata = { schema: VERSION, sourceVersion, decisionKey, applicationScope: proposedScope, evidenceRefs: readChoiceEvidence(choice.evidenceRefs, sourceVersion), receivingUses: choice.receivingUses ?? [],
+    const meta: Metadata = { ...(choice.changeTargets === undefined ? {} : { changeTargets: readChoiceChangeTargets(choice.changeTargets) }), schema: VERSION, sourceVersion, decisionKey, applicationScope: proposedScope, evidenceRefs: readChoiceEvidence(choice.evidenceRefs, sourceVersion), receivingUses: choice.receivingUses ?? [],
       episodes: previous ? (!previous.episodes.length || !episodes.length ? [] : [...new Set([...previous.episodes, ...episodes])].sort((a, b) => a - b)) : episodes,
       sourceStages: [...new Set([...(previous?.sourceStages ?? []), stage])], reason: previous?.reason ?? reason,
       recommended: previous?.recommended ?? choice.recommended, recommendationReason: previous?.recommendationReason ?? choice.recommendationReason };
@@ -133,7 +138,7 @@ export async function syncFoundationChoices(db: Db, projectId: string, sourceVer
       const refreshed = await db.presentationContract.findUniqueOrThrow({ where: { id: old.id } });
       rows[rows.findIndex(row => row.id === old.id)] = refreshed;
     } else {
-      const created = await db.presentationContract.create({ data: { id: `foundation-choice-${digest([projectId, decisionKey, sourceVersion, proposedScope, choice.options])}`, projectId, category: choice.kind,
+      const created = await db.presentationContract.create({ data: { id: `foundation-choice-${digest([projectId, decisionKey, sourceVersion, proposedScope, choice.options, ...(choice.changeTargets === undefined ? [] : [readChoiceChangeTargets(choice.changeTargets)])])}`, projectId, category: choice.kind,
         question: choice.question, options: JSON.stringify(choice.options), evidence, note: JSON.stringify(meta), status: "PENDING" } });
       // Different proposed scope kinds can subtract confirmed consent to the same scope.
       rows.push(created);

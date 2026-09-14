@@ -1,4 +1,5 @@
 import { readApplicationScope, scopeApplies, type ApplicationScope } from './foundation-application-scope';
+import type { ChoiceChangeTargets } from './foundation-choice-change-targets';
 import { DirectorAsset, extractEpisodeAssetCandidates, formatAssetIndex } from "@/lib/assets";
 import { buildDirectorRuleContextSummary, TASK_SCHEMA_V4_REQUIRED_FIELDS, type DirectorRuleContextSummary } from "@/lib/director-rules";
 
@@ -46,7 +47,7 @@ export type TaskSchemaV4Payload = {
 };
 
 export type BuildTaskPackageInput = {
-  scopedDecisions?: { id: string; userAnswer: string | null; applicationScope?: ApplicationScope; episodes: number[]; revision: string; sourceVersion?: string }[];
+  scopedDecisions?: { id: string; userAnswer: string | null; applicationScope?: ApplicationScope; changeTargets?: ChoiceChangeTargets; episodes: number[]; revision: string; sourceVersion?: string }[];
   projectName: string;
   episodeNumber: number;
   episodeTitle?: string;

@@ -220,8 +220,14 @@ def make_scene(episode, key, order, source, marker_location=None, version="SCENE
         heading_line = inline or next((line for line in lines if not re.match(r"^(?:第.*集|(?:场?\s*)?\d+\s*[-－—]\s*\d+)", line) and not dot_scene_header(SCENE_DOT_RE.match(line))), key)
     is_marker = bool(re.match(r"^场景\s*[:：]?", heading_line))
     heading = key if is_marker or re.match(r"^(?:场景|人物|道具)\s*[:：]", heading_line) else heading_line
-    metadata_heading = re.sub(r"[，,]", " ", heading) if version == "SCENE_PARSER_V2" else heading
-    metadata_line = re.sub(r"[，,]", " ", heading_line) if version == "SCENE_PARSER_V2" else heading_line
+    # A colon immediately after a recognized scene number is a separator, not
+    # part of its location. Normalize only metadata: source, heading and scene
+    # boundaries remain byte-for-byte unchanged for both parser versions.
+    metadata_heading = re.sub(r"^[:：]\s*", "", heading) if scene_line else heading
+    metadata_line = re.sub(r"^[:：]\s*", "", heading_line) if scene_line else heading_line
+    if version == "SCENE_PARSER_V2":
+        metadata_heading = re.sub(r"[，,]", " ", metadata_heading)
+        metadata_line = re.sub(r"[，,]", " ", metadata_line)
     loc = marker_location or field(lines, "场景") or infer_location(metadata_heading)
     chars = split_names(field(lines, "人物"))
     for line in lines:

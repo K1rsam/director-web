@@ -1,5 +1,6 @@
 import { buildSourceIndex } from './project-foundation-contracts';
 import { storedApplicationScope, scopeApplies, readApplicationScope } from './foundation-application-scope';
+import { readChoiceChangeTargets } from './foundation-choice-change-targets';
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import path from "node:path";
@@ -2469,6 +2470,7 @@ export async function loadPipelineContext(projectId: string, episodeId: string) 
     revision: `V${version}_${stamp}`,
     project: episode.project,
     contracts: scopedContracts.map((contract) => ({
+      changeTargets: readChoiceChangeTargets(safeParseJson(contract.note).changeTargets),
       applicationScope: storedApplicationScope(contract, contract.episodeId ? episodeNumberById.get(contract.episodeId) : undefined, decisionSourceVersion),
       category: contract.category,
       question: contract.question,
@@ -2578,7 +2580,7 @@ function buildStageInput(
 ) {
   const base = { base_revision: context.revision };
   const presentationContracts = context.contracts.length
-    ? context.contracts.map((contract) => ({ category: contract.category, user_answer: contract.user_answer, applicationScope: contract.applicationScope }))
+    ? context.contracts.map((contract) => ({ category: contract.category, user_answer: contract.user_answer, applicationScope: contract.applicationScope, ...(contract.changeTargets ? { changeTargets: contract.changeTargets } : {}) }))
     : [];
   if (stage === "E0") {
     const nodeList = context.sourcePackage.scenes.flatMap((scene) =>

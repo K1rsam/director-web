@@ -1,4 +1,5 @@
 import { readApplicationScope, scopeEpisodes, readChoiceEvidence, type ApplicationScope, type ChoiceEvidenceRef } from './foundation-application-scope';
+import { readChoiceChangeTargets, changeTargetsIdentity, type ChoiceChangeTargets } from './foundation-choice-change-targets';
 /** Explicit human decisions, not a conversion of model/data diagnostics into a questionnaire. */
 export type HumanChoice = {
   decisionKey: string;
@@ -13,6 +14,7 @@ export type HumanChoice = {
   applicationScope?: ApplicationScope;
   evidenceRefs?: ChoiceEvidenceRef[];
   receivingUses?: string[];
+  changeTargets?: ChoiceChangeTargets;
 };
 
 export const normalizeDecisionKey = (key: string) => key.normalize('NFKC').trim().toLowerCase().replace(/\s+/g, ' ').replace(/\s*\/\s*/g, '/');
@@ -42,7 +44,7 @@ export function readHumanChoices(value: unknown, scope: readonly number[]): Huma
     if (episodes.some(n => !Number.isSafeInteger(n) || !scope.includes(n))) throw new Error(`${at}.episodes: 须为本批集号；全剧口径可用空数组`);
     const applicationScope = readApplicationScope(row.applicationScope, episodes as number[]);
     if (scopeEpisodes(applicationScope).some(n => !scope.includes(n))) throw new Error(`${at}.applicationScope: 集号不在本批来源中`);
-    return { ...(row.applicationScope == null ? {} : { applicationScope }), ...(row.evidenceRefs == null ? {} : { evidenceRefs: readChoiceEvidence(row.evidenceRefs) }), ...(Array.isArray(row.receivingUses) ? { receivingUses: row.receivingUses.map(v=>text(v, `${at}.receivingUses`)) } : {}), decisionKey, kind: row.kind, question: text(row.question, `${at}.question`), reason: text(row.reason, `${at}.reason`),
+    return { ...(row.changeTargets === undefined ? {} : { changeTargets: readChoiceChangeTargets(row.changeTargets) }), ...(row.applicationScope == null ? {} : { applicationScope }), ...(row.evidenceRefs == null ? {} : { evidenceRefs: readChoiceEvidence(row.evidenceRefs) }), ...(Array.isArray(row.receivingUses) ? { receivingUses: row.receivingUses.map(v=>text(v, `${at}.receivingUses`)) } : {}), decisionKey, kind: row.kind, question: text(row.question, `${at}.question`), reason: text(row.reason, `${at}.reason`),
       options, recommended, recommendationReason: text(row.recommendationReason, `${at}.recommendationReason`), evidence: text(row.evidence, `${at}.evidence`),
       episodes: [...new Set(episodes as number[])].sort((a, b) => a - b) };
   })]);
@@ -54,9 +56,9 @@ export function mergeHumanChoices(parts: readonly (readonly HumanChoice[])[]): H
   for (const part of parts) for (const item of part) {
     const decisionKey = normalizeDecisionKey(item.decisionKey);
     const scope = readApplicationScope(item.applicationScope, item.episodes);
-    const key = JSON.stringify([decisionKey, item.options, scope.kind === 'GLOBAL' ? scope : scope.kind]);
+    const key = JSON.stringify([decisionKey, item.options, scope.kind === 'GLOBAL' ? scope : scope.kind, changeTargetsIdentity(item.changeTargets)]);
     const previous = result.get(key);
-    if (!previous) result.set(key, { ...structuredClone(item), decisionKey });
+    if (!previous) result.set(key, { ...structuredClone(item), decisionKey, ...(item.changeTargets === undefined ? {} : { changeTargets: readChoiceChangeTargets(item.changeTargets) }) });
     else {
       const oldScope = readApplicationScope(previous.applicationScope, previous.episodes);
       const mergedScope = oldScope.kind === 'EPISODES' && scope.kind === 'EPISODES' ? readApplicationScope({kind:'EPISODES',episodes:[...oldScope.episodes,...scope.episodes]}) : oldScope.kind === 'SCENES' && scope.kind === 'SCENES' ? readApplicationScope({kind:'SCENES',scenes:[...oldScope.scenes,...scope.scenes]}) : oldScope;

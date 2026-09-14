@@ -16,7 +16,9 @@ export function compactFoundationSceneRefs(value: unknown): unknown {
 export function projectFoundationModelInput(input: unknown): unknown {
   if (!record(input)) return input;
   const compactInput = Object.fromEntries(Object.entries(input).map(([key, value]) => [key,
-    key === 'source' || key === 'scenes' ? value : compactFoundationSceneRefs(value)]));
+    key === 'crossBatchVariants' && Array.isArray(value)
+      ? value.filter(row => !record(row) || Object.keys(row).some(field => !['assetKey','variants'].includes(field)) || !Array.isArray(row.variants) || row.variants.length > 0)
+      : key === 'source' || key === 'scenes' ? value : compactFoundationSceneRefs(value)]));
   if (!record(input.facts)) return compactInput;
   const facts = input.facts;
   if (facts.format === 'FACT_TABLE_V1') return compactInput;

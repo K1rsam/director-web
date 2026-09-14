@@ -15,9 +15,10 @@ const asset = {
     episodes: ["本批有据适用集号整数；与基础范围应一致，不能为凑集合删状态或补造入镜；尚未定位则[]。局部冲突由程序保留待Q1核对"], sceneRefs: [{ episode: "该变体实际使用集", sceneKey: "输入scenes的实际场景键；无定位填[]" }], note: "可省略；必要变化节点、同集前后可选状态、延续及有据解除/覆盖边界", preparation }]
 };
 const humanChoice = {
+  changeTargets: { assetKeys: ['需要改动的输入目录精确key；不按名称猜测；仅场字段事项填[]'], assetFields: ['仅name/type/role/relationNote/aliases/sceneRefs/preparation/variants；仅场字段事项填[]'], sceneFields: ['仅location/timeOfDay/interiorExterior/timeLayer/weather/characters；仅资产事项填[]'] },
   decisionKey: "先复用humanChoiceRegistry已有键；新键用议题+适用对象/范围，不用问句、岗位或分片序号；全剧共用口径只一个键",
   kind: "SOURCE_CONFLICT|PRODUCTION_CHOICE", question: "必须由用户择定的一句话问题",
-  reason: "为何现有原文、已定答案或程序无法解决，且本阶段确需决定",
+  reason: "为何现有原文、已定答案或程序无法解决，且本阶段确需决定；新局部事项明确changeTargets，资产键与资产字段同时有或同时空，至少一种fields非空；权限与applicationScope共同生效，不授权改原文、拆场、删除或归并。不同对象不同字段权限分别提事项，不扩大合并。缺少对象依据时不猜key",
   options: ["2–3个简短、互斥且可执行的方案；自定义由页面提供，不列占位方案"],
   recommended: "原样填写其中一个方案；不代表用户已确认", recommendationReason: "一句推荐依据",
   evidence: "简短原文依据或明确缺失的制作约束，不抄长段", episodes: ["决定实际适用的本批集号，不只是举证出处；全剧共用口径用[]，不按当前出场重复问"]
@@ -91,6 +92,7 @@ export function buildLightFoundationPrompt(stage: 'F2' | 'Q1', input: unknown) {
       key: '可省略；受影响的已有资产key', episodes: ['实际受影响集号，须与applicationScope一致'], note: '具体且有依据的剩余事项',
       applicationScope: scopedHumanChoice.applicationScope, evidenceRefs: scopedHumanChoice.evidenceRefs, receivingUses: scopedHumanChoice.receivingUses
     }] } : {}) })}`,
+    'crossBatchVariants仅列非空清单；本批资产未列出即无已记录的批外变体，不代表禁止新增有据变体。',
     `INPUT_JSON:\n${JSON.stringify(projectFoundationModelInput(input))}`
   ].join('\n\n');
 }

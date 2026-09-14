@@ -270,6 +270,87 @@ check("技术故障折叠诊断，正文不转交底层修复，未知结果优�
   assert.ok(render(waiting).includes("需要你确认") && rail(waiting).includes("创作取舍"));
 });
 
+check("四卡只突出真实当前岗位，计时恢复且非活动状态冻结", () => {
+  const rail = (state: FoundationDeliveryState) => renderToStaticMarkup(createElement(FoundationWorkflowStatus, { projectId: "project-1", state, sourceReady: true, sceneCount: 3, remaining: [] }));
+  const clockTask = task({ createdAt: "2026-09-14T00:00:00.000Z", updatedAt: "2026-09-14T00:02:05.000Z" });
+  for (const [phase, card] of [["PREPARE_SOURCE", "P1"], ["GENERATE_F1", "P2"], ["GENERATE_F2", "P3"], ["EDIT", "P3"], ["REPAIR", "P3"], ["APPLY_DECISION", "P3"]] as const) {
+    const html = rail({ ...base, busy: true, task: { ...clockTask, phase } });
+    const current = html.match(/<article[^>]*aria-current="step"[^>]*>[\s\S]*?<\/article>/g) ?? [];
+    assert.equal(current.length, 1);
+    assert.ok(current[0].includes(`<span>${card}</span>`) && current[0].includes("正在工作"));
+    assert.ok(html.includes("本任务历时（含等待）：2分 5秒") && html.includes('data-clock="running"'));
+  }
+  for (const status of ["WAITING_USER", "STOPPED", "INTERRUPTED", "PARTIAL", "COMPLETE"] as const) {
+    const html = rail({ ...base, task: { ...clockTask, status }, complete: status === "COMPLETE" });
+    assert.doesNotMatch(html, /aria-current="step"|data-clock="running"|正在工作/);
+    assert.ok(html.includes('data-clock="stopped"') && html.includes("已停止计时"));
+    assert.ok(html.includes("2分 5秒"));
+  }
+  const queued = rail({ ...base, busy: true, task: { ...clockTask, status: "QUEUED" } });
+  assert.ok(queued.includes("排队中") && !queued.includes("正在工作"));
+  const unknown = rail({ ...base, busy: true, task: { ...clockTask, unknownOutcome: true } });
+  assert.doesNotMatch(unknown, /aria-current="step"|data-clock="running"/);
+  const invalid = rail({ ...base, task: { ...clockTask, createdAt: "bad" } });
+  assert.doesNotMatch(invalid, /NaN|本任务历时/);
+  const requestClock = { ...base, busy: true, task: clockTask, activeCallStartedAt: '2026-09-14T00:01:00.000Z' };
+  const requestHtml = rail(requestClock);
+  assert.ok(requestHtml.includes('当前请求已等待：1分 5秒'));
+  assert.doesNotMatch(requestHtml, /本任务历时|纯工作耗时/);
+  const stoppedRequest = rail({ ...requestClock, busy: false, task: { ...clockTask, status: 'WAITING_USER' } });
+  assert.ok(stoppedRequest.includes('本任务历时（含等待）：2分 5秒'));
+  assert.doesNotMatch(stoppedRequest, /当前请求已等待|data-clock="running"/);
+  const badRequest = rail({ ...requestClock, activeCallStartedAt: 'bad' });
+  assert.ok(badRequest.includes('本任务历时（含等待）：2分 5秒'));
+  assert.doesNotMatch(badRequest, /NaN/);
+  assert.match(read("app/projects/[projectId]/foundation-delivery.module.css"), /prefers-reduced-motion: reduce/);
+});
+
+check("worker消失后中断与未知结果同时可见，不能显示普通继续或活动计时", () => {
+  const interrupted: FoundationDeliveryState = { ...base, busy: false, action: 'UNKNOWN_CONFIRM', activeCallStartedAt: '2026-09-14T03:03:19.000Z', task: task({ status: 'INTERRUPTED', unknownOutcome: true, createdAt: '2026-09-14T02:20:00.000Z', updatedAt: '2026-09-14T03:03:19.000Z' }) };
+  for (const compact of [false, true]) {
+    const html = renderToStaticMarkup(createElement(FoundationDeliveryPanel, { projectId: 'project-1', state: interrupted, requiredChoiceCount: 0, compact }));
+    assert.match(html, /处理中断|处理已中断/);
+    assert.match(html, /请求结果.*确认/);
+    assert.ok(html.includes('name="allowUnknownRetry"') && html.includes('required=""'));
+    assert.ok(buttons(html).some(button => button.body === '确认重发并继续'));
+    assert.ok(!buttons(html).some(button => button.body === '继续完成'));
+    assert.doesNotMatch(html, /class="live"|正在整理…/);
+  }
+  const rail = renderToStaticMarkup(createElement(FoundationWorkflowStatus, { projectId: 'project-1', state: interrupted, sourceReady: true, sceneCount: 3, remaining: [] }));
+  assert.match(rail, /处理已中断/);
+  assert.match(rail, /data-clock="stopped"/);
+  assert.doesNotMatch(rail, /aria-current="step"|data-clock="running"|当前请求已等待|当前工作：/);
+});
+
+check("客户端保留轮询直到服务回报非busy，然后清理计时器", () => {
+  const reactPath = require.resolve('react'), panelPath = require.resolve('../app/projects/[projectId]/foundation-delivery-panel');
+  const reactModule = require.cache[reactPath]!, navigationModule = require.cache[navigationPath]!;
+  const originalReact = reactModule.exports, originalNavigation = navigationModule.exports, originalPanel = require.cache[panelPath];
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  let effect: (() => undefined | (() => void)) | undefined, tick: (() => void) | undefined, refreshes = 0, cleared = 0, intervals = 0;
+  try {
+    reactModule.exports = { ...originalReact, useEffect: (callback: typeof effect) => { effect = callback; } };
+    navigationModule.exports = { useRouter: () => ({ refresh: () => { refreshes++; } }) };
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: { setInterval: (callback: () => void, delay: number) => { assert.equal(delay, 3000); tick = callback; intervals++; return 71; }, clearInterval: (id: number) => { assert.equal(id, 71); cleared++; } } });
+    delete require.cache[panelPath];
+    const { FoundationDeliveryPanel: Panel } = require(panelPath) as typeof import('../app/projects/[projectId]/foundation-delivery-panel');
+    Panel({ projectId: 'project-1', state: { ...base, busy: true, task: task() }, requiredChoiceCount: 0, compact: true });
+    const cleanup = effect!();
+    tick!(); tick!(); // A server/worker disappearance does not cancel this client timer.
+    assert.equal(refreshes, 2);
+    cleanup!();
+    Panel({ projectId: 'project-1', state: { ...base, busy: false, action: 'UNKNOWN_CONFIRM', task: task({ status: 'INTERRUPTED', unknownOutcome: true }) }, requiredChoiceCount: 0, compact: true });
+    assert.equal(effect!(), undefined);
+    assert.equal(intervals, 1);
+    assert.equal(cleared, 1);
+  } finally {
+    reactModule.exports = originalReact;
+    navigationModule.exports = originalNavigation;
+    require.cache[panelPath] = originalPanel;
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow); else Reflect.deleteProperty(globalThis, 'window');
+  }
+});
+
 check("SSR无提交且不改输入", () => { assert.equal(actionCalls, 0); assert.equal(JSON.stringify(base), before); });
 
 for (const failure of failures) console.error(`FAIL ${failure}`);

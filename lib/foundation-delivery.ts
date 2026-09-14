@@ -1,4 +1,5 @@
 import { actionableFoundationIssues } from './foundation-decision-wait';
+import { decisionSceneKeys, decisionAssetKeys, assertDecisionChanges } from './foundation-decision-targets';
 import { planFoundationIssueDispatch } from './foundation-issue-dispatch';
 import { assessFoundationWorkerHealth } from './foundation-worker-health';
 import { selectRequestChoices, selectRequestIssues } from './foundation-request-context';
@@ -274,7 +275,12 @@ function validateLightEdit(value: unknown, input: Inputs, doc: FoundationDocumen
       })) throw new FoundationContractError('局部素材修订遗漏了目标场外的既有依据，原资料保留。', [{ severity: 'BLOCKER', owner: 'PROGRAM', coordinate: 'changes.assets.sceneRefs', problem: '必须保留同集其他场的素材引用和变体依据', sourceRefs: [] }]);
     }
   }
-  guardLocalEdit(output, phase, targets, allowedScenes); applyDocumentEdit(doc, output, input.sourceIndex); return output;
+  guardLocalEdit(output, phase, targets, allowedScenes);
+  const candidate=applyDocumentEdit(doc, output, input.sourceIndex);
+  for(const choice of output.humanChoices??[]) for(const key of choice.changeTargets?.assetKeys??[]) {
+    if(!candidate.f2?.assets.some(asset=>asset.key===key)) throw new FoundationContractError('事项引用了不存在的素材对象，不能发布无效确认包。', [{severity:'BLOCKER',owner:'PROGRAM',coordinate:'humanChoices.changeTargets.assetKeys',problem:'使用本次输入目录中的准确资产key；不能从名称猜造身份',sourceRefs:[]}]);
+  }
+  return output;
 }
 function assertDeliveryReceipts(output: ProductionOptimization, suggestions: FoundationChoiceView[], decisions: FoundationChoiceView[]) {
   for (const [field, supplied] of [['resolvedSuggestions', suggestions], ['appliedDecisions', decisions]] as const) {
@@ -368,7 +374,7 @@ export async function getFoundationDeliveryState(projectId: string, db: Db = pri
   const availableEpisodes = all.filter(n => document.f2?.coverage.includes(n)).length;
   const documentReady = !needsAssetRefresh && availableEpisodes === all.length && all.every(n => document.editorialCoverage.includes(n)) && !loaded.needsContextEdit && !issues.length && !requiredChoices.length && !unapplied.length && !suggestions.length && !currentTodos(document).length;
   const complete = !unknownOutcome && (!task || task.status === 'RUNNING' || task.status === 'COMPLETE') && documentReady;
-  const activeRuns = await db.pipelineRun.findMany({ where: { projectId, status: { in: ['QUEUED', 'RUNNING'] } }, select: { inputSummary: true } });
+  const activeRuns = await db.pipelineRun.findMany({ where: { projectId, status: { in: ['QUEUED', 'RUNNING'] } }, select: { inputSummary: true, startedAt: true }, orderBy: {createdAt:'desc'} });
   const busy = active(task) || activeRuns.some(run => {
     const input = foundationJson(run.inputSummary);
     return !(storedTask && workerGone && input.deliveryTaskId === storedTask.id && input.workerToken === storedTask.workerToken);
@@ -382,6 +388,7 @@ export async function getFoundationDeliveryState(projectId: string, db: Db = pri
   const continuationBlocker = !busy && !unknownOutcome && !requiredChoices.length ? blocked ?? await paidContinuationBlocker(db, input, document, scenes, choices.pending, choices.confirmed, loaded.needsContextEdit) : null;
   return { document, previousDocument: loaded.previousDocument, task, totalEpisodes: all.length, availableEpisodes, editedEpisodes: all.filter(n => currentEdited.includes(n)).length,
     busy, complete, documentReady, needsContextEdit: loaded.needsContextEdit, needsAssetRefresh, methodUpdateAvailable, continuationBlocker, action: busy ? 'NONE' : unknownOutcome ? 'UNKNOWN_CONFIRM' : continuationBlocker ? 'BLOCKED' : complete ? 'NONE' : document.f1 || document.f2 ? 'CONTINUE' : 'START',
+    activeCallStartedAt: busy ? activeRuns.find(run => foundationJson(run.inputSummary).workerToken === task?.workerToken)?.startedAt?.toISOString() ?? null : null,
     requiredChoices, confirmedChoices: choices.confirmed, suggestionsCount: suggestions.length, sourceContext: input.sourceContext, codes, issues,
     expectedState: hash({ source: input.sourceVersion, context: contextFingerprint(input), revision: document.revision, task: storedTask, unknown, pending: choices.pending.map(c => c.revision), confirmed: choices.confirmed.map(c => c.revision) }) };
 }
@@ -535,8 +542,15 @@ export function buildDeliveryInput(stage: 'F2' | 'Q1', phase: DeliveryPhase, inp
     ...(sourceReviewCandidates.length?{sourceReviewCandidates,candidateRules:'P1称呼和疑问是有原文位置的候选，不是已确认身份或用户决定；只核对本批相关内容，禁止因此改写原台词标签。'}:{}),
     delivery: { mode: phase, documentRevision: doc.revision, ...(targets ? { targets } : {}), instructions: '这是一份持续工作稿：保留正确内容，直接修改实际问题。前岗humanChoices只是待编辑判断的建议；能据上下文理解或可留到表现设计的事项，用中性表述与notes处理，原文照留，不强造独立实体或提前锁死特效。完成建议判断后须交resolvedSuggestions的准确id与依据；省略不等于已处理。只有原文确实无法决定且本阶段必需才提出humanChoices；不把默认值写成用户确认。已定决定实际采用后须交appliedDecisions准确id与说明；现稿本已满足也说明，不以收到决定冒充已采用。APPLY_DECISION只改已定决定的影响范围；REPAIR只改targets与待办，不重写正确分片。' } };
   if (stage === 'F2') return { ...base, registry: registry(identities) };
-  const local = projectProductionCatalog(doc.f2!, scope), localKeys = new Set(local.assets.map(asset => asset.key));
+  const local = projectProductionCatalog(doc.f2!, scope);
+  const decisionKeys = phase === 'APPLY_DECISION' ? decisionAssetKeys(decisions.filter(choice => scopeEpisodes(readApplicationScope(choice.applicationScope,choice.episodes),scope).some(n=>scope.includes(n)))) : undefined;
+  if (decisionKeys) {
+    local.assets = local.assets.filter(asset => !!asset.key && decisionKeys.includes(asset.key));
+    if(local.repairItems) local.repairItems=local.repairItems.filter(item=>decisionKeys.includes(item.assetKey));
+  }
+  const localKeys = new Set(local.assets.map(asset => asset.key));
   return { ...base, candidates: { f2: local },
+    ...(decisionKeys ? {decisionObjectUsage:doc.f2!.assets.filter(asset=>decisionKeys.includes(asset.key)).map(asset=>({key:asset.key,episodes:asset.usageEpisodes,sceneRefs:asset.sceneRefs??[],variants:asset.variants.map(v=>({key:v.key,episodes:v.episodes,sceneRefs:v.sceneRefs??[]}))})),decisionMutationRule:'changeTargets和applicationScope须同时满足。对象使用范围在decisionObjectUsage；共享对象顶层字段影响全部引用，只允许完整授权时改动。局部外观/状态采用有准确场引用的局部variants且须获variants授权，保留既有无关变体。没有权限的原文、对象、字段、集场不能改；只输出实际差异，不复制整目录。'} : {}),
     registry: registry(identities.filter(asset => !localKeys.has(asset.key))),
     crossBatchVariants: doc.f2!.assets.filter(asset => localKeys.has(asset.key)).map(asset => ({ assetKey: asset.key, variants: asset.variants.filter(v => !v.episodes.some(n => scope.includes(n))).map(v => ({ key: v.key, name: v.name })) })),
     editorialSuggestions: suggestions.filter(choice => scopeEpisodes(readApplicationScope(choice.applicationScope,choice.episodes),scope).some(n=>scope.includes(n))), confirmedDecisions: decisions.filter(choice => scopeEpisodes(readApplicationScope(choice.applicationScope,choice.episodes),scope).some(n=>scope.includes(n))),
@@ -885,13 +899,15 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
     progress().q1=progress().q1.filter(id=>!changed.has(id));
     progress().q1Dependencies=currentDependencies;
     for(const fragment of fragments)if(changed.has(fragment.id)&&!pendingEpisodes.includes(fragment.episode))pendingEpisodes.push(fragment.episode);
+    let retainedDecisionTargets: LocalRepairTargets | undefined;
     const buildEditWork = (scope: number[], currentChoices: Awaited<ReturnType<typeof loadFoundationChoices>>) => {
       const localSuggestions = currentChoices.pending.filter(choice => doc.reviewedSuggestions[choice.id] !== choice.revision && !doc.requiredDecisionIds.includes(choice.id) && scope.some(n => remainingChoiceScope(doc, choice, 'suggestionCoverage', all).includes(n)));
       const localDecisions = currentChoices.confirmed.filter(choice => doc.appliedDecisions[choice.id] !== choice.revision && scope.some(n => remainingChoiceScope(doc, choice, 'decisionCoverage', all).includes(n)));
       const decisionEpisodes = union(...localDecisions.map(choice => remainingChoiceScope(doc, choice, 'decisionCoverage', all)));
       const decisionOnly = scope.length > 0 && !localSuggestions.length && !loaded.needsContextEdit
         && scope.every(n => doc.editorialCoverage.includes(n) && decisionEpisodes.includes(n));
-      const targets = decisionOnly ? { episodes: [...scope], keys: doc.f2!.assets.filter(asset => asset.usageEpisodes.some(n => scope.includes(n))).map(asset => asset.key) } : undefined;
+      const sceneKeys = decisionOnly ? decisionSceneKeys(localDecisions, scope) : undefined;
+      const targets = decisionOnly ? retainedDecisionTargets && JSON.stringify(retainedDecisionTargets.episodes) === JSON.stringify(scope) ? structuredClone(retainedDecisionTargets) : { episodes: [...scope], keys: decisionAssetKeys(localDecisions) ?? doc.f2!.assets.filter(asset => asset.usageEpisodes.some(n => scope.includes(n))).map(asset => asset.key), ...(sceneKeys?.length ? {sceneKeys} : {}) } : undefined;
       return { scope: [...scope], phase: (decisionOnly ? 'APPLY_DECISION' : 'EDIT') as DeliveryPhase, targets, localSuggestions, localDecisions };
     };
     const nextEditScope = async (pending: number[]) => {
@@ -904,7 +920,12 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
         && !doc.origins.some(origin => origin.runId === entry.run.id)
         && entry.calls.some(attempt => attempt.requestOutcome === 'RESPONDED' || attempt.requestOutcome === 'UNKNOWN')
         && entry.calls.some(attempt => attempt.scope.some(n => pending.includes(n))));
-      if (retained) {const scope=retained.calls.find(attempt => attempt.scope.some(n => pending.includes(n)))!.scope;const group=orderedGroups.find(group=>group.includes(pending[0]))!;if(scope.some(n=>!group.includes(n)))throw new Error('历史已付费核对范围跨越长集边界，原响应已保留；需校核前接资料后恢复，未自动重购。');return scope;}
+      if (retained) {const scope=retained.calls.find(attempt => attempt.scope.some(n => pending.includes(n)))!.scope;const group=orderedGroups.find(group=>group.includes(pending[0]))!;if(scope.some(n=>!group.includes(n)))throw new Error('历史已付费核对范围跨越长集边界，原响应已保留；需校核前接资料后恢复，未自动重购。');
+        const delivery=isRecord(retained.request?.delivery)?retained.request.delivery:null;
+        const saved=delivery&&isRecord(delivery.targets)?delivery.targets:null;
+        // A receiving-scope improvement must never turn an already purchased request into new paid work.
+        if(delivery?.mode==='APPLY_DECISION' && saved && Array.isArray(saved.episodes) && Array.isArray(saved.keys) && JSON.stringify(saved.episodes)===JSON.stringify(scope)) retainedDecisionTargets=structuredClone(saved) as LocalRepairTargets;
+        return scope;}
       return planFoundationRequestScope(pending, scope => {
         const work = buildEditWork(scope, currentChoices);
         const request = { ...buildDeliveryInput('Q1', work.phase, input, doc, work.scope, work.localSuggestions, work.localDecisions, identities, scenes, work.targets, currentChoices.pending.filter(choice => doc.requiredDecisionIds.includes(choice.id))), humanChoiceRegistry: selectRequestChoices(currentChoices.registry,work.scope) };
@@ -912,7 +933,14 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       });
     };
     const edit = async (scope: number[], phase: DeliveryPhase, targets?: LocalRepairTargets, fragment?: FoundationFragment) => {
-      const result = await call('Q1', phase, scope, value => validateLightEdit(value, input, doc, scope, scenes, savedSplits, sceneParserVersions, phase, targets), targets, fragment);
+      const currentDecisions = phase === 'APPLY_DECISION' ? choices.confirmed.filter(choice => doc.appliedDecisions[choice.id] !== choice.revision && scope.some(n => remainingChoiceScope(doc, choice, 'decisionCoverage', all).includes(n))) : [];
+      const currentDecisionScenes = phase === 'APPLY_DECISION' ? decisionSceneKeys(currentDecisions, scope) : undefined;
+      const validationTargets = targets && currentDecisionScenes?.length ? {...targets, sceneKeys: currentDecisionScenes} : targets;
+      const result = await call('Q1', phase, scope, value => {
+        const output=validateLightEdit(value, input, doc, scope, scenes, savedSplits, sceneParserVersions, phase, validationTargets);
+        if(phase==='APPLY_DECISION') assertDecisionChanges(currentDecisions,scope,output,doc,applyDocumentEdit(doc,output,input.sourceIndex));
+        return output;
+      }, targets, fragment);
       if (result.output.changes.sceneSplits?.length) await previewSceneSplitPlans(projectId, db, result.output.changes.sceneSplits);
       doc = applyDocumentEdit(doc, result.output, input.sourceIndex);
       if (fragment) {

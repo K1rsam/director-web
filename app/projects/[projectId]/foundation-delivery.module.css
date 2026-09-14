@@ -1,6 +1,15 @@
 .panel, .document, .documentSection, .history, .source { min-width: 0; overflow-wrap: anywhere; }
 .operationMessage, .operationError { margin: 12px 0; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
 .operationMessage { color: #536178; }
+.activeCard.activeCard { outline: 2px solid rgba(104, 88, 171, .5); outline-offset: -2px; }
+.activeCard.activeCard::before { height: 3px; background: #7865b8; }
+.pausedCard.pausedCard { outline: 1px solid rgba(141, 98, 52, .4); outline-offset: -1px; }
+.activeCard em::before { display: none; }
+.workSpinner { display: inline-block; flex: 0 0 auto; width: 12px; height: 12px; border: 2px solid rgba(104, 88, 171, .22); border-top-color: #6858ab; border-radius: 50%; animation: foundationWorking 1s linear infinite; }
+.queuedDot { width: 6px; height: 6px; border-radius: 50%; background: #8d6234; }
+.elapsed { font-variant-numeric: tabular-nums; }
+@keyframes foundationWorking { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .workSpinner { animation: none; } }
 .operationError { color: #98494b; white-space: pre-wrap; }
 .operationLinks { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: 12px; color: #68758c; }
 .operationLinks form { margin: 0; }

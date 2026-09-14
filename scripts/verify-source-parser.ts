@@ -41,6 +41,19 @@ assert.match(scenes[0]!.scenes[0]!.sourceText, /^第1集\n/, "the opening materi
 const inlineHeading = parseSceneBatch([{ number: 1, content: "第1集\n1-1地点 夜 内\n人物：苏远\n" }])[0]!.scenes[0]!;
 assert.deepEqual([inlineHeading.sceneKey, inlineHeading.location, inlineHeading.timeOfDay, inlineHeading.interiorExterior], ["1-1", "地点", "夜", "内"], "inline scene heading text remains a usable fixed scene heading");
 const twoInline = parseSceneBatch([{ number: 1, content: "第1集\n1-1客厅 夜 内\n甲：回来。\n1-2天台 日 外\n乙：走吧。\n" }])[0]!.scenes;
+for (const version of ["SCENE_PARSER_V1", "SCENE_PARSER_V2"] as const) {
+  for (const header of ["11-1:日 外 大比擂台区", "11-1：日 外 大比擂台区", "11-1: 日 外 大比擂台区", "11-1 ： 外 日 大比擂台区", "11-1：大比擂台区 日 外"]) {
+    const raw = `第11集\r\n${header}\r\n楚天野：来了🙂。  \r\n11-2 夜 内 大厅\r\n楚天野：走吧。\r\n`;
+    const parsed = parseSceneBatch([{ number: 11, content: raw }], [], { versions: { 11: version } })[0]!.scenes;
+    assert.deepEqual(parsed.map(scene => [scene.sceneKey, scene.location, scene.timeOfDay, scene.interiorExterior]), [["11-1", "大比擂台区", "日", "外"], ["11-2", "大厅", "夜", "内"]], `${version}: scene-number colon accepts either metadata order`);
+    assert.equal(parsed.map(scene => scene.sourceText).join(""), raw);
+    assert.equal(parsed[0]!.sourceText, raw.slice(0, raw.indexOf("11-2")), "metadata normalization never moves a source boundary");
+    assert.equal(parsed[0]!.heading, header.replace(/^11-1\s*/, ""), "display heading retains source punctuation");
+  }
+  const raw = "第11集\n11-1：日光广场 外\n楚天野：日 外 大比擂台区\n";
+  const scene = parseSceneBatch([{ number: 11, content: raw }], [], { versions: { 11: version } })[0]!.scenes[0]!;
+  assert.deepEqual([scene.location, scene.timeOfDay, scene.interiorExterior], ["日光广场", null, "外"], "location words and dialogue cannot invent time metadata");
+}
 assert.deepEqual(twoInline.map((scene) => [scene.sceneKey, scene.location]), [["1-1", "客厅"], ["1-2", "天台"]], "two Chinese-adjacent scene headings split into two non-overlapping scenes");
 const repeatedPageHeader = parseSceneBatch([{ number: 1, content: "第1集\n1-1 客厅 夜 内\n苏远：上半段。\n1-1 客厅 夜 内\n苏远：下半段。\n" }])[0]!.scenes;
 assert.equal(repeatedPageHeader.length, 1);
