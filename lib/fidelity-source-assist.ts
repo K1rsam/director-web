@@ -9,7 +9,8 @@ import type { ImportedScript } from './import-script';
 import { planP1ReviewBatches, validateP1ReviewPlan, projectP1ReviewRequest, p1RepairSections, p1StructureIssues, type P1ReviewState, type P1ReviewRequest } from './fidelity-p1-review';
 import { coalesceFidelityDecisions } from './fidelity-decision-ranges';
 import { routeFidelityQuestions } from './fidelity-question-routing';
-export type FidelityBackendPending={kind:'BACKEND_STRUCTURE_PENDING';codes:string[];reason:'DIRECT_STRUCTURE_PENDING'|'BOUNDED_REPAIR_EXHAUSTED'};
+import {reconcileP1OwnershipDecisions} from './fidelity-p1-ownership';
+export type FidelityBackendPending={kind:'BACKEND_STRUCTURE_PENDING';codes:string[];reason:'DIRECT_STRUCTURE_PENDING'|'BOUNDED_REPAIR_EXHAUSTED'|'REPAIR_NOT_DISPATCHED'};
 export async function prepareFidelitySourceAssisted(projectId:string,db:PrismaClient,options:{checkAfterCommit?:(tx:Prisma.TransactionClient)=>Promise<void>;checkCurrent:(tx:Prisma.TransactionClient)=>Promise<void>;assist:(request:SourceAssistRequest,validate:(value:unknown)=>SourceBoundaryPlan)=>Promise<{plan:SourceBoundaryPlan;runId:string}>}){
  const current=await readFidelityReceipt(projectId,db), input=await readSourcePreparation(projectId,db);
  if(!current?.sourceSnapshot)throw new Error('缺少保真来源。');
@@ -17,7 +18,7 @@ export async function prepareFidelitySourceAssisted(projectId:string,db:PrismaCl
  const storedReview=(current.receipt as typeof current.receipt & {p1Review?:P1ReviewState}).p1Review;
  const review=storedReview?routeFidelityQuestions(storedReview,result):undefined;
  const currentIssues=[...result.validation.issues,...p1StructureIssues(review??{status:'PENDING'})];
- const done=()=>({sourceInputVersion:input.sourceInputVersion,assisted:false,episodeCount:input.project.episodes.length,unresolved:currentIssues.map(i=>i.code),backendPending:currentIssues.length?{kind:'BACKEND_STRUCTURE_PENDING',codes:currentIssues.map(i=>i.code),reason:current.receipt.mode==='direct'?'DIRECT_STRUCTURE_PENDING':'BOUNDED_REPAIR_EXHAUSTED'} as FidelityBackendPending:undefined});
+ const done=()=>({sourceInputVersion:input.sourceInputVersion,assisted:false,episodeCount:input.project.episodes.length,unresolved:currentIssues.map(i=>i.code),backendPending:currentIssues.length?{kind:'BACKEND_STRUCTURE_PENDING',codes:currentIssues.map(i=>i.code),reason:current.receipt.mode==='direct'?'DIRECT_STRUCTURE_PENDING':review?.repairAttempts?'BOUNDED_REPAIR_EXHAUSTED':'REPAIR_NOT_DISPATCHED'} as FidelityBackendPending:undefined});
  // Direct external imports never repeat a paid full review; legacy imports retain their old path.
  if(current.receipt.mode==='direct')return done();
  if(review?.status==='COMPLETE'&&!currentIssues.length)return done();
@@ -37,7 +38,7 @@ export async function prepareFidelitySourceAssisted(projectId:string,db:PrismaCl
     issues:result.validation.issues.filter(i=>i.start<bounds.end&&i.end>bounds.start).map(i=>({code:i.code,message:i.message,sectionKeys:blocks.filter(b=>b.start<i.end&&b.end>i.start).map(b=>b.id)})),baseline:result.episodes.filter(e=>e.start<bounds.end&&e.end>bounds.start).map(e=>({episodeNumber:e.sourceNumber,start:e.start,end:e.end}))};
    const validate=(value:unknown):SourceBoundaryPlan=>{
     const proposal=validateP1ReviewPlan(value,request);
-    prepareFidelityReading(original,current.receipt.mode,coalesceFidelityDecisions(original.sourceText,[...current.receipt.decisions,...(state.pendingDecisions??[]),...proposal.decisions]),current.receipt.originalHash);
+    prepareFidelityReading(original,current.receipt.mode,reconcileP1OwnershipDecisions(original.sourceText,coalesceFidelityDecisions(original.sourceText,[...current.receipt.decisions,...(state.pendingDecisions??[]),...proposal.decisions])).decisions,current.receipt.originalHash);
     return value as SourceBoundaryPlan;
    };
    const response=await options.assist(request,validate);
@@ -52,7 +53,12 @@ export async function prepareFidelitySourceAssisted(projectId:string,db:PrismaCl
    });
    checkpoint=(await readFidelityReceipt(projectId,db))!;
   }
-  const materialize=()=>prepareFidelityReading(original,current.receipt.mode,coalesceFidelityDecisions(original.sourceText,[...current.receipt.decisions,...(state.pendingDecisions??[])]),current.receipt.originalHash);
+  const reconciledDecisions=()=>reconcileP1OwnershipDecisions(original.sourceText,coalesceFidelityDecisions(original.sourceText,[...current.receipt.decisions,...(state.pendingDecisions??[])]));
+  const materialize=()=>{
+   const reconciled=reconciledDecisions();
+   state={...state,ownershipCorrections:[...new Map([...(state.ownershipCorrections??[]),...reconciled.corrections].map(correction=>[JSON.stringify(correction),correction])).values()]};
+   return prepareFidelityReading(original,current.receipt.mode,reconciled.decisions,current.receipt.originalHash);
+  };
   let checked=materialize();
   state=routeFidelityQuestions(state,checked.receipt.result);
   // One bounded local pass follows full reading. Its paid result has its own fingerprint
@@ -69,7 +75,7 @@ export async function prepareFidelitySourceAssisted(projectId:string,db:PrismaCl
     if(JSON.stringify(projectP1ReviewRequest(request)).length<=24000){
     const validate=(value:unknown):SourceBoundaryPlan=>{
      const proposal=validateP1ReviewPlan(value,request);
-     prepareFidelityReading(original,current.receipt.mode,coalesceFidelityDecisions(original.sourceText,[...current.receipt.decisions,...(state.pendingDecisions??[]),...proposal.decisions]),current.receipt.originalHash);
+     prepareFidelityReading(original,current.receipt.mode,reconcileP1OwnershipDecisions(original.sourceText,coalesceFidelityDecisions(original.sourceText,[...current.receipt.decisions,...(state.pendingDecisions??[]),...proposal.decisions])).decisions,current.receipt.originalHash);
      return value as SourceBoundaryPlan;
     };
     const response=await options.assist(request,validate),proposal=validateP1ReviewPlan(response.plan,request);
@@ -86,9 +92,9 @@ export async function prepareFidelitySourceAssisted(projectId:string,db:PrismaCl
    }
   }
   const remaining=[...checked.receipt.result.validation.issues,...p1StructureIssues(state)];
-  await refreshFidelitySource(projectId,db,{expectedReceiptId:checkpoint.snapshot.id,expectedSourceId:current.sourceSnapshot.id,checkCurrent:options.checkCurrent,checkAfterCommit:options.checkAfterCommit,decisions:coalesceFidelityDecisions(original.sourceText,[...current.receipt.decisions,...(state.pendingDecisions??[])]),p1Review:{...state,status:remaining.length?'PENDING':'COMPLETE',pendingDecisions:[]}});
+  await refreshFidelitySource(projectId,db,{expectedReceiptId:checkpoint.snapshot.id,expectedSourceId:current.sourceSnapshot.id,checkCurrent:options.checkCurrent,checkAfterCommit:options.checkAfterCommit,decisions:reconciledDecisions().decisions,p1Review:{...state,status:remaining.length?'PENDING':'COMPLETE',pendingDecisions:[]}});
   const refreshed=await readSourcePreparation(projectId,db),receipt=await readFidelityReceipt(projectId,db);
-  return {sourceInputVersion:refreshed.sourceInputVersion,assisted:true,episodeCount:refreshed.project.episodes.length,unresolved:remaining.map(i=>i.code),backendPending:remaining.length?{kind:'BACKEND_STRUCTURE_PENDING',codes:remaining.map(i=>i.code),reason:'BOUNDED_REPAIR_EXHAUSTED'} as FidelityBackendPending:undefined};
+  return {sourceInputVersion:refreshed.sourceInputVersion,assisted:true,episodeCount:refreshed.project.episodes.length,unresolved:remaining.map(i=>i.code),backendPending:remaining.length?{kind:'BACKEND_STRUCTURE_PENDING',codes:remaining.map(i=>i.code),reason:state.repairAttempts?'BOUNDED_REPAIR_EXHAUSTED':'REPAIR_NOT_DISPATCHED'} as FidelityBackendPending:undefined};
  }
  if(!result.validation.issues.length)return done();
  const ranges:Array<{start:number;end:number}>=[];

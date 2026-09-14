@@ -1,6 +1,7 @@
 import type { FidelityDecision } from './fidelity-import';
 import { createFidelityExternalMaterial } from './fidelity-external';
 import type { SourceAssistRequest } from './source-preparation';
+import type {P1OwnershipCorrection} from './fidelity-p1-ownership';
 
 export type P1CandidateWarning={index:number|null;reason:string;sourceVersion:string;batch:{firstBlock:string;lastBlock:string;index:number;total:number};repairAttempt?:number;runId?:string};
 export type P1ReviewState = {
@@ -11,6 +12,7 @@ export type P1ReviewState = {
  unresolved?:Array<{start:number;end:number;note:string;kind?:'structure'|'semantic';routing?:{kind:'QUESTION';basis:'EXPLICIT_SOURCE_OWNERSHIP';sourceVersion:string}}>;
  aliases?:Array<{alias:string;canonicalCandidate:string;start:number;end:number;note:string}>;
  candidateWarnings?:P1CandidateWarning[];
+ ownershipCorrections?:P1OwnershipCorrection[];
 };
 type Block = ReturnType<typeof createFidelityExternalMaterial>['blocks'][number];
 export type P1ReviewRequest = SourceAssistRequest & {reviewMode:'FULL_STRUCTURE_V1';repairAttempt?:number;batch:{firstBlock:string;lastBlock:string;index:number;total:number};baseline:unknown[]};

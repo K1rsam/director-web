@@ -165,7 +165,11 @@ async function main(){
   assert.equal(cachedFoundationFacts(input.sourceIndex,input.sourceContext,null),facts,'same dependencies reuse facts');
   const renamed={assets:[{name:'新称呼',aliases:[]}]} as any;
   assert.notEqual(cachedFoundationFacts(input.sourceIndex,input.sourceContext,renamed),facts,'identity changes invalidate facts');
-  console.log('PASS P1 complete raw review, direct zero calls, old import compatibility, batch checkpoint, stop, zero-episode controller, strict blocks, real candidate consumer, fact dependency cache');
+  const tooLarge=await create('第1集\n'+'甲：没有明确场头但这一段正文不能被删掉。\n'.repeat(800));
+  let fullReads=0,repairReads=0;
+  const largeResult=await prepareFidelitySourceAssisted(tooLarge.id,db,{...options,assist:async(request:any,validate:any)=>{if(request.repairAttempt)repairReads++;else fullReads++;const plan=answer(request);validate(plan);return {plan,runId:'large-'+fullReads};}});
+  assert(fullReads>0);assert.equal(repairReads,0);assert.equal(largeResult.backendPending?.reason,'REPAIR_NOT_DISPATCHED','a source repair that was never sent must not be called exhausted');
+  console.log('PASS P1 complete raw review, direct zero calls, old import compatibility, batch checkpoint, stop, zero-episode controller, strict blocks, real candidate consumer, fact dependency cache, unsent repair status');
  }finally{await db.$disconnect();const resolved=path.resolve(directory);if(!resolved.startsWith(path.resolve(tmpdir())+path.sep))throw new Error('temp boundary');rmSync(resolved,{recursive:true,force:true});}
 }
 void main().catch(error=>{console.error(error);process.exitCode=1;});
