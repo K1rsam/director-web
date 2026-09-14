@@ -1,6 +1,7 @@
 import { confirmFoundationDeliveryChoiceAction, decidePresentationContractAction } from "@/app/actions";
 import type { FoundationChoiceView } from "@/lib/foundation-choice-store";
 import styles from "./presentation-contracts.module.css";
+import { ChoiceSubmitButton } from "./choice-submit-button";
 
 const categoryLabel = (category: string) => category === "asset_identity" ? "资产身份"
   : category === "SOURCE_CONFLICT" ? "原文取舍"
@@ -15,7 +16,8 @@ export function PresentationContracts({
   active = false,
   mode = "legacy",
   expectedTaskId,
-  blockedReason
+  blockedReason,
+  decisionContinued = false
 }: {
   projectId: string;
   pending: FoundationChoiceView[];
@@ -24,25 +26,27 @@ export function PresentationContracts({
   mode?: "legacy" | "delivery";
   expectedTaskId?: string;
   blockedReason?: string;
+  decisionContinued?: boolean;
 }) {
-  if (!pending.length && !confirmed.length) return null;
+  if (!pending.length && !confirmed.length && !active && !decisionContinued) return null;
   const delivery = mode === "delivery";
   const action = delivery ? confirmFoundationDeliveryChoiceAction : decidePresentationContractAction;
   return (
     <section className={styles.section} id="presentation-contracts" aria-labelledby="foundation-choices-heading">
       <div className={styles.header}>
         <div><span>{delivery ? "必要取舍" : "F1 · F2 · Q1"}</span><h3 id="foundation-choices-heading">{pending.length ? "需要你确认" : "已确认的决定"}</h3></div>
-        <span>{pending.length} 项待确认 · {confirmed.length} 项已确认</span>
+        <span aria-live="polite">{pending.length} 项待确认 · {confirmed.length} 项已确认</span>
       </div>
       {pending.length ? <p className={styles.hint}>这里只收集原文和现有资料无法替你决定的取舍。请选择一个方案，或写下自定义方案；推荐只是建议，不会自动选中。{delivery ? "点击方案即确认，并自动继续处理。" : ""}</p> : null}
-      {active && pending.length ? <p role="status" className={styles.running}>{blockedReason ?? "请先等待当前运行结束，再确认这些决定。"}</p> : null}
-      {pending.map((contract) => {
+      {active ? <p role="status" className={styles.running}>{blockedReason ?? "请先等待当前运行结束。系统正在处理资料，页面会自动更新；新的待确认事项会显示在这里。"}</p> : decisionContinued ? <p role="status" className={styles.running}>{pending.length ? `决定已保存，本轮处理已结束。仍有 ${pending.length} 项需要你确认，请继续查看下方事项。` : "决定已保存，本轮处理已结束。当前没有待确认事项，请查看上方整理状态。"}</p> : null}
+      {pending.map((contract, choiceIndex) => {
         const recommendedIndex = contract.recommended ? contract.options.indexOf(contract.recommended) : -1;
         // Historical option arrays may contain a custom-input placeholder; retain every real option's stored index.
         const options = contract.options.map((text, index) => ({ text, index })).filter(({ text }) => !/^(?:[A-Z][.、．]\s*)?(?:用户)?自定义(?:方案)?(?:…|\.{3})?$/.test(text.trim()));
         return (
-          <article className={styles.card} key={contract.id} aria-labelledby={`choice-${contract.id}`}>
+          <article className={styles.card} id={`choice-card-${contract.id}`} key={contract.id} aria-labelledby={`choice-${contract.id}`}>
             <div className={styles.meta}>
+              <span>待确认 {choiceIndex + 1} / {pending.length}</span>
               <span>{categoryLabel(contract.category)}</span>
               <span>{scopeLabel(contract.episodes)}</span>
               {!delivery ? <span>{contract.sourceStages.length ? `来源：${contract.sourceStages.join(" · ")}` : "来源未记录"}</span> : null}
@@ -63,11 +67,11 @@ export function PresentationContracts({
                   <input name="contractId" type="hidden" value={contract.id} />
                   <input name="revision" type="hidden" value={contract.revision} />
                   {delivery ? <input name="expectedTaskId" type="hidden" value={expectedTaskId ?? ""} /> : null}
-                  <button name="optionIndex" value={index} type="submit" disabled={active} className={`${styles.optionButton} ${index === recommendedIndex ? styles.recommended : ""}`}>
+                  <ChoiceSubmitButton name="optionIndex" value={index} disabled={active} className={`${styles.optionButton} ${index === recommendedIndex ? styles.recommended : ""}`}>
                     <span className={styles.optionLabel}><b>{String.fromCharCode(65 + index)}</b>{index === recommendedIndex ? <em>推荐</em> : null}</span>
                     <span>{text}</span>
                     {delivery ? <span>确认并继续</span> : null}
-                  </button>
+                  </ChoiceSubmitButton>
                   {index === recommendedIndex && contract.recommendationReason ? <p className={styles.recommendationReason}>推荐理由：{contract.recommendationReason}</p> : null}
                 </form>
               ))}
@@ -79,8 +83,9 @@ export function PresentationContracts({
               {delivery ? <input name="expectedTaskId" type="hidden" value={expectedTaskId ?? ""} /> : null}
               <label htmlFor={`custom-${contract.id}`}>自定义方案</label>
               <textarea id={`custom-${contract.id}`} name="customAnswer" rows={2} required disabled={active} placeholder="写下你的具体决定…" />
-              <button type="submit" disabled={active}>{delivery ? "确认自定义方案并继续" : "保存自定义方案"}</button>
+              <ChoiceSubmitButton disabled={active}>{delivery ? "确认自定义方案并继续" : "保存自定义方案"}</ChoiceSubmitButton>
             </form>
+            {pending[choiceIndex + 1] ? <a href={`#choice-card-${pending[choiceIndex + 1].id}`}>查看下一项（{choiceIndex + 2} / {pending.length}）</a> : null}
           </article>
         );
       })}

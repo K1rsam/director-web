@@ -30,6 +30,7 @@ Object.freeze(base.options); Object.freeze(base.episodes); Object.freeze(base.so
 const before = JSON.stringify(base);
 const render = (pending = [base], confirmed: FoundationChoiceView[] = [], active = false) => renderToStaticMarkup(createElement(PresentationContracts, { projectId: "project-safe", pending, confirmed, active } as Parameters<typeof PresentationContracts>[0]));
 const html = render();
+const deliveryRender = (pending: FoundationChoiceView[], active = false, decisionContinued = true) => renderToStaticMarkup(createElement(PresentationContracts, {projectId: 'project-safe', pending, confirmed: [], mode: 'delivery', active, decisionContinued}));
 const article = (markup: string) => markup.match(/<article\b[^>]*>[\s\S]*?<\/article>/)?.[0] ?? "";
 const buttons = (markup: string) => [...markup.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)].map(match => ({ attributes: match[1], body: match[2] }));
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -152,6 +153,38 @@ check("局部样式保障键盘和窄屏文本", () => {
   assert.ok(css.includes("white-space: normal") && css.includes("min-width: 0"));
 });
 check("输入不变且SSR不提交", () => { assert.equal(JSON.stringify(base), before); assert.equal(actionCalls, 0); });
+
+check("等待确认五项完整显示并逐项导航", () => {
+  const five = Array.from({length: 5}, (_, i) => choice({id: `pending-${i}`, question: `独立事项${i + 1}`}));
+  const waiting = deliveryRender(five);
+  assert.equal((waiting.match(/<article\b/g) ?? []).length, 5);
+  assert.ok(waiting.includes('仍有 5 项需要你确认'));
+  for (let i = 1; i <= 5; i++) assert.ok(waiting.includes(`待确认 ${i} / 5`) && waiting.includes(`独立事项${i}`));
+  assert.equal((waiting.match(/查看下一项/g) ?? []).length, 4);
+  assert.ok(buttons(waiting).every(button => !button.attributes.includes('disabled=""')));
+});
+check("已确认后处理中即使无待办仍保留等待反馈", () => {
+  const running = deliveryRender([], true);
+  assert.ok(running.includes('系统正在处理资料，页面会自动更新'));
+  const finished = deliveryRender([]);
+  assert.ok(finished.includes('当前没有待确认事项'));
+  assert.ok(!finished.includes('系统正在处理资料'));
+});
+check("提交按钮展示保存中且防止本次重复提交", () => {
+  const reactDom = require('react-dom');
+  const original = reactDom.useFormStatus;
+  try {
+    reactDom.useFormStatus = () => ({pending: true});
+    const saving = deliveryRender([base]);
+    assert.ok(saving.includes('正在保存决定，请稍候'));
+    assert.ok(buttons(saving).every(button => button.attributes.includes('disabled=""') && button.attributes.includes('aria-busy="true"')));
+  } finally { reactDom.useFormStatus = original; }
+});
+check("页面传递确认反馈和真实请求开始时间", () => {
+  const page = read('app/projects/[projectId]/page.tsx');
+  assert.ok(page.includes('decisionContinued={foundationNotice === "decision-continued"}'));
+  assert.ok(page.includes('activeCallStartedAt: delivery.activeCallStartedAt'));
+});
 
 for (const failure of failures) console.error(`FAIL ${failure}`);
 assert.equal(failures.length, 0, `${failures.length}/${checks} confirmation UI checks failed`);
