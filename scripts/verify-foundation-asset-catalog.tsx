@@ -67,6 +67,23 @@ roles.assets[0].aliases = ['小主'];
 roles.assets[0].variants = [{ key: 'wound', name: '伤态参考', episodes: [2], note: '第二集起受伤', preparation: { mode: 'DERIVE', fromKey: '主角本人' } }, { key: 'inline-wound', name: '临时伤态', episodes: [1], note: '当场擦伤', preparation: { mode: 'INLINE' } }];
 freeze(roles);
 const roleBefore = JSON.stringify(roles);
+const leads = { ...catalog, assets: ['男主', '女主', '主角', '配角'].map((role, i) => ({
+  ...asset(`lead-${i}`, 'CH', 'REFERENCE'), role,
+  variants: [{ key: `lead-${i}-v`, name: '工作服', episodes: [1], note: '', preparation: { mode: 'INLINE' as const } }]
+})) };
+for (const role of ['男主', '女主', '主角', '配角']) {
+  const result = filterAssetCatalog(leads, { query: '', episode: '', type: 'CH', view: 'all', role });
+  assert.equal(result.length, 1);
+  assert.equal(result[0].asset.role, role);
+  assert.equal(result[0].variants.length, 1, '角色筛选保留继承该角色的子形象');
+}
+assert.equal(filterAssetCatalog(leads, { query: '', episode: '', type: '', view: 'all', role: 'other' }).length, 0);
+const leadHtml = renderToStaticMarkup(createElement(FoundationAssetCatalog, { catalog: leads }));
+for (const role of ['男主', '女主']) {
+  assert.ok(leadHtml.includes(`value="${role}"`));
+  assert.ok(leadHtml.includes(`${role} · 继承`));
+}
+assert.ok(!leadHtml.includes('男二') && !leadHtml.includes('女二'));
 const select = (extra: Record<string, string>) => filterAssetCatalog(roles, { query: '', episode: '', type: '', view: 'all', ...extra });
 const labelFixture = { ...roles, assets: [...roles.assets, asset('普通场景', 'LOC', 'REFERENCE'), asset('普通道具', 'PROP', 'REFERENCE'), { ...asset('显式配角群像', 'GROUP', 'REFERENCE'), role: '配角' }] };
 freeze(labelFixture);

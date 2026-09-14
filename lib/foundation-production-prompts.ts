@@ -7,7 +7,7 @@ const preparation = { mode: "REFERENCE|DERIVE|INLINE|AUDIO|UNRESOLVED", fromKey:
 const asset = {
   key: "已有身份沿registry或previousAssetKeys明确key；新资产必须省略，由程序编号；同名不自动合并。",
   name: "基础名称或必要工作名，不写外观长描述", type: "CH|GROUP|BEAST|LOC|PROP",
-  role: "人物基础资产的主要剧情定位：主角 / 配角 / 反派 / 路人；不按一次争执判反派。可省略未知，群像由GROUP表达，子形象不重复填写",
+  role: "人物基础资产的主要剧情定位：男主 / 女主 / 主角 / 配角 / 反派 / 路人；男主/女主须有原文或输入全剧定位依据，不凭性别或出场频率强推，不设男二/女二。不明时保留主角或原分类，新资产未知可省略；不按一次争执判反派。群像由GROUP表达，子形象继承不重复填写",
   relationNote: "可省略；必要且有依据的剧情关联或与已确认制作口径的差异，如独立神兽由谁觉醒/召唤；不是素材派生来源，不自动等同本体变身",
   aliases: ["同一对象的必要别称；无则省略"], episodes: ["本批实际适用集号整数；仅目录/尚未定位使用则[]，不编造使用"], sceneRefs: [{ episode: "该资产实际使用的本批集号", sceneKey: "输入scenes中的实际场景键；无定位填[]，不猜" }],
   preparation,

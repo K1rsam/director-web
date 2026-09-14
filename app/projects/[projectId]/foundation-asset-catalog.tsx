@@ -8,7 +8,7 @@ type View = 'queue' | 'all' | 'pending';
 type Filters = { query: string; episode: string; type: string; view: View; role?: string; layer?: string };
 const labels = { REFERENCE: '独立准备', DERIVE: '复用／派生', INLINE: '随场生成', AUDIO: '声音', UNRESOLVED: '待定／未分类' };
 const types = { CH: '人物', GROUP: '群像', BEAST: '非人', LOC: '场景', PROP: '道具' };
-const roles = ['主角', '配角', '反派', '路人', '群像'];
+const roles = ['男主', '女主', '主角', '配角', '反派', '路人', '群像'];
 const roleOf = (asset: ProductionAsset) => asset.role?.trim() || '';
 const defaultFilters: Filters = { query: '', episode: '', type: '', view: 'all', role: '', layer: '' };
 const modeOf = (item: { key: string; preparation?: Preparation }, pending: Set<string>) => pending.has(item.key) ? 'UNRESOLVED' : item.preparation?.mode ?? 'UNRESOLVED';
