@@ -6,18 +6,34 @@
 
 功能包括：资产专属文字提示词、来源形象依赖、视图模板、参考图上传、画质/比例/数量、提示词导出，以及独立滚动的资产与设置面板。图片 API 尚未接入，模型入口和生成历史仅为预留。
 
-P3 默认勾选完成后生成人物资产提示词；可取消。第一阶段完成后启动独立文字任务，可停止和继续。后台运行需保留 Node、tsx 及 `scripts/asset-prompt-worker.ts`；运行路径为项目根目录。已有剧不会因为更新代码自动重跑 P3。
+P3 默认勾选“完成后整理资产视觉事实”；可取消。第一阶段完成后只启动独立 A/B 事实任务，不自动批量生成美术提示词，可停止和继续。后台运行需保留 Node、tsx 及 `scripts/asset-prompt-worker.ts`；运行路径为项目根目录。已有剧不会因为更新代码自动重跑 P3。
 
 提示词与图片设置保存在独立 SceneSnapshot 中。上传图片默认保存在 `outputs/asset-references`，可用 `DIRECTOR_ASSET_REFERENCE_DIR` 指定目录。迁移用户数据时需另外迁移该目录和数据库；本源码分支不携带这些私人数据。
 
 ## 准确性边界
 
-P3/F2 与 Q1 按需加载 `prompts/foundation/asset-subject-boundaries-v1.md`。独立文字设计规则为 `prompts/asset-image-design-v1.md`。当前外观检索采用保守主体和场次归属索引；第一阶段资料与原文节选可在面板中展开核对。此机制可能漏收或误判，不代表语义准确性已完成验收，也尚未实现 P3 结构化外貌事实卡的完整验证闭环。
+P3/F2、Q1 的实际系统正文和目录契约恢复到原3008基线 d293e18，不再拼接1.5规则。A/B以只读方式使用目录身份与原文，原目录描述不作为设计事实。旧关键词外观索引退出运行路径。
+
+- A：prompts/asset-visual-extract-v1.md。按原文分批，一批共同提取所有主体、动作视觉信息、场景与道具，不按每项资产阅读全剧。
+- B：prompts/asset-visual-audit-v1.md。重读同批原文，检查归属、遗漏及版本；逐条校验引用在原文行号内确实存在。跨批程序检查只保守提示同属性/版本的不同稳定值，不推断同义词，也不声称完整语义审查。
+- C：prompts/asset-image-design-v1.md。只对基础形象作美术补足，接收已核对事实；设计补足与事实分开。事实显示由程序从A/B结果填写，不采信C自报事实。
+- D：prompts/asset-image-derive-v1.md。子形象仅写图生图的来源一致性与变化说明，支持直接参考子资产；不套基础美化规则。后续图片API仍需提供实际来源参考图。
+
+事实缓存为独立 ASSET_VISUAL_FACT_BATCH_V1。缓存依据包含本批原文、身份/别名/版本目录、A/B规则；只改某集复用其他未变批次，目录或规则变化使相应缓存失效。B失败保留A，继续只重试B。中途停止在批次/岗位边界生效，正在执行的模型调用不强杀。
+
+STATE/TRANSITION的版本不明确、归属有疑点时，相关主体暂停AI设计并显示问题，其他主体可继续。原文与目录需核对修正后再更新事实，也可自行编辑提示词；没有把未解决问题自动改写成P3目录。本次尚无可逐条人工改判事实的专门编辑器。
+
+1.5提供“整理/更新剧本事实”；单独或批量点击生成而缺少事实时，会先启动事实任务，明确提示完成后再次点击。已存在提示词保留，来源变更会标记复核；旧AI自报依据不会再作为当前事实输入。
+
+逐字引用检查证明出处存在，不能证明模型的主体/时间推断绝对正确。完整语义准确性与全剧召回率仍需样本验收；不能宣称100%不漏不误。
 
 ## 验证
 
 - `npm run typecheck`
-- `npx tsx scripts/verify-asset-appearance-boundaries.ts`
+- `npx tsx scripts/verify-visual-facts-merge.ts`
+- `npx tsx scripts/verify-visual-facts-selection.ts`
+- `npx tsx scripts/verify-asset-visual-facts-service.ts <一致性数据库备份>`
+- `npx tsx scripts/verify-stage15-facts-ui.tsx`
 - `npx tsx scripts/verify-asset-prompt-queue.ts`
 - `npx tsx scripts/verify-p3-asset-boundaries.ts <一致性数据库备份>`
 - `npx tsx scripts/verify-asset-prompt-automation.ts <一致性数据库备份>`
@@ -37,3 +53,17 @@ P3/F2 与 Q1 按需加载 `prompts/foundation/asset-subject-boundaries-v1.md`。
 - `npx tsx scripts/verify-stage15-prompt-integrity.ts <一致性数据库备份> <备份中的项目ID>`（该项目须有可生成的基础人物和变体）
 
 并发回归覆盖8路启动、旧worker延迟、缺失来源、人工保护、停止收尾及续跑剩余项。测试使用副本数据库与注入生成器，没有真实模型调用。3008实际上传、读取及设置接口回归通过。
+
+## 原流水线保护
+
+verify-p3-asset-boundaries 对 F1/F2/Q1 实际system正文及关键目录/P4文件检查基线字节；verify-foundation-delivery 保留旧端到端行为回归。事实服务测试检查原文与P3快照未改变。开关沿用 autoAssetPrompts 存储键兼容已有偏好，但新任务默认模式为 FACTS；不改变P1-P4产物和验收状态，事实失败不回写P3。
+
+可选真实小样本检查：npx tsx scripts/verify-visual-facts-model.ts <一致性数据库备份> --real。只在副本中新建合成人物剧本，调用A/B各一次，验证眼镜所有者、红长发剪短版本及他人小传边界；不代表全剧验收。
+
+## 本次实测记录（2026-09-15）
+
+完成两轮合成剧本实测，共A/B真实调用4次。首轮发现瞬时动作过量归档和初始版本未绑定，修正规则后第二轮得到7条人物外观事实及2条不阻断人物的目录建议；眼镜所有者、剪发前长发、剪后短发、红色延续和小传边界断言通过。明确版本的TRANSITION现在保留到设计输入，不再静默丢弃。
+
+同时修复停止请求与后台进度更新的CAS竞争，以及准备事实按钮缺少revision的接口问题。3008已登录页面/API读取通过；事实未准备时直接调用生成明确拒绝，所有原项目快照保持不变。类型检查、生产构建、旧流水线回归、事实缓存/归属/继承、队列/停止和UI回调测试通过。浏览器视觉验收仍未完成。
+
+模型设计输入对相同属性/值/版本的事实去重，完整原文出处仍保存在事实库和界面中。目录建议blocking:false不阻断已确认主体；归属与版本不明保持阻断，不能用美术补足掩盖。

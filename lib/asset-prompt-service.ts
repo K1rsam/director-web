@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import {loadLightScenes} from './light-foundation-supply';
+import {readAssetVisualFacts} from './asset-visual-facts-service';
+import {selectAssetVisualFacts} from './asset-visual-facts-selection';
 import {effectiveAutomationState} from './asset-prompt-automation';
-import {buildAppearanceEvidenceIndex} from './asset-appearance-evidence';
 import {normalizeImageOptions,type AssetImageOptions} from './asset-image-options';
 import { prisma } from './prisma';
 import { loadFoundationInputs } from './foundation-state';
@@ -16,7 +16,6 @@ import { defaultStylePrefix, emptyPrompt, validatePromptOutput, promptNeedsRevie
 const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const rowId = (projectId: string, key: string) => `ap15_${digest([projectId, key]).slice(0, 40)}`;
 const rowKey = 'ASSET_PROMPT_V1';
-const appearanceIndexes=new Map<string,ReturnType<typeof buildAppearanceEvidenceIndex>>();
 type Setting = { prefix: string; revision: number };
 function auditDesign(record:PromptRecord):NonNullable<PromptRecord['previousDesignAudit']>{
   const history=record.previousDesignAudit??[];
@@ -42,25 +41,27 @@ export async function loadAssetPromptWorkspace(projectId: string): Promise<Promp
   for (const row of rows) { const value = JSON.parse(row.content); if(row.sceneKey==='ASSET_PROMPT_AUTOMATION_V1')automation=value;else if(row.sceneKey==='ASSET_IMAGE_OPTIONS_V1'&&row.title)imageOptions[row.title]=normalizeImageOptions(value);else if (row.id === rowId(projectId, '$style')) settings = value; else if (value.schema === rowKey) records[value.key] = currentPrompt(value); }
   const readiness = document.f2 ? workingReadiness(document, delivery.requiredChoices, !input.sourceContext.complete || needsContextEdit) : new Map();
   const assets: PromptAsset[] = [];
-  const scenes=await loadLightScenes(projectId,prisma).catch(()=>[]);
-  const indexKey=digest([input.sourceVersion,input.sourceContext.version,(document.f2?.assets??[]).map(a=>[a.key,a.name,a.aliases]),scenes]);
-  let evidenceIndex=appearanceIndexes.get(indexKey);
-  if(!evidenceIndex){evidenceIndex=buildAppearanceEvidenceIndex(document.f2?.assets??[],input.sourceContext.background,input.sourceIndex.episodes,scenes);if(appearanceIndexes.size>=8)appearanceIndexes.delete(appearanceIndexes.keys().next().value!);appearanceIndexes.set(indexKey,evidenceIndex);}
+  const visual=await readAssetVisualFacts(projectId);
+  const designSkills=await Promise.all(['asset-image-design-v1.md','asset-image-derive-v1.md'].map(name=>readFile(path.join(process.cwd(),'prompts',name),'utf8')));
   for (const base of document.f2?.assets ?? []) {
     for (const item of [base, ...base.variants]) {
       const variant = item.key !== base.key;
       const episodes = 'episodes' in item ? item.episodes : base.usageEpisodes;
-      const evidence=evidenceIndex.forAsset(base.name,episodes,item.key!==base.key,item.sceneRefs,item.key===base.key?base.variants.flatMap(v=>v.sceneRefs??[]):[]);
+      const versions=[{key:base.key,fromKey:base.preparation?.fromKey},...base.variants.map(v=>({key:v.key,fromKey:v.preparation?.fromKey??base.key}))];
+      let selected:ReturnType<typeof selectAssetVisualFacts>={facts:[],issues:[]};
+      try{selected=selectAssetVisualFacts(base.key,item.key,visual?.facts??[],versions);}catch(error){selected.issues.push({subjectKey:base.key,message:(error as Error).message});}
+      const visualIssues=[...(visual?.issues??[]).filter(i=>!i.subjectKey||i.subjectKey===base.key),...selected.issues];
+      const evidence=selected.facts.map(f=>({label:f.sourceLabel??f.chunkId,text:f.attribute+'：'+f.value+'\n原文：'+f.quote}));
       const entry: PromptAsset = {key:item.key,baseKey:base.key,name:item.name,baseName:base.name,type:base.type,variant,episodes,
         mode:item.preparation?.mode ?? 'UNRESOLVED',fromKey:item.preparation?.fromKey ?? (variant && item.preparation?.mode==='DERIVE'?base.key:undefined),
         description:base.description,note:[base.relationNote,variant&&'note' in item?item.note:'',item.preparation?.note,!variant&&base.variants.length?`以下状态另有子形象，不要混入基础形象：${base.variants.map(v=>v.name).join('、')}`:''].filter(Boolean).join('\n'),
-        evidence,reasons:readiness.get(item.key)?.pendingReasons ?? ['尚未完成资产资料'],eligible:readiness.get(item.key)?.readyForImages ?? false,fingerprint:'',sceneRefs:item.sceneRefs};
+        visualFacts:selected.facts,visualIssues,evidence,reasons:readiness.get(item.key)?.pendingReasons ?? ['尚未完成资产资料'],eligible:readiness.get(item.key)?.readyForImages ?? false,fingerprint:'',sceneRefs:item.sceneRefs};
       const {sceneRefs: _refs,...designEntry}=entry;
-      entry.fingerprint=digest({entry:designEntry,sourceVersion:input.sourceVersion,decisions:selectAssetPromptDecisions(input.presentationConditions,entry)});
+      entry.fingerprint=digest({entry:designEntry,visualProtocol:'AB-v1',designSkill:digest(designSkills[variant?1:0]),factsReady:Boolean(visual),decisions:selectAssetPromptDecisions(input.presentationConditions,entry)});
       assets.push(entry);
     }
   }
-  return {projectId,title:input.project.title,style:input.project.style??'',stylePrefix:settings?.prefix??defaultStylePrefix(input.project.style??''),styleRevision:settings?.revision??0,assets,records,busy:delivery.busy,imageOptions,automation:automation?effectiveAutomationState(automation):undefined};
+  return {projectId,title:input.project.title,style:input.project.style??'',stylePrefix:settings?.prefix??defaultStylePrefix(input.project.style??''),styleRevision:settings?.revision??0,visualFactsStatus:visual?.status??'MISSING',visualFactIssues:visual?.issues??[],assets,records,busy:delivery.busy,imageOptions,automation:automation?effectiveAutomationState(automation):undefined};
 }
 
 async function compareWrite(projectId: string, key: string, expectedRevision: number, value: PromptRecord | Setting) {
@@ -99,6 +100,10 @@ export async function generateAssetPrompt(projectId:string,key:string,revision:n
   const workspace=await loadAssetPromptWorkspace(projectId),asset=workspace.assets.find(a=>a.key===key);
   if(workspace.busy)throw new Error('第一阶段仍在整理，请完成后再生成提示词。');
   if(!asset||!asset.eligible)throw new Error(asset?.reasons.join('；')||'当前资产无需独立制图。');
+  if(workspace.visualFactsStatus==='MISSING')throw new Error('请先整理剧本视觉事实，完成后再生成初版提示词。');
+  const blockingIssues=asset.visualIssues?.filter(i=>i.blocking!==false)??[];
+  if(blockingIssues.length)throw new Error('该资产的剧本事实仍需核对：'+blockingIssues.map(i=>i.message).join('；'));
+  if(asset.variant&&!asset.visualFacts?.some(f=>f.versionKey===asset.key))throw new Error('尚未核对出该子形象的明确差异，请先核对剧本事实或手动编写变化提示词。');
   const previous=workspace.records[key]??emptyPrompt(key);
   if(previous.status==='RUNNING')throw new Error('此资产已有请求正在处理，未重复提交。');
   const dependencyKey=asset.fromKey??(asset.variant?asset.baseKey:undefined);
@@ -109,12 +114,12 @@ export async function generateAssetPrompt(projectId:string,key:string,revision:n
   await compareWrite(projectId,key,revision,running);
   let rawOutput='';
   try {
-    const [project,systemPrompt,input]=await Promise.all([prisma.project.findUniqueOrThrow({where:{id:projectId}}),readFile(path.join(process.cwd(),'prompts/asset-image-design-v1.md'),'utf8'),loadFoundationInputs(projectId)]);
+    const [project,systemPrompt,input]=await Promise.all([prisma.project.findUniqueOrThrow({where:{id:projectId}}),readFile(path.join(process.cwd(),asset.variant?'prompts/asset-image-derive-v1.md':'prompts/asset-image-design-v1.md'),'utf8'),loadFoundationInputs(projectId)]);
     const decisions=selectAssetPromptDecisions(input.presentationConditions,asset);
-    const result=await runner({projectId,provider:resolveProvider(project.executionMode),role:{code:'A15',skill:'',systemPrompt,model:'gpt-6-astra',reasoningEffort:'low'},sessionMode:'ephemeral',
-      prompt:JSON.stringify({asset,style:workspace.stylePrefix,decisions,referenceDesign:reference?{key:dependencyKey,body:reference.body,facts:reference.facts}:null,evidencePolicy:'提供的是已筛选归属的外观节选，不是全文。无节选表示当前没有可引用的外观事实，不代表原文没有。可以依据已确认资产名称与类型作可编辑初版，所有未明示的年龄、五官、服装细节必须列入suggestions，facts不得编造出处；物种、身份等关键不确定项不得猜测。不要为了填满facts而使用剧情关系、他人外貌或后期状态。'})});
+    const result=await runner({projectId,provider:resolveProvider(project.executionMode),role:{code:asset.variant?'A15_D':'A15',skill:'',systemPrompt,model:'gpt-6-astra',reasoningEffort:'low'},sessionMode:'ephemeral',
+      prompt:JSON.stringify({asset:{key:asset.key,name:asset.name,type:asset.type,variant:asset.variant},lockedFacts:[...new Map((asset.visualFacts??[]).map(f=>[JSON.stringify([f.subjectKey,f.attribute,f.value,f.versionKey,f.scope]),f])).values()],style:workspace.stylePrefix,decisions,referenceDesign:reference?{key:dependencyKey,body:reference.body}:null,evidencePolicy:'lockedFacts是唯一已核对剧本事实；资产名称只是目录标识，不能从其补写剧情事实。基础设计只补未限定的美术细节；变体仅依来源图形象与明确的版本事实写变化，不重新设计五官。没有事实表示当前核对未提取到明示外观，不代表原文绝对没有。不得把设计补足写成剧本事实。'})});
     rawOutput=result.rawOutput??JSON.stringify(result.data);
-    const content=validatePromptOutput(result.data,key);
+    const content={...validatePromptOutput(result.data,key),facts:asset.evidence.map(e=>e.label+'\n'+e.text).join('\n\n')};
     const current=await loadAssetPromptWorkspace(projectId);
     if(current.styleRevision!==workspace.styleRevision||current.stylePrefix!==workspace.stylePrefix||current.style!==workspace.style)throw new Error('生成期间画风已更新，本次结果已保留，请核对后采用。');
     if(current.assets.find(a=>a.key===key)?.fingerprint!==asset.fingerprint)throw new Error('生成期间来源已更新，本次结果已保留，请核对后采用。');

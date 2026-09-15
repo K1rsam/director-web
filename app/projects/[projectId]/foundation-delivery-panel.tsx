@@ -196,8 +196,8 @@ export function FoundationWorkflowStatus({ projectId, state, sourceReady, sceneC
         {card.code === "P3" ? <label style={{ gridColumn: "1 / -1", fontSize: "0.8rem", lineHeight: 1.6 }}>
           <input key={`${state.task?.id ?? "new"}:${state.task?.autoAssetPrompts ?? true}`} type="checkbox" name="autoAssetPrompts" value="yes" form={`foundation-start-${projectId}`}
             defaultChecked={state.task?.autoAssetPrompts ?? true} disabled={state.busy || state.complete} style={{ width: "auto", height: "auto", marginRight: 6 }} />
-          完成后生成人物资产提示词
-          <small style={{ display: "block" }}>后台生成文字，另计模型调用；不生成图片，不阻挡第二阶段。</small>
+          完成后整理资产视觉事实
+          <small style={{ display: "block" }}>独立后台整理，另计模型调用；不生成图片，不阻挡第二阶段。</small>
         </label> : null}
       </article>;
     })}</div>

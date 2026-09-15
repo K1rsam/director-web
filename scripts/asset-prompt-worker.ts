@@ -1,4 +1,5 @@
 import path from 'node:path';
+import {ensureAssetVisualFacts} from '../lib/asset-visual-facts-service';
 import {pathToFileURL} from 'node:url';
 import {prisma} from '../lib/prisma';
 import {loadFoundationInputs} from '../lib/foundation-state';
@@ -6,7 +7,7 @@ import {loadAssetPromptWorkspace,generateAssetPrompt} from '../lib/asset-prompt-
 import {promptNeedsReview} from '../lib/asset-prompt-contract';
 import {AUTOMATION_KEY,automationWorkerAlive,type AssetPromptAutomation} from '../lib/asset-prompt-automation';
 
-export async function runAssetPromptWorker(projectId:string,id:string,token?:string,deps={db:prisma,load:loadAssetPromptWorkspace,inputs:loadFoundationInputs,generate:generateAssetPrompt}){
+export async function runAssetPromptWorker(projectId:string,id:string,token?:string,deps:{db:typeof prisma;load:typeof loadAssetPromptWorkspace;inputs:typeof loadFoundationInputs;generate:typeof generateAssetPrompt;facts?:typeof ensureAssetVisualFacts}={db:prisma,load:loadAssetPromptWorkspace,inputs:loadFoundationInputs,generate:generateAssetPrompt}){
  const row=await deps.db.sceneSnapshot.findUnique({where:{id}});if(!row||row.projectId!==projectId||row.sceneKey!==AUTOMATION_KEY)return;
  let state=JSON.parse(row.content) as AssetPromptAutomation;
  if(state.status!=='RUNNING'||(token&&state.id!==token)||(state.workerPid&&automationWorkerAlive(state.workerPid)))return;
@@ -20,6 +21,16 @@ export async function runAssetPromptWorker(projectId:string,id:string,token?:str
   state.updatedAt=new Date().toISOString();const updated=await deps.db.sceneSnapshot.updateMany({where:{id,content:fresh.content},data:{content:JSON.stringify(state)}});if(updated.count===1)return true;
  }throw new Error('后台任务状态同时发生变化，请刷新后继续。');};
  try{
+  if(state.mode==='FACTS'){
+   if((await deps.inputs(projectId)).sourceVersion!==state.sourceVersion)throw new Error('原文已更新，请重新整理当前版本。');
+   if((await deps.load(projectId)).busy)throw new Error('第一阶段仍在整理，请完成后继续。');
+   const facts=await (deps.facts??ensureAssetVisualFacts)(projectId,undefined,{
+    shouldContinue:async()=>{const current=await deps.db.sceneSnapshot.findUnique({where:{id}});return Boolean(current&&JSON.parse(current.content).id===execution&&JSON.parse(current.content).status==='RUNNING'&&(await deps.inputs(projectId)).sourceVersion===state.sourceVersion&&!(await deps.load(projectId)).busy);},
+    onProgress:async(done,total)=>{state.done=done;state.total=total;await save();}
+   });
+   state.status='COMPLETE';state.error=facts.issues.length?'事实已整理，有 '+facts.issues.length+' 项归属或版本疑点待核对。':'';
+   return;
+  }
   let w=await deps.load(projectId);
   const queue=w.assets.filter(a=>['CH','GROUP','BEAST'].includes(a.type)&&a.eligible&&(!w.records[a.key]?.body||w.records[a.key]?.status!=='READY'||promptNeedsReview(a,w.records,w.assets))).map(a=>a.key);
   state.total=queue.length;if(!await save())return;

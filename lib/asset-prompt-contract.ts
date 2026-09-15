@@ -1,3 +1,4 @@
+import type {VisualFact,VisualIssue} from './asset-visual-facts-contract';
 import type {ApplicationScope} from './foundation-application-scope';
 import type {AssetImageOptions} from './asset-image-options';
 import type {AssetPromptAutomation} from './asset-prompt-automation';
@@ -7,7 +8,7 @@ export type PreviousDesignAudit = {revision:number;body:string;facts:string;sugg
 export type PromptAsset = {
   key: string; baseKey: string; name: string; baseName: string; type: 'CH' | 'GROUP' | 'BEAST' | 'LOC' | 'PROP';
   variant: boolean; episodes: number[]; mode: string; fromKey?: string; description: string; note: string;
-  evidence: PromptEvidence[]; reasons: string[]; eligible: boolean; fingerprint: string; sceneRefs?: {episode:number;sceneKey:string}[];
+  visualFacts?:VisualFact[]; visualIssues?:VisualIssue[]; evidence: PromptEvidence[]; reasons: string[]; eligible: boolean; fingerprint: string; sceneRefs?: {episode:number;sceneKey:string}[];
 };
 export type PromptRecord = {
   schema: 'ASSET_PROMPT_V1'; key: string; revision: number; status: 'EMPTY' | 'RUNNING' | 'READY' | 'FAILED';
@@ -17,7 +18,7 @@ export type PromptRecord = {
 };
 export type PromptWorkspace = {
   projectId: string; title: string; style: string; stylePrefix: string; styleRevision: number;
-  assets: PromptAsset[]; records: Record<string, PromptRecord>; busy: boolean; imageOptions?:Record<string,AssetImageOptions>;automation?:AssetPromptAutomation;
+  visualFactsStatus?:'MISSING'|'READY'|'REVIEW'; visualFactIssues?:VisualIssue[]; assets: PromptAsset[]; records: Record<string, PromptRecord>; busy: boolean; imageOptions?:Record<string,AssetImageOptions>;automation?:AssetPromptAutomation;
 };
 export function composeAssetPrompt(prefix: string, body: string) {
   return [prefix.trim(), body.trim()].filter(Boolean).join('，\n');

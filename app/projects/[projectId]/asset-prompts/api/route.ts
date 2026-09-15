@@ -33,7 +33,7 @@ export async function POST(request:Request,{params}:{params:Promise<{projectId:s
     const input=await request.json();
     if(!Number.isSafeInteger(input.revision)||input.revision<0)throw new Error('无效的内容版本。');
     if(input.action==='stop-automation'){await stopAssetPromptAutomation(projectId);return Response.json(await loadAssetPromptWorkspace(projectId));}
-    if(input.action==='resume-automation'){const workspace=await loadAssetPromptWorkspace(projectId);if(workspace.busy)throw new Error('第一阶段仍在整理，请完成后继续。');await launchAssetPromptAutomation(projectId,(await loadFoundationInputs(projectId)).sourceVersion);return Response.json(await loadAssetPromptWorkspace(projectId));}
+    if(input.action==='prepare-facts'||input.action==='resume-automation'){const workspace=await loadAssetPromptWorkspace(projectId);if(workspace.busy)throw new Error('第一阶段仍在整理，请完成后继续。');await launchAssetPromptAutomation(projectId,(await loadFoundationInputs(projectId)).sourceVersion,undefined,'FACTS');return Response.json(await loadAssetPromptWorkspace(projectId));}
     if(input.action==='style')return Response.json(await saveAssetStyle(projectId,input.prefix,input.revision));
     if(typeof input.key!=='string'||input.key.length>200)throw new Error('请选择有效资产。');
     if(input.action==='save')return Response.json(await saveAssetPrompt(projectId,input.key,input.revision,input.body));

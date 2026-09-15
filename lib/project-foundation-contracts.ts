@@ -525,12 +525,7 @@ export function loadFoundationSystemPrompt(code: FoundationStageCode): string {
   if (!PROJECT_FOUNDATION_STAGES.some((stage) => stage.code === code)) fail("role", "未知第一阶段岗位");
   const prompt = readFileSync(path.join(process.cwd(), "prompts", "foundation", `${code}.md`), "utf8");
   if (!prompt.trim()) fail(`prompt.${code}`, "普通system正文为空");
-  if (code === "F1") return prompt;
-  // Shared source-ownership rules are versioned with the actual system prompt.
-  // Image design/style/view templates remain in the separate stage 1.5 module.
-  const boundaries = readFileSync(path.join(process.cwd(), "prompts", "foundation", "asset-subject-boundaries-v1.md"), "utf8");
-  if (!boundaries.trim()) fail(`prompt.${code}`, "资产资料归属规则为空");
-  return `${prompt.trimEnd()}\n\n${boundaries.trim()}\n`;
+  return prompt;
 }
 const sourceRefSchema = { episode: "number", startLine: "number (1-based, inclusive)", endLine: "number (inclusive)" };
 const issueSchema = { severity: "BLOCKER|MAJOR|MINOR", owner: "F1|F2|PROGRAM|CONTROL", coordinate: "string", problem: "string", sourceRefs: [sourceRefSchema] };

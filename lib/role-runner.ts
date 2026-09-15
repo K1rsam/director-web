@@ -148,7 +148,7 @@ export async function runCliRoleJson(input: {
       cwd: process.cwd(),
       sessionId: canResume ? stored?.sessionId : null,
       ephemeral: sessionMode === "ephemeral",
-      instructionProfile: sessionMode === "ephemeral" && ["F1", "F2", "Q1", "A15"].includes(role.code) && role.systemPrompt?.trim() ? "foundation" : undefined,
+      instructionProfile: sessionMode === "ephemeral" && ["F1", "F2", "Q1", "A15", "A15_A", "B15_B", "A15_D"].includes(role.code) && role.systemPrompt?.trim() ? "foundation" : undefined,
       onRawOutput: role.systemPrompt === undefined ? undefined : (content) => { rawOutput = content; }
     });
   } catch (error) {

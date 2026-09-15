@@ -20,23 +20,27 @@ async function main(){
  let w:PromptWorkspace={projectId,title:'test',style:'',stylePrefix:'',styleRevision:0,assets:[],records:{},busy:false};let calls=0;
  const deps={db,load:async()=>w,inputs:async()=>({sourceVersion:'s'}) as any,generate:async(_p:string,key:string)=>{calls++;const r={...emptyPrompt(key),status:'READY' as const,body:'test',fingerprint:'current'};w.records[key]=r;return r;}};
  const run=()=>{const last=launches.at(-1)!;return runAssetPromptWorker(projectId,last.row,last.token,deps);};
- await Promise.all(Array.from({length:8},()=>launchAssetPromptAutomation(projectId,'s',launchDeps)));
+ await Promise.all(Array.from({length:8},()=>launchAssetPromptAutomation(projectId,'s',launchDeps,'PROMPTS')));
  assert.equal(spawned,1);assert.equal(await db.sceneSnapshot.count({where:{projectId,sceneKey:AUTOMATION_KEY}}),1);
  // A stopped unclaimed job may be replaced; its delayed worker must not claim the replacement.
- const old=launches[0];await set({status:'STOPPED'});await launchAssetPromptAutomation(projectId,'s',launchDeps);assert.equal(spawned,2);
+ const old=launches[0];await set({status:'STOPPED'});await launchAssetPromptAutomation(projectId,'s',launchDeps,'PROMPTS');assert.equal(spawned,2);
  await runAssetPromptWorker(projectId,old.row,old.token,deps);assert.equal((await state()).status,'RUNNING');assert.equal(calls,0);
  w.assets=[asset('child','absent')];w.records={absent:{...emptyPrompt('absent'),body:'orphan',status:'READY',fingerprint:'current'}};
  await run();assert.equal((await state()).failed,1);assert.equal((await state()).status,'FAILED');assert.match((await state()).error,/来源/);assert.equal(calls,0);
- await launchAssetPromptAutomation(projectId,'s',launchDeps);w.assets=[asset('manual')];w.records={manual:{...emptyPrompt('manual'),body:'user text',status:'READY',fingerprint:'old'}};
+ await launchAssetPromptAutomation(projectId,'s',launchDeps,'PROMPTS');w.assets=[asset('manual')];w.records={manual:{...emptyPrompt('manual'),body:'user text',status:'READY',fingerprint:'old'}};
  await run();assert.equal((await state()).done,0);assert.equal((await state()).failed,1);assert.equal(w.records.manual.body,'user text');assert.equal(calls,0);
  // Stop while one injected generation is in flight; no competing resume until the worker releases ownership.
- await launchAssetPromptAutomation(projectId,'s',launchDeps);w.assets=[asset('one'),asset('two')];w.records={};
+ await launchAssetPromptAutomation(projectId,'s',launchDeps,'PROMPTS');w.assets=[asset('one'),asset('two')];w.records={};
  let release!:()=>void;let started!:()=>void;const began=new Promise<void>(r=>started=r);const gate=new Promise<void>(r=>release=r);
  const gated={...deps,generate:async(p:string,key:string)=>{started();await gate;return deps.generate(p,key);}};
  const last=launches.at(-1)!;const running=runAssetPromptWorker(projectId,last.row,last.token,gated);await began;
- await set({status:'STOPPED',error:'stop'});const before=spawned;await assert.rejects(()=>launchAssetPromptAutomation(projectId,'s',launchDeps),/收尾/);assert.equal(spawned,before);
+ await set({status:'STOPPED',error:'stop'});const before=spawned;await assert.rejects(()=>launchAssetPromptAutomation(projectId,'s',launchDeps,'PROMPTS'),/收尾/);assert.equal(spawned,before);
  release();await running;assert.equal((await state()).status,'STOPPED');assert.equal((await state()).done,1);assert.equal((await state()).workerPid,undefined);assert.equal(calls,1);
- await launchAssetPromptAutomation(projectId,'s',launchDeps);await run();assert.equal(calls,2);assert.equal((await state()).status,'COMPLETE');assert.equal((await state()).total,1);
+ await launchAssetPromptAutomation(projectId,'s',launchDeps,'PROMPTS');await run();assert.equal(calls,2);assert.equal((await state()).status,'COMPLETE');assert.equal((await state()).total,1);
+ await launchAssetPromptAutomation(projectId,'s',launchDeps);assert.equal((await state()).mode,'FACTS');
+ const previousCalls=calls;let factCalls=0;
+ const factJob=launches.at(-1)!;await runAssetPromptWorker(projectId,factJob.row,factJob.token,{...deps,facts:async(_p,_r,control)=>{factCalls++;assert.equal(await control?.shouldContinue?.(),true);await control?.onProgress?.(1,2);await control?.onProgress?.(2,2);return {facts:[],issues:[],basis:'b',status:'READY'};}});
+ assert.equal(factCalls,1);assert.equal(calls,previousCalls);assert.equal((await state()).status,'COMPLETE');assert.equal((await state()).done,2);assert.equal((await state()).total,2);
  console.log('PASS: 8 concurrent starts, delayed old worker, missing dependency, stale manual preservation, stop/resume in-flight, resume remaining only; real model calls 0');
  await db.$disconnect();
 }main().catch(e=>{console.error(e);process.exitCode=1;});
