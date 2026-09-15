@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-export const CONTRACT_VERSION = 'fidelity/3';
+export const CONTRACT_VERSION = 'fidelity/4';
 const hash = text => createHash('sha256').update(text, 'utf8').digest('hex');
 const same = (a,b) => JSON.stringify(a) === JSON.stringify(b);
 export function createSource(text) {
@@ -81,6 +81,10 @@ function canonical(source, options={}, groupBoundaryIssues=true) {
     const taggedScene=taggedMetadata&&Number(tagged[1])===currentNumber;
     const inlineBody=taggedScene&&(/(?:人物|出场人物)\s*[:：]|[△▲]/.test(tagged[3])||labels(tagged[3]).length>0);
     const scene=separateScene || taggedScene || sceneMetadata || t.match(/^(?:#{1,6}\s*)?(?:第\s*([零〇一二三四五六七八九十百\d]+)\s*场(?:\s|[：:｜|]|$)|([零〇一二三四五六七八九十百\d]+)[.．、]\s+(?!\d)\S)/);
+    // An explicit location label is a scene boundary without an authored number.
+    // Keep its exact label in the source slice; normalized scene ordinals are view data.
+    const locationLabel=t.match(/^(?:#{1,6}\s*)?场景(?:\s*[:：]\s*|\s+)(\S.*)$/);
+    const labeledScene=!!(locationLabel && locationLabel[1].length<=160 && !/[：:△▲。！？!?“”「」]/.test(locationLabel[1]));
     let kind='body',reason='locked_source_line';
     if (ep || prologue) {
       episodeId=`episode:${source.sourceVersion}:${row.start}`;sceneId=null;sourceNumber=ep?ep[1]:'序章';context=ctx;
@@ -89,7 +93,7 @@ function canonical(source, options={}, groupBoundaryIssues=true) {
     }
     if(ctx){context=true;episodeId=null;sceneId=null;sourceNumber=null;kind='context';reason='explicit_context_heading';}
     else if(context){kind='context';reason='context_section';}
-    else if(scene){sceneId=`scene:${source.sourceVersion}:${row.start}`;kind=inlineBody?'body':'format';reason=inlineBody?'inline_scene_body':'explicit_scene_heading';}
+    else if(scene||labeledScene){sceneId=`scene:${source.sourceVersion}:${row.start}`;kind=inlineBody?'body':'format';reason=inlineBody?'inline_scene_body':'explicit_scene_heading';}
     if(taggedMismatch&&!context){sceneId=null;kind='body';reason='scene_episode_mismatch';issues.push({code:'SCENE_EPISODE_MISMATCH',start:row.start,end:row.end,message:'场号所属集与当前集标题不一致；原文保留，未将错集场号自动归入当前集'});}
     if(!t&&!context){kind='format';reason='source_whitespace';}
     if(continuedSceneHeaders.has(row.start)&&!context){kind='format';reason='continued_scene_metadata';}

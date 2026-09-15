@@ -174,3 +174,5 @@ P1 合入修复：[整集归属覆盖纯标题](3008-P1-OWNERSHIP-MERGE-FIX.md)�
 完成状态：[第一阶段收口](3008-COMPLETION-RECONCILIATION.md)。P4不等待第二阶段；当前交付就绪与历史任务状态分离。
 
 角色子形象方法更新见 [必要角色造型覆盖与数量控制](3008-CHARACTER-VARIANT-COVERAGE.md)。
+
+2026-09-15入口修复：[无数字场号剧本的P1暂停](3008-P1-LABELED-SCENE-FIX.md)。

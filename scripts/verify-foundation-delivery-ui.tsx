@@ -118,7 +118,7 @@ check("未知结果必须显式勾选重复计费确认", () => {
   assert.equal(buttons(html).filter(button => button.attributes.includes('type="submit"')).length, 1);
   const withChoice = render({ ...base, action: "UNKNOWN_CONFIRM", requiredChoices: [choice], task: task({ status: "INTERRUPTED", unknownOutcome: true }) });
   assert.ok(withChoice.includes('name="allowUnknownRetry"'), "请求恢复不能被必要决定挡住");
-  assert.ok(read("app/projects/[projectId]/foundation-delivery-panel.tsx").includes("<form key={state.expectedState}"), "资料意图变化须重置未提交的重发勾选");
+  assert.match(read("app/projects/[projectId]/foundation-delivery-panel.tsx"), /<form\s[^>]*\bkey=\{state\.expectedState\}/, "资料意图变化须重置未提交的重发勾选");
 });
 check("部分完成和停止保留正文并给明确续作", () => {
   for (const status of ["PARTIAL", "INTERRUPTED", "STOPPED"] as const) {

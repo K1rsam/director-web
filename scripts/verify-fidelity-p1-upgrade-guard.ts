@@ -19,7 +19,7 @@ async function main() {
   const { readFidelityReceipt } = await import('../lib/fidelity-store');
   const { refreshFidelitySource } = await import('../lib/fidelity-refresh');
   try {
-    assert.equal(CONTRACT_VERSION, 'fidelity/3', 'regression exercises a real parser-version upgrade');
+    assert.equal(CONTRACT_VERSION, 'fidelity/4', 'regression exercises a real parser-version upgrade');
     const text = '第一集\r\n场1-1 日 外 门口\r\n' + '甲乙：逐字保留 é😀。  \r\n'.repeat(1800);
     const batches = planP1ReviewBatches(text);
     assert(batches.length > 1);
@@ -49,7 +49,7 @@ async function main() {
     const changed = await refreshFidelitySource(project.id, db, { expectedReceiptId: receipt.id, expectedSourceId: source.id, p1Review: completed });
     assert.equal(changed.changed, true);
     const after = (await readFidelityReceipt(project.id, db))!;
-    assert.equal(after.receipt.result.contractVersion, 'fidelity/3');
+    assert.equal(after.receipt.result.contractVersion, 'fidelity/4');
     assert.notEqual(after.snapshot.id, before.snapshot.id);
     assert.notEqual(after.sourceSnapshot!.id, before.sourceSnapshot!.id);
     assert.equal(after.receipt.readingHash, before.receipt.readingHash);
@@ -57,7 +57,7 @@ async function main() {
     assert.deepEqual(after.receipt.p1Review, completed);
     assert.deepEqual(after.receipt.p1Review!.completedRanges!.slice(0, 1), checkpoint.completedRanges);
     assert.equal(after.receipt.p1Review!.runIds![0], checkpoint.runIds![0]);
-    assert.equal(after.receipt.result.validation.issues.filter(issue => issue.code === 'SCENE_BOUNDARY_UNCONFIRMED').length, 0, 'v3 recognizes the previously unrecognized explicit scene heading only after completion');
+    assert.equal(after.receipt.result.validation.issues.filter(issue => issue.code === 'SCENE_BOUNDARY_UNCONFIRMED').length, 0, 'current parser recognizes the previously unrecognized explicit scene heading only after completion');
     assert.equal(after.receipt.result.segments.map(segment => segment.text).join(''), text);
     assert.equal(after.receipt.result.source.text, text);
     assert.equal(JSON.parse(after.sourceSnapshot!.content).sourceText, text);
@@ -65,7 +65,7 @@ async function main() {
     assert.deepEqual(await db.sceneSnapshot.findUniqueOrThrow({ where: { id: source.id } }), source, 'old source evidence is immutable');
     assert.deepEqual(await db.sceneSnapshot.findUniqueOrThrow({ where: { id: receipt.id } }), receipt, 'old paid checkpoint receipt is immutable');
     assert.equal(await db.pipelineRun.count({ where: { projectId: project.id } }), 0, 'local refresh does not fabricate or execute provider calls');
-    console.log('PASS v2 checkpoint ordinary refresh pinned; explicit P1 completion upgrades to v3; exact source, episode identities, old evidence and completed run/ranges preserved; no AI');
+    console.log('PASS v2 checkpoint ordinary refresh pinned; explicit P1 completion upgrades to current contract; exact source, episode identities, old evidence and completed run/ranges preserved; no AI');
   } finally {
     await db.$disconnect();
     assert.equal(path.dirname(path.resolve(directory)), path.resolve(tmpdir()));

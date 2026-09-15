@@ -1,4 +1,4 @@
-/** Frozen-v2 verification precedes v3 interpretation; no database or provider. */
+/** Frozen-v2 verification precedes current interpretation; no database or provider. */
 import assert from 'node:assert/strict';
 import { createSource, normalize, validatePlan } from '../.agents/skills/screenplay-fidelity/scripts/fidelity.mjs';
 import { normalize as normalizeV2, proposePlan as proposeV2, validatePlan as validateV2 } from '../lib/fidelity-v2.mjs';
@@ -13,13 +13,13 @@ async function main() {
   assert.equal(old.episodes.reduce((n, episode) => n + episode.scenes.length, 0), 0);
   const body = { source, plan: old.plan }, original = JSON.stringify(body);
   const upgraded = await prepareFidelityImport('v2.json', Buffer.from(original), 'direct');
-  assert.equal(upgraded.receipt.result.contractVersion, 'fidelity/3');
+  assert.equal(upgraded.receipt.result.contractVersion, 'fidelity/4');
   assert.deepEqual(upgraded.receipt.result.episodes.map(episode => episode.scenes.length), [2, 1]);
   assert.equal(upgraded.receipt.readingHash, old.source.sourceVersion);
   assert.equal(upgraded.receipt.result.source.text, text);
   assert.equal(JSON.stringify(body), original);
   assert.ok(upgraded.receipt.reader.warnings.some(message => message.includes('核验旧清洗包')));
-  assert.equal(validatePlan(source, old.plan).ok, false, 'v3 validator cannot directly accept the old semantic bindings');
+  assert.equal(validatePlan(source, old.plan).ok, false, 'current validator cannot directly accept the old semantic bindings');
   assert.deepEqual(upgraded.receipt.result.segments.map(row => [row.start, row.end, row.text]), old.segments.map(row => [row.start, row.end, row.text]));
   const blocks = createFidelityExternalMaterial(text).blocks;
   assert.deepEqual(upgraded.receipt.result.segments.map(row => [row.start, row.end, row.text]), blocks.map(row => [row.start, row.end, row.text]));
@@ -36,7 +36,7 @@ async function main() {
     await assert.rejects(prepareFidelityImport('tampered-v2.json', Buffer.from(JSON.stringify(tampered)), 'direct'), /被修改|保真/);
   }
   const fakeVersion = structuredClone(body); fakeVersion.plan.contractVersion = 'fidelity/3';
-  await assert.rejects(prepareFidelityImport('fake-v3.json', Buffer.from(JSON.stringify(fakeVersion)), 'direct'), /保真/);
+  await assert.rejects(prepareFidelityImport('fake-v3.json', Buffer.from(JSON.stringify(fakeVersion)), 'direct'), /被修改|保真/);
   const unknownVersion = structuredClone(body); unknownVersion.plan.contractVersion = 'fidelity/999';
   await assert.rejects(prepareFidelityImport('unknown.json', Buffer.from(JSON.stringify(unknownVersion)), 'direct'), /保真/);
   // Earlier v2 wrote one diagnostic per line. Accept only the exact frozen format.
@@ -55,6 +55,6 @@ async function main() {
   assert.deepEqual(accepted.receipt.decisions, decisions);
   assert.equal(accepted.receipt.result.source.text, text);
   assert.equal((normalize(source) as FidelityResult).validation.ok, true);
-  console.log('PASS fidelity v3: frozen v2 verification before upgrade, linewise/grouped diagnostics strict, tamper/unknown-version rejection, accepted decisions and complete source blocks preserved (no DB/AI)');
+  console.log('PASS current fidelity: frozen v2 verification before upgrade, linewise/grouped diagnostics strict, tamper/unknown-version rejection, accepted decisions and complete source blocks preserved (no DB/AI)');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
