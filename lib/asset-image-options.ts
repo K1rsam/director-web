@@ -13,6 +13,9 @@ export const IMAGE_TEMPLATES=[
  {id:'scene-nine-view',label:'场景九视图',types:['LOC'],text:'生成同一连续空间的3×3九宫格场景设定图。依次为正面、左前45度、右前45度、左侧、右侧、后方、入口、高空45度俯视、正交俯视平面布局图。前八格只改变摄影机位置，空间比例、门窗、建筑、家具、物体数量、材质、颜色、天气和光源方向保持一致；第九格准确对应前八格布局。参考图未展示的区域只作最小补全；默认无人，不镜像或移动地标。以本段九视图布局替代前文的单视图构图。'}
 ];
 export function emptyImageOptions():AssetImageOptions{return{revision:0,templateId:'none',templateText:'',references:[],count:1,quality:'1K',aspectRatio:'16:9'};}
+export function normalizeImageOptions(options:AssetImageOptions):AssetImageOptions{
+ return {...emptyImageOptions(),...options,aspectRatio:IMAGE_RATIOS.includes(options.aspectRatio!)?options.aspectRatio:'16:9',quality:IMAGE_QUALITIES.includes(options.quality!)?options.quality:'1K',count:Number.isSafeInteger(options.count)&&options.count!>=1&&options.count!<=4?options.count:1};
+}
 export function imageTemplatesFor(type:PromptAsset['type']){return IMAGE_TEMPLATES.filter(t=>t.types.includes(type));}
 export function compileImagePrompt(prefix:string,body:string,options:Pick<AssetImageOptions,'templateId'|'templateText'>){
  if(!body.trim())return '';

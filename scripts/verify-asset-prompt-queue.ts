@@ -6,6 +6,7 @@ const w:PromptWorkspace={projectId:'test',title:'test',style:'',stylePrefix:'',s
 assert.deepEqual(planAssetPromptQueue(w,['mud']),['base','outfit','mud']);
 w.records.base={...emptyPrompt('base'),body:'saved',fingerprint:'v1',status:'READY',revision:1};
 assert.deepEqual(planAssetPromptQueue(w,['mud']),['outfit','mud']);
+assert.throws(()=>planAssetPromptQueue(w,['mud'],['base']),/先保存/,'An unsaved source draft cannot be silently bypassed by a current saved revision.');
 assert.throws(()=>planAssetPromptQueue(w,['mud'],['outfit']),/先保存/);
 w.records.base.origin='MANUAL';w.records.base.fingerprint='old';assert.throws(()=>planAssetPromptQueue(w,['mud']),/人工设计/);
 delete w.records.base;w.assets[0].fromKey='mud';assert.throws(()=>planAssetPromptQueue(w,['mud']),/循环/);

@@ -4,7 +4,7 @@ import path from 'node:path';
 import {loadLightScenes} from './light-foundation-supply';
 import {effectiveAutomationState} from './asset-prompt-automation';
 import {buildAppearanceEvidenceIndex} from './asset-appearance-evidence';
-import type {AssetImageOptions} from './asset-image-options';
+import {normalizeImageOptions,type AssetImageOptions} from './asset-image-options';
 import { prisma } from './prisma';
 import { loadFoundationInputs } from './foundation-state';
 import { loadFoundationDocument } from './foundation-document';
@@ -18,6 +18,17 @@ const rowId = (projectId: string, key: string) => `ap15_${digest([projectId, key
 const rowKey = 'ASSET_PROMPT_V1';
 const appearanceIndexes=new Map<string,ReturnType<typeof buildAppearanceEvidenceIndex>>();
 type Setting = { prefix: string; revision: number };
+function auditDesign(record:PromptRecord):NonNullable<PromptRecord['previousDesignAudit']>{
+  const history=record.previousDesignAudit??[];
+  if(!record.body&&!record.facts&&!record.suggestions&&!record.rawOutput)return history;
+  const entry={revision:record.revision,body:record.body,facts:record.facts,suggestions:record.suggestions,rawOutput:record.rawOutput,origin:record.origin,updatedAt:record.updatedAt};
+  return history.some(item=>JSON.stringify(item)===JSON.stringify(entry))?history:[...history,entry];
+}
+function currentPrompt(record:PromptRecord):PromptRecord{
+  if(record.origin!=='MANUAL')return record;
+  const legacyProvenance=Boolean(record.facts||record.suggestions||(['READY','EMPTY'].includes(record.status)&&record.rawOutput));
+  return {...record,...(legacyProvenance?{previousDesignAudit:auditDesign(record)}:{}),facts:'',suggestions:'',...(['READY','EMPTY'].includes(record.status)?{rawOutput:undefined}:{})};
+}
 
 export async function loadAssetPromptWorkspace(projectId: string): Promise<PromptWorkspace> {
   const input = await loadFoundationInputs(projectId);
@@ -28,7 +39,7 @@ export async function loadAssetPromptWorkspace(projectId: string): Promise<Promp
   const records: Record<string, PromptRecord> = {};
   const imageOptions:Record<string,AssetImageOptions>={};
   let settings: Setting | undefined;let automation:PromptWorkspace["automation"];
-  for (const row of rows) { const value = JSON.parse(row.content); if(row.sceneKey==='ASSET_PROMPT_AUTOMATION_V1')automation=value;else if(row.sceneKey==='ASSET_IMAGE_OPTIONS_V1'&&row.title)imageOptions[row.title]=value;else if (row.id === rowId(projectId, '$style')) settings = value; else if (value.schema === rowKey) records[value.key] = value; }
+  for (const row of rows) { const value = JSON.parse(row.content); if(row.sceneKey==='ASSET_PROMPT_AUTOMATION_V1')automation=value;else if(row.sceneKey==='ASSET_IMAGE_OPTIONS_V1'&&row.title)imageOptions[row.title]=normalizeImageOptions(value);else if (row.id === rowId(projectId, '$style')) settings = value; else if (value.schema === rowKey) records[value.key] = currentPrompt(value); }
   const readiness = document.f2 ? workingReadiness(document, delivery.requiredChoices, !input.sourceContext.complete || needsContextEdit) : new Map();
   const assets: PromptAsset[] = [];
   const scenes=await loadLightScenes(projectId,prisma).catch(()=>[]);
@@ -78,7 +89,9 @@ export async function saveAssetPrompt(projectId:string,key:string,revision:numbe
   const previous=workspace.records[key]??emptyPrompt(key);
   if(previous.status==='RUNNING')throw new Error('当前资产正在生成，请等待结果后再保存。');
   const referenceKey=asset.fromKey??(asset.variant?asset.baseKey:undefined);
-  const next:PromptRecord={...previous,body,status:body.trim()?'READY':'EMPTY',revision:revision+1,origin:'MANUAL',fingerprint:asset.fingerprint,error:'',referenceKey,referenceRevision:referenceKey?workspace.records[referenceKey]?.revision:undefined,updatedAt:new Date().toISOString()};
+  // A manual rewrite has no verified mapping to the previous model's fact list.
+  // Keep the design editable without laundering old AI provenance into descendants.
+  const next:PromptRecord={...previous,previousDesignAudit:auditDesign(previous),body,facts:'',suggestions:'',rawOutput:undefined,requestId:undefined,workerPid:undefined,status:body.trim()?'READY':'EMPTY',revision:revision+1,origin:'MANUAL',fingerprint:asset.fingerprint,error:'',referenceKey,referenceRevision:referenceKey?workspace.records[referenceKey]?.revision:undefined,updatedAt:new Date().toISOString()};
   await compareWrite(projectId,key,revision,next);return next;
 }
 
@@ -103,8 +116,9 @@ export async function generateAssetPrompt(projectId:string,key:string,revision:n
     rawOutput=result.rawOutput??JSON.stringify(result.data);
     const content=validatePromptOutput(result.data,key);
     const current=await loadAssetPromptWorkspace(projectId);
+    if(current.styleRevision!==workspace.styleRevision||current.stylePrefix!==workspace.stylePrefix||current.style!==workspace.style)throw new Error('生成期间画风已更新，本次结果已保留，请核对后采用。');
     if(current.assets.find(a=>a.key===key)?.fingerprint!==asset.fingerprint)throw new Error('生成期间来源已更新，本次结果已保留，请核对后采用。');
-    if(dependencyKey&&current.records[dependencyKey]?.revision!==reference?.revision)throw new Error('生成期间基础形象已修改，本次结果已保留，请核对后采用。');
+    if(dependencyKey&&(current.records[dependencyKey]?.revision!==reference?.revision||!current.assets.find(a=>a.key===dependencyKey)||promptNeedsReview(current.assets.find(a=>a.key===dependencyKey)!,current.records,current.assets)))throw new Error('生成期间基础形象已修改或不可用，本次结果已保留，请核对后采用。');
     const next:PromptRecord={...running,...content,status:'READY',origin:'AI',fingerprint:asset.fingerprint,rawOutput,referenceKey:dependencyKey,referenceRevision:reference?.revision,revision:running.revision+1,updatedAt:new Date().toISOString()};
     await compareWrite(projectId,key,running.revision,next);return next;
   } catch(error) {

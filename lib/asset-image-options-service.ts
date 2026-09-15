@@ -4,11 +4,11 @@ import path from 'node:path';
 import sharp from 'sharp';
 import {prisma} from './prisma';
 import {loadLatestStoredFoundationDocument} from './foundation-document';
-import {emptyImageOptions,imageTemplatesFor,IMAGE_QUALITIES,IMAGE_RATIOS,type AssetImageOptions,type AssetReferenceImage} from './asset-image-options';
+import {emptyImageOptions,normalizeImageOptions,imageTemplatesFor,IMAGE_QUALITIES,IMAGE_RATIOS,type AssetImageOptions,type AssetReferenceImage} from './asset-image-options';
 export const IMAGE_OPTIONS_KEY='ASSET_IMAGE_OPTIONS_V1';
 const optionsId=(projectId:string,key:string)=>`ai15_${createHash('sha256').update(JSON.stringify([projectId,key])).digest('hex').slice(0,40)}`;
 const root=()=>path.resolve(process.env.DIRECTOR_ASSET_REFERENCE_DIR||'outputs/asset-references');
-export async function readImageOptions(projectId:string,key:string){const row=await prisma.sceneSnapshot.findUnique({where:{id:optionsId(projectId,key)}});return row?JSON.parse(row.content) as AssetImageOptions:emptyImageOptions();}
+export async function readImageOptions(projectId:string,key:string){const row=await prisma.sceneSnapshot.findUnique({where:{id:optionsId(projectId,key)}});return row?normalizeImageOptions(JSON.parse(row.content) as AssetImageOptions):emptyImageOptions();}
 async function assetType(projectId:string,key:string){const doc=await loadLatestStoredFoundationDocument(prisma,projectId);const asset=doc?.f2?.assets.find(a=>a.key===key||a.variants.some(v=>v.key===key));if(!asset)throw new Error('该资产不在当前目录中，请刷新。');return asset.type;}
 async function writeOptions(projectId:string,key:string,expected:number,next:AssetImageOptions){
  if(!Number.isSafeInteger(expected)||expected<0)throw new Error('无效的设置版本。');

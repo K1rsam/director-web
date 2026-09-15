@@ -23,3 +23,17 @@ P3/F2 与 Q1 按需加载 `prompts/foundation/asset-subject-boundaries-v1.md`。
 - `npx tsx scripts/verify-asset-prompt-automation.ts <一致性数据库备份>`
 
 后两项复制备份到隔离测试库，不调用真实文字模型。局部真实文字生成和读回曾通过；空队列后台检查不等同于整剧自动生成验收。图片生成和浏览器视觉验收尚未完成。
+
+## 2026-09-15 可靠性回归
+
+修复了保存途中继续编辑被清除、旧轮询回退新版本、子形象忽略来源未保存草稿、已移除比例的旧值无法继续保存、并发启动重复后台任务、停止/继续与旧 worker 竞争、失效人工提示词被计为成功等问题。
+
+手动修改后的旧 AI 依据归档到 `previousDesignAudit`，可展开历史查看，不进入当前事实或子形象输入。生成期间画风/来源变化则保留结果并要求复核。资料语义准确性的完整闭环仍未完成。
+
+新增回归：
+
+- `npx tsx scripts/verify-asset-prompt-client-state.ts`
+- `npx tsx scripts/verify-stage15-automation-races.ts <一致性数据库备份>`
+- `npx tsx scripts/verify-stage15-prompt-integrity.ts <一致性数据库备份> <备份中的项目ID>`（该项目须有可生成的基础人物和变体）
+
+并发回归覆盖8路启动、旧worker延迟、缺失来源、人工保护、停止收尾及续跑剩余项。测试使用副本数据库与注入生成器，没有真实模型调用。3008实际上传、读取及设置接口回归通过。

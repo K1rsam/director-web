@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+import {copyFile,mkdir} from 'node:fs/promises';
+import path from 'node:path';
+import {EventEmitter} from 'node:events';
+import {PrismaClient} from '@prisma/client';
+import {launchAssetPromptAutomation,AUTOMATION_KEY,type AssetPromptAutomation} from '../lib/asset-prompt-automation';
+import {runAssetPromptWorker} from './asset-prompt-worker';
+import {emptyPrompt,type PromptAsset,type PromptWorkspace} from '../lib/asset-prompt-contract';
+async function main(){
+ const fixture=process.argv[2];assert.ok(fixture,'Pass a consistent SQLite backup');await mkdir('outputs/stage15-tests',{recursive:true});
+ const file=path.resolve(`outputs/stage15-tests/automation-${Date.now()}.db`);await copyFile(fixture,file);
+ const db=new PrismaClient({datasourceUrl:`file:${file.replaceAll('\\','/')}`});const project=await db.project.findFirstOrThrow();const projectId=project.id;
+ await db.sceneSnapshot.deleteMany({where:{projectId,sceneKey:AUTOMATION_KEY}});
+ let spawned=0;const launches:{row:string;token:string}[]=[];
+ const launchDeps={db,spawnWorker:(row:string,token:string)=>{spawned++;launches.push({row,token});return new EventEmitter() as any;}};
+ const read=async()=>await db.sceneSnapshot.findFirstOrThrow({where:{projectId,sceneKey:AUTOMATION_KEY}});
+ const state=async()=>JSON.parse((await read()).content) as AssetPromptAutomation;
+ const set=async(p:Partial<AssetPromptAutomation>)=>{const r=await read();await db.sceneSnapshot.update({where:{id:r.id},data:{content:JSON.stringify({...JSON.parse(r.content),...p})}});};
+ const asset=(key:string,ref?:string):PromptAsset=>({key,baseKey:ref??key,name:key,baseName:ref??key,type:'CH',variant:!!ref,episodes:[1],mode:ref?'DERIVE':'REFERENCE',fromKey:ref,description:'',note:'',evidence:[],reasons:[],eligible:true,fingerprint:'current'});
+ let w:PromptWorkspace={projectId,title:'test',style:'',stylePrefix:'',styleRevision:0,assets:[],records:{},busy:false};let calls=0;
+ const deps={db,load:async()=>w,inputs:async()=>({sourceVersion:'s'}) as any,generate:async(_p:string,key:string)=>{calls++;const r={...emptyPrompt(key),status:'READY' as const,body:'test',fingerprint:'current'};w.records[key]=r;return r;}};
+ const run=()=>{const last=launches.at(-1)!;return runAssetPromptWorker(projectId,last.row,last.token,deps);};
+ await Promise.all(Array.from({length:8},()=>launchAssetPromptAutomation(projectId,'s',launchDeps)));
+ assert.equal(spawned,1);assert.equal(await db.sceneSnapshot.count({where:{projectId,sceneKey:AUTOMATION_KEY}}),1);
+ // A stopped unclaimed job may be replaced; its delayed worker must not claim the replacement.
+ const old=launches[0];await set({status:'STOPPED'});await launchAssetPromptAutomation(projectId,'s',launchDeps);assert.equal(spawned,2);
+ await runAssetPromptWorker(projectId,old.row,old.token,deps);assert.equal((await state()).status,'RUNNING');assert.equal(calls,0);
+ w.assets=[asset('child','absent')];w.records={absent:{...emptyPrompt('absent'),body:'orphan',status:'READY',fingerprint:'current'}};
+ await run();assert.equal((await state()).failed,1);assert.equal((await state()).status,'FAILED');assert.match((await state()).error,/来源/);assert.equal(calls,0);
+ await launchAssetPromptAutomation(projectId,'s',launchDeps);w.assets=[asset('manual')];w.records={manual:{...emptyPrompt('manual'),body:'user text',status:'READY',fingerprint:'old'}};
+ await run();assert.equal((await state()).done,0);assert.equal((await state()).failed,1);assert.equal(w.records.manual.body,'user text');assert.equal(calls,0);
+ // Stop while one injected generation is in flight; no competing resume until the worker releases ownership.
+ await launchAssetPromptAutomation(projectId,'s',launchDeps);w.assets=[asset('one'),asset('two')];w.records={};
+ let release!:()=>void;let started!:()=>void;const began=new Promise<void>(r=>started=r);const gate=new Promise<void>(r=>release=r);
+ const gated={...deps,generate:async(p:string,key:string)=>{started();await gate;return deps.generate(p,key);}};
+ const last=launches.at(-1)!;const running=runAssetPromptWorker(projectId,last.row,last.token,gated);await began;
+ await set({status:'STOPPED',error:'stop'});const before=spawned;await assert.rejects(()=>launchAssetPromptAutomation(projectId,'s',launchDeps),/收尾/);assert.equal(spawned,before);
+ release();await running;assert.equal((await state()).status,'STOPPED');assert.equal((await state()).done,1);assert.equal((await state()).workerPid,undefined);assert.equal(calls,1);
+ await launchAssetPromptAutomation(projectId,'s',launchDeps);await run();assert.equal(calls,2);assert.equal((await state()).status,'COMPLETE');assert.equal((await state()).total,1);
+ console.log('PASS: 8 concurrent starts, delayed old worker, missing dependency, stale manual preservation, stop/resume in-flight, resume remaining only; real model calls 0');
+ await db.$disconnect();
+}main().catch(e=>{console.error(e);process.exitCode=1;});

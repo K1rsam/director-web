@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import {clearSavedPromptDraft,mergePromptWorkspace} from '../lib/asset-prompt-client-state';
+import {emptyPrompt,type PromptWorkspace} from '../lib/asset-prompt-contract';
+import {emptyImageOptions,normalizeImageOptions} from '../lib/asset-image-options';
+const current:PromptWorkspace={projectId:'p',title:'p',style:'',stylePrefix:'new',styleRevision:2,assets:[],busy:false,records:{a:{...emptyPrompt('a'),revision:3,body:'saved'}},imageOptions:{a:{...emptyImageOptions(),revision:4,count:3}}};
+const stale={...current,stylePrefix:'old',styleRevision:1,records:{a:{...emptyPrompt('a'),revision:2,body:'old'}},imageOptions:{a:{...emptyImageOptions(),revision:1,count:1}}};
+const merged=mergePromptWorkspace(current,stale);assert.equal(merged.records.a.body,'saved');assert.equal(merged.imageOptions!.a.count,3);assert.equal(merged.stylePrefix,'new');
+assert.deepEqual(clearSavedPromptDraft({a:'later typing'},'a','submitted'),{a:'later typing'});
+assert.deepEqual(clearSavedPromptDraft({a:'submitted',b:'another'},'a','submitted'),{b:'another'});
+assert.equal(normalizeImageOptions({...emptyImageOptions(),aspectRatio:'5:4' as never}).aspectRatio,'16:9');
+assert.equal(normalizeImageOptions({...emptyImageOptions(),aspectRatio:'4:5' as never}).aspectRatio,'16:9');
+console.log('PASS: stale poll revisions, edits during save, asset draft isolation, removed ratio compatibility');

@@ -2,6 +2,8 @@ import type {ApplicationScope} from './foundation-application-scope';
 import type {AssetImageOptions} from './asset-image-options';
 import type {AssetPromptAutomation} from './asset-prompt-automation';
 export type PromptEvidence = { label: string; text: string };
+/** Historical output only: never supplied as current source facts or referenceDesign. */
+export type PreviousDesignAudit = {revision:number;body:string;facts:string;suggestions:string;rawOutput?:string;origin:'AI'|'MANUAL';updatedAt:string};
 export type PromptAsset = {
   key: string; baseKey: string; name: string; baseName: string; type: 'CH' | 'GROUP' | 'BEAST' | 'LOC' | 'PROP';
   variant: boolean; episodes: number[]; mode: string; fromKey?: string; description: string; note: string;
@@ -11,6 +13,7 @@ export type PromptRecord = {
   schema: 'ASSET_PROMPT_V1'; key: string; revision: number; status: 'EMPTY' | 'RUNNING' | 'READY' | 'FAILED';
   body: string; facts: string; suggestions: string; error: string; fingerprint: string;
   updatedAt: string; origin: 'AI' | 'MANUAL'; requestId?: string; rawOutput?: string; referenceKey?: string; referenceRevision?: number; workerPid?: number;
+  previousDesignAudit?: PreviousDesignAudit[];
 };
 export type PromptWorkspace = {
   projectId: string; title: string; style: string; stylePrefix: string; styleRevision: number;
@@ -27,11 +30,12 @@ export function defaultStylePrefix(style: string) {
 }
 export function promptNeedsReview(asset: PromptAsset, records: Record<string, PromptRecord>, assets: PromptAsset[], seen = new Set<string>()): boolean {
   const record=records[asset.key];if(!record?.body)return false;
+  if(record.status!=='READY')return true;
   if(seen.has(asset.key))return true;seen.add(asset.key);
   if(record.fingerprint!==asset.fingerprint)return true;
   if(!record.referenceKey)return false;
   const source=assets.find(a=>a.key===record.referenceKey), sourceRecord=records[record.referenceKey];
-  return !source||!sourceRecord||sourceRecord.revision!==record.referenceRevision||promptNeedsReview(source,records,assets,seen);
+  return !source||!sourceRecord?.body||sourceRecord.status!=='READY'||sourceRecord.revision!==record.referenceRevision||promptNeedsReview(source,records,assets,seen);
 }
 export function emptyPrompt(key: string): PromptRecord {
   return { schema: 'ASSET_PROMPT_V1', key, revision: 0, status: 'EMPTY', body: '', facts: '', suggestions: '', error: '', fingerprint: '', updatedAt: '', origin: 'MANUAL' };
