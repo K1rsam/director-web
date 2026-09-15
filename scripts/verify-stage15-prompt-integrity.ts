@@ -13,12 +13,12 @@ async function main(){
   const projectId=process.argv[3];if(!projectId)throw new Error('Provide a project ID present in the backup with a base character and a derived variant.');
   // Clear only prompt fixtures in the isolated copy, so this works with populated backups.
   await prisma.sceneSnapshot.deleteMany({where:{projectId,sceneKey:'ASSET_PROMPT_V1'}});
-  const before=await prisma.sceneSnapshot.findMany({where:{projectId,sceneKey:{notIn:['ASSET_PROMPT_V1','ASSET_VISUAL_FACT_BATCH_V1']}},orderBy:{id:'asc'}});
+  const before=await prisma.sceneSnapshot.findMany({where:{projectId,sceneKey:{notIn:['ASSET_PROMPT_V1','ASSET_VISUAL_FACT_BATCH_V1','ASSET_VISUAL_FACT_CALL_V1']}},orderBy:{id:'asc'}});
   let workspace=await loadAssetPromptWorkspace(projectId);
   let base=workspace.assets.find(a=>a.eligible&&!a.variant&&a.type==='CH'&&workspace.assets.some(v=>v.variant&&v.eligible&&v.baseKey===a.key))!;
   let variant=workspace.assets.find(a=>a.eligible&&a.variant&&a.baseKey===base.key)!;assert.ok(base&&variant);
   const {ensureAssetVisualFacts}=await import('../lib/asset-visual-facts-service');
-  await ensureAssetVisualFacts(projectId,async input=>{const {chunk,extracted}=JSON.parse(input.prompt);const line=chunk.lines.find((l:any)=>l.text.trim());return {data:extracted??{coveredChunkId:chunk.id,facts:line?[{subjectKey:base.baseKey,attribute:'test.fixture',value:'测试固定事实',scope:'STABLE',quote:line.text,chunkId:chunk.id,startLine:line.number,endLine:line.number},{subjectKey:base.baseKey,attribute:'test.variant',value:'测试版本事实',versionKey:variant.key,scope:'STATE',quote:line.text,chunkId:chunk.id,startLine:line.number,endLine:line.number}]:[],issues:[]},sessionId:null,stdout:'',stderr:''};});
+  await ensureAssetVisualFacts(projectId,async input=>{const {chunks,extracted}=JSON.parse(input.prompt);return {data:extracted??{batches:chunks.map((chunk:any)=>{const line=chunk.lines.find((l:any)=>l.text.trim());return {coveredChunkId:chunk.id,facts:line?[{subjectKey:base.baseKey,attribute:'test.fixture',value:'测试固定事实',scope:'STABLE',quote:line.text,chunkId:chunk.id,startLine:line.number,endLine:line.number},{subjectKey:base.baseKey,attribute:'test.variant',value:'测试版本事实',versionKey:variant.key,scope:'STATE',quote:line.text,chunkId:chunk.id,startLine:line.number,endLine:line.number}]:[],issues:[]};})},sessionId:null,stdout:'',stderr:''};});
   workspace=await loadAssetPromptWorkspace(projectId);base=workspace.assets.find(a=>a.key===base.key)!;variant=workspace.assets.find(a=>a.key===variant.key)!;
   const fake:Parameters<typeof generateAssetPrompt>[3]=async input=>({data:{key:JSON.parse(input.prompt).asset.key,body:'原版黑发设定',facts:'原版人物事实',suggestions:'原版设计建议'},sessionId:null,stdout:'',stderr:''});
   const initial=await generateAssetPrompt(projectId,base.key,0,fake);assert.equal(initial.status,'READY');assert.ok(initial.facts);
@@ -51,7 +51,7 @@ async function main(){
    return fake!(input);
   });
   assert.equal(duringSource.status,'FAILED');assert.match(duringSource.error,/基础形象已修改或不可用/);assert.equal(duringSource.body,child.body);
-  assert.deepEqual(await prisma.sceneSnapshot.findMany({where:{projectId,sceneKey:{notIn:['ASSET_PROMPT_V1','ASSET_VISUAL_FACT_BATCH_V1']}},orderBy:{id:'asc'}}),before);
+  assert.deepEqual(await prisma.sceneSnapshot.findMany({where:{projectId,sceneKey:{notIn:['ASSET_PROMPT_V1','ASSET_VISUAL_FACT_BATCH_V1','ASSET_VISUAL_FACT_CALL_V1']}},orderBy:{id:'asc'}}),before);
   console.log('PASS: manual provenance cleared, descendant facts clean, failed/running/empty sources reviewed, style and source races rejected, prior content and foundation preserved; zero real model calls.');
  }finally{await prisma.$disconnect();}
 }

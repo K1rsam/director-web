@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {buildVisualChunks} from '../lib/asset-visual-facts-contract';
+import {groupVisualFactBatches,selectVisualIdentities} from '../lib/asset-visual-facts-planner';
+const identities=[{key:'a',name:'楚天野｜默认',aliases:['楚老师'],usageEpisodes:[1],variants:[]},{key:'b',name:'苏炎｜默认',aliases:[],usageEpisodes:[2],variants:[{key:'bv',name:'苏炎白衣',episodes:[3]}]},{key:'c',name:'单独道具',aliases:[],usageEpisodes:[9],variants:[]}];
+const chunks=buildVisualChunks({background:[{key:'author',text:'概述'}],episodes:Array.from({length:30},(_,i)=>({number:i+1,content:'楚老师\n'+'正文'.repeat(400)}))});
+const groups=groupVisualFactBatches(chunks.map(chunk=>({chunk})));
+assert.ok(groups.length<=6);assert.deepEqual(groups.flat().map(x=>x.chunk.id).sort(),chunks.map(c=>c.id).sort());assert.equal(groups.at(-1)!.length,1);assert.equal(groups.at(-1)![0].chunk.domain,'AUTHOR');
+assert.deepEqual(selectVisualIdentities(chunks[0],identities),identities);
+assert.deepEqual(selectVisualIdentities(chunks[1],identities).map(i=>i.key),['a']);
+assert.deepEqual(selectVisualIdentities(chunks[2],identities).map(i=>i.key),['a','b']);
+assert.ok(selectVisualIdentities({...chunks[3],lines:[{number:1,text:'没有姓名的动作'}]},identities).some(i=>i.key==='b'),'Variant episode retains owner');
+assert.equal(selectVisualIdentities({...chunks[4],contextBefore:'苏炎走近',lines:[{number:1,text:'他戴上眼镜'}]},identities).some(i=>i.key==='b'),true);
+assert.deepEqual(selectVisualIdentities({...chunks[4],contextBefore:'',lines:[{number:1,text:'陌生称呼'}]},identities),identities,'Unmatched routing falls back to full catalogue');
+assert.equal(selectVisualIdentities({...chunks[4],lines:[{number:1,text:'苏炎白衣出现'}]},identities).some(i=>i.key==='b'),true);
+console.log('PASS: short episodes grouped without losing source coordinates; author isolated; aliases, base names, variant names/scopes and preceding pronouns routed; unknown context fallback.');

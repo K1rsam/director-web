@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {copyFile,mkdir,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {selectAssetVisualFacts} from '../lib/asset-visual-facts-selection';
-// Explicit, bounded live semantic smoke test: one synthetic source chunk, A + B only.
+// Explicit, bounded live semantic smoke test: two synthetic source chunks in one request, A + B only.
 async function main(){
  assert.equal(process.argv[3],'--real','This test requires --real and calls the configured CLI model twice.');
  const dir=path.resolve('outputs/stage15-semantic-tests');await mkdir(dir,{recursive:true});
@@ -16,10 +16,10 @@ async function main(){
   const second={...template,key:'C_test_b',name:'宋乙',aliases:[],variants:[]};
   document.f2.assets=[first,second];
   const source='第1集\n1-1 日 内 理发店\n人物：林甲、宋乙\n人物资料：林甲，红色长发，戴眼镜。宋乙，林甲的发小，父亲宋辉。\n△林甲摘下自己的眼镜，递给宋乙。宋乙帮林甲擦了擦眼镜，还给林甲。\n△林甲重新戴上眼镜。理发师将林甲的红色长发剪成短发，没有染发。\n△宋乙依旧站在一旁。';
-  const project=await prisma.project.create({data:{title:'synthetic AB accuracy smoke',executionMode:'CLI',episodes:{create:{number:1,content:source}}}});
+  const project=await prisma.project.create({data:{title:'synthetic grouped AB accuracy smoke',executionMode:'CLI',episodes:{create:[{number:1,content:source},{number:2,content:'第2集\n2-1 日 内 理发店\n人物：林甲、宋乙\n△林甲依旧是剪短后的红色短发，戴着自己的眼镜。宋乙在旁边。'}]}}});
   await prisma.sceneSnapshot.create({data:{projectId:project.id,sceneKey:'FOUNDATION_DOCUMENT',content:JSON.stringify(document)}});
   let calls=0;const result=await ensureAssetVisualFacts(project.id,async input=>{calls++;console.log(`Running ${input.role.code}`);return runRoleByProvider(input);});
-  await writeFile(path.join(dir,'latest-result.json'),JSON.stringify({calls,result},null,2));assert.equal(calls,2);
+  await writeFile(path.join(dir,'latest-grouped-result.json'),JSON.stringify({calls,result},null,2));assert.equal(calls,2);
   const firstFacts=result.facts.filter(f=>f.subjectKey===first.key),secondFacts=result.facts.filter(f=>f.subjectKey===second.key);
   assert.ok(firstFacts.some(f=>/眼镜/.test(f.value)),'Glasses ownership must be retained');
   assert.equal(secondFacts.some(f=>/佩戴|戴着|戴眼镜/.test(f.value)),false,'Helping clean another person’s glasses must not become personal eyewear');
