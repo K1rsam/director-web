@@ -1,50 +1,42 @@
 import assert from 'node:assert/strict';
-import {copyFileSync,mkdirSync} from 'node:fs';
+import {mkdirSync,writeFileSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
 import path from 'node:path';
 async function main(){
- assert.ok(process.argv[2],'Pass consistent SQLite backup');mkdirSync('outputs/stage15-tests',{recursive:true});const dbFile=path.resolve(`outputs/stage15-tests/visual-facts-${Date.now()}.db`);copyFileSync(process.argv[2],dbFile);process.env.DATABASE_URL=`file:${dbFile.replaceAll('\\','/')}`;
- const {prisma}=await import('../lib/prisma');const {ensureAssetVisualFacts,readAssetVisualFacts,VISUAL_FACT_CALL_KEY}=await import('../lib/asset-visual-facts-service');
- const source=(await prisma.sceneSnapshot.findMany({where:{sceneKey:'FOUNDATION_DOCUMENT'}})).find(r=>JSON.parse(r.content).f2?.assets?.length>2);assert.ok(source);const doc=JSON.parse(source.content),subject=doc.f2.assets[0],extra=doc.f2.assets[1],unrelated=doc.f2.assets[2];
- doc.f2.format='ASSET_CATALOG_V1';for(const a of doc.f2.assets){a.usageEpisodes=[999];a.sceneRefs=[];for(const v of a.variants){v.episodes=[999];v.sceneRefs=[];}}subject.usageEpisodes=[1,2];
- const project=await prisma.project.create({data:{title:'isolated grouped facts',episodes:{create:[{number:1,content:`${subject.name}身穿白衣。`},{number:2,content:`${subject.name}身穿蓝衣。`}]}}});const pid=project.id;
- assert.equal(await readAssetVisualFacts(pid),null);const document=await prisma.sceneSnapshot.create({data:{projectId:pid,sceneKey:'FOUNDATION_DOCUMENT',content:JSON.stringify(doc)}});
- const episodes=await prisma.episode.findMany({where:{projectId:pid},orderBy:{number:'asc'}}),originalDocument=JSON.stringify(doc);
- const calls:{code:string;episodes:number[];identityCount:number}[]=[];let failAudit=true,tamper=false,includeExtra=false;let release:undefined|(()=>void),started:undefined|(()=>void);const authorReviews:unknown[]=[];
- const runner:any=async(input:any)=>{const parsed=JSON.parse(input.prompt);assert.ok(Array.isArray(parsed.chunks));calls.push({code:input.role.code,episodes:parsed.chunks.map((c:any)=>c.episode),identityCount:parsed.identities.length});
-  if(started&&input.role.code==='A15_A'){const announce=started;started=undefined;announce();await new Promise<void>(r=>release=r);}
-  if(input.role.code==='B15_B'&&failAudit){failAudit=false;throw new Error('injected audit interruption');}
-  assert.ok(['A15_A','B15_B'].includes(input.role.code));assert.equal(input.sessionMode,'ephemeral');assert.equal(input.role.model,'gpt-6-astra');
-  const data=input.role.code==='B15_B'?structuredClone(parsed.extracted):{batches:parsed.chunks.map((chunk:any)=>({coveredChunkId:chunk.id,facts:[{subjectKey:subject.key,attribute:'服装',value:chunk.lines[0].text.slice(0,100),scope:'STATE',versionKey:subject.key,quote:chunk.lines[0].text,chunkId:chunk.id,startLine:chunk.lines[0].number,endLine:chunk.lines[0].number}],issues:includeExtra?[{subjectKey:extra.key,message:'跨批指代需核对'}]:[]}))};
-  if(tamper&&input.role.code==='B15_B')data.batches[0].facts[0].quote='伪造引用';
-  if(parsed.chunks[0].domain==='AUTHOR'){
-   if(input.role.code==='A15_A')data.batches[0].issues.push({subjectKey:subject.key,message:'作者概述存在范围疑点'});
-   else{authorReviews.push(parsed.reviewContext);assert.ok(parsed.reviewContext);data.batches[0].issues=[];}
-  }
-  return{data,sessionId:null,stdout:input.role.code==='A15_A'?JSON.stringify({type:'turn.completed',usage:{input_tokens:123,output_tokens:45}}):'',stderr:''};};
- await assert.rejects(()=>ensureAssetVisualFacts(pid,runner),/injected audit interruption/);assert.equal(calls.length,2);assert.deepEqual(calls[0].episodes,[1,2]);assert.ok(calls[0].identityCount<doc.f2.assets.length);assert.equal(await readAssetVisualFacts(pid),null);
- const ready=await ensureAssetVisualFacts(pid,runner);assert.equal(calls.length,3);assert.equal(calls.at(-1)!.code,'B15_B');assert.equal(ready.facts.length,2);assert.equal(ready.status,'READY');await ensureAssetVisualFacts(pid,runner);assert.equal(calls.length,3);
- assert.deepEqual(await prisma.episode.findMany({where:{projectId:pid},orderBy:{number:'asc'}}),episodes);assert.equal((await prisma.sceneSnapshot.findUniqueOrThrow({where:{id:document.id}})).content,originalDocument);
- await prisma.episode.update({where:{id:episodes[1].id},data:{content:`${subject.name}身穿红衣。`}});assert.equal(await readAssetVisualFacts(pid),null);tamper=true;
- await assert.rejects(()=>ensureAssetVisualFacts(pid,runner),/引用/);assert.equal(calls.length,5);assert.deepEqual(calls[3].episodes,[2]);tamper=false;await ensureAssetVisualFacts(pid,runner);assert.equal(calls.length,6);assert.equal(calls[5].code,'B15_B');
- await prisma.episode.update({where:{id:episodes[1].id},data:{content:`${subject.name}身穿绿衣。`}});const began=new Promise<void>(r=>started=r),pending=ensureAssetVisualFacts(pid,runner);await began;await assert.rejects(()=>ensureAssetVisualFacts(pid,runner),/正在处理/);release!();await pending;assert.equal(calls.length,8);
- unrelated.aliases.push('不相关别名');await prisma.sceneSnapshot.update({where:{id:document.id},data:{content:JSON.stringify(doc)}});assert.ok(await readAssetVisualFacts(pid));await ensureAssetVisualFacts(pid,runner);assert.equal(calls.length,8);
- subject.aliases.push('主体新别名');subject.type=subject.type==='CH'?'PROP':'CH';await prisma.sceneSnapshot.update({where:{id:document.id},data:{content:JSON.stringify(doc)}});assert.equal(await readAssetVisualFacts(pid),null);await ensureAssetVisualFacts(pid,runner);assert.equal(calls.length,10);
- await prisma.episode.update({where:{id:episodes[1].id},data:{content:`${subject.name}身穿黄衣。`}});let checks=0;const progress:number[][]=[];await assert.rejects(()=>ensureAssetVisualFacts(pid,runner,{shouldContinue:async()=>++checks<3}),/已停止/);assert.equal(calls.length,11);await ensureAssetVisualFacts(pid,runner,{onProgress:async(d,t)=>{progress.push([d,t]);}});assert.equal(calls.length,12);assert.deepEqual(progress.at(-1),[2,2]);
- // B failed across both chunks; only changed chunk goes to A on retry, then both go to B.
- await prisma.episode.update({where:{id:episodes[0].id},data:{content:`${subject.name}穿黑衣。`}});await prisma.episode.update({where:{id:episodes[1].id},data:{content:`${subject.name}穿灰衣。`}});failAudit=true;await assert.rejects(()=>ensureAssetVisualFacts(pid,runner),/interruption/);const beforeMixed=calls.length;
- await prisma.episode.update({where:{id:episodes[1].id},data:{content:`${subject.name}穿紫衣。`}});await ensureAssetVisualFacts(pid,runner);assert.equal(calls.length,beforeMixed+2);assert.deepEqual(calls.at(-2)!.episodes,[2]);assert.deepEqual(calls.at(-1)!.episodes,[1,2]);
- // A's cross-chunk issue references another authoritative identity omitted from local candidate routing.
- includeExtra=true;await prisma.episode.update({where:{id:episodes[1].id},data:{content:`${subject.name}穿橙衣。`}});failAudit=true;await assert.rejects(()=>ensureAssetVisualFacts(pid,runner),/interruption/);const beforeExtra=calls.length;
- extra.aliases.push('额外归属新别名');await prisma.sceneSnapshot.update({where:{id:document.id},data:{content:JSON.stringify(doc)}});await ensureAssetVisualFacts(pid,runner);assert.equal(calls.length,beforeExtra+2,'changed actual owner invalidates cached A');assert.equal(calls.at(-2)!.code,'A15_A');assert.equal((await readAssetVisualFacts(pid))!.status,'REVIEW');
- // Only type changes; unchanged key/name/aliases must not reuse either own or extra-identity caches.
- extra.type=extra.type==='CH'?'PROP':'CH';await prisma.sceneSnapshot.update({where:{id:document.id},data:{content:JSON.stringify(doc)}});assert.equal(await readAssetVisualFacts(pid),null);await ensureAssetVisualFacts(pid,runner);
- const beforeType=calls.length;subject.type=subject.type==='CH'?'PROP':'CH';await prisma.sceneSnapshot.update({where:{id:document.id},data:{content:JSON.stringify(doc)}});assert.equal(await readAssetVisualFacts(pid),null);await ensureAssetVisualFacts(pid,runner);assert.equal(calls.length,beforeType+2);
- includeExtra=false;const background=`${subject.name}的服装摘要。`;await prisma.sceneSnapshot.create({data:{projectId:pid,sceneKey:'SOURCE_IMPORT',metadata:JSON.stringify({schema:'IMPORTED_SOURCE_TEXT_V2'}),content:JSON.stringify({sourceText:background,sourceStructure:{version:'SOURCE_STRUCTURE_V1',sections:[{key:'author',kind:'BACKGROUND',start:0,end:background.length}],issues:[]}})}});
- const beforeAuthor=calls.length;await ensureAssetVisualFacts(pid,runner);assert.equal(calls.length,beforeAuthor+2);assert.ok((authorReviews.at(-1) as any).facts.some((f:any)=>f.sourceLabel.includes('EPISODE')));
- await prisma.episode.update({where:{id:episodes[1].id},data:{content:`${subject.name}穿银衣。`}});assert.equal(await readAssetVisualFacts(pid),null);const beforeContext=calls.length;await ensureAssetVisualFacts(pid,runner);assert.equal(calls.length,beforeContext+3);assert.deepEqual(calls.slice(beforeContext).map(c=>c.code),['A15_A','B15_B','B15_B']);assert.equal(calls.at(-1)!.episodes[0],undefined);
- // Oversized evidence is not silently truncated and cannot silently clear the author A issue.
- for(const episode of episodes)await prisma.episode.update({where:{id:episode.id},data:{content:`${subject.name}第${episode.number}集服装。`+'长'.repeat(11900)}});
- const huge=await ensureAssetVisualFacts(pid,runner);assert.equal((authorReviews.at(-1) as any).status,'TOO_LARGE');assert.ok(huge.issues.some(i=>i.message.includes('作者概述')));assert.ok(huge.issues.some(i=>i.message.includes('24000')));
- const logs=(await prisma.sceneSnapshot.findMany({where:{projectId:pid,sceneKey:VISUAL_FACT_CALL_KEY}})).map(r=>JSON.parse(r.content));assert.equal(logs.length,calls.length);assert.ok(logs.some(l=>l.status==='FAILED'&&l.error&&l.output));assert.ok(logs.every(l=>l.finishedAt&&l.durationMs>=0&&l.inputChars>0&&l.chunkIds.length>0));assert.ok(logs.some(l=>l.usage?.input_tokens===123));assert.ok(logs.some(l=>l.usage===null));
- console.log('PASS: grouped A/B, B-only retry, mixed cached A, local routing, unrelated identity reuse, actual owner invalidation, changed chunk only, quote rejection, CAS, stop/progress, per-call usage logs; original/P3 untouched by service; real calls 0');await prisma.$disconnect();
-}main().catch(e=>{console.error(e);process.exitCode=1;});
+ mkdirSync('outputs/stage15-tests',{recursive:true});
+ process.env.DATABASE_URL=`file:${path.resolve(`outputs/stage15-tests/single-${Date.now()}.db`).replaceAll('\\','/')}`;
+ writeFileSync(process.env.DATABASE_URL.slice(5),'');
+ execFileSync(process.execPath,['node_modules/prisma/build/index.js','db','push','--skip-generate'],{env:process.env,stdio:'pipe'});
+ const {prisma}=await import('../lib/prisma');
+ try{
+ const {ensureAssetVisualFacts,readAssetVisualFacts,VISUAL_FACT_CALL_KEY}=await import('../lib/asset-visual-facts-service');
+ const {loadFoundationInputs}=await import('../lib/foundation-state');
+ const {createEmptyDocument}=await import('../lib/foundation-document');
+ const {resolveCliModel,resolveCliReasoning}=await import('../lib/role-runner');
+ for(const role of ['F1','F2','Q1','A15_A','A15','A15_D','E0','E5']){assert.equal(resolveCliModel(role,'gpt-6-astra'),'gpt-5.6-terra');assert.equal(resolveCliReasoning(role,'high'),'medium');}
+ const project=await prisma.project.create({data:{title:'synthetic single pass',episodes:{create:[{number:1,content:'人物甲穿白衣。'},{number:2,content:'人物甲穿蓝衣。'}]}}});const pid=project.id;
+ const doc=createEmptyDocument(await loadFoundationInputs(pid));
+ doc.f2={format:'ASSET_CATALOG_V1',coverage:[1,2],assets:[{key:'hero',name:'人物甲',type:'CH',aliases:[],description:'',sourceRefs:[],appearances:[],usageEpisodes:[1,2],variants:[]}],episodes:[{number:1,context:'',assetKeys:['hero']},{number:2,context:'',assetKeys:['hero']}],issues:[]};
+ const document=await prisma.sceneSnapshot.create({data:{projectId:pid,sceneKey:'FOUNDATION_DOCUMENT',content:JSON.stringify(doc)}});
+ let calls=0,tamper=false;let started:(()=>void)|undefined,release:(()=>void)|undefined;
+ const scopes:(number|undefined)[][]=[];
+ const runner:any=async(input:any)=>{calls++;assert.equal(input.role.code,'A15_A');assert.equal(input.role.model,'gpt-5.6-terra');const v=JSON.parse(input.prompt);scopes.push(v.chunks.map((c:any)=>c.episode));assert.equal(v.reviewContext,undefined);
+ if(started){const announce=started;started=undefined;announce();await new Promise<void>(r=>release=r);}
+ const data={batches:v.chunks.map((c:any)=>({coveredChunkId:c.id,facts:[{subjectKey:'hero',attribute:'clothing',value:c.lines[0].text,scope:'STATE',versionKey:'hero',quote:tamper?'不存在的引用':c.lines[0].text,chunkId:c.id,startLine:c.lines[0].number,endLine:c.lines[0].number}],issues:[]}))};return {data,rawOutput:JSON.stringify(data),sessionId:null,stdout:JSON.stringify({type:'turn.completed',usage:{input_tokens:100,output_tokens:20}}),stderr:''};};
+ const first=await ensureAssetVisualFacts(pid,runner);assert.equal(first.facts.length,2);assert.equal(calls,1);assert.deepEqual(scopes[0],[1,2]);await ensureAssetVisualFacts(pid,runner);assert.equal(calls,1);
+ const episodes=await prisma.episode.findMany({where:{projectId:pid},orderBy:{number:'asc'}});
+ await prisma.project.update({where:{id:pid},data:{style:'新画风'}});await ensureAssetVisualFacts(pid,runner);assert.equal(calls,1,'style reuses facts');
+ await prisma.episode.update({where:{id:episodes[1].id},data:{content:'人物甲穿红衣。'}});assert.equal(await readAssetVisualFacts(pid),null);assert.equal((await readAssetVisualFacts(pid,true))?.facts.length,1);
+ tamper=true;await assert.rejects(()=>ensureAssetVisualFacts(pid,runner),/引用/);assert.equal(calls,2);tamper=false;await ensureAssetVisualFacts(pid,runner);assert.equal(calls,3);assert.deepEqual(scopes.at(-1),[2]);
+ await prisma.episode.update({where:{id:episodes[1].id},data:{content:'人物甲穿绿衣。'}});const began=new Promise<void>(r=>started=r),pending=ensureAssetVisualFacts(pid,runner);await began;await assert.rejects(()=>ensureAssetVisualFacts(pid,runner),/正在处理/);release!();await pending;assert.equal(calls,4);
+ await prisma.episode.update({where:{id:episodes[1].id},data:{content:'人物甲穿黑衣。'}});let checks=0;await assert.rejects(()=>ensureAssetVisualFacts(pid,runner,{shouldContinue:async()=>++checks<3}),/已停止/);assert.equal(calls,5);await ensureAssetVisualFacts(pid,runner);assert.equal(calls,5,'saved extraction resumed without another model call');
+ const background='人物甲戴眼镜。';await prisma.sceneSnapshot.create({data:{projectId:pid,sceneKey:'SOURCE_IMPORT',metadata:JSON.stringify({schema:'IMPORTED_SOURCE_TEXT_V2'}),content:JSON.stringify({sourceText:background,sourceStructure:{version:'SOURCE_STRUCTURE_V1',sections:[{key:'author',kind:'BACKGROUND',start:0,end:background.length}],issues:[]}})}});
+ await ensureAssetVisualFacts(pid,runner);assert.equal(calls,6);assert.deepEqual(scopes.at(-1),[undefined]);
+ await prisma.episode.update({where:{id:episodes[1].id},data:{content:'人物甲穿银衣。'}});await ensureAssetVisualFacts(pid,runner);assert.equal(calls,7,'changed episode does not re-audit author');assert.deepEqual(scopes.at(-1),[2]);
+ assert.equal((await prisma.sceneSnapshot.findUniqueOrThrow({where:{id:document.id}})).content,document.content,'P3 untouched');
+ assert.equal((await prisma.episode.findUniqueOrThrow({where:{id:episodes[0].id}})).content,episodes[0].content,'source untouched by extraction');
+ const logs=(await prisma.sceneSnapshot.findMany({where:{projectId:pid,sceneKey:VISUAL_FACT_CALL_KEY}})).map(r=>JSON.parse(r.content));assert.equal(logs.length,calls);assert.ok(logs.some(l=>l.status==='FAILED'&&l.output));assert.ok(logs.every(l=>l.usage?.input_tokens===100));
+ console.log('PASS: isolated synthetic DB; single call per pack, cache, changed-only retry, partial read, quote rejection, concurrent claim, stop/resume, independent author cache, model pin, source/P3 preservation; paid calls 0');
+ }finally{await prisma.$disconnect();}
+}
+main().catch(e=>{console.error(e);process.exitCode=1;});

@@ -41,7 +41,7 @@ export async function loadAssetPromptWorkspace(projectId: string): Promise<Promp
   for (const row of rows) { const value = JSON.parse(row.content); if(row.sceneKey==='ASSET_PROMPT_AUTOMATION_V1')automation=value;else if(row.sceneKey==='ASSET_IMAGE_OPTIONS_V1'&&row.title)imageOptions[row.title]=normalizeImageOptions(value);else if (row.id === rowId(projectId, '$style')) settings = value; else if (value.schema === rowKey) records[value.key] = currentPrompt(value); }
   const readiness = document.f2 ? workingReadiness(document, delivery.requiredChoices, !input.sourceContext.complete || needsContextEdit) : new Map();
   const assets: PromptAsset[] = [];
-  const visual=await readAssetVisualFacts(projectId);
+  const visual=await readAssetVisualFacts(projectId,true);
   const designSkills=await Promise.all(['asset-image-design-v1.md','asset-image-derive-v1.md'].map(name=>readFile(path.join(process.cwd(),'prompts',name),'utf8')));
   for (const base of document.f2?.assets ?? []) {
     for (const item of [base, ...base.variants]) {
@@ -50,7 +50,7 @@ export async function loadAssetPromptWorkspace(projectId: string): Promise<Promp
       const versions=[{key:base.key,fromKey:base.preparation?.fromKey},...base.variants.map(v=>({key:v.key,fromKey:v.preparation?.fromKey??base.key}))];
       let selected:ReturnType<typeof selectAssetVisualFacts>={facts:[],issues:[]};
       try{selected=selectAssetVisualFacts(base.key,item.key,visual?.facts??[],versions);}catch(error){selected.issues.push({subjectKey:base.key,message:(error as Error).message});}
-      const visualIssues=[...(visual?.issues??[]).filter(i=>!i.subjectKey||i.subjectKey===base.key),...selected.issues];
+      const visualIssues=[...(visual?.issues??[]).filter(i=>i.subjectKey===base.key),...selected.issues];
       const evidence=selected.facts.map(f=>({label:f.sourceLabel??f.chunkId,text:f.attribute+'：'+f.value+'\n原文：'+f.quote}));
       const entry: PromptAsset = {key:item.key,baseKey:base.key,name:item.name,baseName:base.name,type:base.type,variant,episodes,
         mode:item.preparation?.mode ?? 'UNRESOLVED',fromKey:item.preparation?.fromKey ?? (variant && item.preparation?.mode==='DERIVE'?base.key:undefined),
@@ -61,7 +61,7 @@ export async function loadAssetPromptWorkspace(projectId: string): Promise<Promp
       assets.push(entry);
     }
   }
-  return {projectId,title:input.project.title,style:input.project.style??'',stylePrefix:settings?.prefix??defaultStylePrefix(input.project.style??''),styleRevision:settings?.revision??0,visualFactsStatus:visual?.status??'MISSING',visualFactIssues:visual?.issues??[],assets,records,busy:delivery.busy,imageOptions,automation:automation?effectiveAutomationState(automation):undefined};
+  return {projectId,title:input.project.title,style:input.project.style??'',stylePrefix:settings?.prefix??defaultStylePrefix(input.project.style??''),styleRevision:settings?.revision??0,visualFactsStatus:visual?.complete===false?'MISSING':visual?.status??'MISSING',visualFactIssues:visual?.issues??[],assets,records,busy:delivery.busy,imageOptions,automation:automation?effectiveAutomationState(automation):undefined};
 }
 
 async function compareWrite(projectId: string, key: string, expectedRevision: number, value: PromptRecord | Setting) {

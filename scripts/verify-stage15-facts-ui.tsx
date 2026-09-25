@@ -18,7 +18,8 @@ assert.match(render({...base,visualFactsStatus:'READY',automation:automation('FA
 assert.match(render({...base,automation:automation('PROMPTS','RUNNING')}),/生成资产提示词：进行中/);
 assert.match(render({...base,visualFactsStatus:'REVIEW',visualFactIssues:[{subjectKey:'hero',message:'当前人物归属待核对'}]}),/当前人物归属待核对/);
 assert.doesNotMatch(render({...base,visualFactsStatus:'REVIEW',visualFactIssues:[{subjectKey:'other',message:'仅其他人物的问题'}]}),/仅其他人物的问题/);
-assert.match(render({...base,visualFactsStatus:'REVIEW',visualFactIssues:[{message:'场景目录建议',blocking:false}]}),/目录补充建议/);
+assert.doesNotMatch(render({...base,visualFactsStatus:'REVIEW',visualFactIssues:[{message:'场景目录建议',blocking:false}]}),/目录补充建议/);
+assert.match(render({...base,visualFactsStatus:'REVIEW',visualFactIssues:[{subjectKey:'hero',message:'本人物建议',blocking:false}]}),/本人物建议/);
 assert.doesNotMatch(render({...base,visualFactsStatus:'REVIEW',visualFactIssues:[{message:'场景目录建议',blocking:false}]}),/此资产的剧本事实待核对/);
 
 // Invoke the actual button callbacks with inert hook storage. This exercises

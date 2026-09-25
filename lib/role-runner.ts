@@ -63,22 +63,16 @@ export function resolveProvider(executionMode: string | null | undefined): Pipel
 }
 
 export function resolveCliModel(roleCode: string, fallback: string): string {
-  const safeFallback = isProductionCliModel(fallback) ? fallback.trim() : "gpt-5.6-terra";
-  const configured = (process.env[`CLI_MODEL_${roleCode}`] ?? process.env.CLI_MODEL)?.trim();
-  return configured && isProductionCliModel(configured) ? configured : safeFallback;
+  return "gpt-5.6-terra";
 }
 
-const CLI_REASONING_OPTIONS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
+// This isolated 3008 handoff pins all CLI roles to Terra / medium.
 
 export function resolveCliReasoning(
   roleCode: string,
   fallback: "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
 ): "low" | "medium" | "high" | "xhigh" | "max" | "ultra" {
-  const override = process.env[`CLI_REASONING_${roleCode}`] ?? process.env.CLI_REASONING_EFFORT;
-  if (override && CLI_REASONING_OPTIONS.has(override.toLowerCase())) {
-    return override.toLowerCase() as "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
-  }
-  return fallback;
+  return "medium";
 }
 
 export function resolveApiModel(roleCode: string, apiReasoner: boolean): string {

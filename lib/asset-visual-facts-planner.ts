@@ -1,5 +1,5 @@
 import type {VisualChunk} from './asset-visual-facts-contract';
-export const VISUAL_FACT_PLANNER_VERSION='GROUPED_AB_V2';
+export const VISUAL_FACT_PLANNER_VERSION='SINGLE_EXTRACT_V4';
 type Identity={key:string;name:string;aliases:string[];usageEpisodes?:number[];variants:{key:string;name:string;episodes?:number[]}[]};
 function names(identity:Identity){
  return [...new Set([identity.name,...identity.aliases,...identity.variants.map(v=>v.name)].flatMap(name=>[name.trim(),name.split(/[|｜]/)[0].trim()]).filter(name=>name.length>=1))];
@@ -16,7 +16,7 @@ export function selectVisualIdentities<T extends Identity>(chunk:VisualChunk,ide
 export function groupVisualFactBatches<T extends {chunk:VisualChunk}>(items:T[]):T[][]{
  const groups:T[][]=[];let group:T[]=[],chars=0;
  for(const item of [...items].sort((a,b)=>Number(a.chunk.domain==='AUTHOR')-Number(b.chunk.domain==='AUTHOR'))){const size=item.chunk.lines.reduce((sum,line)=>sum+line.text.length+1,0)+(item.chunk.contextBefore?.length??0);
-  if(group.length&&(chars+size>6500||group.length>=8||item.chunk.domain==='AUTHOR'||group[0].chunk.domain==='AUTHOR')){groups.push(group);group=[];chars=0;}
+  if(group.length&&(chars+size>24000||group.length>=40||item.chunk.domain==='AUTHOR'||group[0].chunk.domain==='AUTHOR')){groups.push(group);group=[];chars=0;}
   group.push(item);chars+=size;
  }
  if(group.length)groups.push(group);return groups;

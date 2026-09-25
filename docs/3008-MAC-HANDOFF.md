@@ -2,7 +2,7 @@
 
 **在 Mac 设计第二阶段岗位提示词，先读：[第一阶段提供哪些信息及如何取用](3008-STAGE2-INPUT-GUIDE.md)。** 包含字段字典、事实与状态能力边界、集场权限、输入精简建议及可复用的设计任务说明。
 
-更新：2026-09-14。继续本轮原稿接收、第一阶段资料整理和逐场交接，请使用 `handoff/3008-stage1-20260912`，不要按旧 Mac 文档切回 `main` 或 `handoff/windows-local-20260905`。最新内部修复机制与验收边界见 [岗位交接与自动修复](3008-WORKFLOW-AUTO-REPAIR.md)。
+更新：2026-09-25。完整阶段1及1.5当前状态与未解决问题见 [开发交接总览](3008-STAGE1-15-HANDOFF-20260925.md)，下文历史验收保留原日期。继续本轮原稿接收、第一阶段资料整理和逐场交接，请使用 `handoff/3008-stage1.5`，不要按旧 Mac 文档切回 `main` 或 `handoff/windows-local-20260905`。最新内部修复机制与验收边界见 [岗位交接与自动修复](3008-WORKFLOW-AUTO-REPAIR.md)。
 
 本分支保存 3008 的源码、规则、迁移脚本和验证工具。它是独立开发交接版本，不代表已合入 main、已发布 Sites，或已完成第二阶段图像/视频制作。3000 和 Sites 的数据不随本分支同步。
 
@@ -46,7 +46,7 @@ P1 请求预算：[重复诊断膨胀修复](3008-P1-ISSUE-COMPACTION-20260914.m
 准备 Git、Node.js 24.x、npm 和 Python 3。仓库 `.nvmrc` 指定 Node 版本；使用 nvm 时可运行 `nvm install && nvm use`。Apple Silicon 与 Intel Mac 均在本机重新安装依赖和生成 Prisma Client，不复制 Windows 的 node_modules、.next 或可执行文件。
 
 ```bash
-git clone --branch handoff/3008-stage1-20260912 https://github.com/K1rsam/director-web.git director-web-3008
+git clone --branch handoff/3008-stage1.5 https://github.com/K1rsam/director-web.git director-web-3008
 cd director-web-3008
 git status
 git log -5 --oneline
@@ -75,7 +75,7 @@ npm run dev -- --hostname 127.0.0.1 --port 3008
 
 **端口本身不会隔离 Cookie。** 示例设置 `DIRECTOR_SESSION_COOKIE_NAME="director_session_3008"`；并行启动其他工作台时，各自使用不同 Cookie 名和独立数据库，避免同主机不同端口互相覆盖会话。不要混用 localhost 与 127.0.0.1 登录地址。
 
-本轮第一阶段实测使用 **gpt-6-astra / low**。示例 env 显式覆盖 CLI 默认和 F1/F2/Q1 岗位；源码部分历史默认仍是 gpt-5.6 系列/high，不能只克隆仓库就假定配置一致。项目选择 CLI 模式；在 Mac 自行安装并登录 Codex CLI，从“所有项目 → CLI 与 API”检查连接。API 模式另走供应商配置，不等于上述模型验证。
+当前分支全部 CLI 岗位固定为 **gpt-5.6-terra / medium**，历史环境覆盖不生效。项目选择 CLI 模式；Mac 自行安装并登录 Codex CLI。API 模式仍走原供应商配置。当前单轮1.5尚未进行新模型付费端到端验收。
 
 清除旧电脑 CODEX_CLI_PATH、CODEX_SKILLS_DIR、DIRECTOR_KNOWLEDGE_BASE_DIR 等绝对路径，确需设置时改成 Mac 实际路径。Python 适配器默认执行 python3；自定义解释器可用 PYTHON 环境变量。
 
