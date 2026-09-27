@@ -163,6 +163,48 @@ async function main() {
       assert.ok(clipped?.previousSource.clipped && clipped.gaps.length, '超长一行不得悄悄变成无前场');
       assert.ok(clipped.previousSource.text.length <= 2400);
     });
+    await check('旧P0仅缺集标题前缀仍提供准确末场，读取不补写旧记录', async () => {
+      const firstScene = '场景 旧屋\n\n△甲把钥匙放桌上。\n\n△甲转身。';
+      const lastScene = '场景 门外\n\n△甲把门关上。';
+      const currentScene = '场景 门外\r\n\r\n△甲仍站在门外。';
+      const legacyEpisodes = [
+        { number: 1, title: '第一集', content: `第一集\n\n${firstScene}\n\n${lastScene}\n\n` },
+        { number: 2, title: '第二集', content: `第二集\r\n\r\n${currentScene}\r\n\r\n` }
+      ];
+      const legacy = await db.project.create({ data: { title: '旧P0标题前缀', episodes: { create: legacyEpisodes } } });
+      const sourceEpisodes = await db.episode.findMany({ where: { projectId: legacy.id }, orderBy: { number: 'asc' } });
+      for (const episode of sourceEpisodes) for (const [index, sourceText] of (episode.number === 1 ? [firstScene, lastScene] : [currentScene]).entries()) {
+        await db.scriptScene.create({ data: { episodeId: episode.id, sceneKey: `${episode.number}-${index + 1}`, sortOrder: index + 1,
+          heading: sourceText.split(/\r?\n/)[0], sourceText, metadata: JSON.stringify({ characters: ['甲'], props: [] }) } });
+      }
+      const readRows = () => db.scriptScene.findMany({ where: { episode: { projectId: legacy.id } }, orderBy: [{ episode: { number: 'asc' } }, { sortOrder: 'asc' }] });
+      const storedRows = await readRows(), counts = [await db.sceneSnapshot.count(), await db.pipelineRun.count()];
+      const document = createEmptyDocument(await loadFoundationInputs(legacy.id, db));
+      const packet = (await supply.buildLightEpisodePackets(legacy.id, document, db, [2]))[0];
+      assert.deepEqual(packet.scenes.map(scene => scene.sceneKey), ['2-1'], '集标题不是漏掉的剧情，不能清空本集场次');
+      assert.equal(packet.sourceText, legacyEpisodes[1].content);
+      assert.equal(packet.scenes[0].sourceRange.start, 0, '只读范围保留元标题，不丢原字');
+      assert.equal(packet.boundaryContext?.previousSource.sceneKey, '1-2');
+      assert.equal(packet.boundaryContext?.previousSource.startLine, 9);
+      assert.equal(packet.boundaryContext?.previousSource.endLine, 11);
+      assert.equal(packet.boundaryContext?.previousSource.text, `${lastScene}\n`);
+      assert.ok(!packet.boundaryContext.previousSource.text.includes('钥匙'), '前情只取真实末场，不能注入前一整集');
+      assert.deepEqual(packet.boundaryContext.priorStates, [], '没有资产状态依据时不得推断补齐');
+      assert.deepEqual(packet.gaps, []);
+      assert.deepEqual(packet.boundaryContext.gaps, []);
+      assert.deepEqual(await readRows(), storedRows);
+      assert.deepEqual(await db.episode.findMany({ where: { projectId: legacy.id }, orderBy: { number: 'asc' } }), sourceEpisodes);
+      assert.deepEqual([await db.sceneSnapshot.count(), await db.pipelineRun.count()], counts);
+      const opening = storedRows.find(row => row.sceneKey === '1-1')!;
+      try {
+        await db.scriptScene.update({ where: { id: opening.id }, data: { sourceText: '△甲转身。' } });
+        await assert.rejects(() => supply.loadLightScenes(legacy.id, db, [1]), /定位待重建/, '标题兼容不得吞掉前面的真实动作');
+      } finally { await db.scriptScene.update({ where: { id: opening.id }, data: { sourceText: opening.sourceText } }); }
+      try {
+        await db.episode.update({ where: { id: sourceEpisodes[0].id }, data: { content: legacyEpisodes[0].content.replace(firstScene, `${firstScene}\n\n${firstScene}`) } });
+        await assert.rejects(() => supply.loadLightScenes(legacy.id, db, [1]), /定位待重建/, '重复匹配留下的正文缺口不能任取一个命中');
+      } finally { await db.episode.update({ where: { id: sourceEpisodes[0].id }, data: { content: legacyEpisodes[0].content } }); }
+    });
     await check('本集末尾原文漏出场次时可读但必须PARTIAL', async () => {
       await readDraft(() => {}, 'READY');
       const row = await db.scriptScene.findFirstOrThrow({ where: { sceneKey: '8-1', episode: { projectId: project.id } } });

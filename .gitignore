@@ -11,6 +11,7 @@ coverage/
 prisma/dev.db*
 *.tsbuildinfo
 .DS_Store
+.storyboard-v4/
 .local-login.md
 
 # 本机调试、项目数据与会话交接，不进入源码仓库
@@ -38,3 +39,11 @@ docs/superpowers/
 /scripts/verify-stage1-closeout-live.ts
 /scripts/dry-run-advisor.ts
 /scripts/resync-shot-order.ts
+
+# 3007本机对照试跑与固定项目维护；代码说明见docs/storyboard-v4.md
+/3007_分镜CLI测试指南.md
+/scripts/seed-six-sample-episodes.ts
+/scripts/archive-six-sample-runs.mjs
+/scripts/recover-six-sample-runs.mjs
+/runtime/storyboard-v4/archive-test-runs.test.mjs
+/supervisor-design/决策演练记录.md

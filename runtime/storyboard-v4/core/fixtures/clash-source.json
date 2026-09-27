@@ -1,0 +1,100 @@
+{
+  "key": "clash",
+  "sourceRows": [
+    {
+      "sourceId": "P0080",
+      "line": 80,
+      "sourceFileLine": 111,
+      "text": "△苏远抬起头，轻蔑的看向赵清雅的位置。"
+    },
+    {
+      "sourceId": "P0081",
+      "line": 81,
+      "sourceFileLine": 113,
+      "text": "苏远：赵清雅，你给我站那！"
+    },
+    {
+      "sourceId": "P0082",
+      "line": 82,
+      "sourceFileLine": 115,
+      "text": "赵清雅：苏远，这就是你跟我说话的态度？我说了，我们已经分手了，不要缠着我"
+    },
+    {
+      "sourceId": "P0083",
+      "line": 83,
+      "sourceFileLine": 117,
+      "text": "！"
+    },
+    {
+      "sourceId": "P0084",
+      "line": 84,
+      "sourceFileLine": 119,
+      "text": "苏远：呵呵，赵清雅，给你点脸你还装上了是吧？"
+    },
+    {
+      "sourceId": "P0085",
+      "line": 85,
+      "sourceFileLine": 121,
+      "text": "苏远：分！肯定要分！要不是现在在学校，我都想放挂鞭庆祝下！"
+    },
+    {
+      "sourceId": "P0086",
+      "line": 86,
+      "sourceFileLine": 123,
+      "text": "苏远：我只是通知你，做我女朋友，你根本不配！"
+    }
+  ],
+  "dialogue": [
+    {
+      "id": "P-D1",
+      "line": 81,
+      "speaker": "苏远",
+      "channel": "现场对白",
+      "quote": "赵清雅，你给我站那！",
+      "sourceIds": [
+        "P0081"
+      ]
+    },
+    {
+      "id": "P-D2",
+      "line": 82,
+      "speaker": "赵清雅",
+      "channel": "现场对白",
+      "quote": "苏远，这就是你跟我说话的态度？我说了，我们已经分手了，不要缠着我！",
+      "sourceIds": [
+        "P0082",
+        "P0083"
+      ]
+    },
+    {
+      "id": "P-D3",
+      "line": 84,
+      "speaker": "苏远",
+      "channel": "现场对白",
+      "quote": "呵呵，赵清雅，给你点脸你还装上了是吧？",
+      "sourceIds": [
+        "P0084"
+      ]
+    },
+    {
+      "id": "P-D4",
+      "line": 85,
+      "speaker": "苏远",
+      "channel": "现场对白",
+      "quote": "分！肯定要分！要不是现在在学校，我都想放挂鞭庆祝下！",
+      "sourceIds": [
+        "P0085"
+      ]
+    },
+    {
+      "id": "P-D5",
+      "line": 86,
+      "speaker": "苏远",
+      "channel": "现场对白",
+      "quote": "我只是通知你，做我女朋友，你根本不配！",
+      "sourceIds": [
+        "P0086"
+      ]
+    }
+  ]
+}

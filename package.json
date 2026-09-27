@@ -5,6 +5,10 @@
   "scripts": {
     "dev": "next dev",
     "dev:stage1": "next dev --hostname 127.0.0.1 --port 3007",
+    "dev:3007": "next dev --hostname 127.0.0.1 --port 3007",
+    "start:3007": "next start --hostname 127.0.0.1 --port 3007",
+    "verify:storyboard-v4": "node --test --test-concurrency=1 runtime/storyboard-v4/core/*.test.mjs runtime/storyboard-v4/*.test.mjs && tsx scripts/verify-storyboard-workbench.tsx && npm run verify:storyboard-settings",
+    "verify:storyboard-settings": "tsx scripts/verify-storyboard-settings.tsx",
     "build": "next build",
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",

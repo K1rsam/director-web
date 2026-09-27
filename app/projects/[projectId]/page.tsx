@@ -86,7 +86,13 @@ export default async function ProjectStudioPage({ params, searchParams }: { para
         })))} /></div>
       </section>
       <section className="studioSection" id="phase-two">
-        <div className="sectionHeading"><div><span className="sectionIndex">02</span><h2>后续阶段尚未启用</h2></div><p>这里整理的是制作资料；图片、分镜与视频制作尚未开始。</p></div>
+        <div className="sectionHeading"><div><span className="sectionIndex">02</span><h2>情绪分镜 · 新版制作</h2></div><p>情绪统筹 → 幻想选择 → 完整主创 → 差量整编。固定CLI、Sol中档；点击运行才消耗模型额度。</p></div>
+        <p>沿用本项目的分集原文与前情资料，旧E0–E5入口仍停用。这里产出文字分镜，不自动生成图片或视频。</p>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+          {sourceEpisodes.map(episode => <a className="quietButton" key={episode.id} href={`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episode.id)}/storyboard`}>
+            第{episode.number}集{episode.title ? ` · ${episode.title}` : ""} · 制作分镜
+          </a>)}
+        </div>
       </section>
     </div>
   </AppChrome>;

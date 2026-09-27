@@ -1,0 +1,17 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {VERSION,digest} from './shared.mjs';
+import {baseDraftHash,applyDelta} from './delta.mjs';
+
+const unit=id=>({id,shots:[{id:id+'-s',sourceRefs:[id]}],marker:{keep:true}});
+const base=()=>({schemaVersion:VERSION,units:[unit('a'),unit('b')],fantasyRealization:[]});
+const response=(draft,retainedUnitIds,replacements)=>({schemaVersion:'performance-core-v4-delta',baseDraftHash:baseDraftHash(draft),retainedUnitIds,replacements});
+const invalid=(draft,reply,code)=>assert.throws(()=>applyDelta(draft,reply),e=>e.code===code);
+
+test('no change retains exact unit objects',()=>{const draft=base(),out=applyDelta(draft,response(draft,['a','b'],[]));assert.equal(out.units[0],draft.units[0]);assert.equal(out.units[1],draft.units[1]);});
+test('one replacement preserves other object and source order',()=>{const draft=base(),next=unit('a2'),out=applyDelta(draft,response(draft,['b'],[{replaces:['a'],units:[next],fantasyRealization:[]}]));assert.deepEqual(out.units.map(u=>u.id),['a2','b']);assert.equal(out.units[1],draft.units[1]);});
+test('one complete group can split or merge units',()=>{const draft=base();const split=applyDelta(draft,response(draft,[],[{replaces:['a','b'],units:[unit('x'),unit('y'),unit('z')],fantasyRealization:[]}]));assert.deepEqual(split.units.map(u=>u.id),['x','y','z']);const merged=applyDelta(draft,response(draft,[],[{replaces:['a','b'],units:[unit('joint')],fantasyRealization:[]}]));assert.deepEqual(merged.units.map(u=>u.id),['joint']);});
+test('stale hash and incomplete or duplicated partition are rejected',()=>{const draft=base();invalid(draft,{...response(draft,['a','b'],[]),baseDraftHash:digest('stale')},'DELTA_STALE');for(const retained of [['a'],['a','a'],['a','unknown']])invalid(draft,response(draft,retained,[]),'DELTA_PARTITION');invalid(draft,response(draft,['a'],[{replaces:['a'],units:[unit('x')],fantasyRealization:[]},{replaces:['b'],units:[unit('y')],fantasyRealization:[]}]),'DELTA_PARTITION');});
+test('linked fantasy must be replaced as one group or retained intact',()=>{const draft=base(),f={candidateId:'f',unitIds:['a','b'],shotIds:['a-s','b-s'],status:'realized'};draft.fantasyRealization=[f];const kept=applyDelta(draft,response(draft,['a','b'],[]));assert.equal(kept.fantasyRealization[0],f);invalid(draft,response(draft,['b'],[{replaces:['a'],units:[unit('x')],fantasyRealization:[]}]),'DELTA_FANTASY_GROUP');const revised={...f,unitIds:['x'],shotIds:['x-s']};const out=applyDelta(draft,response(draft,[],[{replaces:['a','b'],units:[unit('x')],fantasyRealization:[revised]}]));assert.deepEqual(out.fantasyRealization,[revised]);});
+test('a replacement cannot silently reuse another group old ID',()=>{const draft=base();invalid(draft,response(draft,[],[{replaces:['a'],units:[unit('b')],fantasyRealization:[]},{replaces:['b'],units:[unit('c')],fantasyRealization:[]}]),'DELTA_UNIT_ID');});
+test('replacement groups must cover a contiguous old run in original order',()=>{const draft=base();draft.units.splice(1,0,unit('middle'));invalid(draft,response(draft,['middle'],[{replaces:['a','b'],units:[unit('joint')],fantasyRealization:[]}]),'DELTA_ORDER');invalid(draft,response(draft,['middle'],[{replaces:['b','a'],units:[unit('joint')],fantasyRealization:[]}]),'DELTA_ORDER');const out=applyDelta(draft,response(draft,[],[{replaces:['a','middle','b'],units:[unit('joint')],fantasyRealization:[]}]));assert.deepEqual(out.units.map(u=>u.id),['joint']);});

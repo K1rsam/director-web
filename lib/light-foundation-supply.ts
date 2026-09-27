@@ -10,16 +10,20 @@ import type { FoundationDocument } from './foundation-document';
 type Db = Prisma.TransactionClient;
 class LightSceneSourceError extends Error {}
 export async function loadLightScenes(projectId: string, db: Db, scope?: number[]) {
-  const rows = await db.scriptScene.findMany({ where: { episode: { projectId, ...(scope ? { number: { in: scope } } : {}) } }, include: { episode: { select: { number: true, content: true } } }, orderBy: [{ episode: { number: 'asc' } }, { sortOrder: 'asc' }] });
+  const rows = await db.scriptScene.findMany({ where: { episode: { projectId, ...(scope ? { number: { in: scope } } : {}) } }, include: { episode: { select: { number: true, title: true, content: true } } }, orderBy: [{ episode: { number: 'asc' } }, { sortOrder: 'asc' }] });
   const cursors = new Map<number, number>();
   const scenes = rows.map(row => {
-    const start = row.episode.content.indexOf(row.sourceText, cursors.get(row.episode.number) ?? 0), end = start + row.sourceText.length;
-    if (start < 0 || row.episode.content.slice(cursors.get(row.episode.number) ?? 0, start).trim()) throw new LightSceneSourceError(`第${row.episode.number}集场次${row.sceneKey}的原文定位待重建，不能漏掉前面的正文。`);
+    const cursor = cursors.get(row.episode.number) ?? 0;
+    const start = row.episode.content.indexOf(row.sourceText, cursor), end = start + row.sourceText.length;
+    const prefix = row.episode.content.slice(cursor, start).trim();
+    // ponytail: old P0 may omit only the exact episode title, never a body-text gap.
+    const omittedTitle = cursor === 0 && /^第[0-9零〇一二两三四五六七八九十百]+集$/.test(prefix) && prefix === row.episode.title?.trim();
+    if (start < 0 || prefix && !omittedTitle) throw new LightSceneSourceError(`第${row.episode.number}集场次${row.sceneKey}的原文定位待重建，不能漏掉前面的正文。`);
     cursors.set(row.episode.number, end);
     const meta = foundationJson(row.metadata);
     return { episode: row.episode.number, sceneKey: row.sceneKey, heading: row.heading, location: row.location, timeOfDay: row.timeOfDay,
       interiorExterior: row.interiorExterior, weather: row.weather, timeLayer: row.timeLayer,
-      characters: Array.isArray(meta.characters) ? meta.characters.filter((item): item is string => typeof item === 'string') : [], sourceRange: { start, end } };
+      characters: Array.isArray(meta.characters) ? meta.characters.filter((item): item is string => typeof item === 'string') : [], sourceRange: { start: omittedTitle ? 0 : start, end } };
   });
   for (const [number, end] of cursors) if (rows.find(row => row.episode.number === number)!.episode.content.slice(end).trim()) {
     throw new LightSceneSourceError(`第${number}集末尾原文尚未定位到场次，完整正文仍保留。`);
