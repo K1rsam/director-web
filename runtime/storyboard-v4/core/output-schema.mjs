@@ -2,6 +2,7 @@ import {VERSION,PLAN_VERSION} from './shared.mjs';
 import {DELTA_VERSION} from './delta.mjs';
 
 export const OUTPUT_SCHEMA_VERSION='structured-v2';
+export const UNIT_DIRECTION_VERSION='unit-direction-v1';
 const string={type:'string'},number={type:'number'};
 const object=properties=>({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
 const array=(items,limits={})=>({type:'array',items,...limits});
@@ -10,7 +11,7 @@ const references=values=>array(choice(values),values.length?{}:{maxItems:0});
 const range=()=>array(number,{minItems:2,maxItems:2});
 
 // Shape and known identifiers only; the existing domain validators retain semantic checks.
-export function buildOutputSchema({stage,finishMode,source,settings,selection,previousDraft,baseDraftHash,scenarioKeys,plan,outputSchemaVersion='structured-v1'}){
+export function buildOutputSchema({stage,finishMode,source,settings,selection,previousDraft,baseDraftHash,scenarioKeys,plan,outputSchemaVersion='structured-v1',unitDirectionVersion}){
  const eventFirst=outputSchemaVersion==='structured-v2';
  const emotion=()=>object({subject:string,contextTone:string,audienceEffect:string,change:string,landing:string,retain:array(string)});
  const boundary=kinds=>object({kind:choice(kinds),reason:string});
@@ -26,7 +27,7 @@ export function buildOutputSchema({stage,finishMode,source,settings,selection,pr
  const dialogueIds=source.dialogue.map(q=>q.id),candidateIds=selection.selectedIds;
  const dialoguePart=object({lineId:choice(dialogueIds),text:string,presentation:choice(['画内','画外','VO','OS','系统音','画外转画内','画内转画外']),delivery:string,voiceStart:number,voiceEnd:number});
  const shot=object({id:string,duration:number,camera:string,picture:string,lighting:string,sound:string,dialogueParts:array(dialoguePart,dialogueIds.length?{}:{maxItems:0}),transition:string,sourceRefs:references(sourceIds),contextRefs:references(contextIds)});
- const units=array(object({id:string,...(eventFirst?{eventId:choice((plan?.events||[]).map(e=>e.id)),boundaryBefore:boundary(['episode_start','continuous','capacity','new_event','time_space_jump'])}:{}),title:string,intent:object({subject:string,change:string,landing:string,retain:array(string)}),scene:string,props:array(string),participants:array(string),lighting:string,initialState:string,exitState:string,shots:array(shot)}));
+ const units=array(object({id:string,...(eventFirst?{eventId:choice((plan?.events||[]).map(e=>e.id)),boundaryBefore:boundary(['episode_start','continuous','capacity','new_event','time_space_jump'])}:{}),title:string,...(unitDirectionVersion===UNIT_DIRECTION_VERSION?{unitDirection:string}:{}),intent:object({subject:string,change:string,landing:string,retain:array(string)}),scene:string,props:array(string),participants:array(string),lighting:string,initialState:string,exitState:string,shots:array(shot)}));
  const fantasyRealization=array(object({candidateId:choice(candidateIds),unitIds:array(string),shotIds:array(string),screenSeconds:number,entry:string,exit:string,domain:string,preservedFunction:string,status:choice(['realized','not_realized'])}),candidateIds.length?{}:{maxItems:0});
  const revision={revisionNotes:array(object({coordinate:string,sourceRefs:references(sourceIds),change:string,preservedFunction:string})),unresolved:array(object({coordinate:string,problem:string}))};
  if(stage==='finish'&&finishMode==='delta'){

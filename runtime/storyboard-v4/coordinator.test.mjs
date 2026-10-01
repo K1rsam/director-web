@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,rm} from 'node:fs/promises';
+import {mkdtemp,rm,mkdir,writeFile} from 'node:fs/promises';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {tmpdir} from 'node:os';
+import {tmpdir,hostname} from 'node:os';
 import path from 'node:path';
 import {createCoordinator} from './core/legacy-test-fixtures.mjs';
+import {createStore} from './core/store.mjs';
 import {VERSION,PLAN_VERSION} from './core/shared.mjs';
 import {DELTA_VERSION} from './core/delta.mjs';
 
@@ -41,7 +42,7 @@ test('next dispatches one request and all respects dependencies, then assembles'
  assert.ok(calls.findIndex(c=>c.ids?.[0]==='p1')<calls.findIndex(c=>c.ids?.[0]==='p2'));
 }));
 
-test('call budget is reserved across parallel ready packages',async()=>fixture(async({coordinator,calls})=>{
+test('call budget is checked before each serial package',async()=>fixture(async({coordinator,calls})=>{
  const d=await coordinator.create({source,settings,binding,budget:{maxCalls:2,maxTokens:300000}});
  await coordinator.start(d.id,{mode:'all'});await coordinator.wait(d.id);
  assert.equal(calls.length,2);
@@ -88,12 +89,100 @@ test('source version check prevents dispatch',async()=>{
  }finally{await c.shutdown();await rm(dir,{recursive:true,force:true});}
 });
 
+test('successful response with unknown usage has an explicit zero-call acknowledgement',async()=>{
+ let count=0;await fixture(async({coordinator:c})=>{
+  const d=await c.create({source,settings,binding});await c.start(d.id);let saved=await c.wait(d.id);
+  assert.equal(saved.plan.schemaVersion,PLAN_VERSION);assert.equal(saved.web.progress,'usage_review');assert.equal(count,1);
+  const attemptId=saved.operations[0].attemptId,check=(await c.cancellationStatus(d.id))[0];
+  assert.equal(check.kind,'usage');assert.equal(check.canAcknowledge,true);
+  await assert.rejects(c.acknowledgeCancelled(d.id,{attemptId}),{code:'UNKNOWN_USAGE_CONFIRMATION'});
+  await c.acknowledgeCancelled(d.id,{attemptId,acceptUnknownUsage:true});saved=await c.read(d.id);
+  assert.equal(count,1);assert.equal(saved.operations[0].receipt.usage,null);assert.equal(saved.operations[0].status,'completed');
+  assert.equal(saved.operations[0].cancelAcknowledgement.kind,'usage');assert.notEqual(saved.web.progress,'usage_review');
+  await c.start(d.id,{mode:'next'});await c.wait(d.id);assert.equal(count,2);
+ },{runner:async request=>{count++;const output=request.stage==='plan'?plan:draft(request);return {output,raw:JSON.stringify(output),usage:count===1?null:{totalTokens:10},requestOutcome:'RESPONDED'};}});
+});
+
+test('unknown successful usage cannot be acknowledged before recorded cleanup is complete',async()=>fixture(async({coordinator:c,dir})=>{
+ const d=await c.create({source,settings,binding});await c.start(d.id);const saved=await c.wait(d.id),attemptId=saved.operations[0].attemptId;
+ const child=spawn(process.execPath,['-e','process.exit(0)'],{stdio:'ignore'});await once(child,'close');
+ const folder=path.join(dir,'attempts',attemptId);await mkdir(folder,{recursive:true});
+ await writeFile(path.join(folder,'receipt.json'),JSON.stringify({state:'FINAL',requestOutcome:'RESPONDED',usage:null,localProcess:{pid:child.pid,host:hostname(),closeObserved:false}}));
+ assert.equal((await c.cancellationStatus(d.id))[0].canAcknowledge,false);
+ await assert.rejects(c.acknowledgeCancelled(d.id,{attemptId,acceptUnknownUsage:true}),{code:'PROCESS_UNVERIFIED'});
+},{runner:async()=>({output:plan,raw:JSON.stringify(plan),usage:null,requestOutcome:'RESPONDED'})}));
+
+test('a returned invalid JSON body with unknown usage can be acknowledged then repaired without replay',async()=>{
+ const calls=[];await fixture(async({coordinator:c})=>{
+  const d=await c.create({source,settings,binding});await c.start(d.id);await c.wait(d.id);await c.start(d.id);const held=await c.wait(d.id);
+  const attemptId=held.operations[0].attemptId;assert.equal(held.web.progress,'usage_review');assert.equal(calls.length,1);
+  const check=(await c.cancellationStatus(d.id))[0];assert.equal(check?.kind,'usage');assert.equal(check.canAcknowledge,true);
+  await c.acknowledgeCancelled(d.id,{attemptId,acceptUnknownUsage:true});const acknowledged=await c.read(d.id);
+  assert.equal(calls.length,1);assert.equal(acknowledged.candidates[0].raw,'saved malformed body');assert.equal(acknowledged.candidates[0].status,'needs_repair');
+  assert.equal(acknowledged.operations[0].error.code,'INVALID_JSON');assert.equal(acknowledged.operations[0].receipt.usage,null);
+  await c.start(d.id,{mode:'next'});const repaired=await c.wait(d.id);
+  assert.equal(calls.length,2);assert.equal(calls[1].stage,'plan');assert.equal(repaired.operations.at(-1).previousDraft.rawText,'saved malformed body');assert.match(calls[1].prompt,/saved malformed body/);assert.ok(repaired.plan);
+ },{runner:async request=>{calls.push(request);if(calls.length===1)throw Object.assign(new Error('格式不合法'),{code:'INVALID_JSON',requestOutcome:'RESPONDED',raw:'saved malformed body',usage:null,responseDisposition:'final'});return {output:plan,raw:JSON.stringify(plan),usage:{totalTokens:10},requestOutcome:'RESPONDED'};}});
+});
+
+test('author repair stops when the same error returns without progress',async()=>{
+ const calls=[];await fixture(async({coordinator:c})=>{
+  const d=await c.create({source,settings,binding});await c.start(d.id);const result=await c.wait(d.id);
+  assert.deepEqual(calls,['plan','author','finish']);assert.equal(result.web.error?.code,'REPAIR_NO_PROGRESS');
+  await c.start(d.id);await c.wait(d.id);assert.equal(calls.length,3);
+ },{runner:async request=>{calls.push(request.stage);const output=request.stage==='plan'?{...plan,workPackages:plan.workPackages.slice(0,1).map(w=>({...w,sourceRefs:['r1','r2','r3']})),provisionalUnits:[{...plan.provisionalUnits[0],sourceRefs:['r1','r2','r3']}]}:draft(request);if(request.stage!=='plan')output.units[0].shots[0].dialogueParts[0].text='篡改';return {output,raw:JSON.stringify(output),usage:{totalTokens:10},requestOutcome:'RESPONDED'};}});
+});
+
+test('blocked author repairs never consume repair allowance before a model call is sent',async()=>{
+ const calls=[];await fixture(async({coordinator:c})=>{
+  const d=await c.create({source,settings,binding});
+  for(let i=0;i<3;i++){await c.start(d.id);const held=await c.wait(d.id);assert.equal(held.web.progress,'usage_review');assert.equal(held.web.autoRepairs,0);}
+  assert.deepEqual(calls.map(r=>r.stage),['plan','author']);
+  const author=(await c.read(d.id)).operations.at(-1);await c.acknowledgeCancelled(d.id,{attemptId:author.attemptId,acceptUnknownUsage:true});
+  await c.start(d.id);const done=await c.wait(d.id);
+  assert.deepEqual(calls.map(r=>r.stage),['plan','author','finish']);assert.equal(done.web.autoRepairs,1);assert.ok(done.assembly);
+ },{runner:async request=>{calls.push(request);const output=request.stage==='plan'?{...plan,workPackages:plan.workPackages.slice(0,1).map(w=>({...w,sourceRefs:['r1','r2','r3']})),provisionalUnits:[{...plan.provisionalUnits[0],sourceRefs:['r1','r2','r3']}]}:request.stage==='author'?{schemaVersion:VERSION,units:[],fantasyRealization:[]}:draft(request);return {output,raw:JSON.stringify(output),usage:request.stage==='author'?null:{totalTokens:10},requestOutcome:'RESPONDED'};}});
+});
+
+for(const action of ['pause','stop','shutdown'])test(`${action} releases a hanging preflight and ignores its late success`,async()=>{
+ const dir=await mkdtemp(path.join(tmpdir(),'v4-preflight-cancel-'));let release,enteredResolve,calls=0;
+ const pending=new Promise(resolve=>{release=resolve;}),entered=new Promise(resolve=>{enteredResolve=resolve;});
+ const c=createCoordinator({dataRoot:dir,beforeExecute:async()=>{enteredResolve();return pending;},modelRunner:async()=>{calls++;throw Error('must not dispatch');}});
+ try{const d=await c.create({source,settings,binding});await c.start(d.id);await entered;
+  const result=await Promise.race([(async()=>{await c[action](...(action==='shutdown'?[]:[d.id]));await c.wait(d.id);return 'settled';})(),new Promise(resolve=>setTimeout(()=>resolve('hung'),150))]);
+  assert.equal(result,'settled');assert.equal(c.active(d.id),false);release(true);await new Promise(resolve=>setImmediate(resolve));assert.equal(calls,0);
+  if(action!=='shutdown')assert.equal((await c.read(d.id)).web.progress,action==='pause'?'paused':'stopped');
+ }finally{release(true);await c.shutdown();await rm(dir,{recursive:true,force:true});}
+});
+
+test('preflight deadline releases the run without sending a model request',async()=>{
+ const dir=await mkdtemp(path.join(tmpdir(),'v4-preflight-deadline-'));let release,calls=0;
+ const pending=new Promise(resolve=>{release=resolve;}),c=createCoordinator({dataRoot:dir,preflightTimeoutMs:30,beforeExecute:()=>pending,modelRunner:async()=>{calls++;throw Error('must not dispatch');}});
+ try{const d=await c.create({source,settings,binding});await c.start(d.id);
+  const result=await Promise.race([c.wait(d.id),new Promise(resolve=>setTimeout(()=>resolve(null),150))]);
+  assert.equal(result?.web.error?.code,'PREFLIGHT_TIMEOUT');assert.equal(calls,0);assert.equal(c.active(d.id),false);
+ }finally{release(true);await c.shutdown();await rm(dir,{recursive:true,force:true});}
+});
+
+for(const action of ['pause','stop','shutdown'])test(`${action} during saved-plan recheck preserves its cancellation state`,async()=>{
+ const dir=await mkdtemp(path.join(tmpdir(),'v4-recheck-cancel-'));let release,enteredResolve,checks=0,calls=0;
+ const pending=new Promise(resolve=>{release=resolve;}),entered=new Promise(resolve=>{enteredResolve=resolve;});
+ const c=createCoordinator({dataRoot:dir,beforeExecute:async()=>{if(++checks>1){enteredResolve();return pending;}return true;},modelRunner:async()=>{calls++;return {output:{},raw:'{}',usage:{totalTokens:10},requestOutcome:'RESPONDED'};}});
+ try{const d=await c.create({source,settings,binding});await c.start(d.id,{mode:'next'});await c.wait(d.id);
+  await createStore(dir).update(d.id,x=>{x.candidates[0].validatorVersion='old';return x;});
+  await c.start(d.id,{mode:'next'});await entered;await c[action](...(action==='shutdown'?[]:[d.id]));const result=await c.wait(d.id);
+  assert.notEqual(result.web.progress,'failed');assert.notEqual(result.web.error?.code,'ABORTED');
+  if(action!=='shutdown')assert.equal(result.web.progress,action==='pause'?'paused':'stopped');
+  release(true);await new Promise(resolve=>setImmediate(resolve));assert.equal(calls,1);
+ }finally{release(true);await c.shutdown();await rm(dir,{recursive:true,force:true});}
+});
+
 test('all four selection modes are handled before authorship',async()=>fixture(async({coordinator,calls})=>{
  const d=await coordinator.create({source,settings,binding});await coordinator.start(d.id,{mode:'next'});await coordinator.wait(d.id);
  for(const mode of ['off','recommended','all','review']){
   await coordinator.choose(d.id,{mode,resetDrafts:true});await coordinator.start(d.id,{mode:'all'});await coordinator.wait(d.id);
   const current=await coordinator.read(d.id);
-  assert.equal(current.web.progress,mode==='all'?'needs_design':mode==='review'?'awaiting_confirmation':'text_ready_for_review');
+  assert.equal(current.web.progress,mode==='review'?'awaiting_confirmation':'text_ready_for_review');
   if(mode==='review'){
    const fingerprint=(await import('./core/selection.mjs')).selectionFingerprint(current.plan,current.choice);
    await coordinator.confirm(d.id,{selectedIds:[],expectedFingerprint:fingerprint,resetDrafts:true});
@@ -249,14 +338,14 @@ test('repair cannot bypass an unresolved attempt in a sibling run',async()=>{
  }finally{await c.shutdown();await rm(dir,{recursive:true,force:true});}
 });
 
-test('all mode can replan missing fantasy designs once, then continue authorship',async()=>{
+test('explicit uncovered-unit requests can replan designs before authorship',async()=>{
  const dir=await mkdtemp(path.join(tmpdir(),'v4-replan-test-'));const calls=[];
  const candidate=i=>({id:`f${i}`,anchorRefs:[`r${i}`],subject:'甲',emotionPurpose:'承接情绪',recommended:i===1,proposal:'光影意象'});
  const first={...plan,fantasyCandidates:[candidate(1)]},second={...plan,fantasyCandidates:[candidate(1),candidate(2),candidate(3)]};
  const runner=async request=>{calls.push(request.stage);const output=request.stage==='plan'?(calls.filter(x=>x==='plan').length===1?first:second):draft(request);return {output,raw:JSON.stringify(output),usage:{totalTokens:20},requestOutcome:'RESPONDED'};};
  const c=createCoordinator({dataRoot:dir,modelRunner:runner});
  try{const d=await c.create({source,settings:{...settings,fantasyMode:'recommended'},binding});
-  await c.start(d.id,{mode:'next'});await c.wait(d.id);await c.choose(d.id,{mode:'all'});
+  await c.start(d.id,{mode:'next'});await c.wait(d.id);await c.choose(d.id,{mode:'all',unitOverrides:{u2:true,u3:true}});
   await c.start(d.id,{mode:'all'});await c.wait(d.id);assert.equal((await c.read(d.id)).web.progress,'needs_design');
   await c.replan(d.id);await c.wait(d.id);const refreshed=await c.read(d.id);
   assert.equal(refreshed.plan.fantasyCandidates.length,3);assert.equal(refreshed.candidates.filter(x=>x.stage==='plan').length,2);
@@ -290,7 +379,7 @@ test('three independent packages complete with exactly five call admissions',asy
  }finally{await c.shutdown();await rm(dir,{recursive:true,force:true});}
 });
 
-test('parallel admission never exceeds the call cap',async()=>{
+test('serial admission never exceeds the call cap',async()=>{
  const dir=await mkdtemp(path.join(tmpdir(),'v4-call-cap-test-'));let calls=0;
  const independent={...plan,workPackages:plan.workPackages.map(w=>({...w,dependsOn:[]}))};
  const runner=async request=>{calls++;const output=request.stage==='plan'?independent:draft(request);return {output,raw:JSON.stringify(output),usage:{totalTokens:1},requestOutcome:'RESPONDED'};};
@@ -300,14 +389,219 @@ test('parallel admission never exceeds the call cap',async()=>{
  }finally{await c.shutdown();await rm(dir,{recursive:true,force:true});}
 });
 
-test('stop leaves the third independent package undispatched',async()=>{
+test('stop leaves all later independent packages unprepared',async()=>{
  const dir=await mkdtemp(path.join(tmpdir(),'v4-stop-queue-test-'));let started=0,wake;
- const twoStarted=new Promise(resolve=>wake=resolve);
+ const firstStarted=new Promise(resolve=>wake=resolve);
  const independent={...plan,workPackages:plan.workPackages.map(w=>({...w,dependsOn:[]}))};
  const runner=async(request,{signal})=>{if(request.stage==='plan')return {output:independent,raw:JSON.stringify(independent),usage:{totalTokens:1},requestOutcome:'RESPONDED'};
-  started++;if(started===2)wake();await new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(Object.assign(new Error('cancelled'),{code:'ABORTED',requestOutcome:'UNKNOWN'})),{once:true}));};
+  started++;wake();await new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(Object.assign(new Error('cancelled'),{code:'ABORTED',requestOutcome:'UNKNOWN'})),{once:true}));};
  const c=createCoordinator({dataRoot:dir,modelRunner:runner});
- try{const d=await c.create({source,settings,binding});await c.start(d.id,{mode:'all'});await twoStarted;await c.stop(d.id);await c.wait(d.id);
-  const result=await c.read(d.id);assert.equal(started,2);assert.equal(result.operations.filter(o=>o.stage==='author').length,2);
+ try{const d=await c.create({source,settings,binding});await c.start(d.id,{mode:'all'});await firstStarted;await c.stop(d.id);await c.wait(d.id);
+  const result=await c.read(d.id);assert.equal(started,1);assert.deepEqual(result.operations.filter(o=>o.stage==='author').map(o=>o.packageIds),[['p1']]);
  }finally{await c.shutdown();await rm(dir,{recursive:true,force:true});}
+});
+
+function gate(){let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};}
+async function until(check,message='scheduler condition did not become true'){
+ for(let i=0;i<200;i++){if(await check())return;await new Promise(resolve=>setTimeout(resolve,5));}
+ assert.fail(message);
+}
+const completed=output=>({output,raw:JSON.stringify(output),usage:{totalTokens:1},requestOutcome:'RESPONDED'});
+async function schedulingFixture(t,{maxConcurrent=2,planValue=plan,runner,beforeExecute}={}){
+ const dir=await mkdtemp(path.join(tmpdir(),'v4-scheduling-test-')),calls=[],gates=[],authored=new Map(),running=new Map(),peaks=new Map();let total=0,peak=0;
+ const c=createCoordinator({dataRoot:dir,maxConcurrent,beforeExecute,modelRunner:async(request,options)=>{
+  const {runId}=options;calls.push({stage:request.stage,ids:request.packageIds,runId,signal:options.signal});
+  running.set(runId,(running.get(runId)||0)+1);peaks.set(runId,Math.max(peaks.get(runId)||0,running.get(runId)));peak=Math.max(peak,++total);
+  try{const result=await runner?.(request,options)??completed(request.stage==='plan'?planValue:request.finishMode==='delta'?{schemaVersion:DELTA_VERSION,baseDraftHash:request.baseDraftHash,retainedUnitIds:(authored.get(runId)||[]).flatMap(x=>x.units.map(u=>u.id)),replacements:[],revisionNotes:[],unresolved:[]}:draft(request));
+   if((request.stage==='author'||request.stage==='finish'&&request.finishMode!=='delta')&&result.output?.units?.length)authored.set(runId,[...(authored.get(runId)||[]),result.output]);return result;
+  }finally{total--;running.set(runId,running.get(runId)-1);}
+ }});
+ t.after(async()=>{gates.forEach(g=>g.resolve());await c.shutdown();await rm(dir,{recursive:true,force:true});});
+ return {c,calls,gates,peaks,peak:()=>peak};
+}
+
+test('serial authors do not prepare the next request before the prior package is adopted',async t=>{
+ const first=gate(),independent={...plan,workPackages:plan.workPackages.map(w=>({...w,dependsOn:[]}))};let checks=0,seenByNextPreflight;
+ const {c,calls,gates,peaks}=await schedulingFixture(t,{maxConcurrent:4,planValue:independent,beforeExecute:async()=>{
+  if(++checks===3)seenByNextPreflight=(await c.read(id)).adopted.flatMap(a=>a.packageIds);return true;
+ },runner:async request=>{if(request.stage==='author'&&request.packageIds[0]==='p1')await first.promise;}});gates.push(first);
+ const {id}=await c.create({source,settings,binding});await c.start(id);
+ await until(()=>calls.some(x=>x.stage==='author'));await new Promise(resolve=>setTimeout(resolve,30));
+ const held=await c.read(id);
+ assert.deepEqual(held.operations.filter(o=>o.stage==='author').map(o=>o.packageIds),[['p1']],'a later request was created before prior adoption');
+ assert.equal(checks,2,'a later preflight started before prior adoption');assert.equal(c.scheduling(id).maxPerEpisode,1);
+ first.resolve();const done=await c.wait(id);
+ assert.deepEqual(seenByNextPreflight,['p1']);assert.deepEqual(calls.filter(x=>x.stage==='author').map(x=>x.ids),[['p1'],['p2'],['p3']]);
+ assert.equal(peaks.get(id),1);assert.equal(done.status,'text_ready_for_review');assert.equal(done.operations.length,5);
+});
+
+test('serial authors follow source order even when legacy package metadata is shuffled',async t=>{
+ const shuffled={...plan,workPackages:[plan.workPackages[2],plan.workPackages[0],plan.workPackages[1]].map(w=>({...w,dependsOn:[]}))};
+ const {c,calls}=await schedulingFixture(t,{maxConcurrent:4,planValue:shuffled});
+ const {id}=await c.create({source,settings,binding});await c.start(id);const done=await c.wait(id);
+ assert.deepEqual(calls.filter(x=>x.stage==='author').map(x=>x.ids),[['p1'],['p2'],['p3']]);assert.equal(done.status,'text_ready_for_review');
+});
+
+test('serial authors stop at a forward dependency without skipping source order or replanning',async t=>{
+ const forward={...plan,workPackages:plan.workPackages.map(w=>({...w,dependsOn:w.id==='p1'?['p3']:[]}))};
+ const {c,calls}=await schedulingFixture(t,{maxConcurrent:4,planValue:forward});
+ const {id}=await c.create({source,settings,binding});await c.start(id);const blocked=await c.wait(id);
+ assert.equal(blocked.web.progress,'waiting_dependencies');assert.equal(blocked.web.error?.code,'DEPENDENCY_NOT_READY');
+ assert.match(blocked.web.error.message,/p1.*p3/);assert.deepEqual(calls.map(x=>x.stage),['plan']);assert.equal(blocked.operations.length,1);
+ await c.start(id);const repeated=await c.wait(id);assert.equal(calls.length,1);assert.deepEqual(repeated.plan,blocked.plan);assert.deepEqual(repeated.adopted,blocked.adopted);
+});
+
+test('serial authors leave all four global slots available to distinct episodes',async t=>{
+ const hold=gate();const {c,calls,gates,peak,peaks}=await schedulingFixture(t,{maxConcurrent:4,runner:async request=>{if(request.stage==='author')await hold.promise;}});gates.push(hold);
+ const docs=[];for(const episodeId of ['a','b','c','d'])docs.push(await c.create({source,settings,binding:{...binding,episodeId}}));
+ for(const d of docs){await c.start(d.id,{mode:'next'});await c.wait(d.id);}
+ for(const d of docs)await c.start(d.id);
+ await until(()=>calls.filter(x=>x.stage==='author').length===4);
+ assert.equal(new Set(calls.filter(x=>x.stage==='author').map(x=>x.runId)).size,4);assert.equal(peak(),4);assert.ok([...peaks.values()].every(n=>n===1));
+ assert.ok(docs.every(d=>c.scheduling(d.id).inFlight===1));hold.resolve();const done=await Promise.all(docs.map(d=>c.wait(d.id)));
+ assert.ok(done.every(d=>d.status==='text_ready_for_review'));
+});
+
+test('serial authors adopt each dependency before preparing its successor',async t=>{
+ const first=gate(),slow=gate();const {c,calls,gates,peaks}=await schedulingFixture(t,{runner:async request=>{if(request.stage==='author'&&request.packageIds[0]==='p1')await first.promise;if(request.stage==='author'&&request.packageIds[0]==='p2')await slow.promise;}});gates.push(first,slow);
+ const d=await c.create({source,settings,binding});await c.start(d.id);
+ await until(()=>calls.some(x=>x.stage==='author'));assert.equal(calls.some(x=>x.ids[0]==='p2'),false);
+ first.resolve();await until(()=>calls.some(x=>x.stage==='author'&&x.ids[0]==='p2'));
+ const held=await c.read(d.id);assert.ok(held.adopted.some(x=>x.packageIds.includes('p1')));assert.equal(held.operations.some(o=>o.packageIds.includes('p3')),false);
+ assert.equal(calls.some(x=>x.stage==='finish'),false);assert.equal(peaks.get(d.id),1);
+ slow.resolve();const result=await c.wait(d.id);assert.equal(result.status,'text_ready_for_review');assert.equal(calls.length,5);assert.equal(result.web.reserved,0);
+ assert.deepEqual(calls.filter(x=>x.stage==='author').map(x=>x.ids[0]),['p1','p2','p3']);
+});
+
+test('four global slots serve one request per episode and retain FIFO ties',async t=>{
+ const planGates=new Map(),authorHold=gate();const {c,calls,gates,peaks,peak}=await schedulingFixture(t,{maxConcurrent:4,runner:async(request,{runId})=>{if(request.stage==='plan')await planGates.get(runId)?.promise;if(request.stage==='author')await authorHold.promise;}});gates.push(authorHold);
+ const docs=[];for(const episodeId of ['a','b','blocker','other-blocker','c','d'])docs.push(await c.create({source,settings,binding:{...binding,episodeId}}));
+ const [a,b,blocker,otherBlocker,third,fourth]=docs;
+ for(const d of [blocker,otherBlocker,third,fourth]){const held=gate();planGates.set(d.id,held);gates.push(held);}
+ await c.start(a.id);await until(()=>calls.some(x=>x.runId===a.id&&x.stage==='author'));
+ await c.start(b.id);await until(()=>c.scheduling(b.id).inFlight===1);
+ await c.start(blocker.id,{mode:'next'});await until(()=>c.scheduling(blocker.id).inFlight===1);
+ await c.start(otherBlocker.id,{mode:'next'});await until(()=>c.scheduling(otherBlocker.id).inFlight===1);
+ await c.start(third.id,{mode:'next'});await until(()=>c.scheduling(third.id).queued===1);
+ await c.start(fourth.id,{mode:'next'});await until(()=>c.scheduling(fourth.id).queued===1);
+ assert.deepEqual(c.scheduling(a.id),{maxConcurrent:4,maxPerEpisode:1,inFlight:1,queued:0});
+ planGates.get(blocker.id).resolve();await until(()=>c.scheduling(third.id).inFlight===1,'the oldest queued episode did not receive the next slot');
+ assert.equal(c.scheduling(fourth.id).queued,1);assert.equal(c.scheduling(b.id).queued,0);
+ planGates.get(third.id).resolve();await until(()=>c.scheduling(fourth.id).inFlight===1);
+ planGates.get(fourth.id).resolve();planGates.get(otherBlocker.id).resolve();
+ for(const d of [blocker,otherBlocker,third,fourth]){await c.wait(d.id);assert.equal(calls.filter(x=>x.runId===d.id).length,1);assert.equal(c.scheduling(d.id).inFlight,0);}
+ assert.equal(peak(),4);assert.ok([...peaks.values()].every(n=>n===1));assert.ok(calls.every(x=>!x.signal.aborted));
+ await Promise.all([c.pause(a.id),c.pause(b.id)]);authorHold.resolve();await Promise.all([c.wait(a.id),c.wait(b.id)]);
+ assert.deepEqual(c.scheduling(a.id),{maxConcurrent:4,maxPerEpisode:1,inFlight:0,queued:0});
+});
+
+test('a temporarily ineligible queue head does not block an available global slot',async t=>{
+ const hold=gate();const one=await schedulingFixture(t,{maxConcurrent:1,runner:async()=>{await hold.promise;}}),two=await schedulingFixture(t,{maxConcurrent:2,runner:async()=>{await hold.promise;}});one.gates.push(hold);two.gates.push(hold);
+ const active=await two.c.create({source,settings,binding}),head=await one.c.create({source,settings,binding}),tail=await two.c.create({source,settings,binding:{...binding,episodeId:'tail'}});
+ await two.c.start(active.id,{mode:'next'});await until(()=>two.calls.length===1);
+ await one.c.start(head.id,{mode:'next'});await until(async()=>(await one.c.read(head.id)).operations.length===1);
+ await two.c.start(tail.id,{mode:'next'});await until(()=>two.calls.length===2,'eligible tail stayed behind the limit-one queue head');
+ assert.equal(one.calls.length,0);assert.deepEqual(one.c.scheduling(head.id),{maxConcurrent:1,maxPerEpisode:1,inFlight:0,queued:1});
+ hold.resolve();await Promise.all([one.c.wait(head.id),two.c.wait(active.id),two.c.wait(tail.id)]);
+});
+
+for(const boundary of ['pause','budget','unknown','usage','repair'])test(`serial authors settle the current request before the ${boundary} boundary`,async t=>{
+ const first=gate(),repairHold=gate(),independent={...plan,workPackages:plan.workPackages.map(w=>({...w,dependsOn:[]}))};let repairEntered=false;
+ const {c,calls,gates}=await schedulingFixture(t,{planValue:independent,runner:async request=>{
+  if(request.stage==='author'&&request.packageIds[0]==='p1'){await first.promise;if(boundary==='unknown')throw Object.assign(new Error('uncertain'),{code:'TIMEOUT',requestOutcome:'UNKNOWN'});if(boundary==='repair')return completed({schemaVersion:VERSION,units:[],fantasyRealization:[]});if(boundary==='usage')return {...completed(draft(request)),usage:null};}
+  if(request.stage==='finish'&&request.packageIds.length===1){repairEntered=true;await repairHold.promise;}
+ }});gates.push(first,repairHold);
+ const d=await c.create({source,settings,binding,...(boundary==='budget'?{budget:{maxCalls:2,maxTokens:300000}}:{})}),sibling=await c.create({source,settings,binding});await c.start(d.id);
+ await until(()=>calls.some(x=>x.stage==='author'));if(boundary==='pause')await c.pause(d.id);
+ assert.equal(c.active(d.id),true);await assert.rejects(c.start(sibling.id),{code:'EPISODE_BUSY'});assert.equal(calls.some(x=>x.stage==='author'&&x.ids[0]==='p3'),false);assert.equal(calls.some(x=>x.stage==='finish'),false);
+ assert.deepEqual((await c.read(d.id)).operations.filter(o=>o.stage==='author').map(o=>o.packageIds),[['p1']]);first.resolve();
+ if(boundary==='repair'){await until(()=>repairEntered);assert.deepEqual((await c.read(d.id)).operations.filter(o=>o.stage==='author').map(o=>o.packageIds),[['p1']]);await assert.rejects(c.start(sibling.id),{code:'EPISODE_BUSY'});repairHold.resolve();}
+ const result=await c.wait(d.id);assert.equal(result.web.reserved,0);
+ if(boundary==='repair'){assert.ok(calls.some(x=>x.stage==='finish'&&x.ids.length===1&&x.ids[0]==='p1'));assert.equal(calls.filter(x=>x.stage==='author').length,3);assert.equal(result.status,'text_ready_for_review');}
+ else{assert.equal(result.web.progress,{pause:'paused',budget:'budget_stop',unknown:'unknown',usage:'usage_review'}[boundary]);assert.equal(calls.filter(x=>x.stage==='author').length,1);assert.equal(result.operations.length,2);}
+ if(boundary==='unknown'){await assert.rejects(c.start(d.id),{code:'ATTEMPT_UNRESOLVED'});assert.equal(calls.length,2);}
+ if(boundary==='pause'){await c.start(d.id,{mode:'next'});const resumed=await c.wait(d.id);assert.deepEqual(calls.filter(x=>x.stage==='author').map(x=>x.ids),[['p1'],['p2']]);assert.deepEqual(resumed.adopted[0],result.adopted[0]);}
+ if(boundary==='budget'){await c.setBudget(d.id,{maxCalls:5,maxTokens:300000});await c.start(d.id);assert.equal((await c.wait(d.id)).status,'text_ready_for_review');assert.equal(calls.filter(x=>x.stage==='author'&&x.ids[0]==='p1').length,1);}
+ if(boundary==='usage'){await c.start(d.id);await c.wait(d.id);assert.equal(calls.length,2);assert.equal((await c.read(d.id)).operations.at(-1).receipt.usage,null);}
+});
+
+for(const boundary of ['pause','stop'])test(`a serial author queued behind another episode is NOT_SENT after ${boundary}`,async t=>{
+ const blockerHold=gate();let blockerId;
+ const {c,calls,gates}=await schedulingFixture(t,{maxConcurrent:1,runner:async(_request,{runId})=>{if(runId===blockerId)await blockerHold.promise;}});gates.push(blockerHold);
+ const target=await c.create({source,settings,binding});await c.start(target.id,{mode:'next'});await c.wait(target.id);
+ const blocker=await c.create({source,settings,binding:{...binding,episodeId:'blocker'}});blockerId=blocker.id;
+ await c.start(blockerId,{mode:'next'});await until(()=>c.scheduling(blockerId).inFlight===1);await c.start(target.id);await until(()=>c.scheduling(target.id).queued===1);
+ const queuedAttempt=(await c.read(target.id)).operations.find(o=>o.stage==='author');assert.deepEqual(queuedAttempt.packageIds,['p1']);
+ await c[boundary](target.id);const after=await c.wait(target.id),withdrawn=after.operations.find(o=>o.attemptId===queuedAttempt.attemptId);
+ assert.equal(withdrawn.status,'completed');assert.equal(withdrawn.error?.requestOutcome,'NOT_SENT');assert.equal(after.web.progress,boundary==='pause'?'paused':'stopped');assert.equal(after.web.reserved,0);
+ assert.equal(calls.filter(x=>x.runId===target.id&&x.stage==='author').length,0);assert.equal(after.operations.filter(o=>o.stage==='author').length,1);
+ blockerHold.resolve();await c.wait(blockerId);await c.start(target.id,{mode:'next'});const resumed=await c.wait(target.id);
+ assert.deepEqual(calls.filter(x=>x.runId===target.id&&x.stage==='author').map(x=>x.ids),[['p1']]);assert.equal(resumed.adopted.length,1);
+});
+
+test('serial repair preflight completes before a new author can be prepared',async t=>{
+ const preflightHold=gate(),repairHold=gate(),independent={...plan,workPackages:plan.workPackages.map(w=>({...w,dependsOn:[]}))};let checks=0,invalid=true,repairEntered=false;
+ const {c,calls,gates}=await schedulingFixture(t,{planValue:independent,beforeExecute:async()=>{if(++checks===3)await preflightHold.promise;return true;},runner:async request=>{
+  if(request.stage==='author'&&invalid){invalid=false;return completed({schemaVersion:VERSION,units:[],fantasyRealization:[]});}
+  if(request.stage==='finish'&&request.packageIds.length===1){repairEntered=true;await repairHold.promise;}
+ }});gates.push(preflightHold,repairHold);
+ const d=await c.create({source,settings,binding});await c.start(d.id);await until(async()=>(await c.read(d.id)).candidates.some(x=>x.status==='needs_repair'));preflightHold.resolve();await until(()=>repairEntered);
+ assert.equal(calls.filter(x=>x.stage==='author').length,1,'stale author preflight crossed the repair boundary');assert.equal((await c.read(d.id)).operations.filter(o=>o.stage==='author').length,1);
+ repairHold.resolve();assert.equal((await c.wait(d.id)).status,'text_ready_for_review');
+});
+
+test('synchronous shouldDispatch rechecks pause during local request preparation',async t=>{
+ const preparation=gate();let preparing=false,sent=false;
+ const {c,gates}=await schedulingFixture(t,{runner:async(request,options)=>{
+  if(request.stage!=='author')return;
+  preparing=true;await preparation.promise;sent=options.shouldDispatch();if(!sent)throw Object.assign(new Error('withdrawn before stdin'),{code:'PAUSED',requestOutcome:'NOT_SENT'});
+ }});gates.push(preparation);
+ const d=await c.create({source,settings,binding});await c.start(d.id);await until(()=>preparing);await c.pause(d.id);preparation.resolve();const result=await c.wait(d.id);
+ assert.equal(sent,false);assert.equal(result.web.progress,'paused');assert.equal(result.operations.find(o=>o.stage==='author').error?.requestOutcome,'NOT_SENT');assert.equal(result.operations.length,2);
+});
+
+test('a queued request does not count its own reservation as an exhausted call budget',async t=>{
+ const hold=gate();let blockerId;const {c,calls,gates}=await schedulingFixture(t,{maxConcurrent:1,runner:async(_request,{runId})=>{if(runId===blockerId)await hold.promise;}});gates.push(hold);
+ const target=await c.create({source,settings,binding,budget:{maxCalls:2,maxTokens:300000}});await c.start(target.id,{mode:'next'});await c.wait(target.id);
+ const blocker=await c.create({source,settings,binding:{...binding,episodeId:'blocker'}});blockerId=blocker.id;await c.start(blockerId,{mode:'next'});await until(()=>c.scheduling(blockerId).inFlight===1);
+ await c.start(target.id,{mode:'next'});await until(()=>c.scheduling(target.id).queued===1);hold.resolve();const result=await c.wait(target.id);await c.wait(blockerId);
+ assert.equal(calls.filter(x=>x.runId===target.id).length,2);assert.equal(result.adopted.length,1);assert.equal(result.operations.length,2);assert.equal(result.web.reserved,0);
+});
+
+for(const boundary of ['unknown','repair'])test(`a global slot is released only after its ${boundary} result is persisted`,async t=>{
+ const leaderHold=gate(),blockerHold=gate(),independent={...plan,workPackages:plan.workPackages.map(w=>({...w,dependsOn:[]}))};let targetId,blockerId,stateAtNextDispatch;
+ const {c,calls,gates}=await schedulingFixture(t,{maxConcurrent:1,planValue:independent,runner:async(request,{runId})=>{
+  if(runId===blockerId){stateAtNextDispatch=await c.read(targetId);await blockerHold.promise;}
+  if(runId===targetId&&request.stage==='author'&&request.packageIds[0]==='p1'){
+   await leaderHold.promise;if(boundary==='unknown')throw Object.assign(new Error('primary timeout'),{code:'TIMEOUT',requestOutcome:'UNKNOWN'});return completed({schemaVersion:VERSION,units:[],fantasyRealization:[]});
+  }
+ }});gates.push(leaderHold,blockerHold);
+ const target=await c.create({source,settings,binding});targetId=target.id;await c.start(targetId,{mode:'next'});await c.wait(targetId);
+ await c.start(targetId);await until(()=>c.scheduling(targetId).inFlight===1);
+ const blocker=await c.create({source,settings,binding:{...binding,episodeId:'blocker'}});blockerId=blocker.id;await c.start(blockerId,{mode:'next'});await until(()=>c.scheduling(blockerId).queued===1);
+ leaderHold.resolve();await until(()=>Boolean(stateAtNextDispatch));
+ assert.equal(stateAtNextDispatch.operations.find(o=>o.stage==='author').status,boundary==='unknown'?'unknown':'completed');
+ if(boundary==='unknown'){assert.equal(stateAtNextDispatch.web.error?.code,'TIMEOUT');assert.equal(stateAtNextDispatch.web.progress,'unknown');}
+ else assert.ok(stateAtNextDispatch.candidates.some(c=>c.stage==='author'&&c.status==='needs_repair'));
+ assert.equal(calls.filter(x=>x.runId===targetId&&x.stage==='author').length,1);
+ blockerHold.resolve();await c.wait(blockerId);const done=await c.wait(targetId);
+ if(boundary==='repair')assert.equal(done.status,'text_ready_for_review');else assert.equal(done.web.error?.code,'TIMEOUT');
+ assert.deepEqual(c.scheduling(targetId),{maxConcurrent:1,maxPerEpisode:1,inFlight:0,queued:0});
+ assert.equal(c.scheduling(blockerId).inFlight,0);
+});
+
+for(const secondFails of [false,true])test(`preflight failure does not prepare later packages or cancel a ${secondFails?'failing':'successful'} other episode`,async t=>{
+ const firstEntered=gate(),firstHold=gate(),peerEntered=gate(),peerHold=gate(),checks=new Map();
+ const {c,calls,gates}=await schedulingFixture(t,{beforeExecute:async b=>{
+  const n=(checks.get(b.episodeId)||0)+1;checks.set(b.episodeId,n);
+  if(n===2&&b.episodeId===binding.episodeId){firstEntered.resolve();await firstHold.promise;throw Object.assign(new Error('primary preflight failure'),{code:'PREFLIGHT_FAILED'});}
+  if(n===2&&b.episodeId==='peer'){peerEntered.resolve();await peerHold.promise;if(secondFails)throw Object.assign(new Error('secondary preflight failure'),{code:'SECOND_PREFLIGHT_FAILED'});}
+  return true;
+ }});gates.push(firstEntered,firstHold,peerEntered,peerHold);
+ const d=await c.create({source,settings,binding}),peer=await c.create({source,settings,binding:{...binding,episodeId:'peer'}});
+ await c.start(d.id);await firstEntered.promise;await c.start(peer.id);await peerEntered.promise;firstHold.resolve();const result=await c.wait(d.id);
+ assert.equal(c.active(peer.id),true);assert.equal(c.active(d.id),false);assert.equal(checks.get(binding.episodeId),2);
+ assert.equal(calls.filter(x=>x.runId===d.id&&x.stage==='author').length,0);assert.equal(result.web.error?.code,'PREFLIGHT_FAILED');assert.equal(result.operations.length,1);assert.equal(result.web.reserved,0);
+ assert.deepEqual(c.scheduling(d.id),{maxConcurrent:2,maxPerEpisode:1,inFlight:0,queued:0});
+ peerHold.resolve();const peerDone=await c.wait(peer.id);assert.equal(peerDone.web.progress,secondFails?'failed':'text_ready_for_review');if(secondFails)assert.equal(peerDone.web.error?.code,'SECOND_PREFLIGHT_FAILED');
 });

@@ -172,7 +172,7 @@ async function main() {
     for (const text of ["确认并继续", 'value="revision-2"', 'value="task-current"', "&lt;script&gt;原文依据"]) assert.ok(html.includes(text));
     assert.ok(!html.includes('checked=""'));
   });
-  await check("页面鉴权后只读查询原文，紧凑入口在顶部且第二阶段仍关闭", async () => {
+  await check("页面鉴权后只读查询原文，紧凑入口在顶部且新版分镜不开放旧流程", async () => {
     const reads: string[] = [];
     let owned = true;
     stub("../lib/auth", { requireSessionUser: async () => { reads.push("auth"); return { id: "owner" }; } });
@@ -183,7 +183,8 @@ async function main() {
     const Page = require("../app/projects/[projectId]/page").default;
     const html = renderToStaticMarkup(await Page({ params: Promise.resolve({ projectId: "p1" }) }));
     assert.ok(reads.indexOf("auth") < reads.indexOf("owned-project") && reads.indexOf("owned-project") < reads.indexOf("source-read"));
-    assert.ok(html.includes("原文与分集索引") && html.includes("后续阶段尚未启用"));
+    assert.ok(html.includes("原文与分集索引") && html.includes("情绪分镜 · 新版制作") && html.includes("旧E0–E5入口仍停用"));
+    for (const episode of sources) assert.ok(html.includes(`href="/projects/p1/episodes/${episode.id}/storyboard"`));
     assert.ok(html.indexOf('id="foundation-delivery"') < html.indexOf("</header>"));
     assert.ok(html.indexOf("executionModeSwitch") < html.indexOf("</header>"), "运行渠道必须在首屏可见，不再藏进历史折叠");
     const workflow = html.split('id="foundation-status"')[1]?.split('id="foundation-document"')[0] ?? '';

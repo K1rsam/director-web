@@ -36,7 +36,9 @@ export function resolveSelection(plan,choice){
     const selected=own(choice.overrides,c.id)??unitVote??base;
     if(selected){selectedIds.push(c.id);for(const id of mapped)byUnit[id].push(c.id);}
   }
-  const unfulfilledUnitIds=units(plan).filter(u=>own(choice.unitOverrides,u.id)!==false&&(choice.mode==='all'||own(choice.unitOverrides,u.id)===true)&&![...map.values()].some(mapped=>mapped.includes(u.id))).map(u=>u.id);
+  // "All" selects available opportunities, not a fantasy quota for every rough unit.
+  // Only an explicit unit request needs a design when no candidate covers it.
+  const unfulfilledUnitIds=units(plan).filter(u=>own(choice.unitOverrides,u.id)===true&&![...map.values()].some(mapped=>mapped.includes(u.id))).map(u=>u.id);
   const fingerprint=selectionFingerprint(plan,choice);
   const status=unfulfilledUnitIds.length?'needs_design':choice.mode==='review'&&choice.confirmedFingerprint!==fingerprint?'awaiting_confirmation':'ready';
   return {mode:choice.mode,status,selectedIds,byUnit,unfulfilledUnitIds,fingerprint};

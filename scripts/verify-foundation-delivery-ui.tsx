@@ -214,7 +214,8 @@ check("主页面鉴权后只读加载，旧岗位无普通入口", () => {
   assert.ok(page.includes('"decision-continued"') && page.includes("blockedReason="));
   assert.ok(page.includes('"delivery-unavailable"') && page.includes("已保存资料和决定没有丢失"));
   assert.ok(page.includes("处理历史") && page.includes("<FoundationUsage") && page.includes("<SceneStructureTable") && page.includes("/foundation/export"));
-  assert.ok(page.includes("后续阶段尚未启用") && !page.includes("runEpisode"));
+  assert.ok(page.includes("情绪分镜 · 新版制作") && page.includes("旧E0–E5入口仍停用"));
+  assert.ok(page.includes('/episodes/${encodeURIComponent(episode.id)}/storyboard') && !page.includes("runEpisode"));
 });
 check("项目列表与当前工作稿完成状态一致且先限定用户项目", () => {
   const home = read("app/page.tsx");

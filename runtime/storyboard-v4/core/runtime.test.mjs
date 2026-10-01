@@ -48,6 +48,24 @@ test('runner args preserve selected model and effort and isolation',()=>{
   assert.throws(()=>buildRunnerArgs({model:'gpt-6-astra',reasoning:'extreme',cwd:'/x',outputPath:'/o',instructionsPath:'/i'}));
 });
 
+test('runner args default to Sol 6.1 with explicit medium effort',()=>{
+  const args=buildRunnerArgs({cwd:'/empty',outputPath:'/raw',instructionsPath:'/instructions'});
+  assert.equal(args[args.indexOf('--model')+1],'gpt-6.1-sol');
+  assert.ok(args.includes('model_reasoning_effort="medium"'));
+});
+
+test('runner sends default and explicit Sol 6.1 medium to CLI and receipts',async t=>{
+  const f=await fixture(t),prev=process.env.FAKE_CALLS;process.env.FAKE_CALLS=f.calls;
+  t.after(()=>{if(prev===undefined)delete process.env.FAKE_CALLS;else process.env.FAKE_CALLS=prev;});
+  for(const [attemptId,settings] of [['default',{}],['explicit',{model:'gpt-6.1-sol',reasoning:'medium'}]]){
+    const result=await runModel({...request,settings},{directory:f.directory,attemptId,executable:process.execPath,executableArgs:[f.script]});
+    assert.equal(result.model,'gpt-6.1-sol');assert.equal(result.reasoning,'medium');
+    assert.equal(result.output.model,'gpt-6.1-sol');assert.equal(result.output.reasoning,'model_reasoning_effort="medium"');
+    const receipt=JSON.parse(await readFile(path.join(f.directory,'attempts',attemptId,'receipt.json'),'utf8'));
+    assert.equal(receipt.model,'gpt-6.1-sol');assert.equal(receipt.reasoning,'medium');
+  }
+});
+
 test('runner saves request and paid raw, returns usage, never resends same attempt',async t=>{
   const f=await fixture(t), options={directory:f.directory,attemptId:'a1',executable:process.execPath,executableArgs:[f.script]};
   const prev=process.env.FAKE_CALLS;process.env.FAKE_CALLS=f.calls;

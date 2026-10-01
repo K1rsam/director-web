@@ -66,6 +66,16 @@ function metadata(text,legacy=false){
   const pair=(a,b)=>(time.test(a)&&/^(?:内|外)$/.test(b))||(/^(?:内|外)$/.test(a)&&time.test(b));
   return numbered?fields.some((f,i)=>i+1<fields.length&&pair(f,fields[i+1])):fields.length>=3&&pair(fields[0],fields[1]);
 }
+function productionNote(text){
+  const line=text.trim();
+  if(!/^【(?:(?:音效|字幕|画面|镜头(?:切换|切)?|转场)[：:]|特写】)/.test(line))return false;
+  let depth=0;
+  for(let i=0;i<line.length;i++){
+    if(line[i]==='【')depth++;else if(line[i]==='】')depth--;
+    if(depth===0)return i===line.length-1;
+  }
+  return false;
+}
 function spokenText(text){
   // Only the explicit visual-annotation syntax is removed from speech, never from source rows.
   let cursor=0,plain='',hasNotes=false;
@@ -84,7 +94,7 @@ function dialogueFromRow(row,index,legacy=false){
   const spoken=legacy?{text:row.text,valid:true}:spokenText(row.text);
   if(!spoken.valid||!legacy&&(/^\s*▲/.test(spoken.text)||metadata(spoken.text)))return null;
   const m=spoken.text.match(/^\s*([^：:△\s][^：:]{0,28})[：:]\s*(.*)$/);
-  if(!m)return null;
+  if(!m||!legacy&&/[【】]/.test(m[1]))return null;
   let speaker=m[1].trim(),rest=m[2],cue='';
   const pre=speaker.match(/^(.*?)[（(]([^）)]+)[）)]$/);
   if(pre){speaker=pre[1].trim();cue=pre[2];}
@@ -113,14 +123,14 @@ export function normalizeSource(raw){
     for(const row of classified){
       const d=dialogueFromRow(row,dialogue.length+1);
       if(d)dialogue.push(d);
-      else if(row.kind==='action'&&!/^\s*[△▲]/.test(row.text)){
+      else if(row.kind==='action'&&!/^\s*[△▲]/.test(row.text)&&!productionNote(row.text)){
         const spoken=spokenText(row.text),previous=dialogue.at(-1);
         const prior=previous?classified.findIndex(r=>r.id===(previous.sourceIds?.at(-1)||previous.rowId)):-1,current=classified.indexOf(row);
         const head=previous&&classified.find(r=>r.id===previous.rowId);
         const cueOnly=/^\s*[^：:]+[：:]\s*[（(][^）)]+[）)]\s*$/.test(spoken.text);
         const emptyActor=spoken.hasNotes&&/^\s*[^：:△▲\s][^：:]{0,28}[：:]\s*$/.test(spoken.text);
         const boundary=/^\s*[△▲]/.test(spoken.text)||metadata(spoken.text)||cueOnly||emptyActor;
-        const continuation=spoken.valid&&!boundary&&spoken.hasNotes&&spoken.text.trim()&&previous?.channel==='VO'&&head&&spokenText(head.text).hasNotes&&prior>=0&&classified.slice(prior+1,current).every(r=>r.kind==='blank');
+        const continuation=spoken.valid&&!boundary&&!/^\s*[【】]/.test(spoken.text)&&spoken.hasNotes&&spoken.text.trim()&&previous?.channel==='VO'&&head&&spokenText(head.text).hasNotes&&prior>=0&&classified.slice(prior+1,current).every(r=>r.kind==='blank');
         if(continuation){previous.quote+=spoken.text;previous.sourceIds=[...(previous.sourceIds||[previous.rowId]),row.id];}
         else if(!(spoken.valid&&(boundary||spoken.hasNotes&&!spoken.text.trim())))diagnostics.push({rowId:row.id,reason:'无法安全识别为对白'});
       }

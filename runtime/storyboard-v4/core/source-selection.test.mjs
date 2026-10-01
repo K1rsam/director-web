@@ -127,8 +127,9 @@ test('off, all, recommended, review and nonrecommended candidate',()=>{
   assert.deepEqual(resolveSelection(p,choice('recommended')).selectedIds,['a']);
   const all=resolveSelection(p,choice('all'));
   assert.deepEqual(all.selectedIds,['a','b']);
-  assert.equal(all.status,'needs_design');
-  assert.deepEqual(all.unfulfilledUnitIds,['u2']);
+  assert.equal(all.status,'ready');
+  assert.deepEqual(all.unfulfilledUnitIds,[]);
+  assert.deepEqual(all.byUnit.u2,[]);
   assert.equal(resolveSelection(p,choice('review',{unitOverrides:{u2:false}})).status,'awaiting_confirmation');
 });
 
@@ -152,10 +153,24 @@ test('editing a review choice after confirmation invalidates confirmation',()=>{
   assert.equal(resolveSelection(p,{...confirmed,overrides:{...confirmed.overrides,b:true}}).status,'awaiting_confirmation');
 });
 
-test('zero candidate remains design need unless unit explicitly disabled',()=>{
+test('all with zero candidates is ready without inventing fantasy requests',()=>{
   const p=plan({fantasyCandidates:[]});
-  assert.deepEqual(resolveSelection(p,choice('all')).unfulfilledUnitIds,['u1','u2']);
-  assert.deepEqual(resolveSelection(p,choice('all',{unitOverrides:{u1:false,u2:false}})).unfulfilledUnitIds,[]);
+  const result=resolveSelection(p,choice('all'));
+  assert.equal(result.status,'ready');
+  assert.deepEqual(result.selectedIds,[]);
+  assert.deepEqual(result.unfulfilledUnitIds,[]);
+  assert.deepEqual(result.byUnit,{u1:[],u2:[]});
+});
+
+test('only an explicit request for an uncovered unit needs a fantasy design',()=>{
+  for(const mode of ['all','recommended','review']){
+    const requested=resolveSelection(plan(),choice(mode,{unitOverrides:{u2:true}}));
+    assert.equal(requested.status,'needs_design');
+    assert.deepEqual(requested.unfulfilledUnitIds,['u2']);
+    const declined=resolveSelection(plan(),choice(mode,{unitOverrides:{u2:false}}));
+    assert.deepEqual(declined.unfulfilledUnitIds,[]);
+    assert.equal(declined.status,mode==='review'?'awaiting_confirmation':'ready');
+  }
 });
 
 test('confirmation fixes selected and declined points despite recommendation refresh',()=>{

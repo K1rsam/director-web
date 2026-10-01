@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
 import {parseScript,normalizeSource} from './source.mjs';
 import {buildRequest,sliceSource} from './core.mjs';
+import {createEngine} from './pipeline.mjs';
 
 test('scene lists, split headings and triangle actions preserve source without becoming speech',()=>{
  const lines=['第一集','1-1','日 内 道观','场景：道观','人物：甲、乙','道具：无','甲os：该出发了。','▲甲抬手。【字幕：甲/修行者】','1-2墓地 日 外','▲甲跪拜。','2.2日，外，中海路','人物：甲、路人','路人：你是谁？'];
@@ -58,6 +62,50 @@ test('standalone visual annotations are not speakers; literal brackets and malfo
  assert.equal(s.sourceRows[2].text,'甲VO：未完成。【搭配画面：窗口');
 });
 
+const productionNotes=['【音效：脚步声由远及近】','  【字幕:三年后】  ','【画面：门上写着【禁入】】','【特写】','【镜头切：竹林】','【镜头切换:门口】','【镜头：由手推到脸】','【转场：淡入庭院】'];
+test('whole-line production notes preserve text and coordinates without becoming speech or metadata',()=>{
+ const s=parseScript(productionNotes.join('\n'),{key:'production-notes'});
+ assert.deepEqual(s.sourceRows.map(r=>[r.text,r.line,r.id,r.kind]),productionNotes.map((text,i)=>[text,i+1,`production-notes:L${String(i+1).padStart(4,'0')}`,'action']));
+ assert.deepEqual(s.dialogue,[]);
+ assert.deepEqual(s.diagnostics,[]);
+ assert.deepEqual(normalizeSource(s),s);
+});
+
+test('an explicit camera cut remains production source and allows task preparation without model calls',async t=>{
+ const directory=await mkdtemp(path.join(tmpdir(),'camera-cut-source-'));
+ t.after(()=>rm(directory,{recursive:true,force:true}));
+ let calls=0;
+ const engine=createEngine({directory,modelRunner:async()=>{calls++;throw new Error('Preparation must not call the model');}});
+ const text='第1集\n苏尘：师父！\n▲苏尘抬头，眼泪滑落地面。\n\n【镜头切：竹林】\n\n▲三炷香焚烧，苏尘跪拜坟墓，接着起身转身。';
+ const source=parseScript(text,{key:'camera-cut'});
+ const d=await engine.create({id:'prepare',source,settings:{maxUnits:null,maxUnitSeconds:30,fantasyMode:'all'}});
+ assert.equal(d.status,'created');assert.equal(calls,0);assert.deepEqual(d.operations,[]);
+ assert.deepEqual(d.source.sourceRows.map(r=>r.text),text.split('\n'));
+ assert.equal(d.source.sourceRows[4].kind,'action');
+ assert.deepEqual(d.source.dialogue.map(q=>[q.speaker,q.quote]),[['苏尘','师父！']]);
+ const request=buildRequest({stage:'plan',source:d.source,settings:d.settings,rulesSnapshot:d.rulesSnapshot});
+ assert.ok(request.prompt.includes('【镜头切：竹林】'));
+});
+
+test('explicit actor dialogue keeps literal production labels and brackets verbatim',()=>{
+ const lines=[...productionNotes.map(note=>`甲：${note}`),'音效师：不要漏念。','甲：我说的是【未知：保留】。'];
+ const s=parseScript(lines.join('\n'),{key:'literal-notes'});
+ assert.deepEqual(s.dialogue.map(d=>[d.speaker,d.quote]),[...productionNotes.map(note=>['甲',note.trimStart()]),['音效师','不要漏念。'],['甲','我说的是【未知：保留】。']]);
+ assert.deepEqual(s.sourceRows.map(r=>r.text),lines);
+ assert.deepEqual(s.diagnostics,[]);
+});
+
+test('unknown and malformed bracket tags stay ambiguous and production notes never bridge VO continuations',()=>{
+ const ambiguous=['【未知：等待】','【未知】','【音效：脚步声','【画面：门上写着【禁入】','【画面：门】未归属文字】','【甲】：快走。','【未知：等待】【搭配画面：门。】','【镜头切：竹林','【镜头切：竹林】未归属文字','【镜头未知：竹林】'];
+ for(const barrier of [...productionNotes,...ambiguous]){
+  const s=parseScript(`甲VO：开头。【搭配画面：窗。】\n\n${barrier}\n\n下一句话。【搭配画面：门。】`,{key:'note-barrier'});
+  assert.deepEqual(s.dialogue.map(d=>[d.speaker,d.quote,d.sourceIds]),[['甲','开头。',['note-barrier:L0001']]],barrier);
+  assert.equal(s.sourceRows[2].kind,'action',barrier);
+  assert.equal(s.sourceRows[2].text,barrier);
+  assert.deepEqual(s.diagnostics.map(d=>d.rowId),[...(ambiguous.includes(barrier)?['note-barrier:L0003']:[]),'note-barrier:L0005'],barrier);
+ }
+});
+
 test('explicit legacy dialogue is preserved and compatibility still requires exact words, speaker and channel',()=>{
  const sourceRows=[{line:1,text:'甲VO：旧原话。【搭配画面：甲站着。】'},{line:2,text:'下一句。【搭配画面：门。】'}];
  const quote='旧原话。【搭配画面：甲站着。】';
@@ -70,4 +118,8 @@ test('explicit legacy dialogue is preserved and compatibility still requires exa
  for(const patch of [{quote:'旧原话'},{speaker:'乙'},{channel:'OS'}])assert.throws(()=>normalizeSource({...raw,dialogue:[{...raw.dialogue[0],...patch}]}));
  const fresh=parseScript(sourceRows.map(r=>r.text).join('\n'),{key:'fresh'});
  assert.throws(()=>normalizeSource({...fresh,dialogue:[{...fresh.dialogue[0],quote:'旧原话。'}]}),/原句/);
+ const legacyNote=normalizeSource({key:'legacy-note',sourceRows:[{line:1,text:'【音效：脚步声由远及近】'}],dialogue:[{id:'D-note',speaker:'【音效',quote:'脚步声由远及近】',channel:'现场对白',sourceIds:['legacy-note:L0001']}]});
+ assert.equal(legacyNote.dialogue[0].quote,'脚步声由远及近】');
+ assert.equal(legacyNote.dialogue[0].speaker,'【音效');
+ assert.deepEqual(normalizeSource(legacyNote),legacyNote);
 });

@@ -59,7 +59,7 @@ test('author and full finish schemas preserve every creative field and close eve
   const r=request(kind);strict(r.schema);
   assert.deepEqual(r.schema.properties.schemaVersion.enum,[VERSION]);
   const unit=r.schema.properties.units.items,frame=shot(r.schema),part=frame.properties.dialogueParts.items;
-  assert.deepEqual(unit.required,['id','eventId','boundaryBefore','title','intent','scene','props','participants','lighting','initialState','exitState','shots']);
+  assert.deepEqual(unit.required,['id','eventId','boundaryBefore','title','unitDirection','intent','scene','props','participants','lighting','initialState','exitState','shots']);
   assert.deepEqual(frame.required,['id','duration','camera','picture','lighting','sound','dialogueParts','transition','sourceRefs','contextRefs']);
   assert.deepEqual(part.required,['lineId','text','presentation','delivery','voiceStart','voiceEnd']);
   for(const field of ['camera','picture','lighting','sound','transition'])assert.deepEqual(frame.properties[field],{type:'string'});
@@ -102,7 +102,7 @@ test('delta schema pins the exact base and old ids while retaining complete repl
 });
 
 test('frozen v1 schema identity changes input hash without leaking hash metadata into model prose',()=>{
- const current={...captureRules(),outputSchemaVersion:'structured-v1'},legacy={...current};delete current.unitPackingPolicy;delete legacy.outputSchemaVersion;delete legacy.unitPackingPolicy;
+ const current={...captureRules(),outputSchemaVersion:'structured-v1'};delete current.unitDirectionVersion;delete current.unitPackingPolicy;const legacy={...current};delete legacy.outputSchemaVersion;
  const a=request('author',{rulesSnapshot:legacy}),b=request('author',{rulesSnapshot:current});
  assert.equal(a.schema,undefined);assert.ok(b.schema);
  assert.equal(b.schemaHash,digest(b.schema));
@@ -112,6 +112,8 @@ test('frozen v1 schema identity changes input hash without leaking hash metadata
 
 test('legacy snapshots keep exact plan, author, full and delta hashes without schema',()=>{
  const rules={version:VERSION,instructions:'测试固定指令',files:Object.fromEntries(Object.keys(captureRules().files).map(p=>[p,'测试固定规则 '+p]))};
+ // Saved tasks contain their normalized model, reasoning and style; today's defaults must not rewrite them.
+ const settings={...fixture().settings,model:'gpt-6-sol',reasoning:'medium',visualStyle:'3D三渲二国漫横屏16:9；C4D/Octane风格精细渲染，赛璐璐光影结合PBR材质。角色身份、衣发与道具一致；人物表演的强弱与幅度服从本段情绪和策略，摄影、声光、动作共同组织，空间可读、有纵深。无额外字幕、水印、logo、BGM；源剧情必要屏幕信息保留。'};
  const expected={
   plan:['6ab79d7a0a04daa55112c117fb064059b4479fdab38362be1152142229e79269','5ddcedb27e13345b56f6a5b782d5e167054652a526225d2701ee159a105adc27'],
   author:['f8a8aa95e99b87bf1424a3f01e84708c40605279cf3d1f6b978b610b7d5c5c2b','71c950657e67aab1a31b0642bbfdd3cee6fa867b9381c976078ab58d129e9e00'],
@@ -119,7 +121,7 @@ test('legacy snapshots keep exact plan, author, full and delta hashes without sc
   delta:['37e6069d70d80241703be08304669dc21e24bc5acc39ab1d4ca1c781b24672b6','e435dfba05a09e256e1db9bb46bf64488ab2bd4936d8aab9875209e37e933294']
  };
  for(const [kind,hashes] of Object.entries(expected)){
-  const r=request(kind,{rulesSnapshot:rules});
+  const r=request(kind,{rulesSnapshot:rules,settings});
   assert.deepEqual([r.inputHash,r.promptHash],hashes,kind);
   assert.equal(r.instructionHash,'c785a430e45b1ec5dd546c1c2499d37d95c27ffaf7eb3713e7df8efda2125659');
   assert.equal(Object.hasOwn(r,'schema'),false);assert.equal(Object.hasOwn(r,'schemaHash'),false);

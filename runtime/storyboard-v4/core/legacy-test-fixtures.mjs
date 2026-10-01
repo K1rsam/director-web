@@ -5,7 +5,7 @@ import {createEngine as currentEngine} from './pipeline.mjs';
 import {createCoordinator as currentCoordinator} from '../coordinator.mjs';
 export function legacyRules(){
  const rules={...captureRules(),outputSchemaVersion:'structured-v1'};
- for(const key of ['unitPackingPolicy','creativeRevision','planHint','draftHint','deltaHint'])delete rules[key];
+ for(const key of ['unitDirectionVersion','seedanceExportVersion','unitPackingPolicy','creativeRevision','sourceExpressionMethodsVersion','acceptedContinuityVersion','planHint','draftHint','deltaHint'])delete rules[key];
  return rules;
 }
 function pinLegacy(instance,directory){

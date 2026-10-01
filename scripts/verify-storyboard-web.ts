@@ -46,9 +46,10 @@ process.stdin.resume();process.stdin.on('end',()=>{fs.writeFileSync(entered,JSON
  const post=async(body:unknown,extra:Record<string,string>={})=>fetch(endpoint,{method:'POST',headers:{...headers,'content-type':'application/json','x-storyboard-action':'1',...extra},body:JSON.stringify(body)});
  assert.equal((await fetch(endpoint)).status,401);
  assert.equal((await post({action:'create'},{origin:'https://outside.invalid'})).status,403);
- let response=await fetch(endpoint,{headers});assert.equal(response.status,200);const index=await response.json();assert.equal(index.model,'gpt-6-sol');assert.equal(index.runner.ready,true);
+ let response=await fetch(endpoint,{headers});assert.equal(response.status,200);const index=await response.json();assert.equal(index.model,'gpt-6.1-sol');assert.equal(index.reasoning,'medium');assert.equal(index.runner.ready,true);assert.equal(index.maxConcurrent,4);assert.equal(index.maxPerEpisode,1);
  response=await post({action:'create',settings:{maxUnitSeconds:30,fantasyMode:'review'},maxCalls:0,maxTokens:0});
- assert.equal(response.status,201,await response.clone().text());let run=(await response.json()).run;assert.equal(run.operations.length,0);
+ assert.equal(response.status,201,await response.clone().text());let run=(await response.json()).run;assert.equal(run.operations.length,0);assert.deepEqual(run.scheduling,{maxConcurrent:4,maxPerEpisode:1,inFlight:0,queued:0});
+ assert.equal(run.settings.model,'gpt-6.1-sol');assert.equal(run.settings.reasoning,'medium');
  response=await fetch(base+`/api/episodes/${other.id}/storyboard?runId=${run.id}`,{headers});assert.equal(response.status,404);
  const {digest}=req('./runtime/storyboard-v4/core/shared.mjs');
  await mkdir(path.join(dataRoot,'source-contexts'),{recursive:true});
@@ -154,6 +155,8 @@ process.stdin.resume();process.stdin.on('end',()=>{fs.writeFileSync(entered,JSON
  const pauseRun=(await response.json()).run;
  await page.goto(`${base}/projects/${project.id}/episodes/${episode.id}/storyboard?runId=${pauseRun.id}`);
  await page.getByRole('button',{name:'先分析',exact:true}).click();await waitEntered(1);
+ const occupied=(await (await fetch(`${endpoint}?runId=${pauseRun.id}`,{headers})).json()).run;
+ assert.deepEqual(occupied.scheduling,{maxConcurrent:4,maxPerEpisode:1,inFlight:1,queued:0});
  await page.getByRole('button',{name:'暂停（保留回包）',exact:true}).click();
  await feedback.getByText(/正在暂停：不再派新请求/).waitFor();
  await control({sequence:1,release:true,output:rawPlan});

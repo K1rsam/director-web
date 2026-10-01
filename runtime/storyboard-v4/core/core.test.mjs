@@ -6,15 +6,16 @@ import {normalizeSource} from './source.mjs';
 import {PLAN_VERSION,digest} from './shared.mjs';
 
 // These pre-event fixtures exercise the frozen v1 contract; event-v2 behavior has its own suite.
-function captureRules(){const rules=captureEventRules();rules.outputSchemaVersion='structured-v1';delete rules.unitPackingPolicy;delete rules.creativeRevision;for(const key of ['planHint','draftHint','deltaHint'])rules[key]=rules[key].split('\n')[0];return rules;}
+function captureRules(){const rules=captureEventRules();rules.outputSchemaVersion='structured-v1';delete rules.unitDirectionVersion;delete rules.unitPackingPolicy;delete rules.creativeRevision;for(const key of ['planHint','draftHint','deltaHint'])rules[key]=rules[key].split('\n')[0];return rules;}
 const buildRequest=payload=>buildEventRequest({rulesSnapshot:captureRules(),...payload});
 
 const source=()=>normalizeSource({key:'t',title:'不甘',context:'只做本段',contextRows:[{id:'prior',line:1,text:'△甲收起护罩。'}],sourceRows:[{id:'s1',line:2,text:'甲：（怒视）我还没输！'}],dialogue:[{id:'d1',line:2,speaker:'甲',cue:'怒视',channel:'现场对白',quote:'我还没输！'}],entryFacts:[{id:'f-state',subject:'甲',statement:'护罩已收起',sourceRefs:['prior'],evidence:'甲收起护罩'}]});
 const plan=()=>({schemaVersion:PLAN_VERSION,emotionArc:'承压仍不服',entryFacts:[],workPackages:[{id:'p1',sourceRefs:['s1'],emotionContract:{subject:'甲',contextTone:'严肃不甘',audienceEffect:'感到他仍抵抗',change:'痛苦但不服',landing:'他本人仍站着',retain:['不改成搞笑']},entryFactIds:['f-state'],dependsOn:[],scenarioKeys:[]}],provisionalUnits:[{id:'u1',packageId:'p1',sourceRefs:['s1'],secondsRange:[2,6]}],fantasyCandidates:[{id:'f1',anchorRefs:['s1'],subject:'甲',emotionPurpose:'不甘与抵抗',recommended:false,proposal:'背后的影子被压弯又绷住',screenSecondsRange:[1,2],extraSecondsRange:[0,1]}]});
 
-test('effective settings preserve Sol medium, explicit scope and no silent unknown fields',()=>{
+test('new settings default to Sol 6.1 medium, preserve legacy models and require explicit scope',()=>{
  const s=normalizeSettings({maxUnits:null,fantasyMode:'off'});
- assert.equal(s.model,'gpt-6-sol');assert.equal(s.reasoning,'medium');assert.equal(s.maxUnitSeconds,30);
+ assert.equal(s.model,'gpt-6.1-sol');assert.equal(s.reasoning,'medium');assert.equal(s.maxUnitSeconds,30);
+ for(const model of ['gpt-6.1-sol','gpt-6-sol','gpt-6-astra'])assert.equal(normalizeSettings({model,reasoning:'medium',maxUnits:null}).model,model);
  assert.throws(()=>normalizeSettings({fantasyMode:'off'}),e=>e.code==='SETTINGS_SCOPE');
  assert.throws(()=>normalizeSettings({maxUnits:null,mystery:true}),e=>e.code==='SETTINGS_FIELD');
  assert.throws(()=>normalizeSettings({maxUnits:1,maxUnitSeconds:100}),e=>e.code==='SETTINGS_CAP');

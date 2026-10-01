@@ -21,8 +21,9 @@ export async function GET(request: Request, context: Context) {
     const id = url.searchParams.get("runId");
     if (!id) {
       const [runs, runner, prepared] = await Promise.all([service.list({ episodeId: episode.id }), storyboardRunnerStatus(), loadStoryboardInput(episode)]);
-      return json({ runs: runs.map((r: any) => ({ id: r.id, title: r.web.title, status: ["pausing", "paused", "stopped", "unknown", "budget_stop", "source_stale"].includes(r.web.progress) ? r.web.progress : r.status, createdAt: r.web.createdAt })).sort((a: any, b: any) => b.createdAt.localeCompare(a.createdAt)),
-        model: "gpt-6-sol", reasoning: "medium", maxConcurrent: 2, runner, sourceWarnings: prepared.warnings });
+      const { maxConcurrent, maxPerEpisode } = service.scheduling();
+      return json({ runs: runs.map((r: any) => ({ id: r.id, title: r.web.title, status: ["pausing", "paused", "stopped", "unknown", "usage_review", "budget_stop", "source_stale"].includes(r.web.progress) ? r.web.progress : r.status, createdAt: r.web.createdAt })).sort((a: any, b: any) => b.createdAt.localeCompare(a.createdAt)),
+        model: "gpt-6.1-sol", reasoning: "medium", maxConcurrent, maxPerEpisode, runner, sourceWarnings: prepared.warnings });
     }
     const run = await service.read(id);
     storyboardHttp.assertEpisodeBinding(run, episode);

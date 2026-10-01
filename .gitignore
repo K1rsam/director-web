@@ -47,3 +47,8 @@ docs/superpowers/
 /scripts/recover-six-sample-runs.mjs
 /runtime/storyboard-v4/archive-test-runs.test.mjs
 /supervisor-design/决策演练记录.md
+
+# Private workload capture and local opt-in paid probes are not release fixtures.
+/runtime/storyboard-v4/core/fixtures/v3-execution-workload.json
+/scripts/probe-storyboard-author-group.mjs
+/scripts/probe-storyboard-cache.mjs

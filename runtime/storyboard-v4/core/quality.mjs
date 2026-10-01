@@ -1,6 +1,8 @@
-import {VERSION} from './shared.mjs';
+import {VERSION,fail} from './shared.mjs';
 import {resolveSourceRef} from './source.mjs';
 import {UNIT_PACKING_POLICY,packEventUnits} from './event-unit-packing.mjs';
+import {UNIT_DIRECTION_VERSION} from './output-schema.mjs';
+import {SUPPORTED_SEEDANCE_EXPORT_VERSIONS} from './visual-style.mjs';
 
 const has=x=>typeof x==='string'&&!!x.trim();
 const issue=(code,coordinate,detail)=>({code,coordinate,detail});
@@ -41,7 +43,7 @@ export function normalizeDraft(raw,source,options={}){
  return {draft,changes};
 }
 
-export function validateDraft({draft,source,settings={},selection,plan}={}){
+export function validateDraft({draft,source,settings={},selection,plan,unitDirectionVersion}={}){
  settings=settings&&typeof settings==='object'?settings:{};
  const errors=[],warnings=[],add=(code,coord,detail)=>errors.push(issue(code,coord,detail));
  const units=Array.isArray(draft?.units)?draft.units:[],qs=source?.dialogue||[],qmap=new Map(qs.map((q,i)=>[q.id,{...q,index:i}]));
@@ -60,6 +62,10 @@ export function validateDraft({draft,source,settings={},selection,plan}={}){
   if(events&&!event)add('EVENT_ID',uid,'单元未归属本次明确完整事件');
   if(events&&(!['episode_start','continuous','capacity','new_event','time_space_jump'].includes(u?.boundaryBefore?.kind)||!has(u?.boundaryBefore?.reason)))add('EVENT_BOUNDARY',uid,'单元边界或依据缺失');
   for(const k of ['title','scene','lighting','initialState','exitState'])if(!has(u?.[k]))add('FIELD',uid,`单元${k}缺失`);
+  if(unitDirectionVersion===UNIT_DIRECTION_VERSION){
+   if(!has(u?.unitDirection))add('UNIT_DIRECTION',uid,'单元专属演出总指令缺失');
+   for(const [i,segment] of (Array.isArray(u?.segments)?u.segments:[]).entries())if(!has(segment?.unitDirection))add('UNIT_DIRECTION',`${uid}.segments[${i}]`,'合并前分段的专属演出总指令缺失');
+  }
   for(const k of ['props','participants'])if(!Array.isArray(u?.[k])||u[k].some(x=>!has(x)))add('FIELD',uid,`单元${k}格式错误`);
   if(!u?.intent||!['subject','change','landing'].every(k=>has(u.intent[k]))||!Array.isArray(u.intent.retain)||!u.intent.retain.length||u.intent.retain.some(x=>!has(x)))add('INTENT',uid,'情绪主体、变化、落点及保留功能不完整');
   if(!Array.isArray(u?.shots)||!u.shots.length){add('SHOTS',uid,'缺少镜头');continue;}
@@ -113,15 +119,42 @@ export function validateDraft({draft,source,settings={},selection,plan}={}){
  return {errors,warnings,stats:{units:units.length,shots:shotIds.size,dialogueParts:partCount,seconds:num(seconds),sourceRowsCovered:covered.size,sourceRowsTotal:source?.sourceRows?.length||0,selectedFantasy:selected.size,realizedFantasy:reality.filter(f=>f?.status==='realized').length}};
 }
 
-export function renderDraft({draft,source,settings={}}={}){
+function enclosingSpeechQuotes(text){
+ if(typeof text!=='string'||!text.startsWith('“')||!text.endsWith('”'))return false;
+ let depth=0;
+ for(let i=0;i<text.length;i++){
+  if(text[i]==='“')depth++;
+  else if(text[i]==='”'){depth--;if(depth<0||depth===0&&i!==text.length-1)return false;}
+ }
+ return depth===0;
+}
+function sourceQuoteEdges(draft,quotes){
+ const byLine=new Map(),first=new Set(),last=new Set();
+ for(const unit of draft?.units||[])for(const shot of unit.shots||[])for(const part of shot.dialogueParts||[]){
+  if(!byLine.has(part.lineId))byLine.set(part.lineId,[]);byLine.get(part.lineId).push(part);
+ }
+ for(const [lineId,parts] of byLine){
+  const quote=quotes.get(lineId)?.quote;
+  if(!enclosingSpeechQuotes(quote)||parts.map(p=>p.text).join('')!==quote)continue;
+  const nonempty=parts.filter(p=>typeof p.text==='string'&&p.text.length);
+  if(nonempty.length){first.add(nonempty[0]);last.add(nonempty.at(-1));}
+ }
+ return {first,last};
+}
+
+export function renderDraft({draft,source,settings={},seedanceExportVersion}={}){
+ if(seedanceExportVersion!==undefined&&!SUPPORTED_SEEDANCE_EXPORT_VERSIONS.includes(seedanceExportVersion))fail('EXPORT_VERSION','未知视频执行稿导出版本');
+ const execution=seedanceExportVersion!==undefined;
+ const unitTimeline=seedanceExportVersion==='seedance-execution-v3';
  const quotes=new Map((source?.dialogue||[]).map(q=>[q.id,q])),sections=[];
+ // V2 and later only omit redundant display delimiters at verified source edges; stored text is untouched.
+ const quoteEdges=seedanceExportVersion==='seedance-execution-v2'||unitTimeline?sourceQuoteEdges(draft,quotes):null;
  const style=has(settings?.visualStyle)?settings.visualStyle:'3D国漫横屏短剧，16:9；角色、场景与光影连续，表演和空间关系清晰。';
  for(const u of draft?.units||[]){
   let t=0;const total=(u.shots||[]).reduce((n,s)=>n+(Number.isFinite(s.duration)?s.duration:0),0);
   const records=Array.isArray(draft?.fantasyRealization)?draft.fantasyRealization:[];
   const realized=records.some(f=>f?.status==='realized'&&Array.isArray(f.unitIds)&&f.unitIds.includes(u.id));
   const active=settings?.fantasyMode==='off'?false:records.length?realized:settings?.fantasyEnabled;
-  const common=`${style}${active?'；已选幻想只按本单元画面正文呈现。':'；本单元不加入额外幻想段落，源剧情的法术与特效照常表现。'}`;
   const displayHeader=value=>typeof value!=='string'?value:value.replace(/【([^】]*)】/g,(_match,anchor)=>{
    for(const [i,shot] of (u.shots||[]).entries()){
     const escaped=shot.id?.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
@@ -129,6 +162,12 @@ export function renderDraft({draft,source,settings={}}={}){
    }
    return `【${anchor}】`;
   });
+  // Project decided execution fields directly; never scrub arbitrary source or saved prose.
+  const common=execution
+   ?[style,has(u.unitDirection)?displayHeader(u.unitDirection):null].filter(has).join('\n')
+   :has(u.unitDirection)
+   ?`${style}\n${active?'已选幻想只按本单元画面正文呈现':'本单元不加入额外幻想段落'}；源剧情明确的Q版、梦境、法术与特效照常表现；主观形变遵守正文声明的主观边界，现实状态及角色知情范围遵循原文。\n${displayHeader(u.unitDirection)}`
+   :`${style}${active?'；已选幻想只按本单元画面正文呈现。':'；本单元不加入额外幻想段落，源剧情的法术与特效照常表现。'}`;
   const opening=u.segments?.[0]||u;
   const lines=[`# ${u.title}｜${num(total)}s`,`[通用提示词] ${common}`,`[场景] ${u.scene}`,`[本单元道具] ${u.props?.join('、')||'无'}`,`[本单元出场人物] ${u.participants?.join('、')||'无'}`,`[本单元光影] ${displayHeader(opening.lighting)}`,`[人物状态与站位前提] ${displayHeader(opening.initialState)}`];
   for(const [i,s] of (u.shots||[]).entries()){
@@ -140,7 +179,24 @@ export function renderDraft({draft,source,settings={}}={}){
     lines.push(`[人物状态｜分镜${i+1}起] ${segment.initialState}`);
    }
    const start=t;t+=Number.isFinite(s.duration)?s.duration:0;
-   const dialogue=(s.dialogueParts||[]).map(p=>{const q=quotes.get(p.lineId),kind=q?.kind==='roar'?'声事件／保持兽吼声型':q?.kind==='scream'?'声事件／保持尖叫声型':null;return `${q?.speaker||'未知说者'}${kind?`（${kind}）`:''}，${p.presentation}，本镜${num(p.voiceStart)}-${num(p.voiceEnd)}s，演法：${p.delivery}：“${p.text}”`;}).join('；')||'无';
+   const dialogue=(s.dialogueParts||[]).map(p=>{
+    const q=quotes.get(p.lineId);
+    const spoken=`${quoteEdges?.first.has(p)?'':'“'}${p.text}${quoteEdges?.last.has(p)?'':'”'}`;
+    if(execution){
+     const channel=['VO','OS','系统音'].includes(q?.channel)?q.channel:null;
+     const kind=q?.kind==='roar'?'兽吼':q?.kind==='scream'?'尖叫':q?.kind==='vocalization'?q.cue:null;
+     const labels=[...new Set([channel,kind,p.presentation==='画内'?null:p.presentation].filter(has))];
+     if(unitTimeline){
+      let delivery=typeof p.delivery==='string'?p.delivery:'';
+      if(has(q?.speaker)&&[`${q.speaker}：`,`${q.speaker}:`].some(prefix=>delivery.startsWith(prefix)))delivery=delivery.slice(q.speaker.length+1);
+      delivery=delivery.trim().replace(/。$/,'');
+      return `${num(start+p.voiceStart)}–${num(start+p.voiceEnd)}秒｜${q?.speaker||'未知说者'}（${[...labels,delivery].filter(has).join('·')}）：${spoken}`;
+     }
+     return `${q?.speaker||'未知说者'}（${[...labels,p.delivery].join('·')}｜本镜${num(p.voiceStart)}-${num(p.voiceEnd)}s）：${spoken}`;
+    }
+    const kind=q?.kind==='roar'?'声事件／保持兽吼声型':q?.kind==='scream'?'声事件／保持尖叫声型':null;
+    return `${q?.speaker||'未知说者'}${kind?`（${kind}）`:''}，${p.presentation}，本镜${num(p.voiceStart)}-${num(p.voiceEnd)}s，演法：${p.delivery}：${spoken}`;
+   }).join(unitTimeline?'\n台词：':'；')||'无';
    lines.push(`分镜${i+1}｜${num(start)}-${num(t)}s｜${num(s.duration)}s`,`机位/运镜：${s.camera}`,`画面：${s.picture}`,`光影：${s.lighting}`,`声音：${s.sound}`,`台词：${dialogue}`,`转场：${s.transition}`);
   }
   sections.push(lines.join('\n'));

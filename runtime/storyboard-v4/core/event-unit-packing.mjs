@@ -93,7 +93,9 @@ export function packEventUnits(draft,{plan,settings,unitPackingPolicy,stage='fin
   }
   const lighting=unique(parts.map(s=>s.lighting)).length===1?parts[0].lighting:parts.map(s=>`【${s.shotIds[0]}—${s.shotIds.at(-1)}】${s.lighting}`).join('\n');
   const initialState=[parts[0].initialState,...parts.slice(1).map(s=>`【${s.shotIds[0]}起承接】${s.initialState}`)].join('\n');
-  packed[packed.length-1]={...prior,title:unique(parts.map(s=>s.title)).join(' / '),intent:combine(parts.map(s=>s.intent),['subject','change','landing']),props:unique(parts.flatMap(s=>s.props)),participants:unique(parts.flatMap(s=>s.participants)),lighting,initialState,exitState:next.exitState,shots:[...prior.shots,...next.shots],segments:parts};
+  const directed=parts.filter(s=>has(s.unitDirection));
+  const unitDirection=directed.length===parts.length&&unique(directed.map(s=>s.unitDirection)).length===1?directed[0].unitDirection:directed.map(s=>`【${s.shotIds[0]}—${s.shotIds.at(-1)}】${s.unitDirection}`).join('\n');
+  packed[packed.length-1]={...prior,title:unique(parts.map(s=>s.title)).join(' / '),...(directed.length?{unitDirection}:{}),intent:combine(parts.map(s=>s.intent),['subject','change','landing']),props:unique(parts.flatMap(s=>s.props)),participants:unique(parts.flatMap(s=>s.participants)),lighting,initialState,exitState:next.exitState,shots:[...prior.shots,...next.shots],segments:parts};
   for(const f of Array.isArray(draft.fantasyRealization)?draft.fantasyRealization:[])if(Array.isArray(f?.unitIds))f.unitIds=unique(f.unitIds.map(id=>id===next.id?prior.id:id));
   changes.push({coordinate:prior.id,field:'units',action:'merge',from,to:prior.id,eventId:prior.eventId,seconds:Number((seconds(prior)+seconds(next)).toFixed(3)),reason:'continuous_event_within_capacity',detail:'同一连续事件在所选容量内合并；画面、声画、镜长及台词未改，仅必要的内部单元转场用语另记归一；原分段头保存在segments'});
  }

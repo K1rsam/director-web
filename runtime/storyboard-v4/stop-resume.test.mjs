@@ -6,8 +6,9 @@ import path from 'node:path';
 import childProcess from 'node:child_process';
 import {once} from 'node:events';
 import {createCoordinator} from './coordinator.mjs';
+import {buildRequest} from './core/core.mjs';
 import {createStore} from './core/store.mjs';
-import {VERSION,PLAN_VERSION} from './core/shared.mjs';
+import {VERSION,PLAN_VERSION,digest} from './core/shared.mjs';
 import {DELTA_VERSION} from './core/delta.mjs';
 
 const source={key:'episode',sourceRows:[{id:'r1',text:'△甲推门。'},{id:'r2',text:'△乙点头。'}]};
@@ -29,7 +30,7 @@ async function fixture(t,{runner=async request=>completed(request.stage==='plan'
  };
  const c=createCoordinator({dataRoot:dir,modelRunner,maxConcurrent,...(beforeExecute?{beforeExecute}:{})}),store=createStore(dir),create=c.create.bind(c);
  // These saved-plan fixtures exercise lifecycle behavior under their explicit v1 contract.
- c.create=async options=>{const d=await create(options);return store.update(d.id,x=>{x.rulesSnapshot.outputSchemaVersion='structured-v1';delete x.rulesSnapshot.unitPackingPolicy;return x;});};
+ c.create=async options=>{const d=await create(options);return store.update(d.id,x=>{x.rulesSnapshot.outputSchemaVersion='structured-v1';delete x.rulesSnapshot.unitPackingPolicy;delete x.rulesSnapshot.unitDirectionVersion;return x;});};
  t.after(async()=>{gates.forEach(g=>g.resolve());await c.shutdown();await rm(dir,{recursive:true,force:true});});
  return {c,dir,calls,gates,store};
 }
@@ -113,12 +114,20 @@ test('accepted unknown cost does not bypass the call budget or make known missin
  assert.equal(blocked.web.progress,'budget_stop');assert.equal(calls.length,1);assert.equal(blocked.operations[0].receipt.usage.totalTokens,null);
 });
 
-test('independent stopped authors can recover one at a time without treating each other as scope conflicts',async t=>{
- const hold=gate();let entered=0;const {c,calls,gates}=await fixture(t,{runner:async req=>{if(req.stage==='plan')return completed(plan);entered++;await hold.promise;throw Object.assign(new Error('connection lost before local settlement'),{code:'ABORTED',requestOutcome:'UNKNOWN',usage:emptyUsage});}});gates.push(hold);
- const d=await c.create({source,settings,binding});await c.start(d.id);await until(()=>entered===2);await c.stop(d.id);hold.resolve();let stopped=await c.wait(d.id);
- for(const op of stopped.operations.filter(o=>o.stage==='author')){const call=calls.find(c=>c.options.attemptId===op.attemptId),folder=path.join(call.options.directory,'attempts',op.attemptId);await writeFile(path.join(folder,'raw.txt'),JSON.stringify(draft(call.request)));await writeFile(path.join(folder,'receipt.json'),JSON.stringify({state:'FINAL',requestOutcome:'RESPONDED',usage:{totalTokens:10}}));}
- for(const op of stopped.operations.filter(o=>o.stage==='author'))stopped=await c.recover(d.id,op.attemptId);
- assert.equal(stopped.adopted.length,2);assert.equal(calls.length,3);assert.ok(stopped.operations.every(o=>o.status==='completed'));
+test('historical independent stopped authors recover one at a time without treating each other as scope conflicts',async t=>{
+ const {c,calls,dir,store}=await fixture(t),d=await c.create({source,settings,binding});await c.start(d.id,{mode:'next'});const planned=await c.wait(d.id),authors=[];
+ // Reproduce saved pre-serial history directly; the current scheduler must never dispatch these in parallel.
+ for(const w of planned.plan.workPackages){
+  const attemptId=`historical-author-${w.id}`,request=buildRequest({stage:'author',source:planned.source,settings:planned.settings,plan:planned.plan,choice:planned.choice,packageId:w.id,packageIds:[w.id],previousDraft:null,voiceReference:planned.voiceReference,rulesSnapshot:planned.rulesSnapshot,dependencyExits:{},issues:[],finishMode:'full'}),folder=path.join(dir,'attempts',attemptId);
+  const fingerprint=digest([request.promptHash,request.instructionHash,request.inputHash]);
+  authors.push({attemptId,stage:'author',packageIds:[w.id],previousDraft:null,issues:[],finishMode:'full',baseDraftHash:null,dependencyFormat:'continuity-v1',fingerprint,epoch:planned.epoch,status:'unknown',createdAt:new Date().toISOString(),cancelReason:'user_stop',error:{code:'ABORTED',message:'saved pre-serial interruption',requestOutcome:'UNKNOWN'}});
+  await mkdir(folder,{recursive:true});await writeFile(path.join(folder,'request.json'),JSON.stringify(request));await writeFile(path.join(folder,'raw.txt'),JSON.stringify(draft(request)));await writeFile(path.join(folder,'receipt.json'),JSON.stringify({state:'FINAL',requestOutcome:'RESPONDED',usage:{totalTokens:10}}));
+ }
+ await store.update(d.id,x=>{x.operations.push(...authors);x.epoch++;x.status='cancelled';x.web.stopped=true;x.web.progress='stopped';return x;});
+ const first=await c.recover(d.id,authors[0].attemptId);assert.deepEqual(first.adopted.flatMap(a=>a.packageIds),['p1']);assert.equal(first.operations.find(o=>o.attemptId===authors[1].attemptId).status,'unknown');assert.equal(calls.length,1);
+ const stopped=await c.recover(d.id,authors[1].attemptId);
+ assert.equal(stopped.adopted.length,2);assert.equal(calls.length,1);assert.ok(stopped.operations.every(o=>o.status==='completed'));
+ assert.deepEqual(stopped.operations.filter(o=>o.stage==='author').map(o=>o.fingerprint),authors.map(o=>o.fingerprint));
 });
 
 test('recheck of an explicitly recovered old-epoch candidate remains free and adoptable',async t=>{
@@ -148,11 +157,14 @@ test('start next restores a persisted response of an UNKNOWN operation before co
  await c.start(d.id,{mode:'next'});const restored=await c.wait(d.id);assert.ok(restored.plan);assert.equal(calls.length,1);assert.equal(restored.operations[0].status,'completed');assert.equal(restored.operations[0].error.requestOutcome,'UNKNOWN');
 });
 
-test('continue all restores late authored work and buys only the still-missing finish',async t=>{
+test('continue all restores the late serial author and buys only the missing author and finish',async t=>{
  const hold=gate();let authored=0;const {c,calls,gates}=await fixture(t,{runner:async request=>{if(request.stage==='author'){authored++;await hold.promise;}return completed(request.stage==='plan'?plan:request.stage==='finish'?{schemaVersion:DELTA_VERSION,baseDraftHash:request.baseDraftHash,retainedUnitIds:['u-r1','u-r2'],replacements:[],revisionNotes:[],unresolved:[]}:draft(request));}});gates.push(hold);
- const d=await c.create({source,settings,binding});await c.start(d.id);await until(()=>authored===2);await c.stop(d.id);hold.resolve();const stopped=await c.wait(d.id);assert.equal(stopped.adopted.length,0);
+ const d=await c.create({source,settings,binding});await c.start(d.id);await until(()=>authored===1);
+ assert.deepEqual((await c.read(d.id)).operations.filter(o=>o.stage==='author').map(o=>o.packageIds),[['p1']]);
+ await c.stop(d.id);hold.resolve();const stopped=await c.wait(d.id),late=stopped.operations.find(o=>o.stage==='author');assert.equal(stopped.adopted.length,0);assert.equal(stopped.operations.length,2);assert.equal(stopped.candidates.find(c=>c.attemptId===late.attemptId).status,'cancelled_late');
  await c.start(d.id);const finished=await c.wait(d.id);
  assert.equal(finished.status,'text_ready_for_review');assert.equal(calls.filter(x=>x.request.stage==='plan').length,1);assert.equal(calls.filter(x=>x.request.stage==='author').length,2);assert.equal(calls.filter(x=>x.request.stage==='finish').length,1);assert.equal(finished.operations.length,4);
+ assert.deepEqual(calls.filter(x=>x.request.stage==='author').map(x=>x.request.packageIds),[['p1'],['p2']]);assert.equal(finished.operations.find(o=>o.attemptId===late.attemptId).fingerprint,late.fingerprint);assert.equal(finished.operations.find(o=>o.attemptId===late.attemptId).recovery.epoch,finished.epoch);
 });
 
 test('resume after a paused author preserves the adopted draft and waits before issuing the next package',async t=>{
