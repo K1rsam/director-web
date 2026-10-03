@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import styles from "./page-status.module.css";
-import { deriveView } from "./view-state";
+import { derivePhaseSteps, deriveView } from "./view-state";
 import type { Run } from "./types";
 
 type PageStatus = { label: string; description: string; tone: string };
@@ -14,7 +14,8 @@ export function StoryboardStatusProvider({ children, initialRun }: { children: R
   const [status, setStatus] = useState<PageStatus | null>(()=>{
     if(!initialRun)return null;
     const view=deriveView(initialRun,false);
-    return {label:view.title,description:view.description,tone:initialRun.sourceCheckPending?'waiting':view.tone};
+    const phase = initialRun.active && view.tone !== 'attention' ? derivePhaseSteps(initialRun, false).find(step => step.isCurrent) : undefined;
+    return {label:view.title,description:view.description,tone:initialRun.sourceCheckPending?'waiting':phase?.state || view.tone};
   });
   return <PublishContext.Provider value={setStatus}><StatusContext.Provider value={status}>{children}</StatusContext.Provider></PublishContext.Provider>;
 }

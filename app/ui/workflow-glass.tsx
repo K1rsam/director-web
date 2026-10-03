@@ -4,6 +4,7 @@ import { useEffect, useState, type ComponentPropsWithoutRef, type CSSProperties 
 import styles from "./workflow-glass.module.css";
 
 export type WorkflowGlassState = "idle" | "running" | "complete" | "paused" | "waiting" | "attention";
+export type WorkflowGlassActivity = "none" | "running" | "waiting";
 export { styles as workflowGlassStyles };
 
 const motionKey = "director-workflow-reduced-motion";
@@ -55,11 +56,13 @@ export function WorkflowGlassRail({ children, label = "工作流程", columns = 
   </section>;
 }
 
-type CardProps = ComponentPropsWithoutRef<"article"> & { index: number; state: WorkflowGlassState };
+type CardProps = ComponentPropsWithoutRef<"article"> & { index: number; state: WorkflowGlassState; activity?: WorkflowGlassActivity };
 
-/** Material sheen is decorative; only the real running state gets a moving activity line. */
-export function WorkflowGlassCard({ children, index, state, className = "", ...props }: CardProps) {
-  return <article {...props} className={`${styles.card} ${className}`} data-workflow-state={state} data-workflow-index={index} aria-busy={state === "running"}>
+/** Travel means active work; a distinct breathing light means an executing CLI
+ * awaiting output. Queues, user choices and uncertain history remain static. */
+export function WorkflowGlassCard({ children, index, state, activity, className = "", ...props }: CardProps) {
+  const motion = state === "running" ? "running" : state === "waiting" && activity === "waiting" ? "waiting" : "none";
+  return <article {...props} className={`${styles.card} ${className}`} data-workflow-state={state} data-workflow-index={index} data-workflow-activity-state={motion} aria-busy={motion !== "none"}>
     <div className={styles.content}>{children}</div>
     <span className={styles.activity} data-workflow-activity aria-hidden="true" />
   </article>;

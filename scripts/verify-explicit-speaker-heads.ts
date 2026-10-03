@@ -41,6 +41,21 @@ test('numbered crowd roles use positive role or declared-group evidence without 
   assert.equal(result.compiled!.package.script.entries.at(-1)?.speaker?.text, '天台搜救组乙');
 });
 
+test('qualified incidental source roles remain readable without a generated catalogue identity', () => {
+  for (const name of ['台上某领导', '台下考官', '门口一名保安', '后排女同学', '某领导', '值班护士', '副院长', '现场主持人', '考场负责人']) {
+    for (const head of [`${name}（冷眼看过来）：`, `${name}：（冷眼看过来）`]) {
+      const {result, source} = good(`${head}干什么！禁止私斗，违者取消资格。`);
+      const entry = result.compiled!.package.script.entries[0];
+      assert.deepEqual([entry.speaker?.text, entry.cue?.text, entry.text], [name, '冷眼看过来', '干什么！禁止私斗，违者取消资格。']);
+      assert.deepEqual(source.dialogue.map((d: any) => [d.speaker, d.cue, d.quote]), [[name, '冷眼看过来', '干什么！禁止私斗，违者取消资格。']]);
+    }
+  }
+  for (const text of ['台上某领导说（冷眼）：不要打。', '领导备注：（低声）仅供参考。', '考场说明：（严肃）本页是资料。', '陌生标签（低声）：不猜身份。']) {
+    assert.equal(prepare(text).compiled, null, text);
+  }
+  assert.equal(prepareStandardEpisode('台上某领导（冷眼看过来）：干什么！', 'old-role', {syntax:'legacy'}).compiled, null, 'new role grammar must not modify the frozen legacy grammar');
+});
+
 test('ordinary named heads need no cast while OS/VO and cues retain exact source spans', () => {
   for (const [head, name, cue, channel, channelSource] of [
     ['苏炎：', '苏炎', null, 'SPEECH', null], ['林岚（低声）：', '林岚', '低声', 'SPEECH', null],

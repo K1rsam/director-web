@@ -36,13 +36,14 @@ assert.equal(waitingView.currentStartedAt,'2026-09-27T01:00:03Z','waiting time m
 assert.equal(deriveView({...waitingPlan,active:false,status:'interrupted'},true).currentStartedAt,undefined,'old unresolved requests do not start a live clock');
 console.log("PASS: stage3 paid-action, unknown, stale, pause and budget guards");
 
-const phaseSteps = (presentation as unknown as { derivePhaseSteps?: (run: Run | null, runnerReady?: boolean) => { id: string; state: string; label: string; detail:string; isCurrent:boolean }[] }).derivePhaseSteps;
+const phaseSteps = (presentation as unknown as { derivePhaseSteps?: (run: Run | null, runnerReady?: boolean) => { id: string; state: string; activity?:string; label: string; detail:string; isCurrent:boolean }[] }).derivePhaseSteps;
 assert.equal(typeof phaseSteps, "function", "The step rail needs an explicit state projection instead of treating every inactive step as pending");
 const phases = (run: Run | null) => phaseSteps!(run).map(step => [step.id, step.state, step.label]);
 assert.deepEqual(phases(null).map(item => item[1]), ["idle", "idle", "idle"]);
 assert.deepEqual(phases(checking)[0],['plan','waiting','核对资料更新'],'loading checks must not look like broken source or running AI');
 const planned: Run = { ...base, status: "planned", plan: { emotionArc: "", workPackages: [{ id: "P1", sourceRefs: [], emotionContract: { subject: "甲", contextTone: "", audienceEffect: "", change: "", landing: "", retain: [] }, dependsOn: [] }], provisionalUnits: [], fantasyCandidates: [] } };
 assert.equal(phaseSteps!(waitingPlan)[0].isCurrent,true,'an executing step remains current while waiting for output');
+assert.equal(phaseSteps!(waitingPlan)[0].activity,'waiting','an actually started CLI awaiting output needs a distinct live activity cue');
 assert.match(phaseSteps!(waitingPlan)[0].detail,/等待首个输出/);
 assert.doesNotMatch(phaseSteps!(waitingPlan)[0].detail,/等待分析/,'already-started analysis must not look unstarted');
 const finishing:Run={...planned,active:true,status:'running',operations:[{...waitingPlan.operations[0],stage:'finish'}]};
@@ -62,6 +63,7 @@ assert.equal(phases({ ...planned, active: true, status: "running", operations: [
 for (const localPhase of ["queued", "preparing", null] as const) {
   const queued: Run = { ...planned, active: true, status: "running", operations: [{ attemptId: "queued", stage: "author", packageIds: ["P1"], status: "running", localPhase, createdAt: base.createdAt }] };
   assert.equal(phases(queued)[1][1], "waiting", "Active coordination does not prove the request has entered the local executor");
+  assert.equal(phaseSteps!(queued)[1].activity, "none", "queued or unconfirmed work cannot get an executing activity cue");
   assert.equal(deriveView(queued, true).current.length, 0);
   if (localPhase === "queued") assert.match(deriveView(queued, true).title, /排队/);
 }
@@ -88,6 +90,13 @@ for(const phase of ['starting','waiting','generating','receiving'] as const){
  const active={...planned,active:true,status:'running',operations:[{attemptId:'new',stage:'author',packageIds:['P1'],status:'running',localPhase:'executing',createdAt:base.createdAt,execution:{phase}}]} as Run;
  const step=phaseSteps!(active)[1];
  assert.equal(step.state,phase==='generating'?'running':'waiting',`${phase} does not invent generation`);
+ assert.equal(step.activity,phase==='generating'?'running':'waiting',`${phase} retains real local activity independently of confirmed generation`);
  assert.match(step.label,phase==='waiting'?/等待首个输出/:phase==='generating'?/生成中/:phase==='receiving'?/接收回包/:/本机启动/);
+}
+for (const stage of ['plan', 'author', 'finish'] as const) {
+ const live={...planned,active:true,status:'running',operations:[{attemptId:'step',stage,packageIds:[],status:'running',localPhase:'executing',createdAt:base.createdAt,execution:{phase:'generating'}}]} as Run;
+ assert.deepEqual(phaseSteps!(live).filter(step=>step.activity==='running').map(step=>step.id),[stage],'the sweep follows the actual current step, not every pending card');
+ const paused={...live,active:false,status:'paused',operations:[]} as Run;
+ assert.ok(phaseSteps!(paused).every(step=>step.activity==='none'),'paused work must stop all execution motion');
 }
 console.log('PASS: legacy read-only with saved export, pending local repair, and observed execution phases');

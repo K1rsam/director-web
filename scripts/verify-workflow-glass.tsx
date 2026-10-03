@@ -37,11 +37,39 @@ async function check(name: string, run: () => void | Promise<void>) {
 }
 
 async function main() {
+  await check("Live foundation request without a receipt stays active in header and card", () => {
+    for (const [phase, cardIndex] of [["PREPARE_SOURCE", 0], ["GENERATE_F1", 1], ["GENERATE_F2", 2], ["EDIT", 2]] as const) {
+      const activeState = { ...base, task: { ...task, phase, unknownOutcome: true } };
+      const html = render(activeState);
+      const card = html.match(new RegExp(`<article\\b[^>]*data-workflow-index="${cardIndex}"[^>]*>[\\s\\S]*?<\\/article>`))?.[0] ?? "";
+      assert.match(card, /data-workflow-state="running"/, `${phase}: an in-flight receipt is not an interrupted request`);
+      assert.match(card, /aria-current="step"/);
+      assert.match(card, /当前步骤/);
+      assert.match(html, /data-clock="running"/);
+      assert.doesNotMatch(html, /结果待确认|结果待核对|当前不会自动重发/);
+      const header = renderToStaticMarkup(createElement(FoundationDeliveryPanel, { projectId: "fixture", state: activeState, requiredChoiceCount: 0, compact: true }));
+      assert.doesNotMatch(header, /请求结果待确认|name="allowUnknownRetry"/);
+      assert.match(header, /正在整理/);
+    }
+  });
+  await check("Stale busy plus an interrupted unknown request never claims execution", () => {
+    const state = { ...base, action: "UNKNOWN_CONFIRM", task: { ...task, status: "INTERRUPTED", unknownOutcome: true } } as FoundationDeliveryState;
+    const html = render(state);
+    assert.doesNotMatch(html, /data-workflow-state="running"|data-clock="running"/);
+    assert.match(html, /结果待核对/);
+    const header = renderToStaticMarkup(createElement(FoundationDeliveryPanel, { projectId: "fixture", state, requiredChoiceCount: 0, compact: true }));
+    assert.match(header, /请求结果待确认/);
+    assert.doesNotMatch(header, /class="live"/);
+  });
   await check("Foundation QUEUED is static waiting, never running", () => {
-    const html = selected(render({ task: { ...task, status: "QUEUED" } }));
+    const state = { ...base, task: { ...task, status: "QUEUED" } } as FoundationDeliveryState;
+    const html = selected(render(state));
     assert.match(html, /data-workflow-state="waiting"/, "排队步骤必须使用 waiting 材质状态");
     assert.match(html, /排队中/);
     assert.doesNotMatch(html, /aria-busy="true"/);
+    const panel = renderToStaticMarkup(createElement(FoundationDeliveryPanel, { projectId: "fixture", state, requiredChoiceCount: 0 }));
+    assert.match(panel, /已排队，等待本机执行/);
+    assert.doesNotMatch(panel, /<h3[^>]*>正在/);
   });
   await check("Foundation running, pause, unknown, waiting and completion are distinct", () => {
     assert.match(selected(render()), /data-workflow-state="running"/);
@@ -87,7 +115,7 @@ async function main() {
         import { WorkflowGlassRail, WorkflowGlassCard, workflowGlassStyles as s } from './app/ui/workflow-glass';
         const states = ['idle', 'running', 'complete', 'paused', 'waiting', 'attention'];
         createRoot(document.getElementById('root')).render(h(WorkflowGlassRail, { label: '流程测试', columns: 3 },
-          states.map((state, index) => h(WorkflowGlassCard, { key: state, state, index },
+          states.map((state, index) => h(WorkflowGlassCard, { key: state, state, index, activity: state === 'waiting' ? 'waiting' : undefined },
             h('span', { className: s.number }, String(index + 1)),
             h('div', { className: s.heading }, h('strong', { className: s.title }, '长标题与完整状态'.repeat(4)), h('span', { className: s.status }, state)),
             h('p', { className: s.detail }, '保留完整内容与真实链接，不制造运行进度。'.repeat(5)),
@@ -119,9 +147,10 @@ async function main() {
         assert.equal(row.opacity, "0.22");
         assert.equal(row.filter, "blur(2px)");
         assert.equal(row.contentOpacity, "1");
-        assert.equal(row.line !== "none", row.state === "running");
-        assert.equal(row.activity === "visible", row.state === "running", `${row.state}: only running shows an activity rail`);
+        assert.equal(row.line !== "none", ["running", "waiting"].includes(row.state!));
+        assert.equal(row.activity === "visible", ["running", "waiting"].includes(row.state!), `${row.state}: actual execution wait has a distinct activity cue`);
       }
+      assert.notEqual(material[4].line, material[1].line, "waiting cannot pretend to be confirmed generation");
       assert.deepEqual(material.slice(0, 4).map(row => row.duration), ["3.2s", "3.6s", "3.9s", "3.4s"]);
       assert.deepEqual(material.slice(0, 4).map(row => row.delay), ["-0.25s", "-1.5s", "-2.65s", "-0.9s"]);
       assert.equal(material[1].lineDuration, "2.4s");

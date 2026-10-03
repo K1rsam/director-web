@@ -22,6 +22,31 @@ async function main() {
   const catalog = { format: 'ASSET_CATALOG_V2', coverage: [1], assets: [{ name: '云台', type: 'LOC', episodes: [1], sceneRefs: [{ episode: 1, sceneKey: '1-1' }], preparation: { mode: 'REFERENCE' } }] };
   const invalidCatalog = (scope: number[] = [1], assets: unknown[] = []) => ({ format: 'ASSET_CATALOG_V2', coverage: JSON.stringify(scope), assets });
   try {
+    await check('有来源的匿名说者无需生成资产，历史解析暂停只读复验即可完成', async () => {
+      const sourceText = '第1集\n1-1 日 外 广场\n人物：甲\n甲：停一下。\n' +
+        ['台上某领导', '台下考官', '门口一名保安', '后排女同学', '某领导', '值班护士', '副院长', '现场主持人', '考场负责人']
+          .map(name => `${name}（冷眼看过来）：请保持秩序。`).join('\n');
+      const project = await db.project.create({ data: { title: '匿名说者不依赖资产目录', episodes: { create: [{ number: 1, content: sourceText }] } } });
+      const task = await queueFoundationDelivery(project.id, {}, db), stages: string[] = [];
+      await executeFoundationDelivery(project.id, task.id, { db, stageRunner: async stage => {
+        stages.push(stage);
+        return response(stage === 'F2' ? { format: 'ASSET_CATALOG_V2', coverage: [1], assets: [] }
+          : { format: 'FOUNDATION_OPTIMIZATION_V2', coverage: [1], changes: {} });
+      } });
+      const completed = await getFoundationDeliveryState(project.id, db);
+      assert.equal(completed.complete, true); assert.deepEqual(stages, ['F2', 'Q1']);
+      assert.deepEqual(completed.document.f2?.assets, [], '不能以增加生产资产和调用负担修说者语法');
+      const id = `foundation-delivery-${project.id}`, saved = await db.sceneSnapshot.findUniqueOrThrow({ where: { id } });
+      const historical = JSON.stringify({ ...JSON.parse(saved.content), status: 'PARTIAL', phase: 'EDIT', message: '旧版接收程序拒绝匿名说者', unknownOutcome: false, workerPid: null });
+      await db.sceneSnapshot.update({ where: { id }, data: { content: historical } });
+      const calls = await db.pipelineRun.count({ where: { projectId: project.id } });
+      const recovered = await getFoundationDeliveryState(project.id, db);
+      assert.equal(recovered.complete, true); assert.equal(recovered.action, 'NONE');
+      assert.equal(recovered.document.revision, completed.document.revision, '复验无需复制或改写已采用材料');
+      assert.equal((await db.sceneSnapshot.findUniqueOrThrow({ where: { id } })).content, historical, '只读复验保留旧失败记录');
+      await assert.rejects(queueFoundationDelivery(project.id, {}, db), /已完成|已整理|无需/);
+      assert.equal(await db.pipelineRun.count({ where: { projectId: project.id } }), calls, '不得为旧解析错误重买正确回包');
+    });
     await check('响应日志瞬时保存失败不能阻断有效F1/F2/Q1的本地复验', async () => {
       for (const failedStage of ['F2', 'Q1', 'F1']) {
         let project: { id: string };
@@ -149,6 +174,15 @@ async function main() {
       await executeFoundationDelivery(project.id, task.id, { db, stageRunner: async stage => response(stage === 'F2' ? catalog : { format: 'FOUNDATION_OPTIMIZATION_V2', coverage: [1], changes: {} }) });
       const before = await getFoundationDeliveryState(project.id, db);
       const older = await saveFoundationDocument(db, project.id, before.document.revision, { ...before.document, assetMethodVersion: 'previous-reviewed-method' }, '保留当时已核对版本');
+      // A historical adopted document also owns matching registry snapshots.
+      // A bare document revision is deliberately not enough for completion.
+      for (const asset of await db.asset.findMany({ where: { projectId: project.id } })) {
+        const metadata = JSON.parse(asset.metadata ?? '{}');
+        if (metadata.foundation?.documentRevision === before.document.revision) {
+          metadata.foundation.documentRevision = older.revision;
+          await db.asset.update({ where: { id: asset.id }, data: { metadata: JSON.stringify(metadata) } });
+        }
+      }
       const state = await getFoundationDeliveryState(project.id, db);
       assert.equal(state.complete, true); assert.equal(state.action, 'NONE'); assert.equal(state.methodUpdateAvailable, true);
       assert.equal(state.document.assetMethodVersion, 'previous-reviewed-method');

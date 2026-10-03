@@ -1,6 +1,7 @@
 import { hashFoundationPrompt, isRecord, loadFoundationSystemPrompt, type FoundationStageCode } from "@/lib/project-foundation-contracts";
 import { PRODUCTION_CATALOG_FORMAT, PRODUCTION_OPTIMIZATION_FORMAT } from "@/lib/foundation-production-contracts";
 import { projectFoundationModelInput } from './foundation-model-input';
+import { FOUNDATION_DIRECTION_CONTENT_SCHEMA } from './foundation-series-direction';
 
 export const PRODUCTION_FOUNDATION_VERSION = "PRODUCTION_FOUNDATION_V3";
 const preparation = { mode: "REFERENCE|DERIVE|INLINE|AUDIO|UNRESOLVED", fromKey: "仅真正素材派生来源；沿用已登记同一对象/同一版本时省略整个preparation即可继承，不再填自身key作新来源。新子形象DERIVE省略来源代表父资产；不是召唤者或剧情归属", note: "可省略；必要制作取舍/未决原因，不复述剧情；剧情关联另写relationNote" };
@@ -78,6 +79,7 @@ export const LIGHT_ASSET_METHOD_VERSION = `LIGHT_P2_3000_${hashFoundationPrompt(
 
 export function buildLightFoundationPrompt(stage: 'F2' | 'Q1', input: unknown) {
   const request = isRecord(input) ? input : {};
+  const direction = stage === 'Q1' && isRecord(request.seriesDirectionPreparation) ? request.seriesDirectionPreparation : null;
   const candidates = isRecord(request.candidates) ? request.candidates : {};
   const catalog = isRecord(candidates.f2) ? candidates.f2 : {};
   const hasItems = (value: unknown) => Array.isArray(value) && value.length > 0;
@@ -115,12 +117,16 @@ export function buildLightFoundationPrompt(stage: 'F2' | 'Q1', input: unknown) {
       : '只改目录及必要场字段，不评分或写F1。changes只含差异，无改动交changes:{}；已有key未变字段省略，不回显variants；新增资产省略key。episodes为本批完整用途；variants省略/null保留，[]清空本批，非空替换本批。场字段省略保留，weather等无据不填；无事项/回执/提醒省略数组，不复述输入或检查过程。',
     ...(Object.keys(receipts).length ? ['只回执本批输入的准确id；据实处理才填，省略不等于完成。'] : []),
     ...(stage === 'Q1' ? ['需修真实场次边界时交sceneSplits，cuts只列严格位于原场次内部的新增边界，不含首段起点；程序按原文锚点执行，不另调模型。首段沿原key，元数据写changes.scenes；后段key为原key__L起始行号，同次修正资产sceneRefs。源hash由程序绑定，不抄全文。'] : []),
+    ...(direction ? [direction.mode === 'FINAL'
+      ? '顺带完成seriesDirection.content全剧方向候选：共用正在核对的source；priorSignals是前批有原文引文的方向解释，不是已确认事实，background是作者背景。结合全剧走势，不能按最后一集/少数高情绪片段定调。总brief目标200–350字，最多600字；无据标签留空，角色说法不提升世界规则，不泄露未来身份/揭示，不写分镜或重复全剧目录。仅候选，由用户采用；不改变本次资产修改权限。'
+      : '顺带在seriesDirection.signals保留本批最有用的1–3条方向依据；引用本次source里的原文短句并写简短解释（解释非硬事实）。覆盖持续主线、观众回报与整体走势的关键变化，不按每集写摘要或提前定稿；只在最后批次汇总候选。'] : []),
     'humanChoices仅本阶段必需且无据可定的选择；每题2–3个互斥可执行方案、一项推荐及依据，推荐非确认。证据出处不等于影响范围；同议题且选项兼容才合并，不扩大既有答案范围。格式/缺字段不构成问题。',
     `OUTPUT_SCHEMA（字段说明，不是事实示例）：\n${JSON.stringify({ ...schema, humanChoices: [scopedHumanChoice], ...(stage === 'Q1' ? { unresolved: [{
       owner: 'Q1|PROGRAM|STAGE2；程序能力缺口归PROGRAM，不重试Q1',
       key: '可省略，受影响已有资产key', episodes: ['影响集号，同applicationScope'], note: '具体有据的剩余事项',
       applicationScope: scopedHumanChoice.applicationScope, evidenceRefs: scopedHumanChoice.evidenceRefs, receivingUses: scopedHumanChoice.receivingUses
-    }] } : {}) })}`,
+    }] } : {}), ...(direction ? { seriesDirection: direction.mode === 'FINAL' ? { content: FOUNDATION_DIRECTION_CONTENT_SCHEMA }
+      : { signals: [{ episode: '本批真实集号', quote: '本次source内逐字引文，100字内', reading: '方向解释，120字内，不复述整集或冒充原文事实' }] } } : {}) })}`,
     'crossBatchVariants仅列非空清单；本批资产未列出即无已记录的批外变体，不代表禁止新增有据变体。',
     `INPUT_JSON:\n${JSON.stringify(projectFoundationModelInput(input))}`
   ].join('\n\n');

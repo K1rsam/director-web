@@ -46,10 +46,12 @@ async function browserChecks() {
   const bundle = await build({ stdin: { contents: `import React from 'react';import{createRoot}from'react-dom/client';import{SeriesDirectionPanel}from'./app/projects/[projectId]/series-direction-panel';createRoot(document.getElementById('root')).render(<SeriesDirectionPanel projectId="synthetic" initialWorkspace={${JSON.stringify(initial)}}/>);`, resolveDir: process.cwd(), loader: "tsx" }, bundle: true, write: false, outdir: "out", platform: "browser", jsx: "automatic", define: { "process.env.NODE_ENV": '"production"' } });
   const browser = await chromium.launch({ headless: true, ...(existsSync(chromium.executablePath()) ? {} : { channel: "chrome" }) });
   try {
-    for (const scenario of ["late-read", "late-post", "history", "preserve", "resume"]) {
+    for (const scenario of ["late-read", "late-post", "history", "preserve", "resume", "shared-reading"]) {
       if (process.argv[2] && process.argv[2] !== scenario) continue;
       const page = await browser.newPage();
       let server = structuredClone(initial), heldRead: Route | undefined, heldPost: Route | undefined, latePost: SeriesDirectionWorkspace | undefined;
+      if (scenario === 'shared-reading') server = { ...server, current: null, status: 'UNCONFIRMED', brief: null, draftOrigin: 'AI', draftReviewed: false, draftCanConfirm: true,
+        foundationPreparation: { status: 'CANDIDATE_READY', coveredEpisodes: 1, totalEpisodes: 1, extraCalls: 0, message: '第一阶段共用读取已生成候选，没有额外调用。' } };
       if(scenario==='resume')server={...server,generation:{id:'stopped',status:'FAILED',createdAt:'2026-10-01T00:00:00Z',pending:false,held:true,resumable:true,reusableCalls:2,remainingCalls:2,recoveryIssue:null,phase:'evidence',completedCalls:1,totalCalls:12,outcome:'FAILED',message:'引文坐标已核对，可继续已有进度。',usage:{...knownUsage,unknownCalls:0}}};
       const actions: Array<Record<string, unknown>> = [], errors: string[] = [];
       const shouldHoldRead = scenario === "late-read" || scenario === "preserve";
@@ -80,7 +82,16 @@ async function browserChecks() {
       await page.addScriptTag({ content: bundle.outputFiles.find(file => file.path.endsWith(".js"))!.text });
       const tone = page.locator("#direction-primaryTone"), save = page.getByRole("button", { name: "保存草稿", exact: true });
       const settle = () => page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-      if(scenario==='resume'){
+      if(scenario==='shared-reading'){
+        await page.getByRole('button', { name: '刷新状态', exact: true }).click();
+        await page.getByText('第一阶段共用读取已生成候选，没有额外调用。', { exact: true }).waitFor();
+        assert.equal(await page.getByRole('button', { name: '生成AI候选', exact: true }).isVisible(), false, 'Paid rereading is not a primary/default action once a candidate exists.');
+        const confirm = page.getByRole('button', { name: '确认采用', exact: true });
+        assert.equal(await confirm.isDisabled(), true);
+        await page.getByRole('checkbox').check();
+        assert.equal(await confirm.isEnabled(), true, 'A verified shared-reading candidate needs one explicit adoption, not another paid generation or redundant save.');
+        await confirm.click(); assert.deepEqual(actions.map(command => command.action), ['confirm']);
+      } else if(scenario==='resume'){
         await page.getByRole('button',{name:'刷新状态',exact:true}).click();
         const resume=page.getByRole('button',{name:'继续已保存进度 · 剩余2次',exact:true});await resume.waitFor();
         assert.equal(actions.length,0,'read-only failed status never dispatches');

@@ -1,5 +1,5 @@
 import { STAGE_LABELS, operationLabel, statusLabel, type Candidate, type Run, type Operation } from "./types";
-import type { WorkflowGlassState } from "@/app/ui/workflow-glass";
+import type { WorkflowGlassState, WorkflowGlassActivity } from "@/app/ui/workflow-glass";
 
 export function executionLabel(operation: Operation) {
   if(operation.localPhase==='queued') return '排队中';
@@ -102,7 +102,8 @@ export function derivePhaseSteps(run?: Run | null, runnerReady = true) {
     const detail = liveOperation ? `${executionLabel(liveOperation)} · ${liveOperation.feedbackRepair ? '仅修资料回执' : liveOperation.packageIds.length ? `本次 ${liveOperation.packageIds.length} 个工作包` : phase.id === 'plan' ? '本集情绪方案' : '整集核对与交稿'}` : phase.id === "plan" ? view?.planFailure ? "已有规划待核对" : run?.plan ? `${run.plan.workPackages.length} 个完整工作包` : "等待分析"
       : phase.id === "author" ? view?.total ? `${view.authorDone} / ${view.total} 工作包已采纳` : "等待情绪方案"
         : view?.total ? `${view.finishDone} / ${view.total} 工作包已整编` : "等待完整主创";
-    return { ...phase, state, label, detail, isCurrent };
+    const activity: WorkflowGlassActivity = state === "running" ? "running" : state === "waiting" && liveOperation?.localPhase === "executing" ? "waiting" : "none";
+    return { ...phase, state, activity, label, detail, isCurrent };
   });
 }
 

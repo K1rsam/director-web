@@ -18,6 +18,20 @@ const input={source:buildNumberedSource(index,[3,4]),scope:[3,4],facts,registry:
 const before=structuredClone(input), raw=facts.historicalEvidenceCandidates;
 
 function expand(table:any):any[] {
+  if (table.format === 'HISTORICAL_EVIDENCE_TABLE_V3') {
+    assert.equal(table.rowEncoding, 'SOURCE_RANGE_RUNS_V1');
+    const position = table.columns.indexOf('evidence'), rows: any[][] = [];
+    for (const [count, first, step] of table.rowBlocks) {
+      assert.ok(Number.isSafeInteger(count) && count > 0);
+      for (let offset = 0; offset < count; offset++) {
+        const row = structuredClone(first);
+        if (count > 1) row[position] = [first[position][0], first[position][1] + offset * step[0], first[position][2] + offset * step[1]];
+        rows.push(row);
+      }
+    }
+    assert.equal(rows.length, table.rowCount, 'All independent source occurrences survive run encoding.');
+    table = { ...table, format: 'HISTORICAL_EVIDENCE_TABLE_V2', rows };
+  }
   assert.equal(table.format,'HISTORICAL_EVIDENCE_TABLE_V2');
   assert.equal(table.idDerivation.format,'SHA256_JSON_V1');
   return table.rows.map((row:any[], position:number)=>{
@@ -38,7 +52,7 @@ function expand(table:any):any[] {
 const wire:any=projectFoundationModelInput(input), table=wire.facts.historicalEvidenceCandidates;
 const {sourceVersion:_version,sourceContextVersion:_contextVersion,...legacyFacts}=facts;
 const legacy:any=projectFoundationModelInput({...input,facts:legacyFacts});
-assert.equal(table.format,'HISTORICAL_EVIDENCE_TABLE_V2','Large source-derived history needs lossless wire compaction, not a larger budget');
+assert.equal(table.format,'HISTORICAL_EVIDENCE_TABLE_V3','Regular source ranges must not repeat thousands of complete mechanical row tuples.');
 assert.deepEqual(expand(table),raw,'Do not merge equal sentences at different positions, or lose releases/claims/anchors');
 assert.deepEqual(input,before);
 assert.deepEqual(wire.source,input.source);

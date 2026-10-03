@@ -19,7 +19,7 @@ import type { ImportedScript } from './import-script';
 import { selectSourceReviewCandidates } from './fidelity-review-candidates';
 import { planFoundationRequestScope } from './foundation-request-plan';
 import { normalizeFoundationSceneRefWire } from './foundation-scene-ref-wire';
-import { projectFoundationModelInput, expandFoundationSceneTable } from './foundation-model-input';
+import { projectFoundationModelInput, expandFoundationSceneTable, expandFoundationBoundaryContext } from './foundation-model-input';
 import { refreshFidelitySource } from './fidelity-refresh';
 import { buildFoundationFragments, fragmentSource, fragmentsComplete, type FoundationFragment } from './foundation-fragments';
 import { partitionFoundationSource, fragmentDependency, changedFragmentIds } from './foundation-fragment-work';
@@ -51,6 +51,8 @@ import { readSourcePreparation, prepareFoundationSource, validateSourceBoundaryP
 import { preprocessProject } from './project-preprocess';
 import { loadLightScenes, lightSceneInput, buildLightBoundaryContext, collectLightSceneIssues, assertLightScenePatches, applyLightScenePatches, type LightScene } from './light-foundation-supply';
 import { parseSceneBatch, type SceneSplitPlan, type SceneParserVersion } from './source-parser';
+import { prepareFoundationDirectionWork, readFoundationDirectionReceipt, directionDigest, type FoundationDirectionWork, type FoundationDirectionReceipt } from './foundation-series-direction';
+import { readFoundationDirectionBasis, saveFoundationDirectionReceipt } from './series-direction-service';
 import { readSceneParserVersions } from './scene-parser-version';
 import { normalizeLightSceneEdit } from './light-scene-edit-normalization';
 import { readSceneSplitPlans, previewSceneSplitPlans, applySceneSplitPlans } from './scene-split-plan';
@@ -95,6 +97,7 @@ export function costFingerprint(stage: FoundationStageCode, input: Record<string
   // Both legacy object inputs and the new tables are compared in the same semantic representation.
   input = normalizeFoundationSceneRefWire(projectFoundationModelInput(input)) as Record<string, unknown>;
   if (Object.hasOwn(input, 'scenes')) input = { ...input, scenes: expandFoundationSceneTable(input.scenes) };
+  if (Object.hasOwn(input, 'boundaryContext')) input = { ...input, boundaryContext: expandFoundationBoundaryContext(input.boundaryContext) };
   const catalog = isRecord(input.candidates) && isRecord(input.candidates.f2) ? input.candidates.f2 : null;
   const { issues: _issues, humanChoices: _choices, repairItems, ...catalogFacts } = catalog ?? {};
   const scopedCost = (item: Record<string,unknown>) => isRecord(item.applicationScope) && ['SCENES','UNRESOLVED'].includes(String(item.applicationScope.kind)) ? { applicationScope:item.applicationScope } : {};
@@ -821,6 +824,8 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
         repairBudgetContext: inputBudgetFingerprint(refreshed), repairBudgetKey: task!.repairBudgetKey ?? inputBudgetFingerprint(refreshed) });
     }
     const input = await loadFoundationInputs(projectId, db), loaded = await loadFoundationDocument(db, projectId, input); doc = loaded.document;
+    const directionBasis = await readFoundationDirectionBasis(projectId, db);
+    const directionWorkFor = (phase: DeliveryPhase, scope: number[], fragment?: FoundationFragment) => phase === 'EDIT' ? prepareFoundationDirectionWork(directionBasis, input.sourceIndex, scope, fragment) : null;
     if (contextFingerprint(input) !== task.contextFingerprint || input.sourceVersion !== task.sourceVersion) throw new Error('排队后原文或项目条件改变，已有稿保留，请继续更新资料。');
     const checkCurrent = async (checkDb: Db = db) => {
       const current = await readTask(checkDb, projectId);
@@ -829,9 +834,11 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
     };
     let pendingSplits: SceneSplitPlan[] = [], pendingPatches: SceneFieldPatch[] = [];
     let pendingCompletedFragment: FoundationFragment | null = null;
+    let pendingDirection: { work: FoundationDirectionWork; receipt: FoundationDirectionReceipt } | null = null;
     const save = async (reason: string) => {
       doc = await saveFoundationDocument(db, projectId, doc.revision, doc, reason, async tx => {
         await checkCurrent(tx);
+        if (pendingDirection) await saveFoundationDirectionReceipt(tx, projectId, pendingDirection.work, pendingDirection.receipt);
         if (pendingSplits.length) await applySceneSplitPlans(projectId, tx, pendingSplits);
         if (pendingPatches.length) await applyLightScenePatches(projectId, tx, pendingPatches, await loadLightScenes(projectId, tx));
         // Commit the accepted slice and its post-edit dependency together. Its own
@@ -843,6 +850,8 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       });
       if (pendingSplits.length || pendingPatches.length) scenes = await loadLightScenes(projectId, db);
       pendingSplits = []; pendingPatches = []; pendingCompletedFragment = null;
+      if (pendingDirection && !directionBasis.receipts.some(row => row.runId === pendingDirection!.receipt.runId)) directionBasis.receipts.push(pendingDirection.receipt);
+      pendingDirection = null;
       await update({ documentRevision: doc.revision, completedEpisodes: doc.editorialCoverage, unresolved: currentTodos(doc) });
     };
     const adoptAuthorSuggestions = async () => db.$transaction(async tx => {
@@ -871,12 +880,13 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       return scene && Object.entries(patch).every(([field, value]) => field === 'episode' || field === 'sceneKey' || JSON.stringify(scene[field as keyof LightScene]) === JSON.stringify(value));
     });
     await adoptAuthorSuggestions();
-    const call = async <T>(stage: 'F2' | 'Q1', phase: DeliveryPhase, scope: number[], validate: (value: unknown) => T, targets?: LocalRepairTargets, fragment?: FoundationFragment): Promise<{ output: T; runId: string; suggestions: FoundationChoiceView[]; decisions: FoundationChoiceView[] }> => {
+    const call = async <T>(stage: 'F2' | 'Q1', phase: DeliveryPhase, scope: number[], validate: (value: unknown) => T, targets?: LocalRepairTargets, fragment?: FoundationFragment): Promise<{ output: T; runId: string; suggestions: FoundationChoiceView[]; decisions: FoundationChoiceView[]; direction?: { work: FoundationDirectionWork; receipt: FoundationDirectionReceipt } }> => {
       await checkCurrent(); await update({ phase, scope, message: phase === 'GENERATE_F1' ? '正在整理分集导航，完成的内容会逐段保存。' : phase === 'GENERATE_F2' ? '正在整理基础资产与必要形象。' : phase === 'REPAIR' ? '正在补齐剩余局部事项。' : phase === 'APPLY_DECISION' ? '正在采用你的选择，只更新受影响内容。' : '正在检查并直接完善已有资料。' });
       const choices = await loadFoundationChoices(db, projectId, input.sourceVersion, true), identities = [...await knownAssets(db, projectId, doc), ...(doc.fragmentProgress?.sourceVersion === input.sourceVersion ? doc.fragmentProgress.f2.flatMap(part => part.output.assets) : [])];
       const all = input.sourceIndex.episodes.map(e => e.number);
       const suggestions = choices.pending.filter(choice => doc.reviewedSuggestions[choice.id] !== choice.revision && !doc.requiredDecisionIds.includes(choice.id) && scope.some(n => remainingChoiceScope(doc, choice, 'suggestionCoverage', all).includes(n)));
       const decisions = choices.confirmed.filter(choice => doc.appliedDecisions[choice.id] !== choice.revision && scope.some(n => remainingChoiceScope(doc, choice, 'decisionCoverage', all).includes(n)));
+      let rawDirection: unknown;
       const validateBound = (value: unknown) => {
         const output = validateStageRecords(normalizeFoundationSceneRefWire(value),validate);
         if (stage === 'Q1') {
@@ -902,14 +912,19 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
             }
           }
         }
+        rawDirection = isRecord(value) ? value.seriesDirection : undefined;
         return output;
       };
       const fullInput = { ...buildDeliveryInput(stage, phase, input, doc, scope, suggestions, decisions, identities, scenes, targets, choices.pending.filter(choice => doc.requiredDecisionIds.includes(choice.id))), humanChoiceRegistry: selectRequestChoices(choices.registry, scope) };
-      const callInput = fragment ? { ...fullInput, source: fragmentSource(input.sourceIndex, fragment), fragment,
+      const baseCallInput = fragment ? { ...fullInput, source: fragmentSource(input.sourceIndex, fragment), fragment,
         scenes: fullInput.scenes.filter(scene => scenes.some(original => original.episode === scene.episode && original.sceneKey === scene.sceneKey && original.sourceRange.start < fragment.end && original.sourceRange.end > fragment.start)),
         facts: { ...fullInput.facts, current: fullInput.facts.current.filter(fact => fact.evidence.episode === fragment.episode && fact.evidence.start < fragment.end && fact.evidence.end > fragment.start) },
         delivery: { ...fullInput.delivery, instructions: fullInput.delivery.instructions + ' 本次仅处理fragment给出的原文UTF-16半开区间；coverage中的集号只表示片段所属集，程序在所有片段完成后才登记整集完整。source.lines保留原集行号，首末行可能只是片段，不得引用未提供文字或删除本片外资产/场次；分片只作有据增量和局部字段修正，身份删除/归并登记待办，不在分片执行。' }
       } : fullInput;
+      const directionWork = stage === 'Q1' ? directionWorkFor(phase, scope, fragment) : null;
+      const callInput = { ...baseCallInput, ...(directionWork ? { seriesDirectionPreparation: directionWork.request } : {}) };
+      const sideResult = (runId: string, actualInput: Record<string, unknown> = callInput) => directionWork && directionDigest(actualInput.seriesDirectionPreparation) === directionDigest(directionWork.request)
+        ? { direction: { work: directionWork, receipt: readFoundationDirectionReceipt(directionWork, input.sourceIndex, rawDirection, runId) } } : {};
       if (fragment) {
         const localText = input.sourceIndex.episodes.find(e => e.number === fragment.episode)!.content.slice(fragment.start, fragment.end);
         callInput.registry = selectDependencySafeRegistry(callInput.registry,doc.f2?.assets??[],scope,localText);
@@ -928,7 +943,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
         try {
           const replay = await runFoundationDeliveryCall({ stage, prompt, context: { projectId, provider: task!.provider, role, sessionMode: 'ephemeral', runId: entry.run.id, batchToken: taskId, sourceVersion: input.sourceVersion, inputVersion: input.inputVersion, chunkIndex: 1, scope },
             validate: validateBound, checkCurrent, resumeFrom: saved, maxRepairAttempts: 0 });
-          return { output: replay.output, runId: entry.run.id, suggestions, decisions };
+          return { output: replay.output, runId: entry.run.id, suggestions, decisions, ...sideResult(entry.run.id, structuredCallInput(saved.taskPrompt) ?? {}) };
         } catch { await checkCurrent(); /* Invalid paid content remains bounded evidence, including across tasks. */ }
       }
       const currentEvidence = evidence.filter(entry => entry.receiver === receiverVersion), paid = formatGuardAttempts(currentEvidence, task);
@@ -957,7 +972,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
           onAttempt: async attempt => { if (attempt.requestOutcome === 'NOT_SENT') assertFoundationRequestBudget(attempt.systemPrompt, attempt.taskPrompt); attempts[attempt.sequence - 1] = structuredClone(attempt); await persist(); } });
         await db.pipelineRun.update({ where: { id: run.id }, data: { status: 'SUCCEEDED', finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime(), outputSummary: JSON.stringify({ deliveryTaskId: taskId, documentBasis: doc.revision, coverage: scope }) } });
         await update({ ...await deliveryCounts(db, projectId, taskId), repairBudgetUsed: (await currentRepairBudget()).used });
-        return { output: result.output, runId: run.id, suggestions, decisions };
+        return { output: result.output, runId: run.id, suggestions, decisions, ...sideResult(run.id) };
       } catch (error) {
         if (error instanceof DeliveryCallError) attempts = error.attempts;
         try { await persist(); await db.pipelineRun.updateMany({ where: { id: run.id, status: 'RUNNING' }, data: { status: 'FAILED', finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime(), error: errorText(error) } }); } catch { /* Do not replay a request to repair a log write. */ }
@@ -1045,7 +1060,8 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       return planFoundationRequestScope(pending, scope => {
         const work = buildEditWork(scope, currentChoices);
         const request = { ...buildDeliveryInput('Q1', work.phase, input, doc, work.scope, work.localSuggestions, work.localDecisions, identities, scenes, work.targets, currentChoices.pending.filter(choice => doc.requiredDecisionIds.includes(choice.id))), humanChoiceRegistry: selectRequestChoices(currentChoices.registry,work.scope) };
-        return input.systemPrompts.Q1.length + buildLightFoundationPrompt('Q1', request).length;
+        const directionWork = directionWorkFor(work.phase, scope);
+        return input.systemPrompts.Q1.length + buildLightFoundationPrompt('Q1', { ...request, ...(directionWork ? { seriesDirectionPreparation: directionWork.request } : {}) }).length;
       });
     };
     const edit = async (scope: number[], phase: DeliveryPhase, targets?: LocalRepairTargets, fragment?: FoundationFragment) => {
@@ -1068,6 +1084,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       }, targets, fragment);
       if (result.output.changes.sceneSplits?.length) await previewSceneSplitPlans(projectId, db, result.output.changes.sceneSplits);
       doc = applyDocumentEdit(doc, result.output, input.sourceIndex);
+      pendingDirection = result.direction ?? null;
       if (fragment) {
         progress().q1 = [...new Set([...progress().q1, fragment.id])];
         pendingCompletedFragment=fragment;

@@ -1,5 +1,8 @@
 # 分镜导演工作台
 
+> **3008 当前更新版本：`3008-v2026.10.03.2`（开发验证版）**
+> 使用独立分支 [`handoff/3008-v2026.10.03.2`](https://github.com/K1rsam/director-web/tree/handoff/3008-v2026.10.03.2)。这是在旧版 `1c77b9f` 上追加的版本，不覆盖 `main` 或旧交接分支。先读 [本版更新说明](docs/3008-RELEASE-20261003-V2.md)；**Windows 更新及启动请读 [Windows 接续指南](docs/3008-WINDOWS-UPDATE-20261003-V2.md)**，不要使用下方历史 3000 安装入口。GitHub 只包含代码、规则和说明，不包含本机项目、密钥与生成结果。
+
 > **2026-09-27 本地集成：第三阶段分镜创作**
 > 新版V4内核已接入3008，界面沿用本工作台Soft Iris体系。使用与验证见 [第三阶段说明](docs/3008-STAGE3-WORKBENCH.md)。用户现已要求进入上游重构：原1.5显示改称“第二阶段 · 资产形象设计”；职责与格式借鉴见 [第一/第二阶段反推分析](docs/3008-UPSTREAM-REFACTOR-DESIGN.md)。不代表完整重构、提交、发布或真实成片验收已完成。
 
@@ -18,6 +21,7 @@
 
 | 入口 | 内容 |
 | --- | --- |
+| [`handoff/3008-v2026.10.03.2`](https://github.com/K1rsam/director-web/tree/handoff/3008-v2026.10.03.2) | 当前 3008 独立更新版本：方向共用读取、说者与长稿接收、步骤动态联动、情绪/幻想修订；Windows 按新版指南接续 |
 | [`main`](https://github.com/K1rsam/director-web/tree/main) | 本地应用稳定基线；已同步本轮正式界面更新 |
 | [`sites-online`](https://github.com/K1rsam/director-web/tree/sites-online) | Sites 平台适配代码；使用云端存储与本地 Runner，不直接照本页启动 |
 | [`handoff/windows-local-20260905`](https://github.com/K1rsam/director-web/tree/handoff/windows-local-20260905) | 额外保存的本机开发快照：对白、时长与流水线改动；继续这部分开发时使用，未合入稳定基线 |

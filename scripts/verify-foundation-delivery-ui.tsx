@@ -316,14 +316,17 @@ check("四卡只突出真实当前岗位，计时恢复且非活动状态冻结"
   }
   for (const status of ["WAITING_USER", "STOPPED", "INTERRUPTED", "PARTIAL", "COMPLETE"] as const) {
     const html = rail({ ...base, task: { ...clockTask, status }, complete: status === "COMPLETE" });
-    assert.doesNotMatch(html, /aria-current="step"|data-clock="running"|正在工作/);
+    assert.doesNotMatch(html, /data-workflow-activity-state="(?:running|waiting)"|aria-busy="true"|data-clock="running"|正在工作/);
+    if (["WAITING_USER", "STOPPED", "INTERRUPTED"].includes(status)) assert.match(html, /待处理步骤/, "定位暂停位置不等于宣称仍在执行");
     assert.ok(html.includes('data-clock="stopped"') && html.includes("已停止计时"));
     assert.ok(html.includes("2分 5秒"));
   }
   const queued = rail({ ...base, busy: true, task: { ...clockTask, status: "QUEUED" } });
   assert.ok(queued.includes("排队中") && !queued.includes("正在工作"));
-  const unknown = rail({ ...base, busy: true, task: { ...clockTask, unknownOutcome: true } });
-  assert.doesNotMatch(unknown, /aria-current="step"|data-clock="running"/);
+  const unknown = rail({ ...base, busy: true, action: "UNKNOWN_CONFIRM", task: { ...clockTask, status: "INTERRUPTED", unknownOutcome: true } });
+  assert.doesNotMatch(unknown, /data-workflow-activity-state="(?:running|waiting)"|aria-busy="true"|data-clock="running"/);
+  const inFlight = rail({ ...base, busy: true, task: { ...clockTask, unknownOutcome: true } });
+  assert.match(inFlight, /data-workflow-activity-state="running"/, "活跃请求落盘前的未知结果保护不能熄灭真实执行提示");
   const invalid = rail({ ...base, task: { ...clockTask, createdAt: "bad" } });
   assert.doesNotMatch(invalid, /NaN|本任务历时/);
   const requestClock = { ...base, busy: true, task: clockTask, activeCallStartedAt: '2026-09-14T00:01:00.000Z' };
@@ -353,7 +356,8 @@ check("worker消失后中断与未知结果同时可见，不能显示普通继�
   const rail = renderToStaticMarkup(createElement(FoundationWorkflowStatus, { projectId: 'project-1', state: interrupted, sourceReady: true, sceneCount: 3, remaining: [] }));
   assert.match(rail, /处理已中断/);
   assert.match(rail, /data-clock="stopped"/);
-  assert.doesNotMatch(rail, /aria-current="step"|data-clock="running"|当前请求已等待|当前工作：/);
+  assert.match(rail, /待处理步骤/);
+  assert.doesNotMatch(rail, /data-workflow-activity-state="(?:running|waiting)"|aria-busy="true"|data-clock="running"|当前请求已等待|当前工作：/);
 });
 
 check("客户端保留轮询直到服务回报非busy，然后清理计时器", () => {

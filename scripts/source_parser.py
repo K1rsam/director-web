@@ -336,7 +336,15 @@ def parse_scenes(payload):
 
 def main():
     try:
-        payload = json.load(sys.stdin); operation = payload.get("operation")
+        # Current workers send one newline-terminated JSON frame. Do not wait
+        # for EOF after a complete frame: that can keep the web worker blocked.
+        # Old compact/pretty-printed EOF-delimited workers remain compatible.
+        first_line = sys.stdin.readline()
+        try:
+            payload = json.loads(first_line)
+        except json.JSONDecodeError:
+            payload = json.loads(first_line + sys.stdin.read())
+        operation = payload.get("operation")
         value = parse_source(payload) if operation == "parse_source" else parse_scenes(payload) if operation == "parse_scenes" else (_ for _ in ()).throw(ValueError("unknown operation"))
         json.dump({"ok": True, "value": value}, sys.stdout, ensure_ascii=False)
     except Exception as error:

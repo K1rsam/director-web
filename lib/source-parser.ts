@@ -22,10 +22,12 @@ export type SceneSplitPlan = {
 
 function invoke(operation: "parse_source" | "parse_scenes", payload: Record<string, unknown>) {
   const parser = path.join(process.cwd(), "scripts/source_parser.py");
-  const encoded = JSON.stringify({ operation, ...payload });
+  // One complete JSON frame. Python can start without waiting for the pipe's
+  // eventual EOF, which is not a reliable completion signal on every runtime.
+  const encoded = JSON.stringify({ operation, ...payload }) + '\n';
   let stdout: string;
   try {
-    stdout = execFileSync(/*turbopackIgnore: true*/ process.env.PYTHON ?? "python3", [parser], { input: encoded, encoding: "utf8", windowsHide: true, maxBuffer: Math.max(8 * 1024 * 1024, Buffer.byteLength(encoded, "utf8") * 12), stdio: ["pipe", "pipe", "pipe"] });
+    stdout = execFileSync(/*turbopackIgnore: true*/ process.env.PYTHON ?? "python3", [parser], { input: encoded, encoding: "utf8", windowsHide: true, timeout: 30_000, killSignal: 'SIGKILL', maxBuffer: Math.max(8 * 1024 * 1024, Buffer.byteLength(encoded, "utf8") * 12), stdio: ["pipe", "pipe", "pipe"] });
   } catch (error) {
     const output = error && typeof error === "object" && "stdout" in error ? String(error.stdout ?? "") : "";
     try {

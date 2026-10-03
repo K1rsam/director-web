@@ -40,6 +40,88 @@ export function expandFoundationSceneTable(value: unknown): unknown {
   return rows.map(row => Object.fromEntries(columns.map((key,index) => [key,row[index]])));
 }
 
+const SOURCE_NODE_FORMAT = 'SOURCE_NODE_TABLE_V1';
+const sourceNodeColumns = ['id', 'target', 'kind', 'sourceUnitIds', 'start', 'end', 'startLine', 'endLine'];
+const sourceNodeGuide = 'columns逐行对应rows，完全等价于原nodes；start/end恢复为sourceRange的UTF16半开区间，其余字段原样保留。原文仍在previousSource.text；节点id、成员、类型、顺序及行号均未删除，解析未决不等于已确认事实。';
+const sourceUnitGuide = ' sourceUnitPrefix存在时，sourceUnitIds内的每个正整数n恢复为sourceUnitPrefix+String(n)，仅共用逐字一致的源键前缀，不计算或改变hash。';
+function validSourceNode(node: unknown): node is RecordValue {
+  return record(node) && jsonValue(node) && Object.keys(node).length === 7
+    && ['id', 'target', 'kind', 'sourceUnitIds', 'sourceRange', 'startLine', 'endLine'].every(key => Object.hasOwn(node, key))
+    && ['id', 'target', 'kind'].every(key => typeof node[key] === 'string')
+    && Array.isArray(node.sourceUnitIds) && node.sourceUnitIds.every(id => typeof id === 'string')
+    && record(node.sourceRange) && Object.keys(node.sourceRange).length === 2
+    && Number.isSafeInteger(node.sourceRange.start) && Number(node.sourceRange.start) >= 0
+    && Number.isSafeInteger(node.sourceRange.end) && Number(node.sourceRange.end) >= Number(node.sourceRange.start)
+    && Number.isSafeInteger(node.startLine) && Number(node.startLine) >= 1
+    && Number.isSafeInteger(node.endLine) && Number(node.endLine) >= Number(node.startLine);
+}
+function compactFoundationBoundaryContext(value: unknown): unknown {
+  if (!record(value) || !record(value.previousSource)) return value;
+  const nodes = value.previousSource.nodes;
+  if (!Array.isArray(nodes) || nodes.length < 2 || !nodes.every(validSourceNode)) return value;
+  const units = nodes.flatMap(node => node.sourceUnitIds as string[]);
+  const prefix = /^((?:src:)?[a-f0-9]{64}:u)[1-9]\d*$/u.exec(units[0] ?? '')?.[1];
+  const sourceUnitPrefix = prefix && units.every(id => id.startsWith(prefix) && Number.isSafeInteger(Number(id.slice(prefix.length)))
+    && Number(id.slice(prefix.length)) > 0 && id === prefix + String(Number(id.slice(prefix.length)))) ? prefix : undefined;
+  const table = { format: SOURCE_NODE_FORMAT, columns: sourceNodeColumns, interpretation: sourceNodeGuide + (sourceUnitPrefix ? sourceUnitGuide : ''),
+    ...(sourceUnitPrefix ? { sourceUnitPrefix } : {}),
+    rows: nodes.map(node => [node.id, node.target, node.kind, sourceUnitPrefix ? (node.sourceUnitIds as string[]).map(id => Number(id.slice(sourceUnitPrefix.length))) : node.sourceUnitIds,
+      (node.sourceRange as RecordValue).start, (node.sourceRange as RecordValue).end, node.startLine, node.endLine]) };
+  return JSON.stringify(table).length < JSON.stringify(nodes).length
+    ? { ...value, previousSource: { ...value.previousSource, nodes: table } } : value;
+}
+/** Canonical boundary packages stay objects. Restore model-only tables before
+ * comparing paid-work identity; a cheaper wire is not a new production job. */
+export function expandFoundationBoundaryContext(value: unknown): unknown {
+  if (!record(value) || !record(value.previousSource) || !record(value.previousSource.nodes)
+    || value.previousSource.nodes.format !== SOURCE_NODE_FORMAT) return value;
+  const table = value.previousSource.nodes;
+  const prefix = table.sourceUnitPrefix;
+  if (Object.keys(table).some(key => !['format', 'columns', 'interpretation', 'rows', 'sourceUnitPrefix'].includes(key))
+    || Object.hasOwn(table, 'sourceUnitPrefix') && (typeof prefix !== 'string' || !/^(?:src:)?[a-f0-9]{64}:u$/u.test(prefix))
+    || table.interpretation !== sourceNodeGuide + (prefix ? sourceUnitGuide : '') || JSON.stringify(table.columns) !== JSON.stringify(sourceNodeColumns)
+    || !Array.isArray(table.rows) || !table.rows.every(row => Array.isArray(row) && row.length === 8 && jsonValue(row))) {
+    throw new Error('源节点传输结构无效，未猜测或丢弃字段。');
+  }
+  if (prefix && !table.rows.every(row => Array.isArray(row[3]) && row[3].every(n => Number.isSafeInteger(n) && n > 0))) {
+    throw new Error('源节点成员传输字段无效，未猜测或丢弃字段。');
+  }
+  const nodes = table.rows.map(row => ({ id: row[0], target: row[1], kind: row[2], sourceUnitIds: prefix ? row[3].map((n: number) => prefix + String(n)) : row[3],
+    sourceRange: { start: row[4], end: row[5] }, startLine: row[6], endLine: row[7] }));
+  if (!nodes.every(validSourceNode)) throw new Error('源节点传输字段无效，未猜测或丢弃字段。');
+  return { ...value, previousSource: { ...value.previousSource, nodes } };
+}
+
+/** Factor only proved arithmetic source-coordinate repetition. Logical rows,
+ * their order, independent IDs and all non-coordinate fields remain intact. */
+function compactHistoricalRowRuns(table: { format: string; columns: string[]; rows: unknown[][]; interpretation: string }): unknown {
+  const evidenceAt = table.columns.indexOf('evidence'), retrievalAt = table.columns.indexOf('retrieval');
+  if (evidenceAt < 0 || retrievalAt < 0) return table;
+  const equalFields = table.rows.map(row => JSON.stringify(row.filter((_, at) => at !== evidenceAt)));
+  const origin = (row: unknown[]) => Array.isArray(row[evidenceAt]) ? row[evidenceAt] as number[] : null;
+  const blocks: unknown[][] = [];
+  for (let at = 0; at < table.rows.length;) {
+    const first = table.rows[at], a = origin(first), b = table.rows[at + 1] && origin(table.rows[at + 1]);
+    let count = 1, step: number[] | null = null;
+    if (first[retrievalAt] === null && a?.length === 3 && b?.length === 3 && a[0] === b[0]
+      && equalFields[at] === equalFields[at + 1] && b[1] > a[1] && b[2] > a[2]) {
+      step = [b[1] - a[1], b[2] - a[2]];
+      while (at + count < table.rows.length) {
+        const next = origin(table.rows[at + count]);
+        if (!next || equalFields[at] !== equalFields[at + count] || next[0] !== a[0]
+          || next[1] !== a[1] + count * step[0] || next[2] !== a[2] + count * step[1]) break;
+        count++;
+      }
+    }
+    if (count < 4) { blocks.push([1, first]); at++; }
+    else { blocks.push([count, first, step]); at += count; }
+  }
+  const { rows, ...rest } = table;
+  const compact = { ...rest, format: 'HISTORICAL_EVIDENCE_TABLE_V3', rowEncoding: 'SOURCE_RANGE_RUNS_V1', rowCount: rows.length, rowBlocks: blocks,
+    interpretation: table.interpretation + ' rowBlocks按原顺序展开，每块[count,firstRow,step?]；count=1原样保留firstRow。count>1时第n行（n从0到count-1）的evidence为[原episode,原start+n*step[0],原end+n*step[1]]，其余字段逐行不变；先累加前块count即逻辑行号。没有合并原句或人物事件，重复发生仍是不同来源与id，retrieval索引引用展开后的逻辑rows。' };
+  return JSON.stringify(compact).length < JSON.stringify(table).length ? compact : table;
+}
+
 /** All historical evidence stays visible; only repeated wire keys/values and anchor IDs are factored out. */
 function compactFoundationHistoricalEvidence(value: unknown, sourceVersion?: unknown, sourceContextVersion?: unknown): unknown {
   if (!Array.isArray(value) || value.length < 2 || !value.every(record) || !jsonValue(value)) return value;
@@ -116,7 +198,8 @@ function compactFoundationHistoricalEvidence(value: unknown, sourceVersion?: unk
       }
       return row[key];
     })) };
-  return JSON.stringify(derived).length < JSON.stringify(legacy).length ? derived : legacy;
+  const compact = compactHistoricalRowRuns(derived);
+  return JSON.stringify(compact).length < JSON.stringify(legacy).length ? compact : legacy;
 }
 
 export function projectFoundationModelInput(input: unknown): unknown {
@@ -124,7 +207,8 @@ export function projectFoundationModelInput(input: unknown): unknown {
   const compactInput = Object.fromEntries(Object.entries(input).map(([key, value]) => [key,
     key === 'crossBatchVariants' && Array.isArray(value)
       ? value.filter(row => !record(row) || Object.keys(row).some(field => !['assetKey','variants'].includes(field)) || !Array.isArray(row.variants) || row.variants.length > 0)
-      : key === 'scenes' ? compactFoundationSceneTable(value) : key === 'source' ? value : compactFoundationSceneRefs(value)]));
+      : key === 'scenes' ? compactFoundationSceneTable(value) : key === 'boundaryContext' ? compactFoundationBoundaryContext(compactFoundationSceneRefs(value))
+        : key === 'source' ? value : compactFoundationSceneRefs(value)]));
   if (!record(input.facts)) return compactInput;
   const facts = input.facts;
   // Unknown root metadata may refer to full historical IDs. Keep legacy addressability
@@ -146,6 +230,22 @@ export function projectFoundationModelInput(input: unknown): unknown {
     if (episode.lines.length !== episode.lineCount || !episode.lines.every((line, index) => Array.isArray(line) && line[0] === index + 1 && typeof line[1] === 'string')) continue;
     sourceTexts.set(episode.number, episode.lines.map(line => line[1]).join(''));
   }
+  const direction = input.seriesDirectionPreparation;
+  const contextTexts = new Map<string, string>();
+  if (derivedHistoryAllowed && record(direction) && direction.version === 'FOUNDATION_DIRECTION_READING_V1'
+    && ['COLLECT', 'FINAL'].includes(String(direction.mode)) && Object.keys(direction).every(key => ['version', 'mode', 'priorSignals', 'background'].includes(key))
+    && Array.isArray(direction.background) && direction.background.every(row => Array.isArray(row) && row.length === 2 && row.every(value => typeof value === 'string'))
+    && new Set(direction.background.map(row => row[0])).size === direction.background.length) {
+    for (const [key, text] of direction.background as Array<[string, string]>) contextTexts.set(key, text);
+  }
+  const recoverableBackground = (fact: RecordValue) => {
+    if (!record(fact.evidence) || !record(fact.validity) || fact.validity.status !== 'UNKNOWN' || Object.keys(fact.validity).length !== 1
+      || Object.keys(fact).some(key => !['id', 'subjects', 'kind', 'statement', 'evidence', 'claim', 'applicability', 'validity'].includes(key))) return false;
+    const evidence = fact.evidence, text = typeof evidence.sectionKey === 'string' ? contextTexts.get(`background:${evidence.sectionKey}`) : undefined;
+    return evidence.domain === 'CONTEXT' && Object.keys(evidence).every(key => ['domain', 'sectionKey', 'start', 'end'].includes(key)) && text !== undefined
+      && typeof evidence.start === 'number' && typeof evidence.end === 'number' && Number.isSafeInteger(evidence.start) && Number.isSafeInteger(evidence.end)
+      && evidence.start >= 0 && evidence.end > evidence.start && evidence.end <= text.length && fact.statement === text.slice(evidence.start, evidence.end);
+  };
   const recoverableCurrent = (fact: unknown) => {
     if (!record(fact) || !record(fact.evidence) || !record(fact.validity)) return false;
     if (fact.validity.status !== 'UNKNOWN' || Object.keys(fact.validity).length !== 1) return false;
@@ -158,7 +258,7 @@ export function projectFoundationModelInput(input: unknown): unknown {
   const semanticIdentity = (fact: RecordValue) => JSON.stringify([fact.evidence, fact.subjects, fact.kind, fact.claim, fact.applicability, fact.validity]);
   const backgroundEvidence = new Set(['background', 'backgroundCandidates'].flatMap(category => Array.isArray(facts[category])
     ? (facts[category] as unknown[]).filter(record).map(semanticIdentity) : []));
-  let omittedCurrentIndexCount = 0, omittedUnlinkedDuplicateCount = 0;
+  let omittedCurrentIndexCount = 0, omittedUnlinkedDuplicateCount = 0, omittedBackgroundStatementCount = 0;
   const rows: unknown[][] = [];
   const rowKeys = new Map<string, number>();
   const groups: Record<string, number[]> = {};
@@ -177,8 +277,11 @@ export function projectFoundationModelInput(input: unknown): unknown {
       // Source coordinates remain exact, including episode zero and section identity.
       const origin = [evidence.domain, evidence.domain === 'EPISODE' ? evidence.episode : evidence.sectionKey, evidence.start, evidence.end];
       const validity = record(fact.validity) && (fact.validity.status !== 'UNKNOWN' || Object.keys(fact.validity).length > 1) ? fact.validity : undefined;
+      const bodyInDirection = recoverableBackground(fact);
+      if (bodyInDirection) omittedBackgroundStatementCount++;
+      const statement = bodyInDirection ? undefined : fact.statement;
       const row = [origin, fact.subjects, fact.kind, fact.claim, fact.applicability,
-        ...(typeof fact.statement === 'string' || validity ? [fact.statement ?? null] : []), ...(validity ? [validity] : [])];
+        ...(typeof statement === 'string' || validity ? [statement ?? null] : []), ...(validity ? [validity] : [])];
       const key = JSON.stringify(row);
       let index = rowKeys.get(key);
       if (index === undefined) { index = rows.length; rowKeys.set(key, index); rows.push(row); }
@@ -189,7 +292,9 @@ export function projectFoundationModelInput(input: unknown): unknown {
   for (const category of categories) delete rest[category];
   return { ...compactInput, facts: { ...rest, ...historicalWire, format: 'FACT_TABLE_V1',
     omittedCurrentIndexCount, omittedUnlinkedDuplicateCount,
+    ...(omittedBackgroundStatementCount ? { omittedBackgroundStatementCount } : {}),
     columns: ['origin:[domain,episodeOrSectionKey,start,end]', 'subjects', 'kind', 'claim', 'applicability', 'statement?', 'validity?'],
-    interpretation: '本批事实直接查完整source；可由该原文重建的逐行机械索引不重复传输，省略索引不等于省略原文或无需检查。台词只是角色主张，不等于事实。groups内整数是rows的零起始索引，仅为本次输入引用；origin起止是原文字符偏移，非行号。statement省略时读source对应原文；validity省略表示UNKNOWN。分类是程序检索提示，不是已确认事实。unlinkedBackground重复元数据只计数，其正文及坐标仍在背景/候选表。hash与数据库id由程序保管，不作为输出回执id。',
+    interpretation: '本批事实直接查完整source；可由该原文重建的逐行机械索引不重复传输，省略索引不等于省略原文或无需检查。台词只是角色主张，不等于事实。groups内整数是rows的零起始索引，仅为本次输入引用；origin起止是原文字符偏移，非行号。statement省略时读source对应原文；validity省略表示UNKNOWN。分类是程序检索提示，不是已确认事实。unlinkedBackground重复元数据只计数，其正文及坐标仍在背景/候选表。hash与数据库id由程序保管，不作为输出回执id。'
+      + (omittedBackgroundStatementCount ? ' CONTEXT的statement省略时，正文逐字位于seriesDirectionPreparation.background的[background:sectionKey,text]；按origin的UTF16半开区间读取，分类、主张和适用性不变。' : ''),
     rows, groups } };
 }

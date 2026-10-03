@@ -33,6 +33,8 @@ async function main() {
     await page.getByLabel('第三阶段当前步骤',{exact:true}).getByText('情绪统筹 · 等待首个输出',{exact:true}).waitFor();
     const current=page.locator('[aria-label="制作流程"] article[aria-current="step"]');
     assert.equal(await current.count(),1);assert.equal(await current.getAttribute('data-workflow-state'),'waiting');
+    assert.equal(await current.getAttribute('data-workflow-activity-state'),'waiting','the active local CLI remains visibly alive without claiming model generation');
+    assert.equal(await page.getByLabel('第三阶段当前步骤',{exact:true}).getAttribute('data-state'),'waiting','header and card must agree on execution wait');
     assert.match(await current.innerText(),/当前步骤/);assert.equal(await page.locator('[data-workflow-state="running"]').count(),0);
     const status=await page.getByRole('region',{name:'制作状态',exact:true}).innerText();assert.match(status,/CLI.*等待首个有效输出/);assert.match(status,/当前作业历时/);
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'header and step rail must fit narrow/enlarged text');

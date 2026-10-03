@@ -32,7 +32,11 @@ const speakerNumber = /^(?:[甲乙丙丁戊己庚辛壬癸]|[一二三四五六�
 const numberedRole = /^(?:(?:围观)?学生|路人|保镖|保安|侍卫|士兵|警察|警员|医生|护士|老师|同学|记者|店员|顾客|观众|考官|考生|村民|群众|工作人员|男|女)(?:[甲乙丙丁戊己庚辛壬癸]|[一二三四五六七八九十百]+|\d+|[A-Z])$/u;
 // Source role labels are independent of the catalogue's production identity.
 // A generated group name must not be needed to read its original A/B speakers.
-const sourceRole = /^(?:围观)?(?:男|女)?(?:学生|同学|考生|考官|路人|保镖|保安|侍卫|士兵|警察|警员|医生|护士|老师|记者|店员|顾客|观众|村民|群众|工作人员|助理|闺蜜|监控员)(?:[甲乙丙丁戊己庚辛壬癸]|[一二三四五六七八九十百]+|\d+|[A-Z])?$/iu;
+// Source syntax may identify an incidental role without an asset entry. Keep
+// its entire label; position/indefinite qualifiers do not assert a named identity.
+const sourceRoleNoun = '学生|同学|考生|考官|主考官|路人|保镖|保安|侍卫|士兵|警察|警员|医生|护士|老师|教师|记者|店员|顾客|观众|村民|群众|工作人员|助理|闺蜜|监控员|领导|院长|校长|主任|秘书|负责人|主持人|裁判|门卫|司机|服务员|售货员|军官|指挥官|首领|族长|长老|掌门';
+const sourceRoleQualifier = '围观|台上|台下|台边|场边|门口|门外|门内|后台|前排|后排|车内|身旁|身边|对面|路边|街边|楼上|楼下|远处|附近|现场|考场|大考|学院|医院|公司|警局|值班|当班|巡逻|随行|某|一名|一位|一个|一群|几名|几位|总|主|副';
+const sourceRole = new RegExp(`^(?:${sourceRoleQualifier}){0,2}(?:男|女)?(?:${sourceRoleNoun})(?:[甲乙丙丁戊己庚辛壬癸]|[一二三四五六七八九十百]+|\\d+|[A-Z])?$`, 'iu');
 const collectiveRole = /^(?:众人|众学生|众同学|众考生|众士兵|众群众|众工作人员)$/u;
 const sourceSystemRole = /^(?:系统|系统窗口|系统提示窗口)$/u;
 // Bounded positive name forms, not an arbitrary-colon whitelist. Other names still use cast/knownSpeakers.

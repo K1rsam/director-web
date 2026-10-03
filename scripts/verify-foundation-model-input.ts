@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { PrismaClient } from '@prisma/client';
 import { writeFile } from 'node:fs/promises';
-import { projectFoundationModelInput, expandFoundationSceneTable } from '../lib/foundation-model-input';
+import { projectFoundationModelInput, expandFoundationSceneTable, expandFoundationBoundaryContext } from '../lib/foundation-model-input';
 import { buildLightFoundationPrompt } from '../lib/foundation-production-prompts';
 
 function restoreSceneRefs(value: any): any {
@@ -43,6 +43,26 @@ assert.equal(fragment.facts.rows.length, 1);
 assert.deepEqual(projectFoundationModelInput(wire), wire);
 assert(!JSON.stringify(wire).includes(fact.id));
 
+const authorStatement = '甲内向，但愿意帮助朋友。\r\n';
+const authorFact = { ...fact, statement: authorStatement, evidence: { domain: 'CONTEXT', sectionKey: 'author', start: 0, end: authorStatement.length } };
+const sharedInput = { source, facts: { schema: 'FOUNDATION_FACTS_V1', sourceVersion: 's', sourceContextVersion: 'c', background: [authorFact] },
+  seriesDirectionPreparation: { version: 'FOUNDATION_DIRECTION_READING_V1', mode: 'FINAL', priorSignals: [], background: [['background:author', authorStatement]] } };
+const sharedBefore = JSON.stringify(sharedInput), sharedWire: any = projectFoundationModelInput(sharedInput);
+assert.equal(sharedWire.facts.rows[0][5], undefined, 'A direction-reading appendix and its exact fact body must not be sent twice.');
+assert.equal(sharedWire.facts.omittedBackgroundStatementCount, 1);
+const [domain, section, start, end] = sharedWire.facts.rows[0][0];
+assert.equal(domain, 'CONTEXT');
+assert.equal(sharedWire.seriesDirectionPreparation.background.find((row: string[]) => row[0] === `background:${section}`)[1].slice(start, end), authorFact.statement);
+assert.equal(JSON.stringify(sharedInput), sharedBefore);
+assert.deepEqual(projectFoundationModelInput(sharedWire), sharedWire);
+for (const conservative of [
+  { ...sharedInput, facts: { ...sharedInput.facts, customRootMeaning: 'unknown' } },
+  { ...sharedInput, facts: { ...sharedInput.facts, background: [{ ...authorFact, statement: '额外解释，不能当成原文省掉' }] } },
+  { ...sharedInput, facts: { ...sharedInput.facts, background: [{ ...authorFact, evidence: { ...authorFact.evidence, end: 9999 } }] } },
+  { ...sharedInput, facts: { ...sharedInput.facts, background: [{ ...authorFact, validity: { status: 'EXPLICIT', start: 0 } }] } },
+  { ...sharedInput, seriesDirectionPreparation: { ...sharedInput.seriesDirectionPreparation, version: 'UNKNOWN_PROTOCOL' } },
+]) assert.equal((projectFoundationModelInput(conservative) as any).facts.rows[0][5], conservative.facts.background[0].statement, 'Unknown shapes, external statements and invalid coordinates retain their body.');
+
 async function main() {
   if (!process.argv.includes('--saved')) { console.log('Foundation model-input semantic preservation passed'); return; }
   const db = new PrismaClient();
@@ -56,7 +76,8 @@ async function main() {
         if (position < 0) return [];
         let parsed: any; try { parsed = JSON.parse(prompt.slice(position + marker.length)); } catch { return []; }
         const projected: any = projectFoundationModelInput(parsed);
-        for (const key of Object.keys(parsed).filter(key => key !== 'facts')) assert.deepEqual(restoreSceneRefs(key === 'scenes' ? expandFoundationSceneTable(projected[key]) : projected[key]), restoreSceneRefs(key === 'scenes' ? expandFoundationSceneTable(parsed[key]) : parsed[key]));
+        const restore = (key: string, value: unknown) => restoreSceneRefs(key === 'scenes' ? expandFoundationSceneTable(value) : key === 'boundaryContext' ? expandFoundationBoundaryContext(value) : value);
+        for (const key of Object.keys(parsed).filter(key => key !== 'facts')) assert.deepEqual(restore(key, projected[key]), restore(key, parsed[key]));
         const oldSize = JSON.stringify(parsed).length, newSize = JSON.stringify(projected).length;
         const freshPrompt = buildLightFoundationPrompt(run.stageCode as 'F2' | 'Q1', parsed);
         return [{ runId: run.id, stage: run.stageCode, sequence: call.sequence, scope: parsed.scope, inputBefore: oldSize, inputAfter: newSize,

@@ -12,11 +12,15 @@ import { confirmSeriesDirection, createSeriesDirectionDraft, previewSeriesDirect
 import { prepareDirectionSource } from './series-direction-source';
 import { readSeriesDirectionEvidence, type EvidenceBatch, type EvidenceCoordinateCorrection } from './series-direction-evidence';
 import { validateSeriesDirectionEvidenceReview } from './series-direction-evidence-review';
+import { buildSourceIndex, isRecord } from './project-foundation-contracts';
+import { FOUNDATION_DIRECTION_VERSION, foundationDirectionCoverage, directionDigest, readFoundationDirectionReceipt, type FoundationDirectionBasis, type FoundationDirectionReceipt, type FoundationDirectionWork } from './foundation-series-direction';
+import { validateSavedDeliveryAttempt, type DeliveryAttempt } from './foundation-delivery-call';
 
 type Db = Prisma.TransactionClient;
 type Options = { db?: PrismaClient };
 type Pointer = { schema: "SERIES_DIRECTION_POINTER_V1"; sequence: number; draftId: string | null; currentId: string | null; revision: number; generationId: string | null };
-type SavedCard = { schema: "SERIES_DIRECTION_SAVED_V1"; card: SeriesDirectionCard; origin: "HUMAN" | "AI"; actorId: string; reviewedAt: string | null; runId?: string };
+type SavedCard = { schema: "SERIES_DIRECTION_SAVED_V1"; card: SeriesDirectionCard; origin: "HUMAN" | "AI"; actorId: string; reviewedAt: string | null; runId?: string;
+  foundationReading?: { version: typeof FOUNDATION_DIRECTION_VERSION; sourceVersion: string; receiptIds: string[] } };
 type SourceUnit = { id: string; evidenceId: string; kind: "EPISODE" | "BACKGROUND" | "UNRESOLVED"; title: string; text: string; production: boolean; episodeId?:string; sourceOffset?:number; dialogueRanges?:Array<{start:number;end:number}>; interpretations?:Array<{line:number;target:string;kind:string;speaker?:string;speakers?:string[]}> };
 type SourceBundle = { context: SeriesSourceContext; units: SourceUnit[]; executionMode: string; episodes: Array<{ id: string; number: number; title: string | null }>; warnings: string[]; blocker: string | null };
 type GenerationSummary = { phase: string; completedCalls: number; totalCalls: number; outcome: "RUNNING" | "SUCCEEDED" | "UNKNOWN" | "FAILED" | "REVIEW_REQUIRED"; message: string; usage: FoundationRunUsage | null; callUsage?: Array<{ call: number; provider: string; usage: FoundationRunUsage }>; reusedCalls?:number; programRecords?:number; resumedFrom?:string };
@@ -24,6 +28,8 @@ export type SeriesDirectionWorkspace = {
   source: { sourceVersion: string; episodes: SourceBundle["episodes"]; evidence: Array<{ id: string; kind: SourceUnit["kind"]; title: string }>; warnings: string[]; blocker: string | null };
   stateToken: string; status: "CONFIRMED" | "UNCONFIRMED" | "STALE"; draft: SeriesDirectionCard | null; current: SeriesDirectionCard | null;
   draftOrigin: "HUMAN" | "AI" | null; draftReviewed: boolean; draftBrief: string | null; draftIssue: string | null; brief: string | null;
+  draftCanConfirm?: boolean;
+  foundationPreparation?: { status: 'PENDING_STAGE1' | 'READING' | 'CANDIDATE_READY' | 'EXISTING' | 'NEEDS_SUPPLEMENT'; coveredEpisodes: number; totalEpisodes: number; extraCalls: 0; message: string };
   permissions: { canEdit: boolean; canConfirm: boolean };
   generationPlan: { batches: number; calls: number; characters: number; allowed: boolean; reason: string | null };
   generation: (GenerationSummary & { id: string; status: string; createdAt: string; pending: boolean; held?:boolean; resumable?:boolean; reusableCalls?:number; remainingCalls?:number; recoveryIssue?:string|null }) | null;
@@ -36,7 +42,7 @@ export type SeriesDirectionCommand = CommandBase & (
   | { action: "revoke" }
   | { action: "release-generation"; generationId: string; unknownOutcomeAcknowledged: boolean }
 );
-export type SeriesDirectionGenerateCommand = CommandBase & { costAcknowledged: boolean } & ({action:"generate"}|{action:"resume"});
+export type SeriesDirectionGenerateCommand = CommandBase & { costAcknowledged: boolean; repeatAnalysisAcknowledged?: boolean } & ({action:"generate"}|{action:"resume"});
 type Runner = typeof runRoleByProvider;
 const POINTER_SCHEMA = "SERIES_DIRECTION_POINTER_V1";
 const CARD_KEY = "SERIES_DIRECTION_CARD";
@@ -132,6 +138,69 @@ function projection(saved: SavedCard | null, source: SourceBundle, episodeId: st
   if (!saved) return { status: "UNCONFIRMED" as const, projection: null };
   if (source.blocker || saved.card.sourceVersion !== source.context.sourceVersion) return { status: "STALE" as const, projection: null };
   return { status: "CONFIRMED" as const, projection: projectSeriesDirection(saved.card, source.context, episodeId, saved.card.confirmation) };
+}
+
+const FOUNDATION_RECEIPT_KEY = 'SERIES_DIRECTION_FOUNDATION_RECEIPT';
+async function loadFoundationDirectionBasis(db: Db, projectId: string, source: SourceBundle, pointer: Awaited<ReturnType<typeof loadPointer>>): Promise<FoundationDirectionBasis> {
+  const [episodes, rows, draft, current] = await Promise.all([
+    db.episode.findMany({ where: { projectId }, orderBy: [{ number: 'asc' }, { id: 'asc' }], select: { id: true, number: true, title: true, content: true } }),
+    db.sceneSnapshot.findMany({ where: { projectId, sceneKey: FOUNDATION_RECEIPT_KEY }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] }),
+    loadCard(db, projectId, pointer.value.draftId), loadCard(db, projectId, pointer.value.currentId)
+  ]);
+  const foundationSourceVersion = buildSourceIndex(episodes).version;
+  const receipts = rows.map(row => parse<FoundationDirectionReceipt>(row.content)).filter(row => row.schema === 'FOUNDATION_DIRECTION_RECEIPT_V1'
+    && row.sourceVersion === source.context.sourceVersion && row.foundationSourceVersion === foundationSourceVersion);
+  return { source: source.context, foundationSourceVersion, pointerToken: pointer.token, episodes,
+    background: source.units.filter(unit => unit.kind === 'BACKGROUND').map(unit => ({ key: unit.evidenceId, text: unit.text })), receipts,
+    enabled: !pointer.value.generationId && !(draft?.card.sourceVersion === source.context.sourceVersion || current?.card.sourceVersion === source.context.sourceVersion), blocker: source.blocker };
+}
+/** Worker-only preparation; does not infer a direction, create a run or publish on read. */
+export async function readFoundationDirectionBasis(projectId: string, db: Db = prisma) {
+  return loadFoundationDirectionBasis(db, projectId, await loadSource(db, projectId), await loadPointer(db, projectId));
+}
+function sharedCandidate(saved: SavedCard | null, basis: FoundationDirectionBasis) {
+  const reading = saved?.foundationReading;
+  if (!saved || !reading || reading.version !== FOUNDATION_DIRECTION_VERSION || reading.sourceVersion !== basis.source.sourceVersion || saved.card.sourceVersion !== basis.source.sourceVersion) return false;
+  const receipts = basis.receipts.filter(row => reading.receiptIds.includes(row.runId));
+  return receipts.length === reading.receiptIds.length && foundationDirectionCoverage({ ...basis, receipts }).complete
+    && receipts.some(row => row.mode === 'FINAL' && !row.issue && directionDigest(row.content) === directionDigest(saved.card.content));
+}
+/** Saved atomically alongside Q1 acceptance. Raw paid evidence remains in the original Q1 run. */
+export async function saveFoundationDirectionReceipt(db: Db, projectId: string, work: FoundationDirectionWork, receipt: FoundationDirectionReceipt) {
+  const source = await loadSource(db, projectId);
+  if (source.context.sourceVersion !== work.basis.source.sourceVersion) fail('DIRECTION_STALE', '资料整理期间全剧来源改变；方向候选未覆盖新稿。');
+  const id = `foundation-direction-receipt:${receipt.runId}`;
+  const previous = await db.sceneSnapshot.findUnique({ where: { id } });
+  if (previous) {
+    if (previous.projectId !== projectId || directionDigest(parse(previous.content)) !== directionDigest(receipt)) fail('DIRECTION_CONFLICT', '同一资料回包已有不同的方向接收记录；未覆盖原证据。');
+    return;
+  }
+  const run = await db.pipelineRun.findFirst({ where: { id: receipt.runId, projectId, stageCode: 'Q1' } });
+  const log = run ? parse<Record<string, unknown>>(run.log || '{}') : null;
+  const calls = log && Array.isArray(log.calls) ? log.calls.filter(isRecord) : [];
+  const sourceIndex = buildSourceIndex(work.basis.episodes);
+  if (!calls.some(call => {
+    if (call.requestOutcome !== 'RESPONDED' || typeof call.taskPrompt !== 'string') return false;
+    try {
+      const marker = call.taskPrompt.lastIndexOf('INPUT_JSON:\n');
+      const input = marker < 0 ? null : JSON.parse(call.taskPrompt.slice(marker + 12));
+      if (!isRecord(input) || directionDigest(input.source) !== directionDigest(work.source)
+        || directionDigest(input.seriesDirectionPreparation) !== directionDigest(work.request)) return false;
+      const original = validateSavedDeliveryAttempt(call as DeliveryAttempt, value => isRecord(value) ? value.seriesDirection : undefined);
+      return directionDigest(readFoundationDirectionReceipt(work, sourceIndex, original, receipt.runId)) === directionDigest(receipt);
+    } catch { return false; }
+  })) fail('DIRECTION_EVIDENCE', '缺少本次方向材料的实际读取回执；未声称全剧已读取。');
+  await db.sceneSnapshot.create({ data: { id, projectId, sceneKey: FOUNDATION_RECEIPT_KEY, title: receipt.issue ? '资料已保存 · 方向待补' : receipt.content ? '全剧方向候选 · 共用资料读取' : '分批方向依据 · 共用资料读取', content: JSON.stringify(receipt), metadata: JSON.stringify({ sourceVersion: receipt.sourceVersion, runId: receipt.runId, extraCalls: 0 }) } });
+  if (!receipt.content || receipt.issue) return;
+  const pointer = await loadPointer(db, projectId), basis = await loadFoundationDirectionBasis(db, projectId, source, pointer);
+  if (!foundationDirectionCoverage(basis).complete) return;
+  const card = makeDraft(source, pointer.value, receipt.content, true);
+  const saved: SavedCard = { schema: 'SERIES_DIRECTION_SAVED_V1', card, origin: 'AI', actorId: 'foundation:Q1', reviewedAt: null, runId: receipt.runId,
+    foundationReading: { version: FOUNDATION_DIRECTION_VERSION, sourceVersion: source.context.sourceVersion, receiptIds: basis.receipts.filter(row => !row.issue).map(row => row.runId) } };
+  const row = await persistCard(db, projectId, saved);
+  // Reserve history revisions too, but never replace a human/other generation's in-flight choice.
+  const isCurrent = pointer.token === work.basis.pointerToken && !pointer.value.generationId;
+  await writePointer(db, projectId, pointer, { ...pointer.value, revision: card.revision, ...(isCurrent ? { draftId: row.id } : {}) });
 }
 
 type ResponseRef = {runId:string;call:number;outputId:string;outputHash:string;reviewId?:string;reviewHash?:string};
@@ -233,6 +302,21 @@ export async function getSeriesDirectionWorkspace(projectId: string, actorId: st
       pointer.value.generationId ? db.pipelineRun.findFirst({ where: { id: pointer.value.generationId, projectId, stageCode: RUN_STAGE } }) : db.pipelineRun.findFirst({ where: { projectId, stageCode: RUN_STAGE }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] })
     ]);
     const currentProjection = projection(current, source, source.context.episodeIds[0] ?? ""), draftPreview = preview(draft?.card ?? null);
+    const foundationBasis = await loadFoundationDirectionBasis(db, projectId, source, pointer), foundationCoverage = foundationDirectionCoverage(foundationBasis);
+    const shared = sharedCandidate(draft, foundationBasis);
+    const stored = await db.sceneSnapshot.findFirst({ where: { projectId, sceneKey: 'FOUNDATION_DOCUMENT' }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], select: { content: true } });
+    const document = stored ? parse<Record<string, unknown>>(stored.content) : null;
+    const stage1Complete = document?.sourceVersion === foundationBasis.foundationSourceVersion && Array.isArray(document.editorialCoverage)
+      && foundationBasis.episodes.every(episode => (document.editorialCoverage as unknown[]).includes(episode.number));
+    const status = shared ? 'CANDIDATE_READY' : !foundationBasis.enabled && !pointer.value.generationId ? 'EXISTING'
+      : stage1Complete || foundationBasis.receipts.some(row => row.issue) || foundationBasis.blocker ? 'NEEDS_SUPPLEMENT'
+        : foundationBasis.receipts.length ? 'READING' : 'PENDING_STAGE1';
+    const foundationPreparation: NonNullable<SeriesDirectionWorkspace['foundationPreparation']> = { status, coveredEpisodes: foundationCoverage.coveredEpisodes, totalEpisodes: source.episodes.length, extraCalls: 0,
+      message: shared ? '方向候选已随第一阶段资料核对生成，没有追加独立调用；核对后可直接确认采用。'
+        : status === 'EXISTING' ? '已有方向草稿或采用卡，第一阶段不重复生产或覆盖。'
+          : status === 'NEEDS_SUPPLEMENT' ? foundationBasis.receipts.find(row => row.issue)?.issue ?? '已有资料尚无完整方向候选；旧结果保留，可手工补充。额外AI分析须单独明确发起，不自动重跑资料。'
+            : status === 'READING' ? '正在随第一阶段分批保留精简方向依据，全部读完后汇总候选，不逐批重读历史。'
+              : '新资料整理会随现有核对生成方向候选，无需另开全剧分析。' };
     const held=Boolean(run&&pointer.value.generationId===run.id);
     let recovery:{resumable:boolean;reusableCalls:number;remainingCalls?:number;recoveryIssue:string|null}={resumable:false,reusableCalls:0,recoveryIssue:null};
     if(run&&held&&run.status==='FAILED') {
@@ -240,7 +324,8 @@ export async function getSeriesDirectionWorkspace(projectId: string, actorId: st
       catch(error){recovery.recoveryIssue=seriesDirectionFailure(error).body.error;}
     }
     return { source: { sourceVersion: source.context.sourceVersion, episodes: source.episodes, evidence: source.units.map(u => ({ id: u.evidenceId, kind: u.kind, title: u.title })), warnings: source.warnings, blocker: source.blocker }, stateToken: pointer.token,
-      status: currentProjection.status, draft: draft?.card ?? null, current: current?.card ?? null, draftOrigin: draft?.origin ?? null, draftReviewed: Boolean(draft?.reviewedAt), draftBrief: draftPreview.brief, draftIssue: draftPreview.issue, brief: currentProjection.projection?.brief ?? null, permissions: access, generationPlan: plan(source),
+      status: currentProjection.status, draft: draft?.card ?? null, current: current?.card ?? null, draftOrigin: draft?.origin ?? null, draftReviewed: Boolean(draft?.reviewedAt), draftCanConfirm: shared || Boolean(draft?.reviewedAt), foundationPreparation,
+      draftBrief: draftPreview.brief, draftIssue: draftPreview.issue, brief: currentProjection.projection?.brief ?? null, permissions: access, generationPlan: plan(source),
       generation: run ? { ...parse<GenerationSummary>(run.outputSummary || "{}"), id: run.id, status: run.status, createdAt: run.createdAt.toISOString(), pending: held&&run.status==='RUNNING',held,...recovery } : null,
       history: history.map(row => { const card = row.sceneKey === CARD_KEY ? parse<SavedCard>(row.content).card : null; return { id: row.id, title: row.title ?? "方向历史", createdAt: row.createdAt.toISOString(), card, brief: preview(card).brief }; }) };
   });
@@ -312,7 +397,8 @@ export async function mutateSeriesDirection(projectId: string, actorId: string, 
       if (source.blocker) fail("DIRECTION_SOURCE", source.blocker);
       const saved = await loadCard(tx, projectId, pointer.value.draftId);
       if (!saved || saved.card.hash !== command.draftHash) fail("DIRECTION_CONFLICT", "待确认草稿已更新，请刷新并核对最新版本。");
-      if (!saved.reviewedAt || command.coverageAcknowledged !== true) fail("DIRECTION_COVERAGE", "请核对并认可当前方向及表达边界，勾选后保存草稿，再确认采用；不要求你声称逐字读完全剧，模型覆盖由实际回执另行核验。");
+      const shared = sharedCandidate(saved, await loadFoundationDirectionBasis(tx, projectId, source, pointer));
+      if ((!saved.reviewedAt && !shared) || command.coverageAcknowledged !== true) fail("DIRECTION_COVERAGE", "请核对并认可当前方向及表达边界，勾选后保存草稿，再确认采用；不要求你声称逐字读完全剧，模型覆盖由实际回执另行核验。");
       const card = confirmSeriesDirection(saved.card, source.context, { id: randomUUID(), projectId, sourceVersion: source.context.sourceVersion, draftHash: saved.card.hash, actorId, confirmedAt: new Date().toISOString() });
       const row = await persistCard(tx, projectId, { ...saved, card, actorId }); next.currentId = row.id;
     } else if (command.action === "revoke") {
@@ -370,6 +456,13 @@ export async function generateSeriesDirectionCandidate(projectId: string, actorI
     const source = await loadSource(tx, projectId), pointer = await loadPointer(tx, projectId);
     assertCurrent(command, source, pointer);
     if(command.action==='generate'&&pointer.value.generationId)fail("DIRECTION_GENERATION_PENDING", "已有候选调用执行中或结果待核对；不会自动重试。请先刷新查看或继续已保存进度。");
+    if (command.action === 'generate') {
+      const basis = await loadFoundationDirectionBasis(tx, projectId, source, pointer);
+      if (sharedCandidate(await loadCard(tx, projectId, pointer.value.draftId), basis) && command.repeatAnalysisAcknowledged !== true) fail('DIRECTION_REUSE', '第一阶段已生成可用方向候选，请核对采用或直接修改；未重复读取全剧。只有明确要求额外重做时才新增调用。');
+      const task = await tx.sceneSnapshot.findFirst({ where: { projectId, sceneKey: 'FOUNDATION_DELIVERY_TASK' }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], select: { content: true } });
+      const delivery = task ? parse<Record<string, unknown>>(task.content) : null;
+      if (delivery && ['QUEUED', 'RUNNING'].includes(String(delivery.status))) fail('DIRECTION_REUSE', '第一阶段正在整理资料并准备方向候选；请等待现有读取完成，未另开重复的全剧分析。');
+    }
     if(command.action==='resume'&&!pointer.value.generationId)fail('DIRECTION_RECOVERY','没有当前待恢复的调用；未开始新的整套生成。');
     const replay=command.action==='resume'?await prepareRecovery(tx,projectId,pointer.value.generationId!,source):null;
     const wire=replay??prepareSource(source),batches=wire.batches,planned=plan(source,batches);

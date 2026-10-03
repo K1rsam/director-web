@@ -115,12 +115,16 @@ export function createProductionWorkflowAdapters(actorId:string,services:Product
   }
   const runs:Row={};
   await Promise.all(Object.values(workflow.selectedRuns).map(async id=>{try{runs[id]=await readRun(id,workflow);}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}}));
+  const hasDirectionCandidate=Boolean(direction.draft&&direction.draft.sourceVersion===direction.source.sourceVersion||direction.draft&&!direction.draft.sourceVersion);
+  const independentDirectionLimit=direction.status!=='CONFIRMED'&&!hasDirectionCandidate&&!direction.generationPlan.allowed?direction.generationPlan.reason:null;
+  const directionSupplement=direction.status!=='CONFIRMED'&&!hasDirectionCandidate&&!direction.generation?.held&&direction.foundationPreparation?.status==='NEEDS_SUPPLEMENT'
+   ? '第一阶段正确资料已保存，但方向候选待补。可手工完善，或明确发起额外方向分析；未自动重读全剧。' : null;
   return {sourceVersion:productionWorkflowSourceVersion(input),availableEpisodes,canPrepareSource:!availableEpisodes.length&&stage1.action==='START',sourceConflicts,technicalIssues,
    standard:{ready:issues.length===0&&workflow.episodeNumbers.every(n=>availableEpisodes.includes(n)),issues},
    stage1:{ready:Boolean(stage1.complete),busy:Boolean(stage1.busy),blocker:stage1Blocker,userConfirmation,taskId:stage1.task?.id??null,requiredChoices:requiredChoices.map((c:Row)=>({id:c.id,question:c.question}))},
-   direction:{status:direction.status,hasCandidate:Boolean(direction.draft&&direction.draft.sourceVersion===direction.source.sourceVersion||direction.draft&&!direction.draft.sourceVersion),pending:Boolean(direction.generation?.pending),
+   direction:{status:direction.status,hasCandidate:hasDirectionCandidate,pending:Boolean(direction.generation?.pending),
     generationId:direction.generation?.id??null,settledKnown:direction.generation?.status==='FAILED'&&!direction.generation.pending&&direction.generation.usage?.unknownCalls===0&&Boolean(direction.generation.callUsage?.length),
-    blocker:direction.source.blocker??(!direction.generationPlan.allowed?direction.generationPlan.reason:null)??(direction.generation?.held&&!direction.generation.pending&&!direction.generation.resumable?(direction.generation.recoveryIssue??'方向调用已停止，需核对已有回包与用量；未自动重发。'):null),brief:direction.brief??direction.draftBrief??null},assets,runs};
+    blocker:direction.source.blocker??independentDirectionLimit??(direction.generation?.held&&!direction.generation.pending&&!direction.generation.resumable?(direction.generation.recoveryIssue??'方向调用已停止，需核对已有回包与用量；未自动重发。'):null)??directionSupplement,brief:direction.brief??direction.draftBrief??null},assets,runs};
  };
  return {inspect,readRun,withBudget:withProductionBudgetContext,
   recoverAction:async(workflow:ProductionWorkflow,action:Row)=>{

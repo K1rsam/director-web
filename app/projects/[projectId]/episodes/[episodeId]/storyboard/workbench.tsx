@@ -24,6 +24,7 @@ export function StoryboardWorkbench({ episodeId, episodeTitle, projectId, episod
   // Unknown connection status permits a request for server-side preflight, not a paid dispatch.
   const canRequestExecution=Boolean(index&&(index.runner.checked===false||index.runner.ready)&&(index.preparation?.ready!==false||index.preparation.deferred));
   const view = run ? deriveView(run, canRequestExecution) : null;
+  const phases = derivePhaseSteps(run, canRequestExecution);
   const disabled = Boolean(pending) || work.detailLoading;
   const warnings = [...new Set([...(index?.sourceWarnings || []), ...(run?.sourceWarnings || [])])];
   const showSettings = settingsOpen || !work.loading && !work.runId;
@@ -35,7 +36,7 @@ export function StoryboardWorkbench({ episodeId, episodeTitle, projectId, episod
   usePublishStoryboardStatus({
     label: pending ? pendingLabels[pending] || '操作处理中' : view?.title || (work.loading || work.detailLoading ? '正在读取任务状态' : '尚未开始制作'),
     description: view?.description || '创建任务后，可连续完成情绪统筹、完整主创与统一整编。',
-    tone: pending || run?.sourceCheckPending ? 'waiting' : view?.tone || 'idle'
+    tone: pending || run?.sourceCheckPending ? 'waiting' : run?.active && view?.tone !== 'attention' ? phases.find(phase => phase.isCurrent)?.state || view?.tone || 'idle' : view?.tone || 'idle'
   });
 
   useEffect(() => { if (!run?.active) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [run?.active]);
@@ -79,7 +80,7 @@ export function StoryboardWorkbench({ episodeId, episodeTitle, projectId, episod
     {work.error ? <div className={styles.errorBanner} role="alert"><strong>这次操作需要留意</strong><p>{work.error}</p>{work.creationUncertain ? <button type="button" className="quietButton" onClick={() => void work.refresh()}>核对已有任务列表</button> : null}</div> : null}
     {work.notice ? <p className={styles.savedNotice} role="status">{work.notice}</p> : null}
     <WorkflowGlassRail label="制作流程" className={styles.phaseGlassRail}>
-      {derivePhaseSteps(run, canRequestExecution).map((phase, index) => <WorkflowGlassCard key={phase.id} index={index} state={phase.state} aria-current={phase.isCurrent ? "step" : undefined}>
+      {phases.map((phase, index) => <WorkflowGlassCard key={phase.id} index={index} state={phase.state} activity={phase.activity} aria-current={phase.isCurrent ? "step" : undefined}>
         <span className={glass.number} aria-hidden="true">{phase.state === "complete" ? "✓" : phase.state === "attention" ? "!" : phase.number}</span>
         <div className={glass.heading}><h3 className={glass.title}>{phase.title}</h3><span className={glass.status}>{phase.label}</span></div>
         {phase.isCurrent ? <span className={styles.currentStep}>当前步骤</span> : null}

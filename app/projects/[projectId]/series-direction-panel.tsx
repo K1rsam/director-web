@@ -75,7 +75,7 @@ export function SeriesDirectionPanel({ projectId, initialWorkspace }: { projectI
   async function send(action: "save" | "confirm" | "revoke" | "generate" | "resume" | "release-generation") {
     const isGeneration=action==='generate'||action==='resume';
     if (mutationPending.current || (isGeneration && generationPending.current)) return;
-    if (action === "generate" && !window.confirm(`将读取全部${view.source.episodes.length}集与背景来源，分${view.generationPlan.batches}批取证并综合，最多${view.generationPlan.calls}次模型调用。按项目的API/CLI方式执行，费用未知；仅生成候选，不自动采用。是否开始？`)) return;
+    if (action === "generate" && !window.confirm(`${view.draft?.sourceVersion === view.source.sourceVersion ? '已有候选可核对或直接修改；额外重做会重复读取。\n' : ''}这是独立补充分析，不是第一阶段的共用读取。将读取全部${view.source.episodes.length}集与背景来源，分${view.generationPlan.batches}批取证并综合，最多${view.generationPlan.calls}次模型调用。费用未知；仅生成候选，不自动采用。是否仍要额外分析？`)) return;
     if(action==='resume'&&!window.confirm(`已核验${view.generation?.reusableCalls??0}份已保存回包，将复用这些结果，只补充剩余${view.generation?.remainingCalls??'待核对'}次调用。旧记录保留，候选不会自动采用。是否继续？`))return;
     if (action === "revoke" && !window.confirm("撤销当前采用后，后续制作将不再收到这张方向卡。已有结果与所有历史版本保留，是否继续？")) return;
     if (action === "release-generation" && !window.confirm("这只结束本地等待，不保证上游调用已终止。原输入与输出保留，用量和费用可能未知；再次生成可能额外计费。是否已核对并结束等待？")) return;
@@ -84,7 +84,7 @@ export function SeriesDirectionPanel({ projectId, initialWorkspace }: { projectI
     let refreshAfter = false;
     setError(""); setMessage("");
     const base = { stateToken: binding.current.stateToken, sourceVersion: binding.current.sourceVersion };
-    const command = { ...base, action, ...(action === "save" ? { content: contentFor(values), coverageAcknowledged: coverage } : action === "confirm" ? { draftHash: view.draft?.hash, coverageAcknowledged: coverage } : isGeneration ? { costAcknowledged: true } : action === "release-generation" ? { generationId: view.generation?.id, unknownOutcomeAcknowledged: true } : {}) };
+    const command = { ...base, action, ...(action === "save" ? { content: contentFor(values), coverageAcknowledged: coverage } : action === "confirm" ? { draftHash: view.draft?.hash, coverageAcknowledged: coverage } : isGeneration ? { costAcknowledged: true, ...(action === 'generate' ? { repeatAnalysisAcknowledged: true } : {}) } : action === "release-generation" ? { generationId: view.generation?.id, unknownOutcomeAcknowledged: true } : {}) };
     try {
       const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(command) }); const body = await response.json();
       if (generation !== requestGeneration.current) { refreshAfter = isGeneration; return; }
@@ -106,18 +106,24 @@ export function SeriesDirectionPanel({ projectId, initialWorkspace }: { projectI
       }
     }
   }
-  const currentLabel = view.status === "CONFIRMED" ? `已采用 v${view.current?.revision}` : view.status === "STALE" ? "已采用卡已过期" : "尚未确认";
-  const canConfirm = Boolean(view.draft && view.draft.sourceVersion === view.source.sourceVersion && view.draftReviewed && coverage && !dirty && !conflict && !view.source.blocker && !view.draftIssue && view.draft.hash !== view.current?.hash);
+  const currentLabel = view.status === "CONFIRMED" ? `已采用 v${view.current?.revision}` : view.status === "STALE" ? "已采用卡已过期" : view.foundationPreparation && view.draft ? '候选待确认' : '尚未确认';
+  const canConfirm = Boolean(view.draft && view.draft.sourceVersion === view.source.sourceVersion && (view.draftCanConfirm ?? view.draftReviewed) && coverage && !dirty && !conflict && !view.source.blocker && !view.draftIssue && view.draft.hash !== view.current?.hash);
+  const generateActions = <>{view.permissions.canEdit ? <button className="studioButton" data-variant="secondary" type="button" onClick={() => void send("generate")} disabled={generating || saving || !view.generationPlan.allowed || Boolean(view.generation?.held??view.generation?.pending) || conflict}>{generating ? "AI候选生成中…" : "生成AI候选"}</button> : null}
+    {view.permissions.canEdit&&view.generation?.resumable?<button className="studioButton" data-variant="primary" type="button" onClick={()=>void send('resume')} disabled={generating||saving||conflict||Boolean(view.source.blocker)}>继续已保存进度 · 剩余{view.generation.remainingCalls}次</button>:null}
+    <span className={styles.meta}>独立补充分析：{view.source.episodes.length} 集 · {view.generationPlan.characters.toLocaleString()} 字 · 额外 {view.generationPlan.calls} 次调用</span></>;
   return <section className={styles.panel} id="series-direction" aria-labelledby="series-direction-title">
     <header className={styles.header}><div><span className={styles.eyebrow}>全剧共享 · 各集保持弹性</span><h2 id="series-direction-title">全剧创作方向</h2><p>定位与表达边界由你定稿；草稿、AI候选与当前采用卡分开保留。</p></div><span className={styles.badge} data-status={view.status}>{currentLabel}</span></header>
     {view.status === "STALE" ? <p className={styles.warning}>全剧来源或制作背景已变化。旧卡仍在历史中，当前不会作为全剧方向投递。</p> : !view.current ? <p className={styles.note}>尚未确认全剧方向；不会根据首集或局部情绪生成默认定位。</p> : null}
     {view.brief ? <details className={styles.preview} open><summary>当前采用 · 各集收到的短brief <small>{Array.from(view.brief).length}/600字</small></summary><p>{view.brief}</p></details> : null}
+    {view.foundationPreparation ? <div className={styles.note} role="status"><p>{view.foundationPreparation.message}</p>
+      {view.foundationPreparation.status === 'READING' ? <small>已核验完整读取 {view.foundationPreparation.coveredEpisodes}/{view.foundationPreparation.totalEpisodes} 集；这不是创作质量验收。</small> : null}
+      {view.foundationPreparation.status === 'PENDING_STAGE1' ? <a href={`/projects/${encodeURIComponent(projectId)}`}>返回第一阶段整理资料</a> : null}
+      <p>确认后，第三阶段自动携带同一张精简方向卡；中间方向依据与历史不随每次调用重复发送。</p></div> : null}
     <div className={styles.actions}>
       <button className="studioButton" data-variant="secondary" type="button" onClick={() => void refresh()} disabled={saving}>刷新状态</button>
-      {view.permissions.canEdit ? <button className="studioButton" data-variant="secondary" type="button" onClick={() => void send("generate")} disabled={generating || saving || !view.generationPlan.allowed || Boolean(view.generation?.held??view.generation?.pending) || conflict}>{generating ? "AI候选生成中…" : "生成AI候选"}</button> : null}
-      {view.permissions.canEdit&&view.generation?.resumable?<button className="studioButton" data-variant="primary" type="button" onClick={()=>void send('resume')} disabled={generating||saving||conflict||Boolean(view.source.blocker)}>继续已保存进度 · 剩余{view.generation.remainingCalls}次</button>:null}
-      <span className={styles.meta}>完整来源 {view.source.episodes.length} 集 · {view.generationPlan.characters.toLocaleString()} 字 · 候选需 {view.generationPlan.calls} 次调用</span>
+      {!view.foundationPreparation ? generateActions : null}
     </div>
+    {view.foundationPreparation ? <details className={styles.preview} open={Boolean(view.generation?.held??view.generation?.pending)}><summary>额外分析（通常无需使用）</summary><p>优先核对现有候选或手工调整。旧版本缺少候选、或你明确要求重做时才使用；不会自动重新生成资产资料。</p><div className={styles.actions}>{generateActions}</div></details> : null}
     {view.generationPlan.reason ? <p className={styles.warning}>{view.generationPlan.reason}</p> : null}
     {view.generation ? <div className={styles.generation} aria-live="polite" aria-busy={generating || (view.generation.pending && view.generation.outcome === "RUNNING")}>
       <strong>{view.generation.pending ? "候选处理中" : view.generation.resumable?'已停止 · 可继续已保存进度':view.generation.status==='FAILED'?'已停止 · 需核对':view.generation.outcome === "UNKNOWN" ? "调用结果待核对" : view.generation.outcome === "REVIEW_REQUIRED" ? "候选已留在历史" : "候选已返回"}</strong>
@@ -146,7 +152,7 @@ export function SeriesDirectionPanel({ projectId, initialWorkspace }: { projectI
         {view.permissions.canConfirm ? <button className="studioButton" data-variant="secondary" type="button" disabled={saving || !canConfirm} onClick={() => void send("confirm")}>确认采用</button> : <span className={styles.meta}>草稿由管理员或审查人确认后生效。</span>}
         {view.permissions.canConfirm && view.current ? <button className="studioButton" data-variant="caution" type="button" disabled={saving || conflict} onClick={() => void send("revoke")}>撤销当前采用</button> : null}
       </div>
-      {view.draft && !view.draftReviewed ? <p className={styles.note}>定稿前请先核对来源、勾选并保存，再确认采用。</p> : null}
+      {view.draft && !view.draftReviewed ? <p className={styles.note}>{view.draftCanConfirm ? '核对候选后，勾选认可即可确认采用；有修改则先保存草稿，不需要再调用AI。' : '定稿前请先核对来源、勾选并保存，再确认采用。'}</p> : null}
       {view.draftBrief ? <details className={styles.preview}><summary>已保存草稿 · 短brief预览 <small>{Array.from(view.draftBrief).length}/600字</small></summary><p>{view.draftBrief}</p></details> : view.draftIssue ? <p className={styles.warning}>{view.draftIssue}</p> : null}
     </details>
     {error ? <p className={styles.error} role="alert">{error}</p> : null}{message ? <p className={styles.feedback} role="status">{message}</p> : null}
