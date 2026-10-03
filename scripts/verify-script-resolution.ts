@@ -128,7 +128,7 @@ async function main(){
   const zero=await service.readScriptReception(scopedProject.id,actor,undefined,{db});assert.deepEqual(zero.episodes.map(e=>e.number),[0,1]);assert.equal(zero.selected?.number,0);assert.equal(zero.selected?.ready,true,'explicit real episode zero remains supported');
   const savedZero=await service.confirmScriptResolution(scopedProject.id,actor,{episode:0,sourceVersion:zero.selected!.sourceVersion,expectedRevision:0,choice:{startLine:2,endLine:2,type:'ACTION'}},{db});assert.equal(savedZero.selected?.revision,1);
   const demoted=await service.assistScriptResolution(scopedProject.id,actor,{episode:0,sourceVersion:zero.selected!.sourceVersion,expectedRevision:1,startLine:1,endLine:1},{db,judge:async()=>{await importScope('BACKGROUND','2026-01-03');return {choice:null,note:'范围变化后不采用'};}});assert.equal(demoted.status,'STALE','source-scope demotion invalidates an in-flight candidate without changing raw text');
-  const route=readFileSync('app/projects/[projectId]/script-reception/route.ts','utf8');assert.match(route,/getCurrentUser/);assert.match(route,/user\.id/);assert.doesNotMatch(route,/input\.actorId/);assert.match(route,/origin/);
+  const route=readFileSync('app/projects/[projectId]/script-reception/route.ts','utf8');assert.match(route,/getCurrentUser/);assert.match(route,/user\.id/);assert.doesNotMatch(route,/input\.actorId/);assert.match(route,/hasSameLocalOrigin\(request\)/);
   const require=createRequire(import.meta.url),authPath=require.resolve('../lib/auth'),servicePath=require.resolve('../lib/script-resolution-service'),judgmentPath=require.resolve('../lib/script-resolution-judgment');
   const oldAuth=require.cache[authPath],oldService=require.cache[servicePath],oldJudgment=require.cache[judgmentPath];let sessionActor:string|null=actor,routeJudgments=0;
   const factoryContexts:Array<{actorId:string;sourceVersion:string;explicitExternalConsent:boolean}>=[];
@@ -136,13 +136,13 @@ async function main(){
   require.cache[servicePath]={id:servicePath,filename:servicePath,loaded:true,exports:{...service,readScriptReception:(p:string,a:string,e?:number)=>service.readScriptReception(p,a,e,{db}),confirmScriptResolution:(p:string,a:string,input:Parameters<typeof service.confirmScriptResolution>[2])=>service.confirmScriptResolution(p,a,input,{db}),assistScriptResolution:(p:string,a:string,input:Parameters<typeof service.assistScriptResolution>[2],options:NonNullable<Parameters<typeof service.assistScriptResolution>[3]>)=>service.assistScriptResolution(p,a,input,{db,judge:options?.judge})}} as NodeModule;
   require.cache[judgmentPath]={id:judgmentPath,filename:judgmentPath,loaded:true,exports:{createScriptResolutionJudgment:(options:{actorId:string;sourceVersion:string;explicitExternalConsent:boolean})=>{factoryContexts.push(options);return async()=>{routeJudgments++;return {choice:null,note:'测试回执：未发出请求',usage:{requestOutcome:'NOT_SENT',status:'unavailable',code:'MISSING_API_KEY'}};};}}} as NodeModule;
   try{
-   const api=require('../app/projects/[projectId]/script-reception/route'),context={params:Promise.resolve({projectId:project.id})},url=`http://local.invalid/projects/${project.id}/script-reception`;
+   const api=require('../app/projects/[projectId]/script-reception/route'),context={params:Promise.resolve({projectId:project.id})},url=`http://127.0.0.1:3008/projects/${project.id}/script-reception`;
    sessionActor=null;assert.equal((await api.GET(new Request(url),context)).status,401);
    sessionActor=stranger.id;assert.equal((await api.GET(new Request(url),context)).status,403);
    sessionActor=operator.id;assert.equal((await (await api.GET(new Request(url),context)).json()).canConfirm,false);
    sessionActor=actor;const currentView=await read();
    const body={action:'confirm',episode:1,sourceVersion:currentView.selected!.sourceVersion,expectedRevision:currentView.selected!.revision,choice:{startLine:4,endLine:4,type:'ACTION'}};
-   const post=(value:unknown,origin='http://local.invalid')=>api.POST(new Request(url,{method:'POST',headers:{origin,'Content-Type':'application/json'},body:JSON.stringify(value)}),context);
+   const post=(value:unknown,origin='http://127.0.0.1:3008')=>api.POST(new Request(url,{method:'POST',headers:{origin,'Content-Type':'application/json'},body:JSON.stringify(value)}),context);
    assert.equal((await post(body,'http://cross-origin.invalid')).status,403);
    assert.equal((await post({...body,actorId:stranger.id})).status,400);
    const confirmed=await post(body);assert.equal(confirmed.status,200);assert.equal((await confirmed.json()).selected.decisions.find((item:{startLine:number})=>item.startLine===4).actorId,actor);

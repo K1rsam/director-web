@@ -27,12 +27,12 @@ function loadTs(file,imports,context={}){
  return module.exports;
 }
 
-function fixture({sourceError=null,active=false,run=structuredClone(saved),env={},coordinatorOverrides={},sourcePartition=null,episodeNumber=1,diagnostics=null,diagnosticsError=null,policyError=null,localPhase=null,budgetAttempts=[],nativeRecovery=null,chain=null,lockedChain=null,boundaryHelpers=null,handoff=null}={}){
- const stats={sourceLoads:0,sourceProtocols:[],sourceReaders:[],inlinePerformanceModes:[],productionRefreshes:[],voiceMeasurements:0,cliChecks:0,resolverCalls:0,dispatches:[],coordinatorOptions:null,diagnosticReads:[],budgetReconciliations:[]};
+function fixture({sourceError=null,active=false,run=structuredClone(saved),env={},coordinatorOverrides={},sourcePartition=null,episodeNumber=1,diagnostics=null,diagnosticsError=null,policyError=null,localPhase=null,budgetAttempts=[],nativeRecovery=null,chain=null,lockedChain=null,boundaryHelpers=null,handoff=null,runtimeGlobal=null,cliState={error:null}}={}){
+ const stats={sourceLoads:0,sourceProtocols:[],sourceReaders:[],inlinePerformanceModes:[],productionRefreshes:[],voiceMeasurements:0,cliChecks:0,resolverCalls:0,dispatches:[],coordinatorOptions:null,diagnosticReads:[],executionReads:[],budgetReconciliations:[]};
  const readSource=(protocol,reader,inlinePerformance)=>{stats.sourceLoads++;stats.sourceProtocols.push(protocol);stats.sourceReaders.push(reader);stats.inlinePerformanceModes.push(inlinePerformance);if(sourceError)throw sourceError;return null;};
  const current={...structuredClone(episode),number:episodeNumber};
  const coordinator={
-  read:async()=>structuredClone(run),list:async()=>[structuredClone(run)],active:()=>active,cancellationStatus:async()=>[],executionState:()=>localPhase,executionStatus:async()=>[],scheduling:()=>({maxConcurrent:4,maxPerEpisode:1,inFlight:active?1:0,queued:localPhase==='queued'?1:0}),refreshProduction:async id=>{stats.productionRefreshes.push(id);return structuredClone(run);},
+  read:async()=>structuredClone(run),list:async()=>[structuredClone(run)],active:()=>active,cancellationStatus:async()=>[],executionState:()=>localPhase,executionStatus:async id=>{stats.executionReads.push(id);return [];},scheduling:()=>({maxConcurrent:4,maxPerEpisode:1,inFlight:active?1:0,queued:localPhase==='queued'?1:0}),refreshProduction:async id=>{stats.productionRefreshes.push(id);return structuredClone(run);},
   withPreparation:callback=>callback(),create:async()=>assert.fail('invalid source must not create a run'),
   ...Object.fromEntries(['start','repair','replan','recheck','pause'].map(action=>[action,async()=>{stats.dispatches.push(action);return structuredClone(run);}])),
   ...coordinatorOverrides
@@ -50,7 +50,7 @@ function fixture({sourceError=null,active=false,run=structuredClone(saved),env={
   './standard-script-reception':{UPSTREAM_MATERIAL_PROTOCOL:'upstream-material-v2'},
   './production-budget':{currentProductionBudget:()=>null,productionBudgetRoot:'/fixture-only-budget',productionBudgetStore:()=>({create:async()=>null,read:async()=>({projectIds:['p1'],maxCalls:40,maxTokens:2000000,summary:{},attempts:budgetAttempts}),reconcile:async(id,attemptId,receipt)=>{stats.budgetReconciliations.push({id,attemptId,...receipt});}}),withProductionBudgetContext:(_budget,action)=>action(),budgetedProductionCall:(_metadata,action)=>action()},
   '@/lib/codex-cli':{resolveCodexExecutable:()=>{stats.resolverCalls++;return env.CODEX_CLI_PATH||'/resolved/codex';}},
-  'node:child_process':{execFile:(_file,_args,_options,callback)=>{stats.cliChecks++;callback(null,'fixture','');}},
+  'node:child_process':{execFile:(_file,_args,_options,callback)=>{stats.cliChecks++;callback(cliState.error,'fixture','');}},
   'node:module':{createRequire:()=>name=>{
    if(name.endsWith('/source-context.mjs'))return {readEpisodeSourceContext:async()=>null};
    if(name.endsWith('/storyboard-archive.mjs'))return {withStoryboardArchive:current=>current};
@@ -63,9 +63,9 @@ function fixture({sourceError=null,active=false,run=structuredClone(saved),env={
    if(name.endsWith('/coordinator.mjs'))return {createCoordinator:options=>{stats.coordinatorOptions=options;return coordinator;}};
    return require(name);
   }}
- },{process:{env,cwd:()=>root}});
+ },{process:{env,cwd:()=>root},...(runtimeGlobal?{globalThis:runtimeGlobal}:{})});
  const route=loadTs('app/api/episodes/[episodeId]/storyboard/route.ts',{
-  '@/lib/auth':{getCurrentUser:async()=>({id:'owner'})},'@/lib/prisma':{prisma:db},'@/lib/storyboard-service':service
+  '@/lib/auth':{getCurrentUser:async()=>({id:'owner'})},'@/lib/prisma':{prisma:db},'@/lib/storyboard-service':service,'@/lib/standard-script-reception':{UPSTREAM_MATERIAL_PROTOCOL:'upstream-material-v2'}
  });
  const url='http://localhost:3008/api/episodes/ep1/storyboard';
  const context={params:Promise.resolve({episodeId:episode.id})};
@@ -75,15 +75,133 @@ function fixture({sourceError=null,active=false,run=structuredClone(saved),env={
  };
 }
 
+test('a retained coordinator uses the current source reader after service hot reload',async()=>{
+ const runtimeGlobal={},old=fixture({runtimeGlobal,sourceError:new Error('old grammar rejected source role labels')});
+ const coordinator=old.service.storyboardService();await new Promise(resolve=>setImmediate(resolve));
+ const current=fixture({runtimeGlobal});
+ assert.equal(current.service.storyboardService(),coordinator,'Hot reload must not replace the coordinator, queues or live attempts.');
+ assert.equal(await old.stats.coordinatorOptions.beforeExecute(saved.web.binding),true,'Execution preflight must use the same updated reader as the checked page.');
+ assert.equal(old.stats.sourceLoads,0);assert.equal(current.stats.sourceLoads,1);
+ assert.deepEqual(old.stats.dispatches,[]);assert.deepEqual(current.stats.dispatches,[]);
+});
+
+test('a retained coordinator uses current production inputs but keeps the saved protocol after reload',async()=>{
+ const runtimeGlobal={},old=fixture({runtimeGlobal,sourceError:new Error('old production reader')});
+ const coordinator=old.service.storyboardService();await new Promise(resolve=>setImmediate(resolve));
+ const current=fixture({runtimeGlobal});current.service.storyboardService();
+ const run=structuredClone(saved);run.web.binding.inputProtocol='legacy';
+ await old.stats.coordinatorOptions.loadProductionContext(run.web.binding,run);
+ assert.equal(old.stats.sourceLoads,0);assert.equal(current.stats.sourceLoads,1);
+ assert.deepEqual(current.stats.sourceProtocols,['legacy']);assert.deepEqual(current.stats.inlinePerformanceModes,[false]);
+ assert.equal(current.service.storyboardService(),coordinator);assert.deepEqual(old.stats.dispatches,[]);
+});
+
+test('current source changes still block the retained coordinator after reload',async()=>{
+ const runtimeGlobal={},old=fixture({runtimeGlobal});old.service.storyboardService();
+ await new Promise(resolve=>setImmediate(resolve));
+ const current=fixture({runtimeGlobal});current.current.content='1-1 日 外 城墙\n甲：原文真的变了。';
+ current.service.storyboardService();
+ assert.equal(await old.stats.coordinatorOptions.beforeExecute(saved.web.binding),false);
+ assert.deepEqual(old.stats.dispatches,[]);assert.deepEqual(current.stats.dispatches,[]);
+});
+
+test('opening and refreshing a page never probes the CLI connection',async()=>{
+ const f=fixture();
+ await f.get('');await f.get('?runId=saved-run&includeIndex=1');
+ assert.equal(f.stats.cliChecks,0,'Read endpoints must not invoke executable/login checks.');
+ assert.deepEqual(f.stats.dispatches,[]);
+});
+
+test('execution checks the current CLI even when a prior login check succeeded',async()=>{
+ const cliState={error:null},f=fixture({cliState});
+ assert.equal((await f.service.storyboardRunnerStatus()).ready,true);const before=f.stats.cliChecks;
+ cliState.error=new Error('login no longer available');
+ const response=await f.post({action:'start',runId:saved.id,mode:'all'});
+ assert.equal(response.status,503);assert.equal((await response.json()).code,'CLI_NOT_READY');
+ assert.ok(f.stats.cliChecks>before);assert.deepEqual(f.stats.dispatches,[],'Cached readiness cannot authorize a new paid attempt.');
+});
+
+test('reading a page does not turn a deferred check into an unavailable-source error',async()=>{
+ const f=fixture({sourceError:new Error('source unavailable during reading')});
+ const snapshot=await f.service.storyboardPageSnapshot(f.current,saved.id);
+ assert.equal(snapshot.run.preparation.deferred,true);assert.equal(snapshot.run.sourceCheckPending,false);
+ assert.equal(snapshot.index.runner.checked,false);assert.equal(snapshot.index.preparation.checking,undefined);
+ assert.equal(f.stats.sourceLoads,0);assert.equal(f.stats.cliChecks,0);
+ const response=await f.post({action:'start',runId:saved.id,mode:'all'});
+ assert.equal(response.status,503);assert.equal((await response.json()).code,'CONTEXT_UNAVAILABLE');
+ assert.deepEqual(f.stats.dispatches,[],'Deferred read-only checks cannot bypass execution source verification.');
+});
+
+test('deferred reading cannot authorize choice or confirmation against changed source',async()=>{
+ for(const command of [{action:'choice',mode:'off'},{action:'confirm',selectedIds:[],expectedFingerprint:'fixture-version'}]){
+  const f=fixture();await f.get('?runId=saved-run&view=saved');
+  f.current.content='1-1 日 外 城墙\n甲：剧本来源已经修改。';
+  const response=await f.post({...command,runId:saved.id});
+  assert.equal(response.status,409);assert.equal((await response.json()).code,'SOURCE_STALE');
+  assert.equal(f.stats.cliChecks,0);assert.deepEqual(f.stats.dispatches,[]);
+ }
+});
+
 test('saved index and detail remain immediate without source, runner or production checks',async()=>{
  const f=fixture({sourceError:new Error('slow or unavailable source')});
  const index=await (await f.get('?view=saved')).json();
  assert.equal(f.stats.sourceLoads,0);assert.equal(f.stats.cliChecks,0);
- assert.equal(index.preparation.checking,true);assert.equal(index.runs[0].id,saved.id);
+ assert.equal(index.preparation.deferred,true);assert.equal(index.runner.checked,false);assert.equal(index.runs[0].id,saved.id);
+ assert.deepEqual(f.stats.executionReads,[],'a selector list must not load each historical execution');
  const detail=await (await f.get('?runId=saved-run&view=saved')).json();
- assert.equal(f.stats.sourceLoads,0);assert.equal(detail.run.sourceCheckPending,true);
- assert.equal(detail.run.blocked,true);assert.equal(detail.run.preparation.checking,true);
+ assert.equal(f.stats.sourceLoads,0);assert.equal(detail.run.sourceCheckPending,false);
+ assert.equal(detail.run.blocked,false);assert.equal(detail.run.preparation.deferred,true);
+ assert.equal(detail.run.sourceStale,false,'pending checks are not proof of changed source');
+ assert.notEqual(detail.run.error?.code,'CONTEXT_UNAVAILABLE');
  assert.deepEqual(detail.run.sourceRows,saved.source.sourceRows);assert.deepEqual(f.stats.productionRefreshes,[]);
+});
+
+test('server page snapshot supplies saved content without upstream or model checks',async()=>{
+ const f=fixture({sourceError:new Error('unavailable upstream')});
+ const before=JSON.stringify(f.run),snapshot=await f.service.storyboardPageSnapshot(f.current,saved.id);
+ assert.equal(snapshot.episodeId,episode.id);assert.equal(snapshot.run.id,saved.id);
+ assert.equal(snapshot.run.sourceCheckPending,false);assert.equal(snapshot.run.blocked,false);
+ assert.deepEqual(snapshot.run.sourceRows,saved.source.sourceRows);
+ assert.equal(f.stats.sourceLoads,0);assert.equal(f.stats.cliChecks,0);assert.deepEqual(f.stats.diagnosticReads,[]);
+ assert.equal(JSON.stringify(f.run),before);assert.deepEqual(f.stats.dispatches,[]);
+});
+
+test('saved snapshot does not misreport a bound shared budget as unbound',async()=>{
+ const run=structuredClone(saved);run.web.binding.productionBudget={id:'bound-budget',directory:'/fixture-only-budget'};
+ const f=fixture({run,sourceError:new Error('upstream is still checking')});
+ const snapshot=await f.service.storyboardPageSnapshot(f.current,run.id);
+ assert.equal(snapshot.run.production.sharedBudget.maxCalls,40);
+ assert.equal(snapshot.run.production.sharedBudget.maxTokens,2000000);
+ assert.equal(snapshot.run.preparation.deferred,true);assert.equal(f.stats.sourceLoads,0);assert.deepEqual(f.stats.dispatches,[]);
+});
+
+test('selector index validates new-task preparation once, not every old grammar or receipt',async()=>{
+ const older=structuredClone(saved);older.id='prior';older.web.binding.inputProtocol='standard-episode-v1';
+ const current=structuredClone(saved);current.web.binding.inputProtocol='upstream-material-v2';
+ const f=fixture({coordinatorOverrides:{list:async()=>[structuredClone(current),structuredClone(older)]}});
+ const index=await(await f.get('')).json();
+ assert.equal(index.runs.length,2);assert.equal(f.stats.sourceLoads,1);
+ assert.deepEqual(f.stats.sourceProtocols,['upstream-material-v2']);
+ assert.deepEqual(f.stats.executionReads,[]);assert.deepEqual(f.stats.diagnosticReads,[]);assert.deepEqual(f.stats.dispatches,[]);
+});
+
+test('combined page check shares current input and keeps legacy protocol validation separate',async()=>{
+ for(const protocol of ['upstream-material-v2','legacy']){
+  const run=structuredClone(saved);Object.assign(run.web.binding,{inputProtocol:protocol,inlinePerformanceVersion:'inline-performance-v1'});
+  const f=fixture({run}),response=await f.get('?runId=saved-run&includeIndex=1');
+  assert.equal(response.status,200);const result=await response.json();
+  assert.equal(result.run.id,saved.id);assert.equal(result.run.sourceCheckPending,false);
+  assert.equal(result.index.preparation.ready,true);assert.equal(result.index.runner.checked,false);assert.equal(f.stats.cliChecks,0);
+  assert.equal(f.stats.sourceLoads,protocol==='upstream-material-v2'?1:2);
+  assert.equal(f.stats.sourceProtocols[0],protocol);assert.deepEqual(f.stats.dispatches,[]);
+ }
+});
+
+test('saved page snapshot cannot expose a task from a different episode or project',async()=>{
+ const f=fixture(),foreign={...f.current,id:'another-episode'};
+ const snapshot=await f.service.storyboardPageSnapshot(foreign,saved.id);
+ assert.equal(snapshot.run,null);assert.equal(snapshot.index,null);assert.match(snapshot.error,/任务不存在/);
+ assert.deepEqual(f.stats.dispatches,[]);
 });
 
 test('checked detail reuses one scoped input and never refreshes unrelated project tasks',async()=>{
@@ -216,6 +334,15 @@ test('live queue projection distinguishes waiting from execution without changin
  }
 });
 
+test('saved first paint retains actual queue/worker phase without loading upstream or CLI',async()=>{
+ for(const localPhase of ['queued','executing','preparing']){
+  const f=fixture({active:true,localPhase}),view=(await(await f.get('?runId=saved-run&view=saved')).json()).run;
+  assert.equal(view.operations[0].localPhase,localPhase,'The reading view must not turn a real worker into generic waiting.');
+  assert.equal(f.stats.sourceLoads,0);assert.equal(f.stats.cliChecks,0);assert.deepEqual(f.stats.diagnosticReads,[]);
+  assert.equal(f.run.operations[0].localPhase,undefined);assert.deepEqual(f.stats.dispatches,[]);
+ }
+});
+
 test('diagnostics projection is read-only, scoped, and omits private or unexpected fields',async()=>{
  const diagnostics={version:1,attemptId:'a1',stage:'plan',timeoutMs:900000,startedAt:'2026-09-27T00:00:00Z',endedAt:null,lastActivityAt:'2026-09-27T00:01:00Z',eventCount:3,eventCounts:{'turn.started':1},stdoutBytes:120,stderrBytes:0,failureCategory:null,eventTail:[],raw:'must not be returned',prompt:'must not be returned'};
  const f=fixture({active:true,diagnostics});
@@ -274,16 +401,17 @@ test('stage3 data and CLI resolution stay isolated while explicit overrides win'
  }
 });
 
-test('index and detail share public state and prepare once per input protocol',async()=>{
+test('index keeps public task state; frozen grammar is checked when its detail is opened',async()=>{
  for(const active of [false,true]){
   const f=fixture({active});
   const indexResponse=await f.get();assert.equal(indexResponse.status,200);
   const index=await indexResponse.json();
-  assert.equal(f.stats.sourceLoads,2,'new-create preparation and frozen legacy preparation are separate, each loaded once');
+  assert.equal(f.stats.sourceLoads,1,'selector checks new-create preparation only, not every historical source');
+  const detail=await (await f.get('?runId=saved-run')).json();
+  assert.equal(f.stats.sourceLoads,2,'selected frozen legacy grammar is still checked separately');
   assert.deepEqual(f.stats.sourceProtocols,['upstream-material-v2','legacy']);
   assert.deepEqual(f.stats.sourceReaders,['production','light']);
   assert.deepEqual(f.stats.inlinePerformanceModes,[true,false]);
-  const detail=await (await f.get('?runId=saved-run')).json();
   assert.equal(detail.run.status,active?'drafting':'interrupted');
   assert.equal(index.runs[0].status,detail.run.status);
   assert.equal(index.runs[0].active,active);
@@ -298,7 +426,7 @@ test('frozen and new delivery grammars sharing a protocol are prepared separatel
   if(inlinePerformanceVersion)run.web.binding.inlinePerformanceVersion=inlinePerformanceVersion;
   const f=fixture({run});
   assert.equal((await f.get()).status,200);
-  assert.deepEqual(f.stats.inlinePerformanceModes,inlinePerformanceVersion?[true]:[true,false]);
+  assert.deepEqual(f.stats.inlinePerformanceModes,[true],'selector must not load old inline grammar');
   const before=f.stats.sourceLoads;
   assert.equal((await f.get('?runId=saved-run')).status,200);
   assert.equal(f.stats.sourceLoads,before+1);
@@ -313,8 +441,8 @@ test('preparation failure keeps saved index, detail, operations and raw JSON rea
  assert.equal(index.runs[0].id,saved.id);
  assert.equal(index.preparation.ready,false);
  assert.equal(index.preparation.code,'CONTEXT_UNAVAILABLE');
- assert.equal(index.runs[0].sourceStale,true);
- assert.equal(index.runs[0].blocked,true);
+ assert.equal('sourceStale' in index.runs[0],false,'selector cannot invent a frozen-task source diagnosis');
+ assert.equal('blocked' in index.runs[0],false,'readiness belongs to preparation and the checked detail');
  assert.ok(index.sourceWarnings.length);
  const detailResponse=await f.get('?runId=saved-run');assert.equal(detailResponse.status,200);
  const detail=(await detailResponse.json()).run;

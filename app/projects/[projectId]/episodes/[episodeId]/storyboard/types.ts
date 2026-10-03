@@ -18,7 +18,7 @@ export type Run = {
   repairControl?: {blocked:boolean;needsRecheck:boolean;reason:'SCOPE'|'LIMIT'|'NO_PROGRESS'|null}|null;
   production?: {boundary:{status:string;actualVersion?:string|null;reason?:string;changedKeys?:string[];missingKeys?:string[]}|null;materialNeeds:{stage:1|2|3;target:string;purpose:string;packageIds:string[];sourceRefs:string[];blocking:boolean;supplyUpdated?:boolean}[];sharedBudget:{maxCalls:number;maxTokens:number;calls:number;knownTokens:number;unknownAttempts:number;inFlight:number;complete:boolean}|{unavailable:true}|null;pendingRepair:{packageIds:string[];reason:string;changedKeys:string[]}|null;blocking:boolean;chainComplete:boolean;chainMode:'SINGLE'|'CHAIN'};
   settings: { maxUnitSeconds: 15 | 30; fantasyMode: Mode; model?: string; reasoning?: string };
-  error?: RunError | null; preparation?: { ready: boolean; checking?:boolean; error?: string; code?: string }; sourceCheckPending?:boolean; blocked?: boolean; sourceRows: SourceRow[]; dialogue?: DialogueSource[]; sourceWarnings?: string[]; plan?: Plan | null;
+  error?: RunError | null; preparation?: { ready: boolean; checking?:boolean; deferred?:boolean; error?: string; code?: string }; sourceCheckPending?:boolean; blocked?: boolean; sourceRows: SourceRow[]; dialogue?: DialogueSource[]; sourceWarnings?: string[]; plan?: Plan | null;
   choice: { mode: Mode; overrides?: Record<string, boolean>; unitOverrides?: Record<string, boolean> };
   selection?: { status: string; selectedIds: string[]; fingerprint: string; unfulfilledUnitIds?: string[] } | null;
   adopted: { packageIds: string[]; stage: string; unitCount: number; shotCount: number; seconds: number }[];
@@ -27,7 +27,8 @@ export type Run = {
   assembly?: { text: string; errors: unknown[]; warnings: unknown[]; stats?: unknown; draft?: { units: Unit[]; fantasyRealization?: unknown[] } } | null;
   usage: Usage; budget: { maxCalls: number; maxTokens: number; maxRepairs: number };
 };
-export type RunIndex = { runs: { id: string; title: string; status: string; createdAt: string; active?: boolean;legacyReadOnly?:boolean }[]; model: string; reasoning: string; maxConcurrent: number; runner: { ready: boolean; message: string; timeoutPolicy?: TimeoutPolicy; configurationError?: boolean }; sourceWarnings: string[]; preparation?: { ready: boolean; checking?:boolean; error?: string; code?: string } };
+export type RunIndex = { runs: { id: string; title: string; status: string; createdAt: string; active?: boolean;legacyReadOnly?:boolean }[]; model: string; reasoning: string; maxConcurrent: number; runner: { ready: boolean; checked?:boolean; message: string; timeoutPolicy?: TimeoutPolicy; configurationError?: boolean }; sourceWarnings: string[]; preparation?: { ready: boolean; checking?:boolean; deferred?:boolean; error?: string; code?: string } };
+export type WorkbenchSnapshot = { episodeId: string; index: RunIndex | null; run: Run | null; savedAt: number; error?: string };
 export type NewSettings = { maxUnitSeconds: 15 | 30; fantasyMode: Mode; notes: string; maxCalls: number; maxTokens: number };
 export const DEFAULT_SETTINGS: NewSettings = { maxUnitSeconds: 30, fantasyMode: "recommended", notes: "", maxCalls: 32, maxTokens: 300000 };
 export const MODE_LABELS: Record<Mode, string> = { off: "不加额外幻想", all: "全部加入", recommended: "按推荐加入", review: "推荐后我来选" };

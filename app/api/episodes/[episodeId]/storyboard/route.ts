@@ -1,7 +1,7 @@
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { createStoryboardRun, loadStoryboardInput, prepareStoryboardView, refreshProductionChain, refreshStoryboardRun, storyboardSavedRunView, storyboardChainComplete, storyboardSourceCompatible, storyboardFailure, storyboardHttp, storyboardRunnerStatus, storyboardRunView, storyboardService } from "@/lib/storyboard-service";
-import type {ScriptInputProtocol} from '@/lib/standard-script-reception';
+import { createStoryboardRun, loadStoryboardInput, prepareStoryboardView, refreshProductionChain, refreshStoryboardRun, storyboardSavedIndex, storyboardSavedRunView, storyboardChainComplete, storyboardSourceCompatible, storyboardFailure, storyboardHttp, storyboardRunnerStatus, storyboardRunView, storyboardService } from "@/lib/storyboard-service";
+import { UPSTREAM_MATERIAL_PROTOCOL } from '@/lib/standard-script-reception';
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,19 +22,11 @@ export async function GET(request: Request, context: Context) {
     const id = url.searchParams.get("runId");
     if (!id) {
       if(url.searchParams.get('view')==='saved'){
-        const runs=await service.list({episodeId:episode.id}),views=await Promise.all(runs.map((run:any)=>storyboardSavedRunView(run,episode)));
-        return json({runs:views.map(({id,title,status,createdAt,active,legacyReadOnly}:any)=>({id,title,status,createdAt,active,legacyReadOnly})).sort((a:any,b:any)=>b.createdAt.localeCompare(a.createdAt)),
-          model:'gpt-6.1-sol',reasoning:'medium',maxConcurrent:4,runner:{ready:false,message:'正在核对本机连接与资料'},sourceWarnings:[],preparation:{ready:false,checking:true}});
+        return json((await storyboardSavedIndex(episode)).index);
       }
-      const [runs, runner, prepared] = await Promise.all([service.list({ episodeId: episode.id }), storyboardRunnerStatus(), prepareStoryboardView(episode)]);
-      const key=(protocol:ScriptInputProtocol,inlinePerformance:boolean)=>`${protocol}:${inlinePerformance}`;
-      const preparationByProtocol = new Map<string,typeof prepared>([[key(prepared.protocol,prepared.inlinePerformance),prepared]]);
-      const modes=new Map<string,{protocol:ScriptInputProtocol;inlinePerformance:boolean}>();
-      for(const run of runs){const protocol:ScriptInputProtocol=run.web?.binding?.inputProtocol??'legacy',inlinePerformance=run.web?.binding?.inlinePerformanceVersion==='inline-performance-v1';modes.set(key(protocol,inlinePerformance),{protocol,inlinePerformance});}
-      await Promise.all([...modes].filter(([k])=>!preparationByProtocol.has(k)).map(async([k,{protocol,inlinePerformance}])=>preparationByProtocol.set(k,await prepareStoryboardView(episode,protocol,inlinePerformance))));
-      const views = await Promise.all(runs.map((run: any) => storyboardRunView(run, episode, preparationByProtocol.get(key(run.web?.binding?.inputProtocol??'legacy',run.web?.binding?.inlinePerformanceVersion==='inline-performance-v1')), false)));
-      return json({ runs: views.map(({ id, title, status, createdAt, active, sourceStale, blocked, legacyReadOnly }: any) => ({ id, title, status, createdAt, active, sourceStale, blocked, legacyReadOnly })).sort((a: any, b: any) => b.createdAt.localeCompare(a.createdAt)),
-        model: "gpt-6.1-sol", reasoning: "medium", maxConcurrent: 4, runner, sourceWarnings: prepared.sourceWarnings, preparation: prepared.preparation });
+      const [{index}, prepared] = await Promise.all([storyboardSavedIndex(episode), prepareStoryboardView(episode)]);
+      // The list is a selector, not a second detailed validation of all historical tasks.
+      return json({...index,sourceWarnings:prepared.sourceWarnings,preparation:prepared.preparation});
     }
     let run = await service.read(id);
     storyboardHttp.assertEpisodeBinding(run, episode);
@@ -55,10 +47,19 @@ export async function GET(request: Request, context: Context) {
       return new Response(content, { headers: { "cache-control": "no-store", "content-type": format === "json" ? "application/json; charset=utf-8" : "text/markdown; charset=utf-8",
         "content-disposition": `attachment; filename="storyboard-${run.id}.${format}"`, "x-content-type-options": "nosniff" } });
     }
-    if(url.searchParams.get('view')==='saved')return json({run:await storyboardSavedRunView(run,episode)});
-    if(run.web.legacyReadOnly)return json({run:await storyboardRunView(run,episode)});
-    const checked=await refreshStoryboardRun(run,episode);
-    return json({ run: await storyboardRunView(checked.run, episode, checked.prepared) });
+    if(url.searchParams.get('view')==='saved'){
+      const view=await storyboardSavedRunView(run,episode);
+      return json({run:view,...(url.searchParams.get('includeIndex')==='1'?{index:(await storyboardSavedIndex(episode)).index}:{})});
+    }
+    const checked=run.web.legacyReadOnly?{run,prepared:undefined}:await refreshStoryboardRun(run,episode);
+    const view=await storyboardRunView(checked.run,episode,checked.prepared);
+    if(url.searchParams.get('includeIndex')!=='1')return json({run:view});
+    try{
+      // Reuse this request's current input instead of reconstructing it in a second index GET.
+      const [{index},prepared]=await Promise.all([storyboardSavedIndex(episode),
+        checked.prepared?.protocol===UPSTREAM_MATERIAL_PROTOCOL&&checked.prepared.inlinePerformance?Promise.resolve(checked.prepared):prepareStoryboardView(episode)]);
+      return json({run:view,index:{...index,preparation:prepared.preparation,sourceWarnings:prepared.sourceWarnings}});
+    }catch(error){return json({run:view,indexError:storyboardFailure(error).body.error});}
   } catch (e) { const failure = storyboardFailure(e); return json(failure.body, failure.status); }
 }
 export async function POST(request: Request, context: Context) {
@@ -68,13 +69,13 @@ export async function POST(request: Request, context: Context) {
     const run = await service.read(command.runId);
     storyboardHttp.assertEpisodeBinding(run, episode);
     if (run.web.legacyReadOnly) return json({error:'旧版第三阶段记录只读，可导出已有稿；请新建任务使用新版。',code:'LEGACY_READ_ONLY'},409);
-    if (["start", "repair", "replan", "recheck"].includes(command.action)) {
+    if (["start", "repair", "replan", "recheck", "choice", "confirm"].includes(command.action)) {
       const current = await loadStoryboardInput(episode, '', run.web.binding.inputProtocol ?? 'legacy',undefined,run.web.binding.inlinePerformanceVersion==='inline-performance-v1');
       const stale = !storyboardSourceCompatible(run.web.binding,current);
       if (run.web.sourceStale || stale) return json({ error: "原文或关键约束已更新，请新建任务使用最新资料；旧结果仍已保存。", code: "SOURCE_STALE" }, 409);
     }
     if (["start", "repair", "replan"].includes(command.action)) {
-      const runner = await storyboardRunnerStatus();
+      const runner = await storyboardRunnerStatus(true);
       if (!runner.ready) return json({ error: runner.message, code: runner.configurationError ? "RUNNER_TIMEOUT_CONFIG" : "CLI_NOT_READY" }, 503);
     }
     const id = command.runId;

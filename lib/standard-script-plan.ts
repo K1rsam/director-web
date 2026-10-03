@@ -30,11 +30,20 @@ const validName = (text: string) => /^[\p{L}\p{N}·・ _.-]+$/u.test(text) && !/
 const trimRange = (text: string, start: number): Range => ({start: start + text.length - text.trimStart().length, end: start + text.trimEnd().length});
 const speakerNumber = /^(?:[甲乙丙丁戊己庚辛壬癸]|[一二三四五六七八九十百]+|\d+|[A-Z])$/u;
 const numberedRole = /^(?:(?:围观)?学生|路人|保镖|保安|侍卫|士兵|警察|警员|医生|护士|老师|同学|记者|店员|顾客|观众|考官|考生|村民|群众|工作人员|男|女)(?:[甲乙丙丁戊己庚辛壬癸]|[一二三四五六七八九十百]+|\d+|[A-Z])$/u;
+// Source role labels are independent of the catalogue's production identity.
+// A generated group name must not be needed to read its original A/B speakers.
+const sourceRole = /^(?:围观)?(?:男|女)?(?:学生|同学|考生|考官|路人|保镖|保安|侍卫|士兵|警察|警员|医生|护士|老师|记者|店员|顾客|观众|村民|群众|工作人员|助理|闺蜜|监控员)(?:[甲乙丙丁戊己庚辛壬癸]|[一二三四五六七八九十百]+|\d+|[A-Z])?$/iu;
+const collectiveRole = /^(?:众人|众学生|众同学|众考生|众士兵|众群众|众工作人员)$/u;
+const sourceSystemRole = /^(?:系统|系统窗口|系统提示窗口)$/u;
 // Bounded positive name forms, not an arbitrary-colon whitelist. Other names still use cast/knownSpeakers.
 const personalName = /^(?:(?:欧阳|司马|上官|诸葛|夏侯|东方|公孙|慕容|宇文|令狐|司徒|南宫|独孤)|[赵钱孙李周吴郑王冯陈沈韩杨朱秦许何吕张曹严华金魏姜谢邹苏潘葛范彭鲁韦马方俞任袁柳史唐薛雷贺倪汤殷罗郝安常于傅齐康伍余顾孟黄穆萧尹姚邵汪毛成戴宋庞熊舒董梁杜阮季贾江童颜郭梅林钟徐邱骆高夏蔡田胡凌霍万卢莫丁邓洪石崔程陆段侯宁刘龙叶黎白乔谭温庄阎向易廖文冷辛曾关])\p{Script=Han}{1,2}$/u;
 const sourceLabel = /(?:备注|说明|提示|事项|处理|要求|规则|设定|notes?|summary|metadata|instructions?|guidance|[说问道答喊叫])$/iu;
 function explicitSpeaker(name: string, knownSpeakers: Set<string>): boolean {
-  return speakerNumber.test(name) || numberedRole.test(name) || personalName.test(name)
+  const comic=/^(?:Q版(.+)|(.+)Q版)$/iu.exec(name), base=comic?.[1]??comic?.[2];
+  // Keep the full exact source label, including the depiction marker. This is
+  // syntax evidence, not an alias, an adopted design or a physical appearance.
+  if(base) return !/Q版/iu.test(base) && !sourceLabel.test(base) && (knownSpeakers.has(base) || explicitSpeaker(base,knownSpeakers));
+  return speakerNumber.test(name) || numberedRole.test(name) || sourceRole.test(name) || collectiveRole.test(name) || sourceSystemRole.test(name) || personalName.test(name)
     || /^[A-Z][a-z]+(?:[ -][A-Z][a-z]+)*$/.test(name)
     || [...knownSpeakers].some(group => name.startsWith(group) && speakerNumber.test(name.slice(group.length)));
 }
@@ -141,7 +150,8 @@ export function prepareStandardEpisode(text: string, sourceId: string, options: 
   const scanQuotes = (value: string) => scanQuotedText(value, syntax === 'current');
   const unquotedColons = (value: string) => scanQuotes(value).colons;
   const episodeHeading = syntax === 'legacy' ? legacyEpisodeHeading : /^第[〇零一二三四五六七八九十百千万两\d]+集(?:（[^()（）\r\n]+）|\([^()（）\r\n]+\))?(?:[ \t:：]|$)/u;
-  const sceneHeading = syntax === 'legacy' ? legacySceneHeading : {test: (value: string) => /^\d+[ \t]*-[ \t]*\d+(?:[ \t:：]|$)/u.test(value) || decimalSceneHeading.test(value)};
+  const sceneHeading = syntax === 'legacy' ? legacySceneHeading : {test: (value: string) => /^\d+[ \t]*-[ \t]*\d+(?:[ \t:：]|$)/u.test(value) || decimalSceneHeading.test(value)
+    || /^(?:场景|SCENE)[\t :：]+[^\r\n:：]+$/iu.test(value)};
   const endMarker = (line: Line) => syntax === 'current' && /^【全剧终】[ \t]*$/u.test(line.content);
   const lines: Line[] = index.units.map((unit, i) => {
     const raw = unit.text.replace(/(?:\r\n|\r|\n)$/, ''), indent = /^[\t \uFEFF]*/.exec(raw)![0].length;

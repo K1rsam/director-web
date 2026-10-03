@@ -1,10 +1,25 @@
-import {spawn} from 'node:child_process';
+import {spawn,execFile} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {constants} from 'node:fs';
 import {mkdir,open,realpath} from 'node:fs/promises';
 import path from 'node:path';
+import {promisify} from 'node:util';
 import {fail} from './core/shared.mjs';
 
 const holder='process.stdin.on("end",()=>process.exit(0));process.stdin.resume();process.stdout.write("LOCKED\\n");';
+const runFile=promisify(execFile);let machineIdentity;
+
+// os.hostname() can be a DHCP address on macOS. Store only a namespaced hash
+// of the hardware identity; a changing network name is not another machine.
+export function readRuntimeMachineIdentity(){
+ return machineIdentity??=(async()=>{
+  let stdout;try{({stdout}=await runFile('/usr/sbin/ioreg',['-rd1','-c','IOPlatformExpertDevice'],{encoding:'utf8',timeout:3000,maxBuffer:131072}));}
+  catch{fail('LEASE_UNAVAILABLE','无法核验本机稳定身份，未发送模型请求');}
+  const uuid=stdout.match(/"IOPlatformUUID"\s*=\s*"([0-9a-f-]{36})"/i)?.[1]?.toLowerCase();
+  if(!uuid||!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(uuid)||uuid==='00000000-0000-0000-0000-000000000000')fail('LEASE_UNAVAILABLE','无法核验本机稳定身份，未发送模型请求');
+  return 'mac-hardware-v1:'+createHash('sha256').update('director-runtime-host-v1\0'+uuid).digest('hex');
+ })().catch(error=>{machineIdentity=null;throw error;});
+}
 
 // The macOS local runtime and maintenance tools share this permanent flock inode.
 // Never unlink or move it: file presence is not ownership, the kernel lock is.

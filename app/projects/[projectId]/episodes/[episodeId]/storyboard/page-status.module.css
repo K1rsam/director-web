@@ -1,0 +1,6 @@
+.badge{display:inline-flex;align-items:center;gap:8px;min-width:0;max-width:24em;padding:8px 13px;border:1px solid rgba(255,255,255,.82);border-radius:18px;background:linear-gradient(135deg,rgba(255,255,255,.46),rgba(237,230,250,.38));box-shadow:inset 0 1px 1px rgba(255,255,255,.65),0 3px 12px rgba(94,78,132,.06);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);color:var(--vision-muted,#5b5f80);font-size:.8125rem;line-height:1.5}
+.badge>span{min-width:0;overflow-wrap:anywhere}.badge>i{width:7px;height:7px;flex:0 0 auto;border-radius:50%;background:#9295af;box-shadow:0 0 0 4px rgba(146,149,175,.09)}
+.badge[data-state=running]{color:#65529c;background:linear-gradient(135deg,rgba(249,245,255,.56),rgba(230,221,249,.4))}.badge[data-state=running]>i{background:#8b6ec0;box-shadow:0 0 0 4px rgba(139,110,192,.11)}
+.badge[data-state=complete]{color:#397361}.badge[data-state=complete]>i{background:#4f927a;box-shadow:0 0 0 4px rgba(79,146,122,.1)}
+.badge[data-state=attention]{color:#996247}.badge[data-state=attention]>i{background:#ba8763;box-shadow:0 0 0 4px rgba(186,135,99,.1)}
+@media(max-width:680px){.badge{padding:7px 10px;max-width:100%;font-size:.75rem}}

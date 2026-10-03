@@ -9,7 +9,7 @@ import {runModel,readAttemptEvidence} from './core/runner.mjs';
 import {resolveSelection,selectionFingerprint,confirmSelection} from './core/selection.mjs';
 import {defaultChoice,normalizeSettings} from './core/core.mjs';
 import {fail,digest} from './core/shared.mjs';
-import {acquireRuntimeLease} from './runtime-lease.mjs';
+import {acquireRuntimeLease,readRuntimeMachineIdentity} from './runtime-lease.mjs';
 import {readyAuthorCallGroups} from './core/author-call-groups.mjs';
 import {feedbackOnlyFailure,repairProblemKey as problemKey} from '../feedback-repair.mjs';
 import {PRODUCTION_FEEDBACK_VALIDATION_VERSION} from '../episode-boundary.mjs';
@@ -98,16 +98,19 @@ async function claimLeaseInner(directory){
  try{const token=await claimLegacyOwner(directory),record={lease,token,users:0,releasing:null};runtimeLeases.set(directory,record);return record;}
  catch(error){await lease.release();throw error;}
 }
+function ownerMatchesMachine(owner,machineId){
+ return owner&&Object.hasOwn(owner,'machineId')?owner.machineId===machineId:owner?.host===hostname();
+}
 async function claimLegacyOwner(directory){
- const file=path.join(directory,'.coordinator-owner.json');
+ const file=path.join(directory,'.coordinator-owner.json'),machineId=await readRuntimeMachineIdentity();
  await mkdir(directory,{recursive:true,mode:0o700});
  for(let tries=0;tries<4;tries++){
   const token=randomUUID();
-  try{const handle=await open(file,'wx',0o600);try{await handle.writeFile(JSON.stringify({pid:process.pid,host:hostname(),token}));await handle.sync();}finally{await handle.close();}leaseTokens.set(directory,token);return token;}
+  try{const handle=await open(file,'wx',0o600);try{await handle.writeFile(JSON.stringify({pid:process.pid,host:hostname(),token,machineId}));await handle.sync();}finally{await handle.close();}leaseTokens.set(directory,token);return token;}
   catch(error){if(error.code!=='EEXIST')throw error;}
   const previous=await readFile(file,'utf8').catch(error=>error.code==='ENOENT'?null:Promise.reject(error));if(previous===null)continue;
   let owner;try{owner=JSON.parse(previous);}catch{fail('LEASE_UNKNOWN','执行者记录无法核验');}
-  if(!Number.isSafeInteger(owner.pid)||owner.pid<=0||owner.host!==hostname()||typeof owner.token!=='string'||!owner.token)fail('LEASE_UNKNOWN','执行者记录无法核验');
+  if(!owner||typeof owner!=='object'||Array.isArray(owner)||!Number.isSafeInteger(owner.pid)||owner.pid<=0||typeof owner.host!=='string'||!owner.host||!ownerMatchesMachine(owner,machineId)||typeof owner.token!=='string'||!owner.token)fail('LEASE_UNKNOWN','执行者记录无法核验');
   if(owner.pid===process.pid&&leaseTokens.get(directory)===owner.token)return owner.token;
   try{process.kill(owner.pid,0);fail('LEASE_BUSY','另一进程持有执行权');}catch(error){if(error.code!=='ESRCH')throw error;}
   if(await readFile(file,'utf8').catch(()=>null)!==previous)continue;
@@ -119,7 +122,7 @@ async function releaseLease(directory,record){
  record.users--;if(record.users>0)return;
  record.releasing??=(async()=>{try{
   record.lease.assertHeld();const file=path.join(directory,'.coordinator-owner.json'),owner=await readFile(file,'utf8').then(JSON.parse).catch(()=>null);
-  if(owner?.pid===process.pid&&owner.host===hostname()&&owner.token===record.token)await unlink(file);
+  if(owner?.pid===process.pid&&ownerMatchesMachine(owner,await readRuntimeMachineIdentity())&&owner.token===record.token)await unlink(file);
  }finally{if(runtimeLeases.get(directory)===record)runtimeLeases.delete(directory);if(leaseTokens.get(directory)===record.token)leaseTokens.delete(directory);await record.lease.release();}})();
  await record.releasing;
 }

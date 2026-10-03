@@ -3,15 +3,15 @@
 import { useState, type ReactNode } from "react";
 import { PromptDocument } from "@/app/ui/prompt-document";
 import { MODE_HINTS, MODE_LABELS, STAGE_LABELS, operationLabel, messageOf, statusLabel, type DialogueSource, type Fantasy, type Mode, type NewSettings, type Operation, type Run, type TimeoutPolicy, type Unit } from "./types";
-import { candidateFeedback, executionLabel, formatCount, formatElapsed, type deriveView } from "./view-state";
+import { candidateFeedback, executionLabel, formatCount, formatElapsed, formatWorkbenchDate, type deriveView } from "./view-state";
 import styles from "./workbench.module.css";
 
 type View = ReturnType<typeof deriveView>;
 type Act = (action: string, payload?: Record<string, unknown>) => Promise<Run | null>;
 const sourceText = (run: Run, refs: string[]) => run.sourceRows.filter(row => refs.includes(row.id) && row.text.trim());
-const dateText = (text?: string) => text ? new Date(text).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
+const dateText = (text?: string) => text ? formatWorkbenchDate(text, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
 const timeoutText = (ms: number) => ms % 60000 === 0 ? `${ms / 60000} 分钟` : ms >= 1000 ? `${ms / 1000} 秒` : `${ms} 毫秒`;
-const diagnosticDate = (text: string | null) => text ? new Date(text).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : "未记录";
+const diagnosticDate = (text: string | null) => text ? formatWorkbenchDate(text, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "未记录";
 const diagnosticFaults: Record<string, string> = { timeout: "达到本次运行时限", aborted: "本机已中断", paused: "保存后暂停", cli_failed: "CLI 执行异常", empty_response: "未返回正文", invalid_json: "回包格式异常", spawn_failed: "本机启动失败", unknown: "原因待核对", rate_limit: "额度或频率限制", auth: "登录或授权异常", network: "连接异常" };
 
 export function SectionTitle({ number, title, note, children }: { number?: string; title: string; note?: string; children?: ReactNode }) {

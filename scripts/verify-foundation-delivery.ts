@@ -69,6 +69,42 @@ async function main() {
     await assert.rejects(api.queueFoundationDelivery(ordinary.id, {}, db), /已整理完成|无需重复调用/);
     assert.equal(await db.pipelineRun.count({ where: { projectId: ordinary.id } }), completedRuns);
 
+    // Ordinary writer dialects reach completion without manual syntax choices
+    // or extra catalogue repair; the original source remains byte-for-byte.
+    const dialect=await create('writer dialect completes once');
+    await db.episode.updateMany({where:{projectId:dialect.id,number:1},data:{content:'第1集\n1-1 客厅 日 内\n甲：你好。\n甲Q版：太突然了！\n众人（大笑）：欢迎！\n助理：请进。\n闺蜜B：等等。\n场景 走廊（快切）\n监控员A（惊叫）：有人！\n男考生B：别关门。\n系统窗口（系统）：叮！\n系统窗口：已连接。\n'}});
+    await preprocessProject(dialect.id,db);
+    const dialectBefore=await db.episode.findMany({where:{projectId:dialect.id},orderBy:{number:'asc'}});
+    const dialectTask=await api.queueFoundationDelivery(dialect.id,{},db),dialectCalls:string[]=[];
+    await api.executeFoundationDelivery(dialect.id,dialectTask.id,{db,stageRunner:async(stage,prompt)=>{
+      const value=input(prompt);dialectCalls.push(stage);return out(stage==='F2'?f2(value.scope):q1(value.scope));
+    }});
+    const dialectState=await api.getFoundationDeliveryState(dialect.id,db);
+    assert.equal(dialectState.complete,true,dialectState.task?.error??JSON.stringify(dialectState.issues));
+    assert.equal(dialectState.task?.status,'COMPLETE');assert.equal(dialectState.task?.repairCalls,0);
+    assert.equal(dialectState.requiredChoices.length,0);assert.deepEqual(dialectCalls,['F2','Q1']);
+    assert.deepEqual(await db.episode.findMany({where:{projectId:dialect.id},orderBy:{number:'asc'}}),dialectBefore);
+
+    // Successful author/editor calls must not conceal a final reception-only
+    // blocker as a generic "continue" task or spend another catalogue repair.
+    const badSyntax=await create('source-only reception issue');
+    await db.episode.updateMany({where:{projectId:badSyntax.id,number:1},data:{content:'第1集\n1-1 客厅 日 内\n人物：甲\n甲：你好。\n未知标签：（轻声）原文归属尚不明确。\n'}});
+    await preprocessProject(badSyntax.id,db);
+    const badSyntaxBefore=await db.episode.findMany({where:{projectId:badSyntax.id},orderBy:{number:'asc'}});
+    const badSyntaxTask=await api.queueFoundationDelivery(badSyntax.id,{},db),badSyntaxCalls:string[]=[];
+    await api.executeFoundationDelivery(badSyntax.id,badSyntaxTask.id,{db,stageRunner:async(stage,prompt)=>{
+      const value=input(prompt);badSyntaxCalls.push(stage);return out(stage==='F2'?f2(value.scope):q1(value.scope));
+    }});
+    const badSyntaxState=await api.getFoundationDeliveryState(badSyntax.id,db);
+    assert.deepEqual(badSyntaxCalls,['F2','Q1'],'Syntax-only blockers must not cause a paid catalogue repair.');
+    assert.equal(badSyntaxState.action,'BLOCKED');assert.equal(badSyntaxState.requiredChoices.length,0);
+    assert.match(badSyntaxState.continuationBlocker??'',/第1集第5行/);
+    assert.equal(badSyntaxState.task?.message,badSyntaxState.continuationBlocker,'The task itself must retain the precise program-owned blocker, not ask for an ineffective continue.');
+    const blockedRuns=await db.pipelineRun.count({where:{projectId:badSyntax.id}});
+    await assert.rejects(api.queueFoundationDelivery(badSyntax.id,{},db),/技术问题/);
+    assert.equal(await db.pipelineRun.count({where:{projectId:badSyntax.id}}),blockedRuns,'A source-only pause must not enqueue another paid call.');
+    assert.deepEqual(await db.episode.findMany({where:{projectId:badSyntax.id},orderBy:{number:'asc'}}),badSyntaxBefore);
+
     // Mechanical validity cannot prove semantic completeness: retain the first Q1 source review.
     const semantic = await create('semantic omission with no mechanical blocker');
     await db.episode.updateMany({ where: { projectId: semantic.id, number: 1 }, data: { content: '第1集\n1-1 客厅 日 内\n人物：甲\n△甲把电棍放在桌上。\n甲：别碰它。\n' } });

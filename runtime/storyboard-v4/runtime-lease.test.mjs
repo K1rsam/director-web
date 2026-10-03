@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,writeFile,readFile,rm,stat} from 'node:fs/promises';
+import {mkdtemp,writeFile,readFile,readdir,rm,stat} from 'node:fs/promises';
 import {fork} from 'node:child_process';
 import {once} from 'node:events';
 import fs from 'node:fs';
@@ -83,4 +83,79 @@ test('asynchronous source preparation retains the lease through shutdown',async(
   release();await pending;await stopping;assert.equal(await readFile(path.join(directory,'prepared.txt'),'utf8'),'complete');
   const lock=await acquireRuntimeLease(directory);await lock.release();
  }finally{release();await pending?.catch(()=>{});await stopping?.catch(()=>{});await c.shutdown();await rm(directory,{recursive:true,force:true});}
+});
+
+test('a dead owner on the same machine can be recovered after its network hostname changes',async t=>{
+ const directory=await fixture(t),{createCoordinator}=await import('./coordinator.mjs');let calls=0;
+ const make=()=>createCoordinator({dataRoot:directory,modelRunner:async()=>{calls++;throw Error('unexpected model call');}}),first=make(),second=make();
+ t.after(async()=>{await first.shutdown();await second.shutdown();});
+ await first.prepareWrite();
+ const file=path.join(directory,'.coordinator-owner.json'),owner=JSON.parse(await readFile(file,'utf8'));
+ const inode=(await stat(path.join(directory,'.runtime-lease.lock'))).ino;
+ await first.shutdown();
+ const previous=JSON.stringify({...owner,pid:99999999,host:'previous-network-address'});await writeFile(file,previous);
+ await second.prepareWrite();
+ const archived=(await readdir(directory)).filter(name=>name.startsWith('.coordinator-owner.stale-'));
+ assert.equal(archived.length,1);assert.equal(await readFile(path.join(directory,archived[0]),'utf8'),previous);
+ const current=JSON.parse(await readFile(file,'utf8'));assert.match(current.machineId,/^mac-hardware-v1:[a-f0-9]{64}$/);
+ assert.equal(current.machineId,owner.machineId);assert.equal(current.pid,process.pid);
+ assert.equal((await stat(path.join(directory,'.runtime-lease.lock'))).ino,inode);assert.equal(calls,0);
+});
+
+test('matching network names do not authorize a record from another machine',async t=>{
+ const directory=await fixture(t),{createCoordinator}=await import('./coordinator.mjs');let calls=0;
+ const c=createCoordinator({dataRoot:directory,modelRunner:async()=>{calls++;throw Error('unexpected model call');}});t.after(()=>c.shutdown());
+ const previous=JSON.stringify({pid:99999999,host:hostname(),token:'foreign',machineId:'mac-hardware-v1:'+'0'.repeat(64)});
+ await writeFile(path.join(directory,'.coordinator-owner.json'),previous);
+ await assert.rejects(c.prepareWrite(),{code:'LEASE_UNKNOWN'});
+ assert.equal(await readFile(path.join(directory,'.coordinator-owner.json'),'utf8'),previous);assert.equal(calls,0);
+});
+
+for(const machineId of [null,'',false,'mac-hardware-v1:bad'])test(`malformed machine identity ${JSON.stringify(machineId)} remains blocked`,async t=>{
+ const directory=await fixture(t),{createCoordinator}=await import('./coordinator.mjs');
+ const c=createCoordinator({dataRoot:directory});t.after(()=>c.shutdown());
+ const previous=JSON.stringify({pid:99999999,host:hostname(),token:'bad-identity',machineId});
+ await writeFile(path.join(directory,'.coordinator-owner.json'),previous);
+ await assert.rejects(c.prepareWrite(),{code:'LEASE_UNKNOWN'});
+ assert.equal(await readFile(path.join(directory,'.coordinator-owner.json'),'utf8'),previous);
+});
+
+test('a live owner remains busy after its network hostname changes',async t=>{
+ const directory=await fixture(t),{createCoordinator}=await import('./coordinator.mjs');
+ const first=createCoordinator({dataRoot:directory}),second=createCoordinator({dataRoot:directory});t.after(async()=>{await first.shutdown();await second.shutdown();});
+ await first.prepareWrite();const file=path.join(directory,'.coordinator-owner.json'),owner=JSON.parse(await readFile(file,'utf8'));await first.shutdown();
+ const previous=JSON.stringify({...owner,pid:process.pid,host:'previous-network-address',token:'another-live-owner'});await writeFile(file,previous);
+ await assert.rejects(second.prepareWrite(),{code:'LEASE_BUSY'});
+ assert.equal(await readFile(file,'utf8'),previous);assert.equal((await readdir(directory)).some(name=>name.startsWith('.coordinator-owner.stale-')),false);
+});
+
+test('shutdown releases its own metadata despite a changed network hostname',async t=>{
+ const directory=await fixture(t),{createCoordinator}=await import('./coordinator.mjs');
+ const c=createCoordinator({dataRoot:directory});t.after(()=>c.shutdown());
+ await c.prepareWrite();const file=path.join(directory,'.coordinator-owner.json'),owner=JSON.parse(await readFile(file,'utf8'));
+ await writeFile(file,JSON.stringify({...owner,host:'previous-network-address'}));await c.shutdown();
+ await assert.rejects(readFile(file,'utf8'),{code:'ENOENT'});
+});
+
+test('legacy foreign or corrupt owner records are not silently recovered',async t=>{
+ const directory=await fixture(t),{createCoordinator}=await import('./coordinator.mjs');
+ const c=createCoordinator({dataRoot:directory});t.after(()=>c.shutdown());
+ for(const previous of [JSON.stringify({pid:99999999,host:'unverified-machine',token:'legacy'}),'{truncated','null','[]','true']){
+  await writeFile(path.join(directory,'.coordinator-owner.json'),previous);
+  await assert.rejects(c.prepareWrite(),{code:'LEASE_UNKNOWN'});
+  assert.equal(await readFile(path.join(directory,'.coordinator-owner.json'),'utf8'),previous);
+ }
+});
+
+for(const unreadable of ['command-failed','invalid-result'])test(`unreadable machine identity ${unreadable} releases the kernel lease without writing`,async t=>{
+ const directory=await fixture(t),script=path.join(directory,'unreadable-identity-worker.mjs');
+ await writeFile(script,`import cp from 'node:child_process';import fs from 'node:fs';import path from 'node:path';import {promisify} from 'node:util';import {syncBuiltinESMExports} from 'node:module';
+const [directory,reason]=process.argv.slice(2),original=cp.execFile,originalAsync=original[promisify.custom];
+const replacement=(...args)=>original(...args);replacement[promisify.custom]=async(command,...args)=>{if(command!=='/usr/sbin/ioreg')return originalAsync(command,...args);if(reason==='command-failed')throw Object.assign(new Error('unavailable'),{code:'ENOENT'});return {stdout:'unverifiable identity',stderr:''};};cp.execFile=replacement;syncBuiltinESMExports();
+const {createCoordinator}=await import(${JSON.stringify(coordinatorURL)});const {acquireRuntimeLease}=await import(${JSON.stringify(leaseURL)});let calls=0;
+const c=createCoordinator({dataRoot:directory,modelRunner:async()=>{calls++;throw Error('unexpected model');}});let failure;
+try{await c.prepareWrite();}catch(error){failure=error.code;}finally{await c.shutdown();}
+const lease=await acquireRuntimeLease(directory);lease.assertHeld();await lease.release();process.send({event:'checked',code:failure,ownerWritten:fs.existsSync(path.join(directory,'.coordinator-owner.json')),calls});process.disconnect();`);
+ const child=worker(t,script,[directory,unreadable]);
+ assert.deepEqual(await child.waitFor(message=>message.event==='checked'),{event:'checked',code:'LEASE_UNAVAILABLE',ownerWritten:false,calls:0});
 });

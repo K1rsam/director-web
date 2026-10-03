@@ -65,6 +65,12 @@ const union = (...values: number[][]) => [...new Set(values.flat())].sort((a, b)
 const overlaps = (scope: number[], target: number[]) => !target.length || scope.some(n => target.includes(n));
 const active = (task: FoundationDeliveryTask | null) => !!task && DELIVERY_ACTIVE_STATUSES.includes(task.status);
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+// A running task hides continuation controls, not its final technical stop reason.
+// Use the same pure routing rule for the reader and the task's final receipt.
+function programContinuationBlocker(dispatch: ReturnType<typeof planFoundationIssueDispatch>, generationFinished: boolean, hasUnappliedChoices: boolean, hasSuggestions: boolean) {
+  return generationFinished && !hasUnappliedChoices && !hasSuggestions && !dispatch.targets.length && dispatch.backendItems.length
+    ? `整理遇到技术问题，已暂停重复请求：${dispatch.backendItems[0].problem}` : null;
+}
 // Bump only for an actual receiving protocol/validator change, never for prompts, UI or wording.
 const DELIVERY_RECEIVERS = { F1: 'SOURCE_BOUNDARY_ACCEPT_V1', F2: 'LIGHT_CATALOG_ACCEPT_V1', Q1: 'LIGHT_EDITOR_ACCEPT_V2' };
 const LEGACY_DELIVERY_RECEIVERS = { F1: 'SOURCE_BOUNDARY_ACCEPT_V1', F2: 'LIGHT_CATALOG_ACCEPT_V1', Q1: 'LIGHT_EDITOR_ACCEPT_V1' };
@@ -452,8 +458,8 @@ export async function getFoundationDeliveryState(projectId: string, db: Db = pri
   const currentEdited = loaded.needsContextEdit ? document.contextCoverage?.fingerprint === createEmptyDocument(input).settingsFingerprint ? document.contextCoverage.episodes : [] : document.editorialCoverage;
   const generationFinished = !needsAssetRefresh && availableEpisodes === all.length && all.every(n => currentEdited.includes(n)) && !loaded.needsContextEdit;
   const dispatch = planFoundationIssueDispatch({ doc: document, scenes, index: input.sourceIndex, issues });
-  const blocked = generationFinished && !unapplied.length && !suggestions.length && !dispatch.targets.length && dispatch.backendItems.length ? `整理遇到技术问题，已暂停重复请求：${dispatch.backendItems[0].problem}`
-    : task?.repairHalt && [repairFingerprint(input, document, scenes), legacyRepairFingerprint(input, document, scenes)].includes(task.repairHalt.fingerprint) ? task.repairHalt.reason : null;
+  const blocked = programContinuationBlocker(dispatch, generationFinished, !!unapplied.length, !!suggestions.length)
+    ?? (task?.repairHalt && [repairFingerprint(input, document, scenes), legacyRepairFingerprint(input, document, scenes)].includes(task.repairHalt.fingerprint) ? task.repairHalt.reason : null);
   const continuationBlocker = !complete && !documentReady && !busy && !unknownOutcome && !requiredChoices.length ? blocked ?? await paidContinuationBlocker(db, input, document, scenes, choices.pending, choices.confirmed, loaded.needsContextEdit) : null;
   return { document, previousDocument: loaded.previousDocument, task, totalEpisodes: all.length, availableEpisodes, editedEpisodes: all.filter(n => currentEdited.includes(n)).length,
     busy, complete, documentReady, needsContextEdit: loaded.needsContextEdit, needsAssetRefresh, methodUpdateAvailable, continuationBlocker, action: busy ? 'NONE' : unknownOutcome ? 'UNKNOWN_CONFIRM' : continuationBlocker ? 'BLOCKED' : complete ? 'NONE' : document.f1 || document.f2 ? 'CONTINUE' : 'START',
@@ -1113,7 +1119,11 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
       }
       for (const number of work.scope) { const at = remainingEdit.indexOf(number); if (at >= 0) remainingEdit.splice(at,1); }
     }
-    const pendingWork = () => ({ issues: actionableFoundationIssues(doc, [...collectFoundationPublicationIssues(doc.f2!, input.sourceContext,input.sourceIndex), ...collectLightSceneIssues(doc.f2!, scenes)], choices.pending.filter(choice => doc.requiredDecisionIds.includes(choice.id))), todos: currentTodos(doc),
+    // The executor and the final reader must agree on source readiness. Source
+    // syntax diagnostics remain PROGRAM-owned: never repair a whole catalogue
+    // or manufacture an author choice merely to clear an unrecognised line.
+    const pendingWork = () => ({ issues: actionableFoundationIssues(doc, [...collectFoundationPublicationIssues(doc.f2!, input.sourceContext,input.sourceIndex), ...collectLightSceneIssues(doc.f2!, scenes),
+      ...collectScriptReceptionIssues(input.sourceIndex,doc.f2!,input.scriptResolutions)], choices.pending.filter(choice => doc.requiredDecisionIds.includes(choice.id))), todos: currentTodos(doc),
       suggestions: choices.pending.filter(choice => !doc.requiredDecisionIds.includes(choice.id) && doc.reviewedSuggestions[choice.id] !== choice.revision),
       decisions: choices.confirmed.filter(choice => doc.appliedDecisions[choice.id] !== choice.revision && remainingChoiceScope(doc, choice, 'decisionCoverage', all).length) });
     repairRounds: for (let round = task!.repairRounds; round < task!.maxRepairRounds; round++) {
@@ -1178,9 +1188,13 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
     const state = await getFoundationDeliveryState(projectId, db);
     // Registry publication is independent of historical approval snapshots and cannot erase manual material.
     if (doc.f2) { const { registerFoundationDocumentAssets } = await import('./foundation-delivery-assets'); await registerFoundationDocumentAssets(db, projectId, doc, state.requiredChoices, checkCurrent); }
+    const finalPending = pendingWork();
+    const finalProgramBlocker = programContinuationBlocker(planFoundationIssueDispatch({ doc, scenes, index: input.sourceIndex, issues: state.issues }),
+      !state.needsAssetRefresh && !state.needsContextEdit && state.availableEpisodes === state.totalEpisodes && state.editedEpisodes === state.totalEpisodes,
+      !!finalPending.decisions.length, !!finalPending.suggestions.length);
     await update({ status: state.requiredChoices.length ? 'WAITING_USER' : state.documentReady ? 'COMPLETE' : 'PARTIAL', scope: [], workerPid: null,
       message: state.requiredChoices.length ? '其他资料已整理，请连续保存剩余选择，全部确认后自动继续。' : state.documentReady ? '资料已整理完成，可以阅读和使用。'
-        : programTodos(doc).length ? '已有资料已保存；尚有技术问题未完成，当前已暂停自动整理。' : task!.repairHalt?.reason ?? '已有资料已保存，剩余局部事项尚未完成，可继续补齐。', error: null });
+        : state.continuationBlocker ?? finalProgramBlocker ?? (programTodos(doc).length ? '已有资料已保存；尚有技术问题未完成，当前已暂停自动整理。' : task!.repairHalt?.reason ?? '已有资料已保存，剩余局部事项尚未完成，可继续补齐。'), error: null });
     // Stage 2 is demand-driven. Even a legacy saved task with autoAssetPrompts=true
     // must not dispatch a whole-catalogue job here; existing source cards go directly to Stage 3.
   } catch (error) {

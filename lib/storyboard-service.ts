@@ -35,7 +35,24 @@ const agreementStore = createAgreementStore(path.join(process.env.DIRECTOR_PRODU
 type RecordValue = Record<string, any>;
 type Service = ReturnType<typeof makeService>;
 type RunnerStatus = { ready: boolean; message: string; configurationError?: boolean; timeoutPolicy?: { plan: number; author: number; finish: number } };
-const state = globalThis as unknown as { storyboardIntegratedV1?: Service; storyboardV4Status?: { at: number; value: Promise<RunnerStatus> } };
+type RuntimeHooks = {
+  beforeExecute: (binding: RecordValue) => Promise<boolean>;
+  loadProductionContext: typeof loadProductionContext;
+  beforeAuthorAdmission: typeof sealOutgoingProductionAgreements;
+  onSettled: typeof refreshProductionChain;
+};
+const state = globalThis as unknown as { storyboardIntegratedV1?: Service; storyboardRuntimeHooks?: RuntimeHooks; storyboardV4Status?: { at: number; value: Promise<RunnerStatus> } };
+// Keep the coordinator, queues and immutable attempts across hot reload, but
+// never keep an obsolete closure over the source/material receiving code.
+state.storyboardRuntimeHooks = {
+  beforeExecute: async binding => {
+    const episode = await prisma.episode.findFirst({ where: { id: binding.episodeId, projectId: binding.projectId }, include: { project: true } });
+    if (!episode) return false;
+    const prepared = await loadStoryboardInput(episode, '', binding.inputProtocol ?? 'legacy', undefined, binding.inlinePerformanceVersion === 'inline-performance-v1');
+    return storyboardSourceCompatible(binding, prepared);
+  },
+  loadProductionContext, beforeAuthorAdmission: sealOutgoingProductionAgreements, onSettled: refreshProductionChain
+};
 
 export function storyboardSourceCompatible(binding:RecordValue,prepared:RecordValue){
   return binding.sourceBasisVersion ? prepared.sourceBasisVersion===binding.sourceBasisVersion&&sourceEvidenceCompatible(binding.contextEvidence,prepared.contextEvidence) : prepared.sourceVersion===binding.sourceVersion;
@@ -73,17 +90,53 @@ export async function prepareStoryboardView(episode: RecordValue, protocol: Scri
   }
 }
 
-/** Saved content is readable before freshness checks, but cannot authorize mutation or formal delivery. */
+async function savedSharedBudget(run:RecordValue){
+  const binding=run.web?.binding?.productionBudget;
+  return binding?productionBudgetStore(binding.directory).read(binding.id).then((d:RecordValue)=>({maxCalls:d.maxCalls,maxTokens:d.maxTokens,...d.summary})).catch(()=>({unavailable:true})):null;
+}
+
+/** A reading view never authorizes dispatch/export; their endpoints validate current inputs. */
 export async function storyboardSavedRunView(run:RecordValue,episode:RecordValue){
   storyboardHttp.assertEpisodeBinding(run,episode);
   const service=storyboardService(),legacy=run.web?.legacyReadOnly===true;
   const view=input.publicRun(run,{active:!legacy&&service.active(run.id),sourceStale:Boolean(run.web?.sourceStale),
     executions:legacy?[]:await service.executionStatus(run.id),scheduling:legacy?undefined:service.scheduling(run.id),
-    preparation:legacy?{ready:true}:{ready:false,checking:true}});
-  view.legacyReadOnly=legacy;view.sourceCheckPending=!legacy;view.blocked=true;
+    preparation:{ready:true}});
+  // Deferred means no check is running. Preserve known blocks; do not invent one on navigation.
+  view.preparation=legacy?{ready:true}:{ready:false,deferred:true};
+  view.legacyReadOnly=legacy;view.sourceCheckPending=false;view.blocked=legacy||view.blocked;
+  view.operations=view.operations.map((operation:RecordValue)=>({...operation,
+    localPhase:!legacy&&operation.status==='running'?service.executionState(run.id,operation.attemptId):null}));
   view.production={boundary:run.production?.boundaryCheck??null,materialNeeds:run.production?.needs??[],pendingRepair:run.production?.pendingRepair??null,
-    blocking:run.production?.blocking??false,chainMode:run.web.binding.productionChain?.mode??'SINGLE',chainComplete:storyboardChainComplete(run),sharedBudget:null};
+    blocking:run.production?.blocking??false,chainMode:run.web.binding.productionChain?.mode??'SINGLE',chainComplete:storyboardChainComplete(run),sharedBudget:await savedSharedBudget(run)};
   return view;
+}
+
+/** List metadata needs neither source reconstruction nor every run's receipts/diagnostics. */
+export async function storyboardSavedIndex(episode:RecordValue){
+  const service=storyboardService(),documents=await service.list({episodeId:episode.id});
+  const runs=documents.map((run:RecordValue)=>{
+    storyboardHttp.assertEpisodeBinding(run,episode);
+    const legacyReadOnly=run.web?.legacyReadOnly===true,active=!legacyReadOnly&&service.active(run.id);
+    const progress=run.web?.progress;
+    const visible=['awaiting_confirmation','needs_design','budget_stop','usage_review','source_stale','waiting_dependencies','failed','unknown','pausing','paused','stopped'].includes(progress)?progress:run.status;
+    return {id:run.id,title:run.web?.title||run.source?.title||run.id,status:!active&&run.operations?.some((op:RecordValue)=>op.status==='running')?'interrupted':visible,
+      createdAt:run.web?.createdAt,active,legacyReadOnly};
+  }).sort((a:RecordValue,b:RecordValue)=>b.createdAt.localeCompare(a.createdAt));
+  return {documents,index:{runs,model:'gpt-6.1-sol',reasoning:'medium',maxConcurrent:4,
+    runner:storyboardDeferredRunner(),sourceWarnings:[],preparation:{ready:false,deferred:true}}};
+}
+
+/** Authenticated page render carries the saved result; no model or upstream preparation here. */
+export async function storyboardPageSnapshot(episode:RecordValue,requestedId?:string){
+  try{
+    const {documents,index}=await storyboardSavedIndex(episode);
+    const id=index.runs.find((item:RecordValue)=>item.id===requestedId)?.id||index.runs[0]?.id;
+    const document=documents.find((item:RecordValue)=>item.id===id);
+    return {episodeId:episode.id,index,run:document?await storyboardSavedRunView(document,episode):null,savedAt:Date.now()};
+  }catch(error){
+    return {episodeId:episode.id,index:null,run:null,savedAt:Date.now(),error:storyboardFailure(error).body.error};
+  }
 }
 
 /** Reconcile only the requested run. The same immutable current input also supplies its public freshness view. */
@@ -112,20 +165,15 @@ export async function refreshStoryboardRun(run:RecordValue,episode:RecordValue){
 function makeService() {
   const { createCoordinator } = nativeRequire(path.join(runtimePath, "coordinator.mjs"));
   const coordinator = createCoordinator({ dataRoot: storyboardDataRoot, executable, maxConcurrent: 4,
-    loadProductionContext: async (binding:RecordValue, run:RecordValue) => loadProductionContext(binding,run,coordinator),
-    beforeAuthorAdmission:sealOutgoingProductionAgreements,
-    onSettled: async (run:RecordValue) => refreshProductionChain(run.web.binding.projectId),
+    loadProductionContext: async (binding:RecordValue, run:RecordValue) => state.storyboardRuntimeHooks!.loadProductionContext(binding,run,coordinator),
+    beforeAuthorAdmission: (binding:RecordValue, run:RecordValue) => state.storyboardRuntimeHooks!.beforeAuthorAdmission(binding,run),
+    onSettled: async (run:RecordValue) => state.storyboardRuntimeHooks!.onSettled(run.web.binding.projectId),
     modelRunner: async (request: RecordValue, options: RecordValue) => {
       const run = await coordinator.read(options.runId), binding = run.web.binding;
       const call = () => budgetedProductionCall({projectId: binding.projectId, stage: `stage3:${request.stage}`, provider: 'CLI', model: request.settings.model, runId: options.runId, attemptId: options.attemptId}, () => execution.runModel(request, options));
       return binding.productionBudget ? withProductionBudgetContext(binding.productionBudget, call) : call();
     },
-    beforeExecute: async (binding: RecordValue) => {
-      const episode = await prisma.episode.findFirst({ where: { id: binding.episodeId, projectId: binding.projectId }, include: { project: true } });
-      if (!episode) return false;
-      const prepared = await loadStoryboardInput(episode, '', binding.inputProtocol ?? 'legacy',undefined,binding.inlinePerformanceVersion==='inline-performance-v1');
-      return storyboardSourceCompatible(binding,prepared);
-    }
+    beforeExecute: (binding: RecordValue) => state.storyboardRuntimeHooks!.beforeExecute(binding)
   });
   const service = withStoryboardArchive(coordinator, storyboardArchiveRoot);
   // One free reconciliation pass on service recovery, including completed documents.
@@ -138,8 +186,17 @@ function makeService() {
 }
 export function storyboardService() { return state.storyboardIntegratedV1 ??= makeService(); }
 
-export async function storyboardRunnerStatus() {
-  if (!state.storyboardV4Status || Date.now() - state.storyboardV4Status.at > 60000) {
+/** Viewing a saved task does not require a CLI process or a current login. */
+export function storyboardDeferredRunner(){
+  try{
+    return {ready:false,checked:false,timeoutPolicy:execution.readTimeoutPolicy(process.env),message:'开始执行时自动检查本机连接；阅读已有稿件无需连接。'};
+  }catch{
+    return {ready:false,checked:true,configurationError:true,message:'分阶段运行时限配置无效，请检查本项目的超时设置；历史记录仍可查看，未发送生成请求。'};
+  }
+}
+
+export async function storyboardRunnerStatus(force=false) {
+  if (force || !state.storyboardV4Status || Date.now() - state.storyboardV4Status.at > 60000) {
     const value = (async () => {
       let timeoutPolicy;
       try { timeoutPolicy = execution.readTimeoutPolicy(process.env); }
@@ -320,7 +377,7 @@ export async function storyboardRunView(run: RecordValue, episode: RecordValue, 
   const chainMode=run.web.binding.productionChain?.mode??'SINGLE';
   const chainComplete=storyboardChainComplete(run);
   view.production = {boundary:run.production?.boundaryCheck ?? null,materialNeeds:run.production?.needs ?? [],pendingRepair:run.production?.pendingRepair??null,blocking:run.production?.blocking??false,chainMode,chainComplete,
-    sharedBudget:run.web.binding.productionBudget ? await productionBudgetStore(run.web.binding.productionBudget.directory).read(run.web.binding.productionBudget.id).then((d:RecordValue)=>({maxCalls:d.maxCalls,maxTokens:d.maxTokens,...d.summary})).catch(()=>({unavailable:true})) : null};
+    sharedBudget:await savedSharedBudget(run)};
   view.operations = view.operations.map((operation: RecordValue) => ({ ...operation,
     localPhase: operation.status === "running" ? service.executionState(run.id, operation.attemptId) : null }));
   if (!includeDiagnostics || legacy) return view;

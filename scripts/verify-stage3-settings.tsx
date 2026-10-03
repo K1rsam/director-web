@@ -94,9 +94,13 @@ function speakingRun() {
 async function main() {
   // Real component + browser; only its HTTP boundary and clipboard are isolated. No Next/database/model process.
   const bundle = await build({
-    stdin: { contents: `import {createElement} from "react"; import {createRoot} from "react-dom/client"; import {StoryboardWorkbench} from "./app/projects/[projectId]/episodes/[episodeId]/storyboard/workbench";
+    stdin: { contents: `import {createElement,StrictMode} from "react"; import {createRoot} from "react-dom/client"; import {StoryboardWorkbench} from "./app/projects/[projectId]/episodes/[episodeId]/storyboard/workbench";
+      import {StoryboardStatusProvider,StoryboardHeaderStatus} from "./app/projects/[projectId]/episodes/[episodeId]/storyboard/page-status";
       const root = createRoot(document.getElementById("root"));
-      window.stage3Mount = (episodeId = "fixture") => root.render(createElement(StoryboardWorkbench, {episodeId, episodeTitle: "隔离验证 " + episodeId, projectId: "fixture-project"}));
+      window.stage3Mount = (episodeId = "fixture", initialSnapshot, strict = false) => {
+        const view=createElement(StoryboardStatusProvider, {key:episodeId, initialRun:initialSnapshot?.run}, createElement("header",null,createElement(StoryboardHeaderStatus)),createElement(StoryboardWorkbench, {episodeId, initialSnapshot, episodeTitle: "隔离验证 " + episodeId, projectId: "fixture-project"}));
+        root.render(strict?createElement(StrictMode,null,view):view);
+      };
       window.stage3Unmount = () => root.unmount();
       Object.defineProperty(navigator, "clipboard", {configurable: true, value: {writeText: async text => {window.stage3Copied = text;}}});
       window.stage3Mount();`, resolveDir: root, loader: "tsx" },
@@ -111,7 +115,7 @@ async function main() {
     const errors: string[] = [], posts: { episode: string; command: Record<string, any> }[] = [], requests: string[] = [], holds: ReturnType<typeof hold>[] = [];
     const runs: Record<string, Run> = { A: savedRun("A", "all", 15), B: savedRun("B", "review", 30) };
     const otherRuns: Record<string, Run> = { Z: savedRun("Z", "off", 30) };
-    const config = { indexHold: null as ReturnType<typeof hold> | null, checkedHold: null as ReturnType<typeof hold> | null, runHold: null as { id: string; gate: ReturnType<typeof hold>; failure?: boolean } | null, postHold: null as ReturnType<typeof hold> | null, failIndex: false, failCreate: false, failChecked: false };
+    const config = { savedIndexHold: null as ReturnType<typeof hold> | null, indexHold: null as ReturnType<typeof hold> | null, checkedHold: null as ReturnType<typeof hold> | null, runHold: null as { id: string; gate: ReturnType<typeof hold>; failure?: boolean } | null, postHold: null as ReturnType<typeof hold> | null, failIndex: false, failCreate: false, failChecked: false, checkedSourceStale:false };
     page.on("pageerror", error => errors.push(error.message));
     let closing = false;
     await context.route("**/*", async route => {
@@ -156,14 +160,23 @@ async function main() {
         const id = url.searchParams.get("runId");
         if (!id) {
           const saved = url.searchParams.get('view') === 'saved';
+          if (saved && config.savedIndexHold) { const gate = config.savedIndexHold; config.savedIndexHold = null; await gate.wait(); }
           if (!saved && config.indexHold) { const gate = config.indexHold; config.indexHold = null; await gate.wait(); }
-          return await route.fulfill(config.failIndex && !saved ? { status: 503, json: { error: "索引暂不可用" } } : { json: { runs: Object.values(records).map(({ id, title, createdAt, status, active }) => ({ id, title, createdAt, status, active })), model: "gpt-6-sol", reasoning: "medium", maxConcurrent: 2, runner: { ready: !saved, message: "隔离验证", timeoutPolicy: { plan: 900000, author: 1800000, finish: 1200000 } }, sourceWarnings: [], preparation: { ready: !saved, ...(saved ? {checking:true} : {}) } } });
+          return await route.fulfill(config.failIndex && !saved ? { status: 503, json: { error: "索引暂不可用" } } : { json: { runs: Object.values(records).map(({ id, title, createdAt, status, active }) => ({ id, title, createdAt, status, active })), model: "gpt-6-sol", reasoning: "medium", maxConcurrent: 2, runner: { ready: false, checked:false, message: "隔离验证", timeoutPolicy: { plan: 900000, author: 1800000, finish: 1200000 } }, sourceWarnings: [], preparation: { ready: !saved, ...(saved ? {deferred:true} : {}) } } });
         }
+        if(!records[id])return await route.fulfill({status:404,json:{error:'任务不存在'}});
         const run = structuredClone(records[id]), delay = config.runHold?.id === id ? config.runHold : null;
         if (delay) { config.runHold = null; await delay.gate.wait(); }
-        if(url.searchParams.get('view')==='saved'){run.sourceCheckPending=true;run.blocked=true;run.preparation={ready:false,checking:true};}
-        else if(config.checkedHold){const gate=config.checkedHold;config.checkedHold=null;await gate.wait();}
-        return await route.fulfill(delay?.failure || config.failChecked && url.searchParams.get('view')!=='saved' ? { status: 503, json: { error: "资料核对暂不可用" } } : { json: { run } });
+        if(url.searchParams.get('view')==='saved'){run.sourceCheckPending=false;run.blocked=Boolean(run.sourceStale||run.legacyReadOnly);run.preparation={ready:false,deferred:true};}
+        else {
+          if(config.checkedSourceStale){run.sourceStale=true;run.blocked=true;}
+          const waits:Promise<void>[]=[];
+          if(config.checkedHold){const gate=config.checkedHold;config.checkedHold=null;waits.push(gate.wait());}
+          if(url.searchParams.get('includeIndex')==='1'&&config.indexHold){const gate=config.indexHold;config.indexHold=null;waits.push(gate.wait());}
+          await Promise.all(waits);
+        }
+        const index=url.searchParams.get('includeIndex')==='1'?{runs:Object.values(records).map(({id,title,status,createdAt,active})=>({id,title,status,createdAt,active})),model:'gpt-6.1-sol',reasoning:'medium',maxConcurrent:4,runner:{ready:false,checked:false,message:'isolated'},sourceWarnings:[],preparation:{ready:!config.failIndex,...(url.searchParams.get('view')==='saved'?{ready:false,deferred:true}:{})}}:undefined;
+        return await route.fulfill(delay?.failure || config.failChecked && url.searchParams.get('view')!=='saved' ? { status: 503, json: { error: "资料核对暂不可用" } } : { json: { run,...(index?{index}:{}) } });
       } catch (error) { if (!closing) errors.push(`route failure: ${(error as Error).message}`); }
     });
     return { context, page, runs, otherRuns, config, posts, errors, requests,
@@ -180,13 +193,116 @@ async function main() {
     finally { await test.close(); }
   }
   try {
-    await check("快照详情先显示，慢核对不挡已保存稿也不能提前派单", async test => {
+    await check("切页只读保存稿，不自动重做连接和资料核对", async test => {
+      await test.open();await loaded(test.page);await flush(test.page);
+      const run={...completedRun(),id:'Z',sourceCheckPending:false,blocked:false,preparation:{ready:false,deferred:true}};
+      const seed={episodeId:'other',run,savedAt:Date.now(),index:{runs:[{id:'Z',status:run.status,createdAt:run.createdAt}],model:'gpt-6.1-sol',reasoning:'medium',maxConcurrent:4,runner:{ready:false,checked:false,message:'执行时检查连接'},sourceWarnings:[],preparation:{ready:false,deferred:true}}};
+      await test.page.evaluate(snapshot=>(window as any).stage3Mount('other',snapshot,true),seed);await loaded(test.page,'Z');await flush(test.page);
+      assert.equal(test.requests.filter(r=>r.startsWith('GET /api/episodes/other/storyboard')).length,0,'已有保存稿切页不能重复启动资料或连接读取');
+      assert.equal(await test.page.getByLabel('第三阶段当前步骤',{exact:true}).innerText(),'完整文字稿，等待你审看');
+      assert.equal(await test.page.getByText('本机 CLI 尚未就绪',{exact:true}).count(),0,'尚未检测不等于连接失败');
+      assert.doesNotMatch(await test.page.getByRole('region',{name:'制作状态',exact:true}).innerText(),/正在核对|正在读取/);
+      assert.deepEqual(test.posts,[]);
+    });
+    await check("已有任务不等浏览器预检，点击连续完成才提交执行校验", async test => {
+      await test.open();await loaded(test.page);await flush(test.page);
+      const run={...savedRun('Z','off',30),sourceCheckPending:false,blocked:false,preparation:{ready:false,deferred:true}};test.otherRuns.Z=run;
+      const seed={episodeId:'other',run,savedAt:Date.now(),index:{runs:[{id:'Z',status:run.status,createdAt:run.createdAt}],model:'gpt-6.1-sol',reasoning:'medium',maxConcurrent:4,runner:{ready:false,checked:false,message:'执行时检查连接'},sourceWarnings:[],preparation:{ready:false,deferred:true}}};
+      await test.page.evaluate(snapshot=>(window as any).stage3Mount('other',snapshot),seed);await loaded(test.page,'Z');await flush(test.page);
+      assert.deepEqual(test.posts,[]);assert.equal(test.requests.filter(r=>r.startsWith('GET /api/episodes/other/storyboard')).length,0);
+      const start=test.page.getByRole('button',{name:/^连续完成本集/});assert.equal(await start.isEnabled(),true);
+      await start.click();await savedNotice(test.page,'请求已受理').waitFor();
+      assert.deepEqual(test.posts.map(p=>p.command),[{action:'start',runId:'Z',mode:'all'}]);
+    });
+    await check("有已保存待恢复回包不能被当成无需更新的空闲稿",async test=>{
+      await test.open();await loaded(test.page);
+      const run={...completedRun(),id:'Z',status:'paused',operations:[{attemptId:'response-saved',stage:'author',packageIds:['P1'],status:'completed',canRecoverSaved:true,createdAt:'2026-10-03T00:00:00Z'}],preparation:{ready:false,deferred:true}};
+      test.otherRuns.Z=run;
+      const seed={episodeId:'other',run,savedAt:Date.now(),index:{runs:[{id:'Z',status:run.status,createdAt:run.createdAt}],model:'gpt-6.1-sol',reasoning:'medium',maxConcurrent:4,runner:{ready:false,checked:false,message:'执行时检查'},sourceWarnings:[],preparation:{ready:false,deferred:true}}};
+      const gate=test.hold();test.config.checkedHold=gate;
+      await test.page.evaluate(snapshot=>(window as any).stage3Mount('other',snapshot),seed);
+      await within(gate.ready,'待恢复回包状态核对');assert.deepEqual(test.posts,[]);gate.release();
+    });
+    await check("切页首屏使用保存快照，不清空成果等待重复读取", async test => {
+      await test.open(); await loaded(test.page);
+      const index = test.hold(), detail = test.hold(); test.config.indexHold = index; test.config.checkedHold = detail;
+      const run = { ...completedRun(), id: 'Z', sourceCheckPending: false, blocked: false, preparation: {ready:false,deferred:true} };
+      const initialSnapshot = { episodeId:'other', run, index:{runs:[{id:'Z',title:'保存稿Z',status:run.status,createdAt:run.createdAt,active:false}],model:'gpt-6.1-sol',reasoning:'medium',maxConcurrent:4,runner:{ready:false,checked:false,message:'执行时核对'},sourceWarnings:[],preparation:{ready:false,deferred:true}}, savedAt:Date.now() };
+      await test.page.evaluate(seed => (window as any).stage3Mount('other', seed), initialSnapshot);
+      await loaded(test.page,'Z');await flush(test.page);
+      assert.equal(await test.page.getByLabel('第三阶段当前步骤',{exact:true}).innerText(),'完整文字稿，等待你审看');
+      await test.page.getByRole('heading',{name:'完整文字稿，等待你审看',exact:true}).waitFor();
+      assert.equal(test.requests.filter(r => r.includes('/api/episodes/other/storyboard') && r.includes('view=saved')).length,0,'已有首屏快照不能再清空并重读保存稿');
+      assert.equal(test.requests.filter(r=>r==='GET /api/episodes/other/storyboard').length,0,'首屏核对复用一次输入，不能另开列表核对');
+      assert.equal(await test.page.getByRole('link',{name:'导出 Markdown',exact:true}).count(),1,'导出入口可见，交付资格由导出端点即时校验');
+      assert.deepEqual(test.posts,[]);
+      await test.page.getByRole('button',{name:'刷新任务状态',exact:true}).click();await within(index.ready,'手动核对索引');await within(detail.ready,'手动核对资料');
+      index.release();detail.release();await flush(test.page);
+    });
+    await check("直达指定任务不等待列表才能读取保存正文", async test => {
+      test.runs.A=completedRun();const index=test.hold();test.config.savedIndexHold=index;
+      await test.open();await within(index.ready,'保存列表慢读取');
+      await within(test.page.getByRole('heading',{name:'完整文字稿，等待你审看',exact:true}).waitFor(),'正文独立显示',1200);
+      assert.deepEqual(test.posts,[]);index.release();await loaded(test.page);
+    });
+    await check("已完成稿不进行无意义的整套资料定时轮询", async test => {
+      await test.page.clock.install();test.runs.A=completedRun();await test.open();await loaded(test.page);
+      const before=test.requests.filter(r=>r===`GET ${endpoint}?runId=A`).length;
+      await test.page.clock.runFor(17000);await flush(test.page);
+      assert.equal(test.requests.filter(r=>r===`GET ${endpoint}?runId=A`).length,before,'完成稿应按焦点、手动刷新或变更核对，不每8秒重读上游');
+      assert.deepEqual(test.posts,[]);
+    });
+    await check("开发模式重复挂载也不重做保存稿资料核对", async test => {
+      await test.open();await loaded(test.page);
+      test.otherRuns.Z={...completedRun(),id:'Z'};
+      const gate=test.hold();test.config.checkedHold=gate;
+      const run={...test.otherRuns.Z,sourceCheckPending:false,blocked:false,preparation:{ready:false,deferred:true}};
+      const seed={episodeId:'other',run,savedAt:Date.now(),index:{runs:[{id:'Z',status:run.status,createdAt:run.createdAt}],model:'gpt-6.1-sol',reasoning:'medium',maxConcurrent:4,runner:{ready:false,checked:false,message:'执行时核对'},sourceWarnings:[],preparation:{ready:false,deferred:true}}};
+      await test.page.evaluate(snapshot=>(window as any).stage3Mount('other',snapshot,true),seed);await loaded(test.page,'Z');await flush(test.page);
+      assert.equal(test.requests.filter(r=>r==='GET /api/episodes/other/storyboard?runId=Z&includeIndex=1').length,0,'StrictMode 也不能触发重资料检查');
+      assert.equal(await test.page.getByLabel('第三阶段当前步骤',{exact:true}).innerText(),'完整文字稿，等待你审看');
+      gate.release();await loaded(test.page,'Z');assert.deepEqual(test.posts,[]);
+    });
+    await check("版本返回使用已有正文，重资料服务故障不影响阅读", async test => {
+      test.runs.A=completedRun();await test.open();await loaded(test.page);
+      await test.page.getByLabel('任务版本',{exact:true}).selectOption('B');await loaded(test.page,'B');
+      const before=test.requests.filter(r=>r===`GET ${endpoint}?runId=A&view=saved`).length;
+      const gate=test.hold();test.config.checkedHold=gate;test.config.failChecked=true;
+      await test.page.getByLabel('任务版本',{exact:true}).selectOption('A');await loaded(test.page);await flush(test.page);
+      await test.page.getByRole('heading',{name:'完整文字稿，等待你审看',exact:true}).waitFor();
+      assert.equal(test.requests.filter(r=>r===`GET ${endpoint}?runId=A&view=saved`).length,before+1,'只做一份轻量状态读取，不重建资料或检测连接');
+      assert.equal(test.requests.filter(r=>r===`GET ${endpoint}?runId=A`).length,0);
+      assert.equal(await test.page.getByRole('link',{name:'导出 Markdown',exact:true}).count(),1);
+      assert.equal(await test.page.getByRole('alert').count(),0);gate.release();
+      assert.deepEqual(test.posts,[]);
+    });
+    await check("返回已有版本轻量接收别处启动的状态，不重建资料",async test=>{
+      test.runs.A=completedRun();await test.open();await loaded(test.page);
+      await test.page.getByLabel('任务版本',{exact:true}).selectOption('B');await loaded(test.page,'B');
+      test.runs.A.active=true;test.runs.A.status='running';
+      const gate=test.hold();test.config.checkedHold=gate;
+      await test.page.getByLabel('任务版本',{exact:true}).selectOption('A');
+      await within(gate.ready,'发现新的执行状态后再核对运行任务');
+      assert.equal(await test.page.getByRole('region',{name:'制作状态',exact:true}).getByText('LIVE · 实际作业状态',{exact:true}).count(),1);
+      assert.deepEqual(test.posts,[]);gate.release();
+    });
+    await check("轻量同步接收已记录的源文变更，旧稿仍可阅读", async test => {
+      test.runs.A=completedRun();await test.open();await loaded(test.page);await flush(test.page);
+      test.runs.A.sourceStale=true;test.runs.A.blocked=true;
+      await test.page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+      await test.page.getByRole('heading',{name:'资料已更新，旧稿仍保留',exact:true}).waitFor();
+      assert.equal(await test.page.getByRole('link',{name:'导出 Markdown',exact:true}).count(),0);
+      await test.page.getByRole('tab',{name:/^完整分镜/}).click();
+      await test.page.getByRole('button',{name:'原始完整稿',exact:true}).click();
+      assert.equal(await test.page.locator('.promptDocument').textContent(),test.runs.A.assembly!.text);assert.deepEqual(test.posts,[]);
+    });
+    await check("慢核对服务不被只读入口调用，完整稿直接显示", async test => {
       test.runs.A = completedRun();
       const index=test.hold(),detail=test.hold();test.config.indexHold=index;test.config.checkedHold=detail;
-      await test.open();await within(index.ready,'后台索引核对');await within(detail.ready,'后台详情核对');
+      await test.open();await loaded(test.page);await flush(test.page);
       await test.page.getByRole('heading',{name:'完整文字稿，等待你审看',exact:true}).waitFor();
-      assert.match(await test.page.getByRole('region',{name:'制作状态',exact:true}).innerText(),/核对资料更新/);
-      assert.deepEqual(test.posts,[]);assert.equal(await test.page.getByRole('link',{name:'导出 Markdown',exact:true}).count(),0);
+      assert.doesNotMatch(await test.page.getByRole('region',{name:'制作状态',exact:true}).innerText(),/核对资料更新/);
+      assert.deepEqual(test.posts,[]);assert.equal(test.requests.filter(r=>r.startsWith(`GET ${endpoint}`)&&!r.includes('view=saved')).length,0);
       index.release();detail.release();await loaded(test.page);
     });
     await check("新任务可直接连续完成，也保留只做情绪分析且创建不派单", async test => {
@@ -195,18 +311,19 @@ async function main() {
       await test.page.getByRole('button',{name:/^连续完成本集/}).click();await savedNotice(test.page,'请求已受理').waitFor();
       assert.deepEqual(test.posts[1].command,{action:'start',runId:'C',mode:'all'});
     });
-    await check("无指定任务也先显示保存稿，重复焦点共享在途核对", async test => {
-      test.runs.A=completedRun();const detail=test.hold();test.config.checkedHold=detail;
-      await test.open('');await within(detail.ready,'默认任务核对');
+    await check("无指定任务也先显示保存稿，重复焦点共享轻量状态读取", async test => {
+      test.runs.A=completedRun();await test.open('');await loaded(test.page);await flush(test.page);
+      const detail=test.hold();test.config.runHold={id:'A',gate:detail};
       await test.page.getByRole('heading',{name:'完整文字稿，等待你审看',exact:true}).waitFor();
-      await test.page.evaluate(()=>{for(let i=0;i<4;i++)window.dispatchEvent(new Event('focus'));});await flush(test.page);
-      assert.equal(test.requests.filter(r=>r===`GET ${endpoint}?runId=A`).length,1,'焦点更新不能重复装配正在核对的材料');
+      await test.page.evaluate(()=>{for(let i=0;i<4;i++)window.dispatchEvent(new Event('focus'));});await within(detail.ready,'焦点轻量同步');await flush(test.page);
+      assert.equal(test.requests.filter(r=>r===`GET ${endpoint}?runId=A&view=saved&includeIndex=1`).length,1,'重复焦点共用轻量读取');
+      assert.equal(test.requests.filter(r=>r===`GET ${endpoint}?runId=A`).length,0,'完成稿焦点不装配上游资料');
       assert.deepEqual(test.posts,[]);detail.release();await loaded(test.page);
     });
-    await check("后台核对失败仍保留保存稿，但不放行派单或正式交付", async test => {
+    await check("显式核对失败仍保留保存稿，但不放行派单或正式交付", async test => {
       test.runs.A=completedRun();test.config.failChecked=true;
-      await test.open();await test.page.getByRole('alert').filter({hasText:'资料核对暂不可用'}).waitFor();
-      await test.page.getByRole('heading',{name:'完整文字稿，等待你审看',exact:true}).waitFor();
+      await test.open();await loaded(test.page);await test.page.getByRole('button',{name:'刷新任务状态',exact:true}).click();await test.page.getByRole('alert').filter({hasText:'资料核对暂不可用'}).waitFor();
+      await test.page.getByRole('heading',{name:'资料暂不可读，历史仍保留',exact:true}).waitFor();
       await test.page.getByRole('tab',{name:/^完整分镜/}).click();
       const result=test.page.getByRole('region',{name:'完整分镜成果',exact:true});
       await result.getByRole('button',{name:'原始完整稿',exact:true}).click();
@@ -214,6 +331,23 @@ async function main() {
       assert.equal(await result.locator('a[href]').count(),0,'核对失败不能提供正式导出地址');
       assert.equal(await test.page.getByRole('button',{name:/连续完成本集|只做情绪分析|继续制作/}).evaluateAll(elements=>elements.some(e=>!(e as HTMLButtonElement).disabled)),false);
       assert.deepEqual(test.posts,[]);
+    });
+    for(const cause of ['source','unavailable'])await check(`轻量同步不抹掉已核对的${cause==='source'?'源文变更':'检查失败'}，成功复核才能解除`,async test=>{
+      test.runs.A=completedRun();await test.open();await loaded(test.page);
+      if(cause==='source')test.config.checkedSourceStale=true;else test.config.failChecked=true;
+      await test.page.getByRole('button',{name:'刷新任务状态',exact:true}).click();
+      const title=cause==='source'?'资料已更新，旧稿仍保留':'资料暂不可读，历史仍保留';
+      await test.page.getByRole('heading',{name:title,exact:true}).waitFor();
+      test.config.checkedSourceStale=false;test.config.failChecked=false;
+      await test.page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+      await flush(test.page);await test.page.getByRole('heading',{name:title,exact:true}).waitFor();
+      await test.page.getByLabel('任务版本',{exact:true}).selectOption('B');await loaded(test.page,'B');
+      await test.page.getByLabel('任务版本',{exact:true}).selectOption('A');await loaded(test.page);await flush(test.page);
+      assert.equal(await test.page.getByRole('heading',{name:title,exact:true}).count(),1,'未做当前来源核对的保存读取不能清掉明确阻断');
+      assert.equal(await test.page.getByRole('link',{name:'导出 Markdown',exact:true}).count(),0);
+      await test.page.getByRole('button',{name:'刷新任务状态',exact:true}).click();
+      await test.page.getByRole('heading',{name:'完整文字稿，等待你审看',exact:true}).waitFor();
+      assert.equal(await test.page.getByRole('link',{name:'导出 Markdown',exact:true}).count(),1);assert.deepEqual(test.posts,[]);
     });
     await check("模型标签沿用实际历史设置，不把旧任务写成当前模型", async test => {
       for (const legacyReadOnly of [false, true]) {
@@ -310,6 +444,33 @@ async function main() {
       assert.match(await test.page.getByLabel("运行状态摘要").innerText(), /本机执行中/);
       assert.deepEqual(test.posts, [], "展示实时排队与执行只读状态");
     });
+    await check("顶部与步骤共用实时阶段，等待可解释且计时，不多开读取或派单", async test => {
+      const run=test.runs.A;run.active=true;run.status='running';run.plan=null;run.selection=null;
+      run.operations=[{attemptId:'live-plan',stage:'plan',packageIds:[],status:'running',localPhase:'executing',createdAt:run.createdAt,execution:{phase:'waiting',startedAt:new Date(Date.now()-65000).toISOString(),lastProgressAt:null}}];
+      await test.open();await loaded(test.page);
+      const header=test.page.getByLabel('第三阶段当前步骤',{exact:true}),status=test.page.getByRole('region',{name:'制作状态',exact:true});
+      await header.getByText('情绪统筹 · 等待首个输出',{exact:true}).waitFor();
+      assert.match(await status.innerText(),/CLI.*已启动.*等待首个有效输出/);
+      assert.match(await status.innerText(),/当前作业历时.*1分\d{2}秒/s);
+      assert.doesNotMatch(await status.innerText(),/本机等待/);
+      const current=test.page.locator('[aria-label="制作流程"] article[aria-current="step"]');
+      assert.equal(await current.count(),1);assert.match(await current.innerText(),/情绪统筹.*当前步骤/s);
+      assert.equal(await current.getAttribute('data-workflow-state'),'waiting');
+      assert.equal(await test.page.locator('[data-workflow-state="running"]').count(),0,'waiting does not invent model progress');
+      assert.ok(await test.page.evaluate(()=>{const rail=document.querySelector('[aria-label="制作流程"]')!,result=document.querySelector('[role="tablist"]')!;return Boolean(rail.compareDocumentPosition(result)&Node.DOCUMENT_POSITION_FOLLOWING);}),'steps remain above secondary panels');
+      const readsBefore=test.requests.length;
+      await flush(test.page);await flush(test.page);
+      assert.equal(test.requests.length,readsBefore,'publishing header state never creates a second polling stream');
+      for(const [stage,phase,label] of [['author','generating','完整主创 · 生成中'],['finish','receiving','统一整编 · 接收回包']] as const){
+        run.plan=savedRun('A','all',15).plan;run.operations=[{...run.operations[0],attemptId:stage,stage,packageIds:['P1'],execution:{phase,startedAt:new Date().toISOString(),lastProgressAt:new Date().toISOString()}}];
+        await test.page.getByRole('button',{name:'刷新任务状态',exact:true}).click();await header.getByText(label,{exact:true}).waitFor();
+        assert.match(await current.innerText(),stage==='author'?/完整主创/:/统一整编/);
+      }
+      test.runs.A=completedRun();await test.page.getByRole('button',{name:'刷新任务状态',exact:true}).click();
+      await header.getByText('完整文字稿，等待你审看',{exact:true}).waitFor();
+      assert.equal(await header.getAttribute('data-state'),'complete');assert.equal(await current.count(),0);
+      assert.deepEqual(test.posts,[],'all live display transitions are read only');
+    });
     await check("超时风险确认必须显式同意，保留旧回执且不能自动继续", async test => {
       const run = test.runs.A;
       run.status = "unknown"; run.error = { code: "TIMEOUT", message: "Request timed out" };
@@ -378,7 +539,7 @@ async function main() {
       assert.match(await test.page.getByLabel("当前任务已保存配置").innerText(), /15秒单元档.*全部加入/s);
       await form(test.page).mode("off").click(); await form(test.page).seconds(30).click(); await form(test.page).notes.fill("未保存的新任务要求");
       assert.equal(await choicePanel(test.page).getByRole("button", { name: "全部加入", exact: true }).getAttribute("aria-pressed"), "true");
-      const refreshed = test.page.waitForResponse(response => response.url().endsWith("?runId=A"));
+      const refreshed = test.page.waitForResponse(response => response.url().endsWith("?runId=A&includeIndex=1"));
       await test.page.getByRole("button", { name: "刷新任务状态", exact: true }).click(); await refreshed; await flush(test.page);
       await assertSettings(test.page, "off", 30, "未保存的新任务要求");
       assert.deepEqual(test.posts, [], "修改下一次新建参数不能写入旧任务或启动模型");
@@ -393,7 +554,7 @@ async function main() {
       assert.deepEqual(test.posts[1].command, { action: "start", runId: "C", mode: "next" });
     });
     await check("索引或任务详情未就绪时不能用默认设置抢先创建", async test => {
-      const index = test.hold(), detail = test.hold(); test.config.indexHold = index; test.config.runHold = { id: "A", gate: detail };
+      const index = test.hold(), detail = test.hold(); test.config.savedIndexHold = index; test.config.runHold = { id: "A", gate: detail };
       const cannotCreate = async () => assert.ok(!await form(test.page).create.count() || await form(test.page).create.isDisabled(), "资料未就绪不得创建");
       await test.open(); await within(index.ready, "索引请求"); await cannotCreate();
       index.release(); await within(detail.ready, "详情请求"); await cannotCreate();
@@ -419,7 +580,7 @@ async function main() {
       const gate = test.hold(); test.config.runHold = { id: "A", gate, failure };
       await test.page.evaluate(() => window.dispatchEvent(new Event("focus"))); await within(gate.ready, "旧任务同步");
       await test.page.getByLabel("任务版本").selectOption("B"); await loaded(test.page, "B");
-      const old = test.page.waitForResponse(response => response.url().endsWith("?runId=A")); gate.release(); await old; await flush(test.page);
+      const old = test.page.waitForResponse(response => response.url().endsWith("?runId=A&view=saved&includeIndex=1")); gate.release(); await old; await flush(test.page);
       await assertSettings(test.page, "review", 30, "已保存要求 B", 21, 210000);
       assert.equal(await test.page.getByLabel("任务版本").inputValue(), "B");
       assert.equal(await test.page.getByRole("alert").count(), 0, "旧任务错误不能泄漏到当前任务"); assert.deepEqual(test.posts, []);
@@ -440,7 +601,7 @@ async function main() {
       await test.open(); await loaded(test.page); await openSettings(test.page);
       const gate = test.hold(); test.config.postHold = gate;
       await form(test.page).create.click(); await within(gate.ready, "等待已发出的创建请求");
-      const nextIndex = test.page.waitForResponse(response => response.url() === `${origin}/api/episodes/other/storyboard`);
+      const nextIndex = test.page.waitForResponse(response => response.url() === `${origin}/api/episodes/other/storyboard?view=saved`);
       await test.page.evaluate(() => (window as any).stage3Mount("other")); await nextIndex;
       await loaded(test.page, "Z");
       await openSettings(test.page); await assertSettings(test.page, "off", 30, "已保存要求 Z");
@@ -599,7 +760,7 @@ async function main() {
     await check("局部回执修复明确保留正文，不显示成重新统筹", async test => {
       Object.assign(test.runs.A,{active:true,status:'running',operations:[{attemptId:'receipt-only',stage:'plan',packageIds:[],status:'running',createdAt:test.runs.A.createdAt,localPhase:'executing',feedbackRepair:true}]});
       await test.open(); await loaded(test.page);
-      await test.page.getByText('正在局部回执修复',{exact:true}).waitFor();
+      await test.page.getByRole('region',{name:'制作状态',exact:true}).getByRole('heading',{name:'局部回执修复 · 本机执行中',exact:true}).waitFor();
       await test.page.getByText(/只修资料回执中的错误字段，不重写/).waitFor();
       await test.page.getByRole('tab',{name:/^执行记录/}).click();
       await test.page.getByRole('tabpanel').locator('strong').filter({hasText:'局部回执修复'}).waitFor();
