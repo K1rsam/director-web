@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getFoundationDeliveryState } from "@/lib/foundation-delivery";
+import { readProjectLibrarySummaries } from "@/lib/project-library-summary";
 import type { CSSProperties } from "react";
 import {
   deriveProjectCardState,
@@ -8,7 +8,7 @@ import {
 } from "@/lib/project-entry";
 import { requireSessionUser } from "@/lib/auth";
 import { getProjectLibrary } from "@/lib/project-library";
-import { isProductionEpisodeNumber, readProductionScope } from "@/lib/production-episodes";
+import { isProductionEpisodeNumber } from "@/lib/production-episodes";
 import { archiveProjectAction, restoreProjectAction } from "@/app/actions";
 import { DeleteProjectButton } from "./delete-project-button";
 import { AppChrome } from "./ui/app-chrome";
@@ -27,8 +27,8 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
   const currentUser = await requireSessionUser("/");
   const { projectId: requestedProjectId } = await searchParams;
   const { projects, archivedProjects } = await getProjectLibrary(currentUser.id);
-  const foundationCompleteByProject = new Map(await Promise.all(projects.map(async project => [project.id, (await getFoundationDeliveryState(project.id)).complete] as const)));
-  const productionScopeByProject = new Map(await Promise.all(projects.map(async project => [project.id, await readProductionScope(project.id)] as const)));
+  const summaries = await readProjectLibrarySummaries(currentUser.id, [...projects, ...archivedProjects].map(project => project.id), undefined,
+    { foundationProjectIds: projects.map(project => project.id) });
   const activeProject = requestedProjectId
     ? projects.find((project) => project.id === requestedProjectId)
     : undefined;
@@ -61,11 +61,11 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
         {projects.length ? (
           <div className={`projectCardGrid ${projects.length === 1 ? "singleProject" : ""}`}>
             {projects.map((project, index) => {
-              const productionEpisodes = project.episodes.filter((episode) => isProductionEpisodeNumber(episode.number, productionScopeByProject.get(project.id)!));
+              const productionEpisodes = project.episodes.filter((episode) => isProductionEpisodeNumber(episode.number, summaries.get(project.id)!.productionScope));
               const unitEpisodeCount = productionEpisodes.filter((episode) => episode._count.seedanceUnits > 0).length;
               const state = deriveProjectCardState({
                 episodeCount: productionEpisodes.length,
-                foundationReady: foundationCompleteByProject.get(project.id) === true,
+                foundationReady: summaries.get(project.id)?.complete === true,
                 unitEpisodeCount
               });
               const posterStyle = {
@@ -155,7 +155,7 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
                       <span className="aspectBadge">归档</span>
                     </div>
                     <div className="projectCardFooter">
-                      <span>{project.episodes.filter((episode) => episode.number >= 1).length} 集 · 归档于 <time dateTime={(project.archivedAt ?? project.updatedAt).toISOString()}>{dateFormatter.format(project.archivedAt ?? project.updatedAt)}</time></span>
+                      <span>{project.episodes.filter((episode) => isProductionEpisodeNumber(episode.number, summaries.get(project.id)!.productionScope)).length} 集 · 归档于 <time dateTime={(project.archivedAt ?? project.updatedAt).toISOString()}>{dateFormatter.format(project.archivedAt ?? project.updatedAt)}</time></span>
                       <form action={restoreProjectAction}>
                         <input name="projectId" type="hidden" value={project.id} />
                         <button type="submit" className="archiveAction" title="恢复到项目列表" aria-label={`恢复项目：${project.title}`}>恢复</button>

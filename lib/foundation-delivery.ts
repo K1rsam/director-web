@@ -406,7 +406,10 @@ function currentRegistryComplete(document:FoundationDocument,assets:readonly {id
 }
 
 /** Reading this state never changes jobs, answers, documents or starts a provider request. */
-export async function getFoundationDeliveryState(projectId: string, db: Db = prisma): Promise<FoundationDeliveryState> {
+export async function getFoundationDeliveryState(projectId: string, db: Db = prisma, readContext?: {
+  input: Awaited<ReturnType<typeof loadFoundationInputs>>;
+  loaded: Awaited<ReturnType<typeof loadFoundationDocument>>;
+}): Promise<FoundationDeliveryState> {
   const project = await db.project.findUnique({ where: { id: projectId }, select: { id: true, _count: { select: { episodes: true } } } });
   if (!project) throw new Error('没有找到项目。');
   if (!project._count.episodes) {
@@ -420,8 +423,9 @@ export async function getFoundationDeliveryState(projectId: string, db: Db = pri
       continuationBlocker: unknownOutcome ? null : continuationBlocker, action: active(task) ? 'NONE' : unknownOutcome ? 'UNKNOWN_CONFIRM' : continuationBlocker ? 'BLOCKED' : source.sourceText ? 'START' : 'NONE', requiredChoices: [], confirmedChoices: [], suggestionsCount: 0, sourceContext, codes: {}, expectedState: hash([document.revision, source.sourceInputVersion, task, unknown]),
       issues: [{ severity: 'BLOCKER', owner: 'PROGRAM', coordinate: 'source', problem: '没有可读取的分集原文；请先检查源文，未发起模型请求。', sourceRefs: [] }] };
   }
-  const input = await loadFoundationInputs(projectId, db);
-  const [loaded, storedTask, choices, assets] = await Promise.all([loadFoundationDocument(db, projectId, input), readTask(db, projectId), loadFoundationChoices(db, projectId, input.sourceVersion, true), db.asset.findMany({ where: { projectId } })]);
+  if (readContext && readContext.input.project.id !== projectId) throw new Error('资料读取上下文不属于当前项目。');
+  const input = readContext?.input ?? await loadFoundationInputs(projectId, db);
+  const [loaded, storedTask, choices, assets] = await Promise.all([readContext?.loaded ?? loadFoundationDocument(db, projectId, input), readTask(db, projectId), loadFoundationChoices(db, projectId, input.sourceVersion, true), db.asset.findMany({ where: { projectId } })]);
   const { document } = loaded;
   let task = storedTask ? { ...storedTask, ...await deliveryCounts(db, projectId, storedTask.id) } : null;
   const unknown = outstandingUnknown(await deliveryEvidence(db, projectId, false), task), unknownOutcome = Boolean(task?.unknownOutcome || unknown.length);

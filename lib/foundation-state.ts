@@ -1,8 +1,7 @@
 /** Current-version reads and deterministic episode supply. No model calls or publication. */
 import crypto from "node:crypto";
-import { readFidelityReceipt } from './fidelity-store';
+import { readFidelityReviewCandidates } from './fidelity-store';
 import {collectPhysicalEvidenceIssues} from './foundation-physical-evidence';
-import { fidelityReviewCandidates } from './fidelity-review-candidates';
 import type { Prisma, SceneSnapshot, PipelineRun } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { FOUNDATION_CLI_INSTRUCTION_PROFILE } from "@/lib/codex-cli";
@@ -98,8 +97,7 @@ export async function loadFoundationInputs(projectId: string, db: FoundationDb =
   const resolved = options.includeResolutions === false ? new Map() : await readCurrentResolvedPlans(projectId, project.episodes, db);
   const scriptResolutions = Object.fromEntries([...resolved].map(([number, value]) => [number, value.prepared]));
   const scriptInterpretationVersions = Object.fromEntries([...resolved].map(([number, value]) => [number, value.hash]));
-  const fidelity=await readFidelityReceipt(projectId,db);
-  const sourceReviewCandidates=fidelity?fidelityReviewCandidates(fidelity.receipt):[];
+  const sourceReviewCandidates=await readFidelityReviewCandidates(projectId,db);
   const choices = await loadFoundationChoices(db, projectId, sourceIndex.version);
   const confirmed = await db.presentationContract.findMany({ where: { projectId, status: "CONFIRMED" }, orderBy: [{ category: "asc" }, { id: "asc" }] });
   const presentationScopeVersions = confirmed.map(entry => ({ id: entry.id, answer: entry.userAnswer, episodeId: entry.episodeId, scopeMode: entry.scopeMode, targetEpisodeNumbers: entry.targetEpisodeNumbers, ruleKey: entry.ruleKey, condition: foundationChoiceCondition(entry, project.episodes) }));

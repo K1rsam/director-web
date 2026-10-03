@@ -219,7 +219,7 @@ test('pause during preparation withdraws the unsent request and retains a truthf
   await assert.rejects(readFile(f.calls,'utf8'),{code:'ENOENT'});
 });
 
-test('timeout kills TERM-ignoring descendant after parent closes',async t=>{
+test(process.platform==='win32'?'timeout force-reclaims the Windows parent and descendant process tree':'timeout kills TERM-ignoring descendant after parent closes',async t=>{
   const f=await fixture(t),prevCalls=process.env.FAKE_CALLS,prevMode=process.env.FAKE_MODE,prevPid=process.env.FAKE_CHILD_PID;
   process.env.FAKE_CALLS=f.calls;process.env.FAKE_MODE='descendant';process.env.FAKE_CHILD_PID=path.join(f.directory,'child-pid');
   t.after(()=>{if(prevCalls===undefined)delete process.env.FAKE_CALLS;else process.env.FAKE_CALLS=prevCalls;if(prevMode===undefined)delete process.env.FAKE_MODE;else process.env.FAKE_MODE=prevMode;if(prevPid===undefined)delete process.env.FAKE_CHILD_PID;else process.env.FAKE_CHILD_PID=prevPid;});
@@ -232,6 +232,15 @@ test('timeout kills TERM-ignoring descendant after parent closes',async t=>{
     await new Promise(resolve=>setTimeout(resolve,25));
   }
   assert.equal(alive,false);
+  const receipt=JSON.parse(await readFile(path.join(f.directory,'attempts','descendant','receipt.json'),'utf8'));
+  assert.equal(receipt.requestOutcome,'UNKNOWN');assert.equal(receipt.localProcess.closeObserved,true);
+  assert.throws(()=>process.kill(receipt.localProcess.pid,0),{code:'ESRCH'},'the owned parent also exited');
+  if(process.platform==='win32'){
+    assert.equal(receipt.localProcess.exitSignal,null);
+    assert.ok(receipt.localProcess.terminationRequests.some(r=>r.mechanism==='windows_taskkill_tree'&&r.forced===true&&r.signal===null&&r.result==='sent'));
+  }
+  await assert.rejects(runModel(request,{directory:f.directory,attemptId:'descendant',executable:process.execPath,executableArgs:[f.script]}),error=>error.code==='ATTEMPT_EXISTS'&&error.requestOutcome==='UNKNOWN');
+  assert.equal(await readFile(f.calls,'utf8'),'1','unknown timeout never resends');
 });
 
 test('store serializes concurrent updates and rereads across instances',async t=>{

@@ -1,5 +1,5 @@
 import {createHash, randomUUID} from 'node:crypto';
-import {stat} from 'node:fs/promises';
+import {stat,readFile} from 'node:fs/promises';
 import path from 'node:path';
 import type {Prisma} from '@prisma/client';
 import {prisma, isSqliteBusyError} from './prisma';
@@ -191,7 +191,7 @@ export type AssetDesignHandoff = {
   assetKey: string; status: AssetDesignStatus; materialAvailability: 'TEXT_ONLY' | 'REFERENCE_AVAILABLE';
   adoptionVersion?: number; promptRevision?: number; styleRevision?: number; sourceFingerprint?: string; factsFingerprint?: string; referenceDependencies?: Dependency[]; brief?: string;
   freeDesignScope?: string; visualFacts?: NonNullable<PromptAsset['visualFacts']>;
-  references: {id: string; source: 'USER_UPLOADED_REFERENCE'; description: string; available: boolean}[];
+  references: {id: string; source: 'USER_UPLOADED_REFERENCE'|'CHATGPT_WEB_GENERATED'|'TASK_IMAGE_IMPORT'; description: string; available: boolean}[];
 };
 /** Internal server helper. Callers supply only this episode's keys; no prompt body, raw URLs or filesystem paths leave it. */
 export async function readAssetDesignHandoff(projectId: string, assetKeys: string[], workspace?: PromptWorkspace): Promise<AssetDesignHandoff[]> {
@@ -203,9 +203,10 @@ export async function readAssetDesignHandoff(projectId: string, assetKeys: strin
       let available = false;
       if (referenceIdPattern.test(reference.id)) {
         // Private runtime uploads are not application deployment assets.
-        try {const file = await stat(/*turbopackIgnore: true*/ path.join(/*turbopackIgnore: true*/ path.resolve(/*turbopackIgnore: true*/ process.env.DIRECTOR_ASSET_REFERENCE_DIR || 'outputs/asset-references'), reference.id)); available = file.isFile() && file.size === reference.size; } catch {}
+        try {const target=/*turbopackIgnore: true*/ path.join(/*turbopackIgnore: true*/ path.resolve(/*turbopackIgnore: true*/ process.env.DIRECTOR_ASSET_REFERENCE_DIR || 'outputs/asset-references'), reference.id);const file = await stat(target); available = file.isFile() && file.size === reference.size;if(available&&reference.sha256)available=createHash('sha256').update(await readFile(target)).digest('hex')===reference.sha256; } catch {}
       }
-      return {id: reference.id, source: 'USER_UPLOADED_REFERENCE' as const, description: `用户上传参考图 ${index + 1}（${reference.width}×${reference.height}）；非自动生成结果，未代表图像质量验收`, available};
+      const source:AssetDesignHandoff['references'][number]['source']=reference.source??'USER_UPLOADED_REFERENCE',label=source==='CHATGPT_WEB_GENERATED'?'ChatGPT网页执行器回传原图':source==='TASK_IMAGE_IMPORT'?'图片任务手工导入候选':'用户上传参考图';
+      return {id: reference.id, source, description: `${label} ${index + 1}（${reference.width}×${reference.height}）；由用户采用，未代表图像质量验收`, available};
     }));
     return {assetKey, status: view.status, materialAvailability: references.some(reference => reference.available) ? 'REFERENCE_AVAILABLE' : 'TEXT_ONLY',
       adoptionVersion: current.version, promptRevision: current.promptRevision, styleRevision: current.styleRevision, sourceFingerprint: current.sourceFingerprint, factsFingerprint: current.factsFingerprint,

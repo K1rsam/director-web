@@ -38,8 +38,10 @@ function currentPrompt(record:PromptRecord):PromptRecord{
 
 export async function loadAssetPromptWorkspace(projectId: string,scope?:AssetProductionScope): Promise<PromptWorkspace> {
   const input = await loadFoundationInputs(projectId);
-  const [{ document, needsContextEdit }, delivery, rows, direction] = await Promise.all([
-    loadFoundationDocument(prisma, projectId, input), getFoundationDeliveryState(projectId),
+  const loaded = await loadFoundationDocument(prisma, projectId, input);
+  const { document, needsContextEdit } = loaded;
+  const [delivery, rows, direction] = await Promise.all([
+    getFoundationDeliveryState(projectId, prisma, {input, loaded}),
     prisma.sceneSnapshot.findMany({ where: { projectId, sceneKey: {in:[rowKey,'ASSET_IMAGE_OPTIONS_V1','ASSET_PROMPT_AUTOMATION_V1']} },orderBy:{createdAt:'asc'} }),
     readProjectSeriesDirectionProjection(projectId)
   ]);

@@ -6,6 +6,8 @@ import path from 'node:path';
 import * as runner from './runner.mjs';
 import {createAttemptDiagnostics} from './attempt-diagnostics.mjs';
 import {digest} from './shared.mjs';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 
 const nativeTimeout=globalThis.setTimeout;
 const delay=ms=>new Promise(resolve=>nativeTimeout(resolve,ms));
@@ -31,6 +33,17 @@ async function until(read){
   assert.fail('Timed out waiting for fake CLI evidence');
 }
 const readJSON=file=>readFile(file,'utf8').then(JSON.parse);
+async function assertPrivateMetadata(file){
+  const folder=path.dirname(file);
+  if(process.platform!=='win32'){
+    assert.equal((await stat(file)).mode&0o777,0o600);assert.equal((await stat(folder)).mode&0o777,0o700);return;
+  }
+  // Node's POSIX mode bits on Windows do not represent NTFS ACLs. Verify the
+  // actual fixture ACL instead of pretending 0600/0700 enforce Windows access.
+  const command=`$ErrorActionPreference='Stop';$paths=ConvertFrom-Json $env:DIRECTOR_TEST_PRIVATE_FILES;$broad=@('S-1-1-0','S-1-5-11','S-1-5-32-545');$mask=[Security.AccessControl.FileSystemRights]::ReadData -bor [Security.AccessControl.FileSystemRights]::WriteData -bor [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership;$checks=@(foreach($p in $paths){$acl=if([IO.Directory]::Exists($p)){[IO.Directory]::GetAccessControl($p)}else{[IO.File]::GetAccessControl($p)};$rules=$acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]);$unsafe=@($rules|Where-Object{$_.AccessControlType -eq 'Allow' -and $broad -contains $_.IdentityReference.Value -and ($_.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -eq 0 -and ($_.FileSystemRights -band $mask) -ne 0});@{private=($unsafe.Count -eq 0)}});[Console]::Out.Write((ConvertTo-Json -InputObject $checks -Compress))`;
+  const {stdout}=await promisify(execFile)(path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe'),['-NoProfile','-NonInteractive','-Command',command],{windowsHide:true,timeout:3000,env:{...process.env,DIRECTOR_TEST_PRIVATE_FILES:JSON.stringify([file,folder])}});
+  const checks=JSON.parse(stdout);assert.equal(checks.length,2);assert.ok(checks.every(item=>item.private),'native ACL must deny broad identities metadata read/write');
+}
 
 test('timeout policy has stage budgets above ten minutes and validates every override',()=>{
   assert.equal(typeof runner.readTimeoutPolicy,'function');
@@ -112,8 +125,7 @@ process.stdout.write(${JSON.stringify(JSON.stringify(events.at(-1))+'\n')});`);
     assert.equal(live.eventTail.length,32);assert.ok(live.lastActivityAt);
     assert.equal(JSON.stringify(live).includes('PRIVATE_'),false);
     assert.ok(live.eventTail.every(e=>Object.keys(e).sort().join(',')==='timestamp,type'));
-    assert.equal((await stat(f.file('metadata','diagnostics.json'))).mode&0o777,0o600);
-    assert.equal((await stat(path.dirname(f.file('metadata','diagnostics.json')))).mode&0o777,0o700);
+    await assertPrivateMetadata(f.file('metadata','diagnostics.json'));
     assert.ok((await stat(f.file('metadata','diagnostics.json'))).size<16384);
     await writeFile(f.file('metadata','raw.txt.release'),'release');
     const result=await pending;assert.equal(result.error,undefined);assert.equal(result.value.usage.totalTokens,7);

@@ -26,11 +26,10 @@ export type FoundationSourceContext = {
  * legacy uploads into episodes.
  */
 export async function loadFoundationSourceContext(projectId: string, db: Db = prisma): Promise<FoundationSourceContext> {
-  const snapshots = await db.sceneSnapshot.findMany({
+  const current = await db.sceneSnapshot.findFirst({
     where: { projectId, sceneKey: "SOURCE_IMPORT" },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }]
   });
-  const current = snapshots[0];
   if (!current) {
     const notices = [{ code: "NO_SOURCE_IMPORT_METADATA", message: "没有 SOURCE_IMPORT；不从既有 Episode 反推补充来源。" }];
     return { version: fingerprint({ projectId, marker: notices[0]!.code }), background: [], unresolved: [], issues: [], complete: false, notices, coverage: "UNKNOWN" };

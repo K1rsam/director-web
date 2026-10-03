@@ -13,6 +13,6 @@ export default async function Page({params}:{params:Promise<{projectId:string}>}
   const scope=await readProductionScope(projectId);
   return <div className={styles.shell}><AppChrome title={workspace.title} eyebrow="第二阶段 · 资产形象设计" projectId={projectId} projectLabel={workspace.title} activeSection="assets" episodes={episodes.filter(item=>isProductionEpisodeNumber(item.number,scope)).map(item=>({...item,title:item.title||'',productionEligible:true}))}
     primaryAction={<a className="quietButton" href={`/projects/${projectId}`}>返回第一阶段</a>}>
-    <AssetPromptWorkspace initial={workspace}/>
+    <AssetPromptWorkspace initial={workspace} productionEpisodes={episodes.filter(item=>isProductionEpisodeNumber(item.number,scope)).map(item=>item.number)}/>
   </AppChrome></div>;
 }

@@ -1,7 +1,7 @@
 import { getCurrentUser, requireProjectAccess } from '@/lib/auth';
 import {hasSameLocalOrigin,readLocalJsonObject,readLocalFormData,LocalRequestError} from '@/lib/local-json-request';
 import { loadAssetPromptWorkspace, saveAssetPrompt, saveAssetStyle, generateAssetPrompt, recoverAssetPrompt,planEpisodeAssetProduction } from '@/lib/asset-prompt-service';
-import {saveImageTemplate,uploadAssetReference,removeAssetReference,readAssetReference} from '@/lib/asset-image-options-service';
+import {saveImageTemplate,uploadAssetReference,removeAssetReference,readAssetReference,readAssetReferencePreview} from '@/lib/asset-image-options-service';
 import {stopAssetPromptAutomation,launchAssetPromptAutomation} from '@/lib/asset-prompt-automation';
 import {loadFoundationInputs} from '@/lib/foundation-state';
 import {readAssetPreparationReview} from '@/lib/episode-upstream-material';
@@ -12,6 +12,7 @@ export async function GET(request:Request,{params}:{params:Promise<{projectId:st
   await requireProjectAccess(projectId);
   const search=new URL(request.url).searchParams;
   if(search.has('reference')){
+    if(search.get('view')==='reference-preview'){const preview=await readAssetReferencePreview(projectId,search.get('key')??'',search.get('reference')??'');if(!preview)return Response.json({error:'参考图不存在或已移除。'},{status:404});return new Response(new Uint8Array(preview.bytes),{headers:{'Content-Type':preview.mime,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});}
     const result=await readAssetReference(projectId,search.get('key')??'',search.get('reference')??'');
     if(!result)return Response.json({error:'参考图不存在或已移除。'},{status:404});
     return new Response(new Uint8Array(result.bytes),{headers:{'Content-Type':result.reference.mime,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}});

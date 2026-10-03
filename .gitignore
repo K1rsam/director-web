@@ -62,3 +62,7 @@ __pycache__/
 .production-ledgers/
 .production-workflows/
 .storyboard-stage3-v2/
+
+# AOCI agent host integration (machine-bound; do not commit)
+.codex/config.toml
+.codex/config.toml.backup.*

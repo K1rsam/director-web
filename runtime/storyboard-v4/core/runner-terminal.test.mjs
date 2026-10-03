@@ -5,9 +5,15 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {runModel,readCompletedAttempt,readAttemptEvidence} from './runner.mjs';
 import {digest} from './shared.mjs';
+import childProcess from 'node:child_process';
 
 const request={stage:'author',prompt:'终态回收本地回归',instructions:'输出JSON',settings:{model:'gpt-6.1-sol',reasoning:'medium'},inputHash:'terminal-fixture',promptHash:digest('终态回收本地回归')};
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const windows=process.platform==='win32';
+function assertNativeTreeTermination(receipt){
+  assert.equal(receipt.localProcess.exitSignal,null);
+  assert.ok(receipt.localProcess.terminationRequests.some(r=>r.mechanism==='windows_taskkill_tree'&&r.forced===true&&r.signal===null&&r.result==='sent'));
+}
 async function fixture(t,body,options={}){
   const directory=await mkdtemp(path.join(tmpdir(),'v4-cli-terminal-')),attemptId='terminal',script=path.join(directory,'fake-cli.mjs');
   await writeFile(script,`import {writeFile} from 'node:fs/promises';\nprocess.stdin.resume();\nawait new Promise(resolve=>process.stdin.on('end',resolve));\nconst emit=e=>process.stdout.write(JSON.stringify(e)+'\\n');\n${body}`);
@@ -30,7 +36,7 @@ for(const withUsage of [true,false])test(`complete final settles without CLI exi
   assert.equal(result.usage.totalTokens,withUsage?5:null);assert.equal(result.responseDisposition,'final');
   assert.equal(receipt.execution.timeoutKind,null);assert.equal(receipt.execution.terminalEvent,'turn.completed');
   assert.ok(receipt.execution.terminalAt);assert.equal(receipt.responseDisposition,'final');
-  assert.equal(receipt.localProcess.closeObserved,true);assert.equal(receipt.localProcess.exitSignal,'SIGTERM');
+  assert.equal(receipt.localProcess.closeObserved,true);if(windows)assertNativeTreeTermination(receipt);else assert.equal(receipt.localProcess.exitSignal,'SIGTERM');
   assert.ok(receipt.durationMs<2000,'terminal settlement must not use the generation deadline');
   assert.deepEqual((await readCompletedAttempt(f)).output,{ok:true});
 });
@@ -47,8 +53,9 @@ test('terminal success recycles a TERM-ignoring CLI without changing the result 
   const f=await fixture(t,`process.on('SIGTERM',()=>{});${complete}\nemit({type:'turn.completed'});setTimeout(()=>process.exit(0),4000);`);
   const {result,error}=await f.completion,receipt=await f.receipt();
   assert.equal(error,undefined);assert.deepEqual(result.output,{ok:true});
-  assert.equal(receipt.localProcess.closeObserved,true);assert.equal(receipt.localProcess.exitSignal,'SIGKILL');
-  assert.deepEqual(receipt.localProcess.terminationRequests.map(r=>r.signal),['SIGTERM','SIGKILL']);
+  assert.equal(receipt.localProcess.closeObserved,true);
+  if(windows)assertNativeTreeTermination(receipt);
+  else {assert.equal(receipt.localProcess.exitSignal,'SIGKILL');assert.deepEqual(receipt.localProcess.terminationRequests.map(r=>r.signal),['SIGTERM','SIGKILL']);}
   assert.equal(receipt.execution.timeoutKind,null);assert.equal(receipt.usage.totalTokens,null);
 });
 
@@ -82,8 +89,22 @@ test('turn.completed with half JSON settles into the original parser rejection w
 
 test('cancellation before the terminal event keeps a late complete-looking body non-adoptable',async t=>{
   const controller=new AbortController();
-  const f=await fixture(t,`process.on('SIGTERM',()=>{${complete}emit({type:'turn.completed'});process.exit(0);});
+  const f=await fixture(t,windows?`import {access} from 'node:fs/promises';
+emit({type:'turn.started'});await writeFile(new URL('./ready',import.meta.url),'ready');
+while(true){try{await access(new URL('./cancelled',import.meta.url));break;}catch{}await new Promise(r=>setTimeout(r,5));}
+${complete}emit({type:'turn.completed'});await writeFile(new URL('./late-emitted',import.meta.url),'ready');setInterval(()=>{},1000);`:`process.on('SIGTERM',()=>{${complete}emit({type:'turn.completed'});process.exit(0);});
 emit({type:'turn.started'});await writeFile(new URL('./ready',import.meta.url),'ready');setTimeout(()=>process.exit(0),4000);`,{signal:controller.signal,timeoutMs:3000,idleTimeoutMs:2500});
+  if(windows){
+    // Windows cannot deliver the POSIX TERM callback. Hold only this test's
+    // native kill until the fake CLI emits a late body, then perform the real
+    // taskkill. This deterministically exercises cancellation/late-output order.
+    const nativeExecFile=childProcess.execFile;
+    t.mock.method(childProcess,'execFile',(...args)=>{
+      if(path.basename(args[0]).toLowerCase()!=='taskkill.exe')return nativeExecFile(...args);
+      void(async()=>{await writeFile(path.join(f.directory,'cancelled'),'cancelled');await waitFor(()=>readFile(path.join(f.directory,'late-emitted'),'utf8'),Boolean,1000);})()
+        .catch(()=>{}).finally(()=>nativeExecFile(...args));
+    });
+  }
   await waitFor(()=>readFile(path.join(f.directory,'ready'),'utf8'),Boolean);controller.abort();
   const {error}=await f.completion,receipt=await f.receipt();
   assert.equal(error?.code,'ABORTED');assert.equal(error.requestOutcome,'UNKNOWN');
@@ -102,7 +123,7 @@ test('cancellation after a complete terminal body does not adopt but keeps paid 
   assert.deepEqual((await readCompletedAttempt(f)).output,{ok:true});
 });
 
-test('terminal settlement never fabricates close when detached inherited pipes stay open',async t=>{
+test(windows?'terminal Windows tree cleanup closes inherited pipes and records the actual mechanism':'terminal settlement never fabricates close when detached inherited pipes stay open',async t=>{
   const f=await fixture(t,`import {spawn} from 'node:child_process';
 const descendant=spawn(process.execPath,['-e','setTimeout(()=>process.exit(0),6000)'],{detached:true,stdio:['ignore',process.stdout,process.stderr]});
 await writeFile(new URL('./descendant-pid',import.meta.url),String(descendant.pid));
@@ -111,7 +132,12 @@ ${complete}emit({type:'turn.completed'});setTimeout(()=>process.exit(0),4000);`)
   pid=Number(await waitFor(()=>readFile(path.join(f.directory,'descendant-pid'),'utf8'),Boolean));
   const {result,error}=await f.completion,receipt=await f.receipt();
   assert.equal(error,undefined);assert.deepEqual(result.output,{ok:true});
-  assert.equal(receipt.localProcess.closeObserved,false);assert.equal(receipt.localProcess.exitedAt,null);assert.equal(receipt.localProcess.exitSignal,null);
-  assert.deepEqual(receipt.localProcess.terminationRequests.map(r=>r.signal),['SIGTERM','SIGKILL']);
+  if(windows){
+    assert.equal(receipt.localProcess.closeObserved,true);assert.ok(receipt.localProcess.exitedAt);assertNativeTreeTermination(receipt);
+    assert.throws(()=>process.kill(pid,0),{code:'ESRCH'},'detached fixture descendant was actually reclaimed');
+  }else{
+    assert.equal(receipt.localProcess.closeObserved,false);assert.equal(receipt.localProcess.exitedAt,null);assert.equal(receipt.localProcess.exitSignal,null);
+    assert.deepEqual(receipt.localProcess.terminationRequests.map(r=>r.signal),['SIGTERM','SIGKILL']);
+  }
   assert.equal(receipt.execution.timeoutKind,null);assert.equal(receipt.usage.totalTokens,null);
 });

@@ -1,0 +1,35 @@
+import {readFile,writeFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import vm from 'node:vm';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+const root=fileURLToPath(new URL('..',import.meta.url));
+const home=process.argv[2];if(!home||!path.isAbsolute(home))throw Error('Absolute bridge home required');
+const runtime=path.join(root,'runtime-3008/bridge-image-parser-experiment');
+const file=path.join(home,'src/routes.js'),hash=s=>createHash('sha256').update(s).digest('hex');
+const current=await readFile(file,'utf8');
+const original=hash(current)==='883ef20b4978cfb3036bf4500d61fc57e080883439950b251265976d9ae5cf3e'?current:await readFile(path.join(runtime,'routes.original.js'),'utf8');
+assert.equal(hash(original),'883ef20b4978cfb3036bf4500d61fc57e080883439950b251265976d9ae5cf3e');
+const before="  res.setHeader('Content-Disposition', `attachment; filename=\"${sanitizeFilename(file.name)}\"`);";
+assert.equal(original.split(before).length,2);
+const after=`  // director3008: HTTP headers must be ASCII; preserve Unicode via RFC 5987.
+  const filename = sanitizeFilename(file.name).toWellFormed();
+  const asciiName = filename.replace(/[^\\x20-\\x7e]/g, '_');
+  const encodedName = encodeURIComponent(filename).replace(/['()*]/g, (char) => '%' + char.charCodeAt(0).toString(16).toUpperCase());
+  res.setHeader('Content-Disposition', \`attachment; filename="\${asciiName}"; filename*=UTF-8''\${encodedName}\`);`;
+const patched=original.replace(before,after);
+if(hash(current)!==hash(original)&&hash(current)!==hash(patched))throw Error('Download route drift; not installed');
+const fragment=patched.slice(patched.indexOf('function sanitizeFilename('),patched.indexOf('async function streamChatResponse('));
+const context=vm.createContext({});vm.runInContext(fragment,context);
+const names=['已生成图像 1.png','test.png','图像😀.png','bad\r\n"file.png',"a'b(c)*.png",'lone\ud800.png'];
+const bytes=Buffer.from([137,80,78,71,13,10,26,10]);
+const server=http.createServer((req,res)=>{const name=names[Number(req.url.slice(1))];context.sendStoredFile(res,{name,mime:'image/png',stream:{pipe:r=>r.end(bytes)}});});
+await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+try{for(let i=0;i<names.length;i++){const res=await fetch(`http://127.0.0.1:${server.address().port}/${i}`);assert.equal(res.status,200);assert.deepEqual(Buffer.from(await res.arrayBuffer()),bytes);const header=res.headers.get('content-disposition');assert.match(header,/filename\*=UTF-8''/);assert.ok(!/[^\x20-\x7e]/.test(header));if(i===0)assert.ok(header.includes(encodeURIComponent(names[i])));}}finally{await new Promise(resolve=>server.close(resolve));}
+await writeFile(path.join(runtime,'routes.original.js'),original);
+await writeFile(path.join(runtime,'routes.patched.js'),patched);
+await writeFile(path.join(runtime,'header-proof.json'),JSON.stringify({beforeSha256:hash(original),afterSha256:hash(patched),httpTestsPassed:names.length,bodyBytesUnchanged:true},null,2));
+if(current!==patched)await writeFile(file,patched);
+console.log('PASS: 6 real HTTP downloads preserve body bytes and encode Unicode filenames safely.');

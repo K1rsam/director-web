@@ -4,7 +4,50 @@ import { prepareFidelityReading, type FidelityReceipt, type FidelityDecision } f
 import type { ImportedScript } from './import-script';
 import { preprocessProject } from './project-preprocess';
 import { assertNoActiveFoundationDelivery } from './foundation-choice-store';
+import { fidelityReviewCandidates, type FidelityCandidateMaterial } from './fidelity-review-candidates';
 type ReadDb = Pick<Prisma.TransactionClient, 'sceneSnapshot'>;
+/** Read only the source-bound candidate evidence, not the multi-megabyte import
+ * package, duplicate source branches, diagnostics and original-file base64.
+ * Full receipts remain the authority for source downloads and all mutations. */
+export async function readFidelityReviewCandidates(projectId:string,db:ReadDb & Partial<Pick<Prisma.TransactionClient,'$queryRaw'>>=prisma){
+ if(!db.$queryRaw){const full=await readFidelityReceipt(projectId,db);return full?fidelityReviewCandidates(full.receipt):[];}
+ const rows=await db.$queryRaw<Array<{material:string;fullReceipt:string|null}>>`
+  SELECT CASE WHEN json_valid(content) THEN json_object(
+   'schema',json_extract(content,'$.schema'),
+   'sourceVersion',json_extract(content,'$.result.source.sourceVersion'),
+   'readingHash',json_extract(content,'$.readingHash'),
+   'p1Review',json_object('status',json_extract(content,'$.p1Review.status'),
+     'reviewedSourceVersion',json_extract(content,'$.p1Review.reviewedSourceVersion'),
+     'aliases',json_extract(content,'$.p1Review.aliases'),
+     'unresolved',json_extract(content,'$.p1Review.unresolved')),
+   'externalReview',json_extract(content,'$.externalReview'),
+   'result',json_object('source',json_object('text',json_extract(content,'$.result.source.text')),
+     'episodes',json((SELECT json_group_array(json_object(
+       'number',json_extract(value,'$.number'),'productionEligible',json_extract(value,'$.productionEligible'),
+       'start',json_extract(value,'$.start'),'end',json_extract(value,'$.end')))
+       FROM json_each(content,'$.result.episodes') WHERE type='object')))
+  ) ELSE '{}' END AS material,
+  CASE WHEN json_valid(content) THEN CASE WHEN
+    (SELECT COUNT(key)>COUNT(DISTINCT key) FROM json_each(content)) OR
+    (SELECT COUNT(key)>COUNT(DISTINCT key) FROM json_each(content,'$.result')) OR
+    (SELECT COUNT(key)>COUNT(DISTINCT key) FROM json_each(content,'$.result.source')) OR
+    (SELECT COUNT(key)>COUNT(DISTINCT key) FROM json_each(content,'$.p1Review')) OR
+    json_type(content,'$.result.episodes') IS NOT 'array' OR
+    EXISTS(SELECT 1 FROM json_each(content,'$.result.episodes') e WHERE e.type IS NOT 'object'
+      OR CASE WHEN e.type='object' THEN (SELECT COUNT(key)>COUNT(DISTINCT key) FROM json_each(e.value)) ELSE 0 END)
+    THEN content END END AS fullReceipt FROM SceneSnapshot
+  WHERE projectId=${projectId} AND sceneKey='FIDELITY_IMPORT'
+  ORDER BY createdAt DESC,id DESC LIMIT 1`;
+ if(!rows.length)return [];
+ if(rows[0].fullReceipt){
+  const full=JSON.parse(rows[0].fullReceipt) as FidelityReceipt;
+  if(full.schema!=='FIDELITY_RECEIPT_V1'||!full.result?.source?.sourceVersion)throw new Error('保真记录不可读，请保留原件并重新导入。');
+  return fidelityReviewCandidates(full);
+ }
+ const material=JSON.parse(rows[0].material) as FidelityCandidateMaterial & {schema?:string;sourceVersion?:string};
+ if(material.schema!=='FIDELITY_RECEIPT_V1'||!material.sourceVersion)throw new Error('保真记录不可读，请保留原件并重新导入。');
+ return fidelityReviewCandidates(material);
+}
 export async function readFidelityReceipt(projectId:string,db:ReadDb=prisma){
  const [snapshot,sourceSnapshot]=await Promise.all([
   db.sceneSnapshot.findFirst({where:{projectId,sceneKey:'FIDELITY_IMPORT'},orderBy:[{createdAt:'desc'},{id:'desc'}]}),

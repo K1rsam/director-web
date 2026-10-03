@@ -106,8 +106,7 @@ async function main() {
       window.stage3Mount();`, resolveDir: root, loader: "tsx" },
     bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic", loader: { ".css": "empty", ".module.css": "empty" }, define: { "process.env.NODE_ENV": '"development"' }, logLevel: "silent",
   });
-  const executablePath = existsSync(chromium.executablePath()) ? undefined : "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-  const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
+  const browser = await chromium.launch({ headless: true, ...(existsSync(chromium.executablePath()) ? {} : { channel: 'chrome' }) });
   let failed = 0, checked = 0;
   async function fixture() {
     const context = await browser.newContext({ serviceWorkers: "block" });

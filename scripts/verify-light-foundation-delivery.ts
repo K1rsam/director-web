@@ -49,7 +49,11 @@ async function main() {
     assert.ok(packets[0].assets.every(asset => asset.sceneRefs?.every(ref => ref.episode === 0)));
     assert.ok(!('summary' in packets[0]), 'consumer receives source and actual preparation, not filler');
     const { saveFoundationDocument } = await import('@/lib/foundation-document');
-    await saveFoundationDocument(db, project.id, state.document.revision, { ...state.document, assetMethodVersion: 'old-method' }, 'old method fixture');
+    const oldMethodDocument = await saveFoundationDocument(db, project.id, state.document.revision, { ...state.document, assetMethodVersion: 'old-method' }, 'old method fixture');
+    // A new revision must be locally registered before it can be complete. This
+    // fixture changes only the reviewed rule version and buys no provider work.
+    const { registerFoundationDocumentAssets } = await import('@/lib/foundation-delivery-assets');
+    await registerFoundationDocumentAssets(db, project.id, oldMethodDocument, []);
     const oldMethod = await getFoundationDeliveryState(project.id, db), beforeMethodCalls = await db.pipelineRun.count({ where: { projectId: project.id } });
     assert.equal(oldMethod.complete, true); assert.equal(oldMethod.action, 'NONE'); assert.equal(oldMethod.methodUpdateAvailable, true);
     await assert.rejects(queueFoundationDelivery(project.id, {}, db), /已完成|已整理|无需/);
@@ -102,11 +106,30 @@ async function main() {
     const task=await queueFoundationDelivery(project.id,{},db), calls:string[]=[];
     await executeFoundationDelivery(project.id,task.id,{db,stageRunner:async(stage,prompt)=>{
       calls.push(stage);const input=JSON.parse(prompt.split('INPUT_JSON:\n').at(-1)!);
-      assert(input.facts.groups.backgroundCandidates.some((i:number)=>input.facts.rows[i][5].includes('尚未匹配')));
+      const expected = '一段尚未匹配姓名的作者资料。\n';
+      const rows = input.facts.groups.backgroundCandidates.map((i:number) => input.facts.rows[i]);
+      assert.equal(rows.length, 1);
+      const row = rows[0], origin = row[0];
+      assert.equal(origin[0], 'CONTEXT');
+      assert.equal(typeof origin[1], 'string');
+      assert.equal(origin[2], background.indexOf(expected));
+      assert.equal(origin[3], background.indexOf(expected) + expected.length);
+      let body = background;
+      if (stage === 'Q1') {
+        const matches = input.seriesDirectionPreparation.background.filter((item:[string,string]) => item[0] === `background:${origin[1]}`);
+        assert.equal(matches.length, 1);
+        assert.equal(matches[0][1], background, 'Q1 retains the exact original background');
+        assert.equal(row[5], undefined, 'Q1 may omit a verified duplicate statement');
+        assert.equal(input.facts.omittedBackgroundStatementCount, 1);
+        body = matches[0][1];
+      } else assert.equal(row[5], expected);
+      const restored = body.slice(origin[2], origin[3]);
+      assert.equal(restored, expected);
+      assert.equal(row[5] === undefined ? restored : row[5], expected);
       return response(stage==='F2'?{format:'ASSET_CATALOG_V2',coverage:[1],assets:[{name:'甲',type:'CH',episodes:[1],sceneRefs:[{episode:1,sceneKey:'1-1'}],preparation:{mode:'REFERENCE'}}]}:{format:'FOUNDATION_OPTIMIZATION_V2',coverage:[1],changes:{}});
     }});
     const state=await getFoundationDeliveryState(project.id,db);
-    assert.deepEqual(calls,['F2','Q1']);assert.equal(state.complete,false);assert.equal(state.task?.status,'PARTIAL');assert(state.continuationBlocker?.includes('作者资料'));
+    assert.deepEqual(calls,['F2','Q1']);assert.equal(state.complete,true);assert.equal(state.task?.status,'COMPLETE');assert.equal(state.continuationBlocker,null);assert.equal(state.task?.unknownOutcome,false);
     }
     console.log('PASS lightweight real controller: ordinary source zero F1, F2/Q1 direct edits, source preserved, per-scene consumer supply');
   } finally { await db.$disconnect(); rmSync(directory, { recursive: true, force: true }); }

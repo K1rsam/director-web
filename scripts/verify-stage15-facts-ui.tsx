@@ -4,45 +4,42 @@ import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {emptyPrompt,type PromptWorkspace} from '../lib/asset-prompt-contract';
 
+// Static presentation complements the actual browser callbacks in
+// verify-asset-scope-ui.tsx; never replace React hooks with inert storage.
 const require=createRequire(import.meta.url);
 require.extensions['.css']=module=>{module.exports={};};
-const componentPath=require.resolve('../app/projects/[projectId]/asset-prompts/workspace');
-const {AssetPromptWorkspace}=require(componentPath) as typeof import('../app/projects/[projectId]/asset-prompts/workspace');
-const base:PromptWorkspace={projectId:'fixture',title:'fixture',style:'3D',stylePrefix:'3D',styleRevision:0,busy:false,records:{},visualFactsStatus:'MISSING',assets:[{key:'hero',baseKey:'hero',name:'人物甲',baseName:'人物甲',type:'CH',variant:false,episodes:[1],mode:'REFERENCE',description:'不应作为事实展示的旧目录描述',note:'不应混入事实的目录备注',evidence:[],reasons:[],eligible:true,fingerprint:'f'}]};
-const render=(workspace:PromptWorkspace)=>renderToStaticMarkup(createElement(AssetPromptWorkspace,{initial:workspace}));
-const missing=render(base);assert.match(missing,/整理剧本事实/);assert.match(missing,/剧本事实与出处/);assert.doesNotMatch(missing,/不应作为事实展示|不应混入事实/);
-const automation=(mode:'FACTS'|'PROMPTS',status:'RUNNING'|'FAILED'|'COMPLETE')=>({id:'job',sourceVersion:'source',mode,status,done:1,failed:status==='FAILED'?1:0,total:2,error:status==='FAILED'?'核对未完成':'',updatedAt:new Date().toISOString()});
-assert.match(render({...base,automation:automation('FACTS','RUNNING')}),/整理剧本事实：进行中/);
-assert.match(render({...base,automation:automation('FACTS','FAILED')}),/整理剧本事实：未完成/);
-assert.match(render({...base,visualFactsStatus:'READY',automation:automation('FACTS','COMPLETE')}),/整理剧本事实：已完成/);
-assert.match(render({...base,automation:automation('PROMPTS','RUNNING')}),/生成资产提示词：进行中/);
+const {AssetPromptWorkspace}=require('../app/projects/[projectId]/asset-prompts/workspace') as typeof import('../app/projects/[projectId]/asset-prompts/workspace');
+const base:PromptWorkspace={projectId:'fixture',title:'fixture',style:'3D',stylePrefix:'3D',styleRevision:0,busy:false,records:{},visualFactsStatus:'MISSING',assets:[{key:'hero',baseKey:'hero',name:'人物甲',baseName:'人物甲',type:'CH',variant:false,episodes:[1,9],mode:'REFERENCE',description:'不应作为事实展示的旧目录描述',note:'不应混入事实的目录备注',evidence:[{label:'第1集原文',text:'人物甲推开铁门。'}],reasons:[],eligible:true,fingerprint:'f'},{key:'other',baseKey:'other',name:'人物乙',baseName:'人物乙',type:'CH',variant:false,episodes:[2],mode:'REFERENCE',description:'',note:'',evidence:[{label:'第2集原文',text:'仅其他人物的原文依据。'}],reasons:[],eligible:true,fingerprint:'f'}]};
+const render=(workspace:PromptWorkspace,productionEpisodes:number[]=[1,2])=>renderToStaticMarkup(createElement(AssetPromptWorkspace,{initial:workspace,productionEpisodes}));
+const missing=render(base);
+assert.match(missing,/核对所选资产的原文依据/);
+assert.match(missing,/原文依据与设计补足/);
+assert.match(missing,/>生成初版<\/button>/);
+assert.match(missing,/人物甲推开铁门。/);
+assert.doesNotMatch(missing,/制作集数|资产制作集数|仅其他人物的原文依据|不应作为事实展示|不应混入事实/);
+const automation=(mode:'FACTS'|'PROMPTS',status:'RUNNING'|'FAILED'|'COMPLETE'|'STOPPED')=>({id:'job',sourceVersion:'source',mode,status,done:1,failed:status==='FAILED'?1:0,total:2,error:status==='FAILED'?'核对未完成':'',updatedAt:new Date(0).toISOString()});
+const running=render({...base,automation:automation('FACTS','RUNNING')});
+assert.match(running,/role="status"><span>整理原文依据 · 1 \/ 2/);
+assert.match(running,/整理依据中…/);
+assert.match(running,/停止后续任务/);
+assert.match(running,/<button disabled="">生成初版<\/button>/);
+const failed=render({...base,automation:automation('FACTS','FAILED')});
+assert.match(failed,/整理原文依据 · 1 \/ 2 · 核对未完成/);
+assert.match(failed,/继续未完成项/);
+assert.match(render({...base,automation:automation('FACTS','STOPPED')}),/继续未完成项/);
+const complete=render({...base,visualFactsStatus:'READY',automation:automation('FACTS','COMPLETE')});
+assert.doesNotMatch(complete,/整理依据中…|停止后续任务|继续未完成项/);
+assert.match(complete,/>生成初版<\/button>/);
+assert.match(render({...base,automation:automation('PROMPTS','RUNNING')}),/生成资产提示词 · 1 \/ 2/);
 assert.match(render({...base,visualFactsStatus:'REVIEW',visualFactIssues:[{subjectKey:'hero',message:'当前人物归属待核对'}]}),/当前人物归属待核对/);
 assert.doesNotMatch(render({...base,visualFactsStatus:'REVIEW',visualFactIssues:[{subjectKey:'other',message:'仅其他人物的问题'}]}),/仅其他人物的问题/);
-assert.doesNotMatch(render({...base,visualFactsStatus:'REVIEW',visualFactIssues:[{message:'场景目录建议',blocking:false}]}),/目录补充建议/);
-assert.match(render({...base,visualFactsStatus:'REVIEW',visualFactIssues:[{subjectKey:'hero',message:'本人物建议',blocking:false}]}),/本人物建议/);
-assert.doesNotMatch(render({...base,visualFactsStatus:'REVIEW',visualFactIssues:[{message:'场景目录建议',blocking:false}]}),/此资产的剧本事实待核对/);
-
-// Invoke the actual button callbacks with inert hook storage. This exercises
-// request routing without a browser, DB, model or rendering side effects.
-const reactPath=require.resolve('react'),reactModule=require.cache[reactPath]!,realReact=reactModule.exports;
-const stateUpdates:unknown[]=[];
-reactModule.exports={...realReact,useState:(initial:unknown)=>[initial,(value:unknown)=>stateUpdates.push(value)],useRef:(value:unknown)=>({current:value}),useEffect:()=>{}};
-delete require.cache[componentPath];
-const {AssetPromptWorkspace:Interactive}=require(componentPath) as typeof import('../app/projects/[projectId]/asset-prompts/workspace');
-function nodes(value:any):any[]{return Array.isArray(value)?value.flatMap(nodes):value&&typeof value==='object'?[value,...nodes(value.props?.children)]:[];}
-function text(value:any):string{return Array.isArray(value)?value.map(text).join(''):typeof value==='string'||typeof value==='number'?String(value):value?.props?text(value.props.children):'';}
-async function click(label:string,workspace:PromptWorkspace){
- const selected:PromptWorkspace={...workspace,automation:{id:'scope-fixture',sourceVersion:'source',mode:'FACTS',status:'COMPLETE',done:0,failed:0,total:1,error:'',updatedAt:new Date(0).toISOString(),scope:{episodeNumbers:[1]}}};
- const tree=Interactive({initial:selected});const button=nodes(tree).find(node=>node.type==='button'&&text(node.props.children).startsWith(label));assert.ok(button,`${label} exists`);assert.ok(!button.props.disabled,`${label} enabled`);await button.props.onClick();
-}
-async function main(){
- const originalFetch=globalThis.fetch;const actions:string[]=[];let current=base;
- globalThis.fetch=(async(_url,init)=>{if(!init?.method)return new Response(JSON.stringify(current));const payload=JSON.parse(String(init.body));assert.ok(Number.isSafeInteger(payload.revision)&&payload.revision>=0,'POST includes required revision');actions.push(payload.action);return new Response(JSON.stringify(payload.action==='generate'?{...emptyPrompt('hero'),status:'READY',body:'可编辑设计',revision:2,fingerprint:'f'}:{...current,automation:automation('FACTS','RUNNING')}));}) as typeof fetch;
- try{
-  for(const label of ['生成初版提示词','批量生图提示词（可选）']){actions.length=0;stateUpdates.length=0;await click(label,base);assert.deepEqual(actions,['prepare-facts']);assert.ok(stateUpdates.some(value=>typeof value==='string'&&value.includes('所需事实与材料依赖')&&value.includes('不自动生成美术提示词')));}
-  actions.length=0;await click('整理剧本事实',base);assert.deepEqual(actions,['prepare-facts'],'Explicit preparation never generates art prompts');
-  current={...base,visualFactsStatus:'REVIEW',visualFactIssues:[{subjectKey:'other',message:'其他人物问题'}]};actions.length=0;await click('生成初版提示词',current);assert.deepEqual(actions,['generate'],'Unrelated REVIEW issues do not block this asset');
-  console.log('PASS: fact statuses and scoped issues rendered; missing single/batch generation prepares facts only with explicit notice; explicit preparation never generates prompts; unrelated review permits generation. No browser or model calls.');
- }finally{globalThis.fetch=originalFetch;reactModule.exports=realReact;delete require.cache[componentPath];}
-}
-void main().catch(error=>{console.error(error);process.exitCode=1;});
+assert.doesNotMatch(render({...base,visualFactsStatus:'REVIEW',visualFactIssues:[{message:'不具归属的目录建议',blocking:false}]}),/不具归属的目录建议/);
+const advice=render({...base,visualFactsStatus:'REVIEW',visualFactIssues:[{subjectKey:'hero',message:'本人物设计建议',blocking:false}]});
+assert.match(advice,/本人物设计建议/);
+assert.doesNotMatch(advice,/原文依据待核对/);
+const records={hero:{...emptyPrompt('hero'),revision:1,status:'READY' as const,body:'人物甲设计',facts:'仅人物甲的已保存依据',suggestions:'甲设计补足',fingerprint:'f'},other:{...emptyPrompt('other'),revision:1,status:'READY' as const,body:'人物乙设计',facts:'不可展示的人物乙依据',suggestions:'不可展示的乙补足',fingerprint:'f'}};
+assert.match(render({...base,records}),/仅人物甲的已保存依据/);
+assert.doesNotMatch(render({...base,records}),/不可展示的人物乙依据|不可展示的乙补足/);
+assert.match(render(base,[]),/<button disabled="">生成初版<\/button>/);
+assert.match(render(base,[]),/此资产尚无可制作的原文出场范围/);
+console.log('PASS Stage 1.5 presentation: compact fact progress/actions, selected-only evidence and issues, completed state, empty authoritative scope, no manual episode input. Browser request/draft/poll regression follows.');

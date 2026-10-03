@@ -269,11 +269,11 @@ check("主页面鉴权后只读加载，旧岗位无普通入口，第三阶段�
 });
 check("项目列表与当前工作稿完成状态一致且先限定用户项目", () => {
   const home = read("app/page.tsx");
-  assert.ok(home.includes("(await getFoundationDeliveryState(project.id)).complete"));
+  assert.ok(home.includes("await readProjectLibrarySummaries(currentUser.id"));
   assert.ok(!home.includes("getFoundationState") && !home.includes(".ready"));
   assert.ok(home.indexOf("await requireSessionUser") < home.indexOf("await getProjectLibrary(currentUser.id)"));
-  assert.ok(home.indexOf("await getProjectLibrary(currentUser.id)") < home.indexOf("await getFoundationDeliveryState"));
-  assert.ok(home.includes("foundationReady: foundationCompleteByProject.get(project.id) === true"));
+  assert.ok(home.indexOf("await getProjectLibrary(currentUser.id)") < home.indexOf("await readProjectLibrarySummaries"));
+  assert.ok(home.includes("foundationReady: summaries.get(project.id)?.complete === true"));
 });
 check("刷新只读且局部样式可键盘和窄屏使用", () => {
   const panel = read("app/projects/[projectId]/foundation-delivery-panel.tsx");

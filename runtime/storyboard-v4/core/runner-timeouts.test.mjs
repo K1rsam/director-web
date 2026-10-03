@@ -5,9 +5,15 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import * as runner from './runner.mjs';
 import {digest} from './shared.mjs';
+import childProcess from 'node:child_process';
 
 const baseRequest={stage:'author',prompt:'本地执行器超时回归',instructions:'输出JSON',settings:{model:'gpt-6.1-sol',reasoning:'medium'},inputHash:'timeout-fixture',promptHash:digest('本地执行器超时回归')};
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const windows=process.platform==='win32';
+function assertNativeTreeTermination(receipt){
+  assert.equal(receipt.localProcess.exitSignal,null);
+  assert.ok(receipt.localProcess.terminationRequests.some(r=>r.mechanism==='windows_taskkill_tree'&&r.forced===true&&r.signal===null&&r.result==='sent'));
+}
 async function fixture(t,body,{request=baseRequest,...options}={}){
   const directory=await mkdtemp(path.join(tmpdir(),'v4-cli-timeout-'));
   const script=path.join(directory,'fake-cli.mjs'),attemptId='timing';
@@ -54,8 +60,8 @@ setTimeout(()=>{clearInterval(interval);process.exit(0);},1200);`,{timeoutMs:800
   assert.doesNotMatch(JSON.stringify(receipt),/PRIVATE_KEY|PRIVATE_AUTH/);
   assert.equal(receipt.usage.totalTokens,null);
   assert.equal(receipt.localProcess.closeObserved,true);
-  assert.equal(receipt.localProcess.exitSignal,'SIGTERM');
-  assert.ok(receipt.localProcess.terminationRequests.some(r=>r.signal==='SIGTERM'&&r.requestedAt));
+  if(windows)assertNativeTreeTermination(receipt);
+  else{assert.equal(receipt.localProcess.exitSignal,'SIGTERM');assert.ok(receipt.localProcess.terminationRequests.some(r=>r.signal==='SIGTERM'&&r.requestedAt));}
 });
 
 test('turn.started is waiting, and duplicate snapshots plus heartbeat/error spam cannot renew idle budget',async t=>{
@@ -128,8 +134,8 @@ test('explicit short timeout remains fast and termination records observed SIGKI
   const second=await forced.completion,receipt=await forced.receipt();
   assert.equal(second.error?.code,'TIMEOUT');
   assert.equal(receipt.localProcess.closeObserved,true);
-  assert.equal(receipt.localProcess.exitSignal,'SIGKILL');
-  assert.ok(receipt.localProcess.terminationRequests.some(r=>r.signal==='SIGKILL'&&r.requestedAt));
+  if(windows)assertNativeTreeTermination(receipt);
+  else{assert.equal(receipt.localProcess.exitSignal,'SIGKILL');assert.ok(receipt.localProcess.terminationRequests.some(r=>r.signal==='SIGKILL'&&r.requestedAt));}
   assert.ok(receipt.localProcess.exitedAt);
 });
 
@@ -163,7 +169,7 @@ ${needsCleanup?'setTimeout(()=>process.exit(0),1500);':''}`,{timeoutMs:550,start
   assert.equal(await readFile(path.join(attempt,'event-final.txt'),'utf8'),'{"ok":true}');
 });
 
-test('signal requests never masquerade as observed CLI close when inherited pipes remain open',async t=>{
+test(windows?'native Windows tree termination closes inherited pipes but leaves timeout UNKNOWN':'signal requests never masquerade as observed CLI close when inherited pipes remain open',async t=>{
   const f=await fixture(t,`
 import {spawn} from 'node:child_process';
 import {writeFile} from 'node:fs/promises';
@@ -174,13 +180,42 @@ emit({type:'turn.started'});
 setInterval(()=>{},1000);`,{timeoutMs:300});
   let pid;
   t.after(()=>{if(pid)try{process.kill(pid,'SIGKILL');}catch{}});
-  await waitReceipt(f,r=>r.execution?.phase==='waiting');
-  pid=Number(await readFile(path.join(f.directory,'descendant-pid'),'utf8'));
+  // Read the actual spawned descendant identity. A subsecond timeout need not
+  // produce an intermediate heartbeat receipt before FINAL settles.
+  const until=Date.now()+2000;
+  while(!pid&&Date.now()<until){pid=Number(await readFile(path.join(f.directory,'descendant-pid'),'utf8').catch(()=>''));if(!pid)await pause(10);}
+  assert.ok(Number.isSafeInteger(pid)&&pid>0,'fixture descendant actually spawned');
   const {error}=await f.completion,receipt=await f.receipt();
   assert.equal(error?.code,'TIMEOUT');
-  assert.equal(receipt.localProcess.closeObserved,false);
-  assert.equal(receipt.localProcess.exitedAt,null);
-  assert.equal(receipt.localProcess.exitSignal,null);
-  assert.deepEqual(receipt.localProcess.terminationRequests.map(r=>r.signal),['SIGTERM','SIGKILL']);
+  if(windows){
+    assert.equal(receipt.localProcess.closeObserved,true);assert.ok(receipt.localProcess.exitedAt);assertNativeTreeTermination(receipt);
+    assert.throws(()=>process.kill(pid,0),{code:'ESRCH'},'detached fixture descendant actually exited');
+  }else{
+    assert.equal(receipt.localProcess.closeObserved,false);assert.equal(receipt.localProcess.exitedAt,null);assert.equal(receipt.localProcess.exitSignal,null);
+    assert.deepEqual(receipt.localProcess.terminationRequests.map(r=>r.signal),['SIGTERM','SIGKILL']);
+  }
   assert.equal(receipt.requestOutcome,'UNKNOWN');assert.equal(receipt.usage.totalTokens,null);
+});
+
+if(windows)test('failed native Windows tree termination never fabricates close or permits resend',async t=>{
+  const nativeExecFile=childProcess.execFile;
+  t.mock.method(childProcess,'execFile',(...args)=>{
+    if(path.basename(args[0]).toLowerCase()!=='taskkill.exe')return nativeExecFile(...args);
+    process.nextTick(()=>args.at(-1)(Object.assign(new Error('mock unavailable native tree terminator'),{code:'EACCES'}),'',''));
+  });
+  const f=await fixture(t,"emit({type:'turn.started'});setInterval(()=>{},1000);",{timeoutMs:200});
+  let pid;
+  try{
+    const {error}=await f.completion,receipt=await f.receipt();pid=receipt.localProcess.pid;
+    assert.equal(error?.code,'TIMEOUT');assert.equal(error.requestOutcome,'UNKNOWN');
+    assert.equal(receipt.localProcess.closeObserved,false);assert.equal(receipt.localProcess.exitedAt,null);assert.equal(receipt.localProcess.exitSignal,null);
+    assert.ok(receipt.localProcess.terminationRequests.length>0);assert.ok(receipt.localProcess.terminationRequests.every(r=>r.mechanism==='windows_taskkill_tree'&&r.result==='failed'));
+    assert.doesNotThrow(()=>process.kill(pid,0),'the test CLI is genuinely still alive');
+    await assert.rejects(runner.runModel(baseRequest,{directory:f.directory,attemptId:f.attemptId,executable:process.execPath,executableArgs:[path.join(f.directory,'fake-cli.mjs')]}),error=>error.code==='ATTEMPT_EXISTS'&&error.requestOutcome==='UNKNOWN');
+  }finally{
+    // This PID comes from this exact run's native ChildProcess receipt; cleanup
+    // deliberately bypasses only the test mock and invokes the real tree tool.
+    if(!pid)pid=(await f.receipt().catch(()=>null))?.localProcess?.pid;
+    if(pid)await new Promise(resolve=>nativeExecFile(path.join(process.env.SystemRoot,'System32/taskkill.exe'),['/PID',String(pid),'/T','/F'],{windowsHide:true},()=>resolve()));
+  }
 });

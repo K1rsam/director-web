@@ -1,5 +1,5 @@
 import type {PromptAsset} from './asset-prompt-contract';
-export type AssetReferenceImage={id:string;name:string;mime:string;size:number;width:number;height:number};
+export type AssetReferenceImage={id:string;name:string;mime:string;size:number;width:number;height:number;source?:'CHATGPT_WEB_GENERATED'|'TASK_IMAGE_IMPORT';generationJobId?:string;sha256?:string};
 export const IMAGE_QUALITIES=['1K','2K','4K'] as const;
 export const IMAGE_RATIOS=['auto','1:1','16:9','9:16','4:3','3:4','3:2','2:3','21:9','9:21','1:3','3:1','2:1','1:2'] as const;
 export type AssetImageOptions={revision:number;templateId:string;templateText:string;references:AssetReferenceImage[];count?:number;quality?:typeof IMAGE_QUALITIES[number];aspectRatio?:typeof IMAGE_RATIOS[number]};

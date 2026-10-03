@@ -137,8 +137,8 @@ async function main() {
     require.cache[authPath] = {id: authPath, filename: authPath, loaded: true, exports: {getCurrentUser: async () => sessionActor}} as NodeModule;
     try {
       const route = require('../app/projects/[projectId]/asset-prompts/adoption/route') as typeof import('../app/projects/[projectId]/asset-prompts/adoption/route');
-      const context = {params: Promise.resolve({projectId: project.id})}, url = `http://adoption.test/projects/${project.id}/asset-prompts/adoption`;
-      const post = (body: unknown, origin = 'http://adoption.test') => route.POST(new Request(url, {method: 'POST', headers: {'content-type': 'application/json', origin}, body: JSON.stringify(body)}), context);
+      const context = {params: Promise.resolve({projectId: project.id})}, url = `http://127.0.0.1:3008/projects/${project.id}/asset-prompts/adoption`;
+      const post = (body: unknown, origin = 'http://127.0.0.1:3008') => route.POST(new Request(url, {method: 'POST', headers: {'content-type': 'application/json', origin}, body: JSON.stringify(body)}), context);
       assert.equal((await route.GET(new Request(url), context)).status, 401);
       sessionActor = outsider;
       assert.equal((await route.GET(new Request(url), context)).status, 403);

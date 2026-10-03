@@ -2,12 +2,24 @@ import {createHash,randomUUID} from 'node:crypto';
 import {mkdir,writeFile,readFile} from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
+import type {Prisma} from '@prisma/client';
 import {prisma} from './prisma';
 import {loadLatestStoredFoundationDocument} from './foundation-document';
 import {emptyImageOptions,normalizeImageOptions,imageTemplatesFor,IMAGE_QUALITIES,IMAGE_RATIOS,type AssetImageOptions,type AssetReferenceImage} from './asset-image-options';
 export const IMAGE_OPTIONS_KEY='ASSET_IMAGE_OPTIONS_V1';
 const optionsId=(projectId:string,key:string)=>`ai15_${createHash('sha256').update(JSON.stringify([projectId,key])).digest('hex').slice(0,40)}`;
 const root=()=>path.resolve(process.env.DIRECTOR_ASSET_REFERENCE_DIR||'outputs/asset-references');
+/** Only the bound image-job transaction can attach an existing verified original. */
+export async function attachGeneratedAssetReference(projectId:string,key:string,expected:number,image:AssetReferenceImage,db:Prisma.TransactionClient){
+ const id=optionsId(projectId,key),row=await db.sceneSnapshot.findUnique({where:{id}}),current=row?normalizeImageOptions(JSON.parse(row.content)):emptyImageOptions();
+ if(current.revision!==expected)throw new Error('参考图设置已更新，请刷新。');
+ if(current.references.some(r=>r.id===image.id))return current;
+ if(current.references.length>=6)throw new Error('每项资产最多6张参考图，请先移除不再使用的参考图。');
+ const next={...current,revision:expected+1,references:[...current.references,image]};
+ if(row){if((await db.sceneSnapshot.updateMany({where:{id,projectId,content:row.content},data:{content:JSON.stringify(next)}})).count!==1)throw new Error('参考图设置刚被更新，请刷新。');}
+ else await db.sceneSnapshot.create({data:{id,projectId,sceneKey:IMAGE_OPTIONS_KEY,title:key,content:JSON.stringify(next)}});
+ return next;
+}
 export async function readImageOptions(projectId:string,key:string){const row=await prisma.sceneSnapshot.findUnique({where:{id:optionsId(projectId,key)}});return row?normalizeImageOptions(JSON.parse(row.content) as AssetImageOptions):emptyImageOptions();}
 async function assetType(projectId:string,key:string){const doc=await loadLatestStoredFoundationDocument(prisma,projectId);const asset=doc?.f2?.assets.find(a=>a.key===key||a.variants.some(v=>v.key===key));if(!asset)throw new Error('该资产不在当前目录中，请刷新。');return asset.type;}
 async function writeOptions(projectId:string,key:string,expected:number,next:AssetImageOptions){
@@ -47,4 +59,10 @@ export async function readAssetReference(projectId:string,key:string,id:string){
  const current=await readImageOptions(projectId,key),reference=current.references.find(r=>r.id===id);
  if(!reference||!/^[-a-f0-9]{36}$/.test(id))return null;
  return {reference,bytes:await readFile(path.join(root(),id))};
+}
+/** Display-only derivative; the stored reference and generation input retain original bytes. */
+export async function readAssetReferencePreview(projectId:string,key:string,id:string){
+ const original=await readAssetReference(projectId,key,id);if(!original)return null;
+ const bytes=await sharp(original.bytes,{limitInputPixels:40_000_000}).rotate().resize({width:640,height:640,fit:'inside',withoutEnlargement:true}).webp({quality:80}).toBuffer();
+ return {bytes,mime:'image/webp'};
 }

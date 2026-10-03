@@ -95,6 +95,15 @@ function killGroup(child,sig){
     try{return child.kill(sig)?'sent':'not_sent';}catch{return 'failed';}
   }
 }
+function killWindowsProcessTree(child){
+  // Windows has no POSIX negative-PID process groups. Use the native tree
+  // terminator while the exact ChildProcess is still alive; never target a PID
+  // after its observed exit, when that number could belong to someone else.
+  if(!child?.pid||child.exitCode!==null||child.signalCode!==null)return Promise.resolve('not_found');
+  const systemRoot=process.env.SystemRoot||process.env.WINDIR;
+  if(!systemRoot||!path.isAbsolute(systemRoot))return Promise.resolve('failed');
+  return new Promise(resolve=>childProcess.execFile(path.join(systemRoot,'System32','taskkill.exe'),['/PID',String(child.pid),'/T','/F'],{windowsHide:true,encoding:'utf8',timeout:1000,maxBuffer:32768},error=>resolve(error?'failed':'sent')));
+}
 function usageOf(event){
   const u=event.usage||{},r=usageEmpty();
   if(integer(u.input_tokens))r.inputTokens=u.input_tokens;
@@ -214,10 +223,22 @@ export async function runModel(request,{directory,attemptId,signal,shouldDispatc
       let child,pending='',done=false,timer,terminalTimer,forceTimer,closeTimer,termination,terminalFailure,cleanupStarted=false,completedTurn=false,completedBody=false,cliStartedAt=null,lastProgressMs=null;
       const decoder=new StringDecoder('utf8'),stderrDecoder=new StringDecoder('utf8');
       const dispatchedAt=Date.now();execution.startedAt=new Date(dispatchedAt).toISOString();
+      const windowsTreeKills=new Set();
       const finish=error=>{if(done)return;done=true;clearTimeout(timer);clearTimeout(terminalTimer);clearTimeout(forceTimer);clearTimeout(closeTimer);clearInterval(progressTimer);progressTimer=null;signal?.removeEventListener('abort',abort);
         if(!localProcess?.closeObserved){child?.stdin.destroy();child?.stdout.destroy();child?.stderr.destroy();child?.unref();}
-        error?reject(error):resolve();};
+        const settle=()=>error?reject(error):resolve();
+        if(windowsTreeKills.size)Promise.allSettled([...windowsTreeKills]).then(settle);else settle();};
       const requestTermination=sig=>{
+        if(process.platform==='win32'){
+          // /F is a forceful native termination, not an observed SIGTERM/SIGKILL.
+          // Keep the requested intent separate from the mechanism and close data.
+          const prior=localProcess?.terminationRequests.find(r=>r.mechanism==='windows_taskkill_tree');
+          if(prior&&prior.result!=='failed')return;
+          const record={signal:null,requestedSignal:sig,requestedAt:new Date().toISOString(),mechanism:'windows_taskkill_tree',forced:true,result:'pending'};
+          if(localProcess)localProcess.terminationRequests.push(record);
+          const killing=killWindowsProcessTree(child).then(result=>{record.result=result;progressDirty=true;});
+          windowsTreeKills.add(killing);killing.finally(()=>windowsTreeKills.delete(killing));progressDirty=true;return;
+        }
         if(localProcess?.terminationRequests.some(r=>r.signal===sig))return;
         const requestedAt=new Date().toISOString(),result=killGroup(child,sig);
         if(localProcess)localProcess.terminationRequests.push({signal:sig,requestedAt,result});
@@ -249,7 +270,7 @@ export async function runModel(request,{directory,attemptId,signal,shouldDispatc
         },Math.max(1,Math.min(dispatchedAt+totalMs,phaseDeadline)-now));
       };
       armTimeout();
-      try{child=spawn(executable,args,{cwd,stdio:['pipe','pipe','pipe'],detached:true});}catch(error){spawnFailed=true;finish(error);return;}
+      try{child=spawn(executable,args,{cwd,stdio:['pipe','pipe','pipe'],detached:true,windowsHide:true});}catch(error){spawnFailed=true;finish(error);return;}
       child.on('spawn',()=>{
         localProcess={pid:child.pid,host:hostname(),startedAt:new Date().toISOString(),exitedAt:null,exitCode:null,exitSignal:null,closeObserved:false,terminationRequests:[]};
         if(signal?.aborted)abort();else if(!shouldDispatch())terminate(Object.assign(new Error('Request paused before dispatch'),{code:'PAUSED'}));else{sent=true;child.stdin.end(request.prompt);}

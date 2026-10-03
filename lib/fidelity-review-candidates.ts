@@ -3,7 +3,10 @@ import type { P1ReviewState } from './fidelity-p1-review';
 import { createFidelityExternalMaterial } from './fidelity-external';
 
 export type SourceReviewCandidate={kind:'ALIAS'|'QUESTION';sourceVersion:string;ranges:Array<{start:number;end:number}>;episodes:number[];detail:Record<string,unknown>};
-export function fidelityReviewCandidates(receipt:FidelityReceipt):SourceReviewCandidate[]{
+export type FidelityCandidateMaterial = Pick<FidelityReceipt,'readingHash'|'p1Review'|'externalReview'> & {
+ result: {source: {text: string}; episodes: Pick<FidelityReceipt['result']['episodes'][number],'productionEligible'|'start'|'end'|'number'>[]};
+};
+export function fidelityReviewCandidates(receipt:FidelityCandidateMaterial):SourceReviewCandidate[]{
  const result:SourceReviewCandidate[]=[];
  const add=(kind:SourceReviewCandidate['kind'],ranges:Array<{start:number;end:number}>,detail:Record<string,unknown>)=>{
   if(!ranges.length||ranges.some(({start,end})=>!Number.isInteger(start)||!Number.isInteger(end)||start<0||end<=start||end>receipt.result.source.text.length))return;

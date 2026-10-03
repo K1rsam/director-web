@@ -1,0 +1,227 @@
+#AOCI-CODE-VOLUME: 1
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/===
+.env.3008.example[FC6T]: F:提供3008独立数据库与Cookie、固定CLI策略、阶段超时及可选DeepSeek配置示例 | R:code:.env.example | A:DATABASE_URL,DIRECTOR_SESSION_COOKIE_NAME,CLI_MODEL | S:同主机不同端口共享Cookie域，需独立名称；Mac路径按本机填写，API模式不采用CLI模型配置
+.env.example[FC6T]: F:提供通用数据库、账号初始化、规则Skill位置及DeepSeek执行模式与凭证加密配置模板 | R:code:.env.3008.example | A:DATABASE_URL,DIRECTOR_CREDENTIAL_KEY,DEEPSEEK_API_KEY | S:CLI环境覆盖不能改变固定生产策略；真实凭证仅本机填写，不提交此模板
+.gitattributes[FV5T]: F:固定文本checkout为LF，以跨平台原始字节一致支持AOCI基线比较 | R:- | A:text=auto,eol=lf | S:二进制自动识别并保留原样，不统一改写
+.gitignore[FV6T]: F:排除依赖、构建、私有环境数据库、本机流程产物及机器绑定宿主配置，保留环境模板入库 | R:code:.gitattributes | A:runtime-3008/,prisma/dev.db*,.codex/config.toml | S:env通配忽略后重新允许两份example；AOCI认知资产未列入忽略
+.nvmrc[FV4T]: F:声明本地开发Node主版本为24 | R:- | A:24 | S:-
+AGENTS.md[SG8S]: F:规定项目接手、平台同步及当前AOCI模型证据创作、完整交付和最终维护合同 | R:code:README.md,code:DESIGN.md | A:aoci_rules,aoci_overview,aoci_maintain,aoci_update_entry | S:Next修改前读安装包对应指南；压缩后必须普通完整Overview重载；不得以源码或历史补答Challenge，Root/Meta只按实时Guide创作
+CLAUDE.md[SG3T]: F:让Claude项目指引引用统一AGENTS规则 | R:code:AGENTS.md | A:@AGENTS.md | S:-
+DESIGN.md[SU7S]: F:规定柔光鸢尾共享视觉、三阶段阅读布局及图片工作台交互与验收尺度 | R:code:app/vision-studio.css,code:app/page-surfaces.css,code:app/projects/[projectId]/asset-prompts/workspace.tsx | A:WorkflowGlass,PromptDocument,640px预览 | S:图片候选与人工采用分开；制作范围从资产实际生产集计算；扫光不证明运行，旧引擎历史规范不恢复执行权限
+PROJECT_HANDOFF.md[SV5L]: F:归档截至2026年8月30日的本地与Sites架构、岗位演进、Runner协议和交接风险 | R:code:README.md,code:docs/HANDOFF-2026-09-05.md | A:本地完整版,Sites overlay,Runner | S:历史入口与模型策略不能当当前部署事实；协议接通不代表真实生成闭环已验收
+README.md[SV7S]: F:提供项目版本与阶段入口、本地安装更新、数据库迁移、离线验证和3180样稿启动说明 | R:code:docs/LOCAL-SETUP-MAC.md,code:docs/HANDOFF-2026-09-05.md | A:dev:3008,database:migrate,preview:3180 | S:3008交接不沿用历史3000入口；继承数据不能重新新库初始化，Git克隆不包含私人库与登录状态，push不等于Sites发布
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/.agents/skills/e0-narrative-rhythm-director/===
+SKILL.md[SB7S]: F:定义E0叙事节奏岗位，按源节点连续覆盖构建Sequence与Beat骨架及视觉升级合同 | R:code:.agents/skills/e1-structure-director/SKILL.md | A:sequences,visual_steps,anchor_nodes | S:Beat预算仅供参考；容量硬下限由Python计算并钳制，返修不重切Beat
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/.agents/skills/e1-structure-director/===
+SKILL.md[SB8S]: F:规定E1按源文顺序拆镜、计算时长并输出画面骨架、台词归属和可见文字声明 | R:code:.agents/skills/e0-narrative-rhythm-director/SKILL.md | A:shots,dialogue_spans,visible_text | S:普通镜上限5秒，仅不超42字台词镜可到7秒；跨镜台词需原文起止锚，视觉步骤按Bxx.Vx绑定而分段编号由服务端计算
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/.agents/skills/e2-performance-blocking-director/===
+SKILL.md[SB7S]: F:规定E2增强逐镜picture中的表演、可见动作及站位连续性，保持结构岗位字段 | R:code:.agents/skills/e1-structure-director/SKILL.md | A:patches,issues | S:视觉步骤directive是跨镜总目标，每镜仅执行part_goal；返修邻镜只供参考，不输出其补丁
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/.agents/skills/e3-unit-audiovisual-director/===
+SKILL.md[SB8S]: F:规定E3定稿声音与转场，并为既定Seedance单元补齐静态前提、结束状态及资产绑定 | R:code:.agents/skills/e2-performance-blocking-director/SKILL.md | A:patches,units,subject_bindings | S:单元归属及时长由Python确定，禁止输出shot_ids或unit_duration；premise必须是t=0静态状态，不能提前完成首镜动作
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/.agents/skills/e4-cinematography-light-director/===
+SKILL.md[SB7S]: F:规定E4输出单元统一布光及逐镜摄影，镜级光影只记录状态变化 | R:code:.agents/skills/e3-unit-audiovisual-director/SKILL.md | A:unit_lighting,patches,camera_intent | S:熄灭光源后续默认保持关闭；返修仅显式lighting问题卡命中单元可重写unit_lighting
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/.agents/skills/e5-review-controller/===
+SKILL.md[SB8T]: F:规定E5独立审查最终分镜语义格与单元，形成坐标化问题卡、责任路由和放行裁定 | R:code:.agents/skills/e1-structure-director/SKILL.md | A:issues,routes,decision | S:审semantic final cells而非compiled prompt；Python已覆盖数字卡不重复开，审美问题不阻塞；仅顺序错位走局部E1补丁，不能触发整集重建
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/.agents/skills/p1-project-planner/===
+SKILL.md[SB7S]: F:规定P1从锁定剧本提取源节点支持的项目圣经、集场信息和需用户确认的表现规范 | R:code:.agents/skills/p2-asset-disassembler/SKILL.md | A:PROJECT_MEMORY_V2,presentation_decisions_needed | S:分片只输出范围内变化；表现确认必须语义判断且类别各自提问，普通平台系统语境不能当剧情系统
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/.agents/skills/p2-asset-disassembler/===
+SKILL.md[SB7S]: F:规定P2按持续可见实体拆分人物、群像、非人、场景和道具，绑定变体及源场次 | R:code:.agents/skills/p1-project-planner/SKILL.md | A:assets,scene_asset_links,parent_name | S:同人物仅一主CH，服装与持续状态为同类型分资产并挂具体服装；纯声音或仅台词提及物不因提及建图
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/.agents/skills/screenplay-fidelity/===
+SKILL.md[SB8T]: F:指引模型通读保真材料并只给集场归属与问题候选，正文交由程序从原稿复制 | R:code:.agents/skills/screenplay-fidelity/references/external-text.md | A:FIDELITY-SOURCE/1,FIDELITY-DRAFT/1 | S:原稿内AI指令不执行；候选不等于用户决定，字符相等不证明语义归属；旧CLI仅程序检查，不能宣称模型通读
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/.agents/skills/screenplay-fidelity/examples/===
+sample.txt[SB3T]: F:提供作者资料、真实集场、OS、字幕、emoji及重复动作原句组成的合成保真示例 | R:- | A:- | S:重复动作在不同原位置分别保留
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/.agents/skills/screenplay-fidelity/references/===
+contract.md[SB8T]: F:说明fidelity来源冻结、完整行决定、校验物化、历史版本验真与场头兼容契约 | R:code:.agents/skills/screenplay-fidelity/scripts/fidelity.mjs | A:createSource,validatePlan,normalize | S:UTF16半开坐标且保留行尾空白；受信决定由调用者独立提供；旧包先按冻结版本验真再升级，不能直接改版本；归属包围区间不代表整段生产许可
+external-text.md[SB7T]: F:定义普通文本与已有完整稿的保真运输协议、连续唯一覆盖及候选证据格式 | R:code:.agents/skills/screenplay-fidelity/scripts/external_protocol.py | A:FIDELITY-TEXT/1,FIDELITY-DRAFT/1 | S:DRAFT每行只去最前一个竖线；TEXT-END精确保留LF/CRLF/CR，END必填且其后仅空行
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/.agents/skills/screenplay-fidelity/scripts/===
+chunk.mjs[XW5T]: F:将UTF8原稿按完整行分成有来源坐标的JSON证据块并导出覆盖清单 | R:code:.agents/skills/screenplay-fidelity/scripts/fidelity.mjs | A:INPUT.txt,OUTPUT_DIR,UTF16_TARGET | S:超长单行完整保留并标oversize，不按目标长度截断
+cli.mjs[EB6T]: F:读取TXT或MD并运行保真校验，导出原上传、来源计划、清洗原文与规范化显示视图 | R:code:.agents/skills/screenplay-fidelity/scripts/fidelity.mjs | A:INPUT.txt,PLAN.json,TRUSTED_DECISIONS.json | S:拒绝DOCX与无效UTF8；显示MD只供阅读，回导使用来源计划JSON并独立传受信决定
+external_protocol.py[IB7S]: F:把外部TEXT或DRAFT协议解析成完整行归属决定及称呼、问题元数据 | R:code:.agents/skills/screenplay-fidelity/scripts/fidelity.mjs | A:parse,stdinJSON,stdoutJSON | S:只做运输适配，后续Node仍须验真；重复原句按当前顺序匹配，候选名称必须存在于引证块
+fidelity-comma.test.mjs[TB6T]: F:验证逗号场头及同集元数据场声明兼容，同时防止对白、金额、错集和无场头误判 | R:code:.agents/skills/screenplay-fidelity/scripts/fidelity.mjs | A:node:test | S:无作者小场号只生成内部索引，不制造源场号，逐段源切片始终不变
+fidelity.d.mts[FB4T]: F:声明保真模块来源创建、计划校验及规范化函数的TypeScript调用类型 | R:code:.agents/skills/screenplay-fidelity/scripts/fidelity.mjs | A:createSource,validatePlan,normalize | S:-
+fidelity.mjs[KB8S]: F:执行fidelity/5完整行来源冻结与结构分类，严格验真决定、覆盖顺序和诊断并物化逐字正文 | R:code:.agents/skills/screenplay-fidelity/scripts/fidelity.test.mjs | A:createSource,proposePlan,validatePlan,renderNormalized,normalize | S:信任调用者决定而非计划内决定；同句不同位置身份不同；场归属包围坐标可含已排除资料，content用选中行拼接；只接受完整重算的区间或逐行诊断，不能混拼
+fidelity.test.mjs[TB7S]: F:回归验证来源逐字覆盖、说话标签、边界决定、真实零集、场头和历史诊断隔离 | R:code:.agents/skills/screenplay-fidelity/scripts/fidelity.mjs | A:node:test | S:冻结v2需保留旧场头漏识别；同契约只接受完整旧或新诊断表示，禁止删卡或任意混拼
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/.platform/===
+README.md[SV6T]: F:解释main公共基线与sites-online overlay边界，以及分类、合成与日常同步流程 | R:code:.platform/change-scope.mjs,code:.platform/materialize-sites.mjs | A:common_once,dual_until_split,sites_only,local_only | S:合成工具读取已提交Git内容，生成目录是发布产物；生成源码不等于线上已更新
+change-scope.mjs[XV6S]: F:根据平台边界清单分类文件改动，并审计两仓跟踪文件以提示main或Sites修改范围 | R:code:.platform/platform-boundaries.json | A:classify,--audit-main,--audit-sites | S:优先平台工具、精确公共与双端清单，再专属glob；未归类退出2，不能直接同步
+materialize-sites.mjs[XV7S]: F:从main提交和Sites overlay差异合成新发布源码目录，按平台分类复制或删除Git blob | R:code:.platform/change-scope.mjs,code:.platform/platform-boundaries.json | A:--main,--overlay,--target,--base,--main-ref,--overlay-ref | S:拒绝既存目标；只取Git提交内容；rebase带入的公共同blob不算overlay私有变动，结果必须有hosting.json
+platform-boundaries.json[FV7M]: F:声明main与Sites公共、双端差异及平台专属文件集合和overlay比较基点 | R:code:.platform/change-scope.mjs,code:.platform/materialize-sites.mjs | A:overlayBase,common_once,dual_until_split,sites_only_patterns,local_only_patterns | S:同路径双端差异是临时分类，不能视为所有公共源码须重复维护；未列入的新增路径会阻止合成
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/===
+actions.ts[EB8L]: F:承接受账号项目权限保护的导入、执行渠道、基础工程、历史分镜和问题确认等服务端表单操作 | R:code:lib/auth.ts,code:lib/foundation-delivery.ts,code:lib/episode-pipeline.ts | A:importProjectAction,startFoundationDeliveryAction,continueProjectFoundationAction,setProjectExecutionModeAction,stopPipelineAction,decidePresentationContractAction | S:导入必须匹配预览来源hash；活跃任务阻止换渠道；旧E0–E5执行有scope禁用门；未知上游调用不能自动重发，停止先落任务状态再终止进程树
+auth-actions.ts[EI7T]: F:处理账号验证、会话创建撤销及安全Cookie写入，完成登录和退出重定向 | R:code:lib/auth-service.ts,code:lib/auth-crypto.ts,code:lib/auth.ts | A:loginAction,logoutAction | S:账号错误不区分用户是否存在；退出即使数据库失败也清除浏览器凭证；returnTo只接受本域路径，生产Cookie启用secure
+delete-project-button.tsx[EU5T]: F:提供项目永久删除确认与请求中反馈，将项目ID提交删除服务端操作 | R:code:app/actions.ts | A:DeleteProjectButton | S:提交前同步ref阻止连点，表单pending结束重置，取消确认不发送
+episode-surface.css[FU5L]: F:定义分集岗位、宽幅分镜提示词、执行问题区和资料弹窗的专属阅读布局及响应式样式 | R:code:app/projects/[projectId]/episodes/[episodeId]/workspace-grid.tsx | A:episodeSurface,episodeReadingCanvas,promptDocument,infoPanel | S:只限定分集根；提示词保持全宽与原文空白，资料模态正文独立滚动，减少动效关闭过渡
+globals.css[FU5L]: F:提供应用基础与历代共享导航、表单、项目卡、分镜、问题及响应式布局样式 | R:code:app/layout.tsx,code:app/vision-studio.css | A:appChrome,appSidebar,storyboardTable,issueRow | S:根布局先载入此文件再载入vision-studio主题，开头旧暗色变量不是最终视觉权威
+layout.tsx[EU6T]: F:设置中文应用根文档和页面元信息，加载基础与Studio主题并包裹页面切换层 | R:code:app/globals.css,code:app/vision-studio.css,code:app/ui/page-transition.tsx | A:RootLayout,metadata | S:样式加载顺序为globals后vision-studio；children在PageTransition内保持路由显示
+mode-switch.tsx[EU5T]: F:提供项目API与本机CLI执行渠道切换的即时选中、表单保存和玻璃选择层 | R:code:app/actions.ts,code:app/ui/motion-selection.tsx | A:ModeSwitch | S:仅服务端pending完成后refresh而非固定延时或整页重载；无合法current时默认API
+page-surfaces.css[FU5L]: F:为项目库、新建、连接设置、全剧工作台和登录页提供Soft Iris阅读面及响应式布局 | R:code:app/page.tsx,code:app/login/page.tsx | A:pageSurface,librarySurface,createSurface,runnerSurface,workbenchSurface,loginSurface | S:选择器限定pageSurface根，防止Next导航后留存样式影响其它页面；共享外壳与按钮由主主题拥有
+page.tsx[EU6S]: F:展示当前账号项目库、实际资料完成度与生产集计数，并提供归档恢复及继续制作入口 | R:code:lib/project-library.ts,code:lib/production-episodes.ts,code:lib/project-entry.ts | A:HomePage | S:项目卡只按生产范围计集，资料完成用持久交付状态而非角色记录存在；永久删除只在归档列表明确呈现
+vision-studio.css[FU5L]: F:统一柔光鸢尾主题变量、应用外壳、阅读面、控件反馈与响应式导航样式 | R:code:app/layout.tsx,code:app/ui/app-chrome.tsx,code:app/ui/page-transition.tsx | A:appChrome,appSidebar,appTopbar,visionRouteFrame | S:在legacy样式之后载入，主题后段覆盖早期规则；短侧栏独立滚动保持账号可达，移动导航隐藏桌面栏，减少动效关闭动画但不改变业务状态
+workbench-refinement.css[FU4M]: F:为全剧工作台资料岗位卡、操作表单、监控和分集列表补充布局与样式 | R:code:app/projects/[projectId]/foundation-actions.tsx,code:app/projects/[projectId]/page.tsx | A:workbenchRefinement,foundationRail,batchMonitorCard | S:按卡位置配置的图标仅装饰，实际状态和操作仍由组件决定
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/api/episodes/[episodeId]/final/===
+route.ts[EB5T]: F:按当前账号项目成员资格读取单集最新FinalScript并下载Markdown | R:code:lib/auth.ts,code:lib/prisma.ts | A:GET | S:无权限与无记录同走404，未登录401；文件名使用UTF8附件编码
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/api/episodes/[episodeId]/storyboard/===
+route.ts[EB8T]: F:提供单集分镜任务查询、导出及创建启动修复等命令，校验集归属和当前资料绑定 | R:code:lib/storyboard-service.ts | A:GET,POST | S:旧任务只读；源变更禁止启动修复；正式Markdown需整编与连续链完成且源兼容，JSON可保留历史；执行前核验CLI连接
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/api/fidelity/material/===
+route.ts[EB6T]: F:将登录用户提交的原稿解析成可供外部模型保真整理的块材料与来源版本 | R:code:lib/fidelity-external.ts,code:lib/local-json-request.ts | A:POST | S:配对originalScript优先于script；表单总量41MiB而选定原稿单独限制20MiB，空稿拒绝
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/api/fidelity/preview/===
+route.ts[EB7T]: F:预览剧本保真或直接导入结果，返回来源指纹、生产集场计数、读取警告和分组疑点 | R:code:lib/fidelity-import.ts,code:lib/local-json-request.ts | A:POST | S:主稿与配对稿各限20MiB；预览可移空行并截12000字符，但receipt原文与指纹保持来源，显式标注截断
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/api/fidelity/skill/===
+route.ts[EB5T]: F:下载仓库保真Skill说明或限定目录与扩展名组成的ZIP技能包 | R:code:.agents/skills/screenplay-fidelity/SKILL.md | A:GET,format=md | S:目录只递归scripts、references、examples、agents；固定根不由请求指定
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/api/projects/[projectId]/production-workflow/===
+route.ts[EB7T]: F:为登录用户查询及变更项目连续制作流程，统一返回私有不缓存JSON和错误状态 | R:code:lib/production-workflow.ts,code:lib/local-json-request.ts | A:GET,POST | S:POST要求同一loopback来源及32KiB对象JSON；项目、用户和目录由服务端拥有，成员权限在流程服务再次核验
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/api/task-packages/[taskPackageId]/prompt/===
+route.ts[EB5T]: F:按项目成员权限读取任务包payload并构建可下载的ChatGPT文本投喂包 | R:code:lib/workflow.ts,code:lib/auth.ts | A:GET | S:无payload与不可访问任务统一404；附件名用UTF8编码
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/auth/clear-session/===
+route.ts[EI5T]: F:清除浏览器失效会话Cookie并带安全returnTo重定向登录页 | R:code:lib/auth-crypto.ts,code:lib/auth.ts | A:GET | S:只清浏览器Cookie，不撤销数据库会话；returnTo经过本域路径净化
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/login/===
+login-form.tsx[EU5T]: F:呈现账号密码登录表单及真实pending和服务端错误反馈 | R:code:app/auth-actions.ts | A:LoginForm | S:隐藏returnTo随提交传递；同步ref与pending共同阻止重复请求，错误仅非pending时显示
+page.tsx[EU5T]: F:渲染私有工作台登录页和简洁制作流程介绍，已登录账号直接返回安全目标页 | R:code:lib/auth.ts,code:app/login/login-form.tsx | A:LoginPage | S:动态读取会话，returnTo先净化；页面不公布初始密码
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/[projectId]/===
+asset-index-tabs.tsx[EU6L]: F:按类型展示主分资产层级，浏览器内生成保留来源与父资产的多Sheet Excel清单 | R:- | A:AssetIndexTabs,AssetExportButton,sortAssetsHierarchically,buildAssetWorkbookXlsx,buildXlsx | S:Excel单元格用inlineStr防公式执行；名称仅按首个竖线分列而不拆状态中点；无依赖store-only ZIP，孤儿与环仍有限遍历保留
+batch-monitor-control.tsx[EU5M]: F:呈现旧E0–E5批量监控的状态、并发规则及启停表单，活跃时刷新服务端状态 | R:code:app/actions.ts | A:BatchMonitorControl | S:停止监控说明已启动单集继续完成；显示的三集并发与重做规则属于旧流程，不能据此恢复现行禁用的旧引擎
+choice-submit-button.tsx[EU4T]: F:为表单决定提交提供pending禁用、忙状态及保存反馈 | R:- | A:ChoiceSubmitButton | S:-
+foundation-actions.tsx[EU7M]: F:呈现基础岗位启停与分片恢复入口，汇总已记录调用用量和历史错误 | R:code:app/actions.ts,code:lib/foundation-run-usage.ts,code:lib/foundation-state.ts | A:FoundationActions,FoundationUsage | S:普通继续不重发未知片，重发需明确计费风险确认；复验不调用模型；用量只计岗位最近任务，缓存已含输入、推理已含输出，复用不重复计，批次耗时不当墙钟
+foundation-asset-catalog.module.css[FU4T]: F:定义全剧基础资产及子形象目录筛选、分组表格、待定徽标与移动样式 | R:code:app/projects/[projectId]/foundation-asset-catalog.tsx | A:catalog,filters,tableScroll,variant,context | S:宽表只在tableScroll横滚，父级不扩宽页面
+foundation-asset-catalog.tsx[EU7S]: F:统计和筛选完整资产家族，区分备图队列、待定项、角色层级与派生来源 | R:code:lib/foundation-production-contracts.ts | A:FoundationAssetCatalog,summarizeAssetCatalog,filterAssetCatalog | S:待定沿已登记DERIVE依赖传播；仅有适用集且REFERENCE或DERIVE进队列，历史全部禁队列；父上下文行不算订单；关联集与范围包络不证明入镜，备注不推导来源
+foundation-delivery-panel.tsx[EU8M]: F:展示持续资料任务阶段、实际集覆盖、停止恢复和P1–P4流程，将必要取舍与技术暂停分开 | R:code:lib/foundation-delivery-types.ts,code:app/actions.ts | A:FoundationDeliveryPanel,FoundationWorkflowStatus,FoundationTaskElapsed | S:提交绑定expectedState；未知重发需勾选风险，普通继续不重发；时钟优先持久请求开始否则含等待任务历时，不推测纯执行；规则更新不自动重跑，累计修复额度不因继续重置；资料complete不代表图片分镜完成
+foundation-delivery.module.css[FU4T]: F:定义资料交付控制、实际进度、持续文档、原文与历史区及窄屏响应式样式 | R:code:app/projects/[projectId]/foundation-delivery-panel.tsx | A:panel,document,progress,processing,workflowSummary | S:正文pre-wrap；760px下控件与同意区改纵向，确保长错误说明可换行
+foundation-document-viewer.tsx[EU7S]: F:展示持续工作文档、直接编号原文与资产简表，投影当前资料欠缺及历史修订 | R:code:lib/foundation-document.ts,code:lib/foundation-production-contracts.ts | A:FoundationDocumentViewer,LightFoundationDocumentViewer | S:不以旧批准阻挡保存稿可读；未应用决定保留原范围，删除集不变全局；待定沿派生来源传播；轻流程忽略STAGE2待办对第一阶段阻塞，历史不计当前完成
+foundation-drafts.tsx[EU6S]: F:按运行和分片展示完整已保存原始作者字段、data及rawOutput草稿 | R:code:lib/foundation-draft.ts | A:FoundationDrafts | S:未知形状转文本避免对象作为JSX；分片已返回不等于验收或可复用；旧候选不拼入草稿，无逐集登记身份标后台定义
+foundation-reference-grid.tsx[EU4T]: F:监听资料卡尺寸，在桌面将资产卡高度与圣经卡对齐 | R:- | A:FoundationReferenceGrid | S:仅1321px以上同步高度；清理监听或窄屏时删除内联height，表格自身滚动
+foundation-viewer.tsx[EU7S]: F:分别展示生产目录与旧身份上下文的作者候选、独审、草稿、原文证据和批准版本 | R:code:lib/foundation-state.ts,code:lib/foundation-production-contracts.ts | A:FoundationViewer | S:当前批准需源输入及F1/F2/Q1身份同时匹配；Q1 READY仍可因资料缺口未发布，不改写原结论；身份词面命中不证明身份，目录记录不等于制图许可
+page.tsx[EU8S]: F:展示账号项目全剧工作台，汇集持续资料、必要选择、原文资产索引、历史用量及第三阶段入口 | R:code:lib/studio.ts,code:lib/foundation-delivery.ts,code:lib/production-episodes.ts | A:ProjectStudioPage | S:导航与新版分镜仅取生产集；未知请求锁必要决定且不自动重发；STAGE2待办仅提醒不触发第一阶段重试；旧AI导航留历史不代替编号原文，进入阶段不自动调用模型
+presentation-contracts.module.css[FU4T]: F:定义必要取舍卡、推荐标识、自定义方案、依据与已确认历史的可访问响应式样式 | R:code:app/projects/[projectId]/presentation-contracts.tsx | A:section,card,options,custom,confirmed | S:推荐样式仅视觉标识，不实现默认提交；640px以下选项单列
+presentation-contracts.tsx[EU7S]: F:呈现共享必要人工取舍及依据，按当前合同版本保存真实选项或自定义决定 | R:code:app/actions.ts,code:lib/foundation-choice-store.ts | A:PresentationContracts | S:推荐不自动选；过滤历史自定义占位保留真实optionIndex；提交绑定revision及delivery task；全部必要选择保存后统一整理，legacy仅存决定不运行
+project-bible-viewer.tsx[EU5S]: F:折叠呈现PROJECT_MEMORY_V2项目圣经，区分合同、人物关系、揭示与原始资料 | R:- | A:ProjectBibleViewer | S:仅接受含episodes数组的V2结构；观众秘密与角色所知分开，旧P1投喂说明不代表当前执行许可
+scene-structure-table.tsx[EU4T]: F:折叠展示场次结构、输入元数据及原文短预览 | R:- | A:SceneStructureTable | S:预览折叠空白并取前100字符，不能当完整原稿导出
+script-reception-panel.module.css[FU4T]: F:定义剧本接收的原句阅读、诊断、范围编辑、判断候选与历史核对界面样式 | R:code:app/projects/[projectId]/script-reception-panel.tsx | A:panel,reading,line,editor,candidate,assistSettings | S:原句pre-wrap，阅读与选段独立滚动；720px以下控件和历史改纵向
+script-reception-panel.tsx[EU8T]: F:阅读原稿与标准视图，按完整范围保存撤销动作对白及辅助类型核对，并显式请求判断候选 | R:code:lib/script-resolution-service.ts | A:ScriptReceptionPanel | S:确认绑定集号、源版本与解析revision，旧候选不生效；首次加载不判断，候选须手动采用；未知或失败重试需接受重复消耗风险，JEV需第三方同意；多说话人及BODY_GROUP不能当单类型覆盖，空行隐藏仍保留原行号
+series-direction-panel.module.css[FU4T]: F:提供全剧方向草稿、采用状态、来源覆盖、生成等待与历史的玻璃表单样式 | R:code:app/projects/[projectId]/series-direction-panel.tsx | A:panel,formGrid,coverage,generation,preview,history | S:来源列表限高独立滚动，正文pre-wrap；720px以下双列变单列，减少动效关闭输入过渡
+series-direction-panel.tsx[EU8S]: F:编辑保存全剧方向，管理候选生成恢复、人工确认撤销和历史草稿预览 | R:code:lib/series-direction-service.ts | A:SeriesDirectionPanel | S:变更绑定stateToken与sourceVersion，确认另绑draftHash；轮询不覆盖脏输入或重发AI，未知释放不证明上游停止；勾选表示认可方向边界而非逐字读全剧，模型覆盖凭实际回执；仅已确认且当前来源方向供下游，历史加载不自动采用
+stop-foundation-button.tsx[EU4T]: F:在基础任务活跃时显示停止表单按钮及提交中反馈 | R:- | A:StopFoundationButton | S:pending禁用且保持按钮可见；按钮状态不证明后台执行已终止
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/[projectId]/asset-prompts/===
+adoption-panel.module.css[FU4T]: F:定义设计采用面板的玻璃材质、状态提示、文本参考选择与历史恢复控件样式 | R:code:app/projects/[projectId]/asset-prompts/adoption-panel.tsx | A:panel,badge,reference,history | S:-
+adoption-panel.tsx[EU7T]: F:让有权限用户核对设计简述与参考图并采用、撤销或恢复历史，显示当前材料匹配状态 | R:code:lib/asset-design-adoption.ts,code:lib/asset-image-options.ts | A:AssetDesignAdoptionPanel | S:采用发送revision与materialToken防旧窗口覆盖；失败保留用户草稿；历史恢复移除已删除参考，采用不证明图片质量或分镜见过像素
+image-generation-panel.module.css[FU4T]: F:定义紧凑出图方式、连接状态、生成按钮及折叠任务候选的响应式视觉 | R:code:app/projects/[projectId]/asset-prompts/image-generation-panel.tsx | A:provider,connection,generateButton,taskHistory,images | S:图片使用contain，显示预览不代表原图被裁切
+image-generation-panel.tsx[EU8M]: F:编排单资产Chrome生图、连接检查、任务轮询及候选原图下载与设为参考 | R:code:lib/asset-image-job-contract.ts,code:app/projects/[projectId]/asset-prompts/images/route.ts,code:app/projects/[projectId]/asset-prompts/image-browser/route.ts | A:AssetImageGenerationPanel | S:只开放单图，API和CLI禁用；创建网络或5xx未知锁重发，读取新任务后解除；未保存或过期来源禁止生成；轮询只读，回传仅为REVIEW，设参考仍不等于采用，取消不证明上游已停止
+image-options-panel.tsx[EU7T]: F:保存比例画质数量、视图模板及最多六张参考图片，展示私有缩略图 | R:code:lib/asset-image-options.ts,code:lib/asset-image-options-service.ts | A:ImageOptionsPanel | S:当前数量2至4禁选；多参考逐张上传使用最新revision，模板未保存不能改参考；模板追加正文，参考不供文字生成读像素
+page.tsx[EU6T]: F:为有权限用户装载完整资产工作区与权威生产集，并渲染第二阶段导航 | R:code:lib/asset-prompt-service.ts,code:lib/production-episodes.ts,code:app/projects/[projectId]/asset-prompts/workspace.tsx | A:Page | S:范围来自生产目录，不采用查询参数或手填集数；打开页面不整理事实也不生图
+preparation-panel.tsx[EU7T]: F:按明确选集手动读取制作资料卡，分开展示原文证据、采用设计及待补材料 | R:code:lib/asset-preparation-review.ts | A:AssetPreparationPanel | S:初次渲染不拉取或调用AI；返回schema、project和排序选集须完全匹配，换范围中断旧读；关联集数不证明每场外观，缺图不阻断文字分镜
+workspace.module.css[FU5T]: F:定义图片资产网格和提示词出图双栏、折叠工具、短窗口与移动布局 | R:code:app/projects/[projectId]/asset-prompts/workspace.tsx | A:layout,grid,cardVisual,editorScroll,optionRow | S:桌面视口约束只限shell，网格与编辑器独立滚动；图片4比3容器contain；950px以下单栏，短窗口压缩间距保留生成按钮
+workspace.tsx[AU8S]: F:组织完整资产库、当前提示词编辑、按资产范围事实生产、候选预览与人工采用 | R:code:lib/asset-prompt-client-state.ts,code:lib/asset-prompt-queue.ts,code:lib/asset-image-options.ts | A:AssetPromptWorkspace | S:派发集数取所选资产出场范围交权威生产集，空范围不默认全剧；缺事实先补而不继续生成；队列先来源后派生且保留人工草稿；revision单调合并、离页保护，图片候选优先预览但不自动采用
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/[projectId]/asset-prompts/adoption/===
+route.ts[EB7T]: F:为当前账号查询资产设计采用状态，并提交采用、撤销及历史恢复操作 | R:code:lib/asset-design-adoption.ts,code:lib/local-json-request.ts | A:GET,POST | S:actor来自会话而非正文；POST同源且JSON限16KB，版本与材料指纹由服务再次核验，采用不等于图像质量验收
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/[projectId]/asset-prompts/api/===
+route.ts[EB8T]: F:读取资产工作区、生产卡与私有参考原图或预览，处理事实整理、提示词和图片参数操作 | R:code:lib/asset-prompt-service.ts,code:lib/asset-image-options-service.ts,code:lib/episode-upstream-material.ts | A:GET,POST | S:服务仍要求明确选集，界面自动计算范围不等于后台默认全剧；恢复只复用保存范围；同源与成员权限先核验，multipart限11MiB、JSON限64KiB，参考图私有不缓存
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/[projectId]/asset-prompts/images/===
+route.ts[EB8T]: F:查询图片任务及私有原图预览，接收Chrome生成、手动创建导入、取消和参考使用命令 | R:code:lib/asset-image-job-service.ts,code:lib/image-browser-service.ts,code:lib/local-json-request.ts | A:GET,POST | S:generate先核连接再创建CHROME并启用，create默认MANUAL；交接净化磁盘路径且不派发；图片私有不缓存，JSON限32KiB、上传限81MiB；原图候选与使用版本由服务核验
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/[projectId]/episodes/[episodeId]/===
+copy-prompt-button.tsx[EU5T]: F:复制完整提示词并呈现成功失败及剪贴板访问反馈 | R:- | A:CopyPromptButton | S:同步ref阻止重复复制；反馈绑定当时content，内容变动不沿用旧成功状态
+episode-info-panel.tsx[EU5S]: F:折叠展示单集完整原文、场次结构、按类型分组引用资产及原始JSON信息包 | R:- | A:EpisodeInfoPanel,InfoPanelScene,InfoPanelAsset | S:无场次与资产才默认展开原文；资产确认标记是输入状态，不验证其出现或图片质量
+episode-pipeline-button.tsx[EU5T]: F:提交旧单集E0–E5启动操作，活跃时刷新并防止重复请求 | R:code:app/actions.ts | A:EpisodePipelineButton | S:已有分镜重新运行需确认覆盖本集，已放行也需确认；真实执行仍受服务端旧引擎禁用门控制
+export-episode.tsx[EU5T]: F:将输入单元顺序与完整提示词汇总为可复制或下载的Markdown | R:code:app/projects/[projectId]/episodes/[episodeId]/copy-prompt-button.tsx | A:ExportEpisodeButtons | S:下载成功反馈仅表示已发起浏览器下载，不证明文件已保存；无单元禁用导出
+page.tsx[EU7M]: F:呈现账号可访问的旧单集分镜、Seedance单元版本、执行记录和历史问题，并提供新版入口 | R:code:lib/studio.ts,code:lib/production-episodes.ts | A:EpisodeStudioPage | S:旧记录全程只读，UnitPromptCard明确readOnly且不启动返修；新版链接只给生产集，导航剔除非生产集；单元导出取最新非空完整版本
+reset-episode-button.tsx[EU5T]: F:提供危险的本集分镜重置确认、pending反馈与运行中禁用 | R:- | A:ResetEpisodeButton | S:用户确认说明单元问题执行记录不可撤回；同步ref阻止确认后的连点，业务清空由所在表单处理
+stop-pipeline-button.tsx[EU5T]: F:为正在执行的旧单集任务提供停止表单按钮及中断反馈 | R:- | A:StopPipelineButton | S:非活跃且无pending时不渲染；按钮只提交所在表单，不能凭客户端反馈证明进程已终止
+unit-prompt-card.tsx[EU6S]: F:预览和复制单元提示词版本，提供可选手动另存与恢复当前版本表单 | R:code:app/actions.ts | A:UnitPromptCard,UnitPromptVersion | S:点击版本仅预览；readOnly隐藏编辑恢复，活跃流水线禁保存；放行标记只属于当前RELEASE_COMPILED版本，不沿用到历史预览
+workspace-grid.tsx[EU5T]: F:以原生模态资料抽屉叠加单集画布，保持内容阅读宽度 | R:code:app/projects/[projectId]/episodes/[episodeId]/episode-info-panel.tsx | A:WorkspaceGrid,WorkspaceGridProps | S:关闭时归还焦点，Escape与点击背景关闭；抽屉正文点击不冒泡，资料显示不改变画布列宽
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/[projectId]/episodes/[episodeId]/storyboard/===
+page.tsx[EU6T]: F:核验项目与分集权限后渲染新版第三阶段工作台及生产集导航 | R:code:lib/auth.ts,code:lib/production-episodes.ts | A:StoryboardPage | S:episode查询同时绑定projectId；工作台以episodeId作key，换集重建客户端状态而非沿用旧任务
+panels.tsx[EU8S]: F:呈现第三阶段承接材料和预算、任务设置、幻想选择、完整分镜与可追溯执行及返修面板 | R:code:app/projects/[projectId]/episodes/[episodeId]/storyboard/types.ts,code:app/projects/[projectId]/episodes/[episodeId]/storyboard/view-state.ts | A:ProductionPanel,SettingsPanel,PlanningPanel,ResultsPanel,ActivityPanel | S:创建与选择不调用生成；已采用正文后改幻想需确认保留历史并重生成，选择绑定fingerprint；原文Q版幻想不因额外模式关闭而删；共享预算不按集重置，未知用量不能算零；活动不等于进度，文字估时与候选采纳不证明成片质量
+types.ts[FU6T]: F:声明分镜工作台任务、原文、幻想、候选、用量诊断与连续制作数据形状及状态文案 | R:code:app/projects/[projectId]/episodes/[episodeId]/storyboard/use-workbench.ts | A:Run,RunIndex,NewSettings,DEFAULT_SETTINGS,statusLabel,messageOf | S:用量完整性、未知尝试及取消风险确认独立于运行状态；默认32次和30万Token只供新任务，未知状态显示待核对
+use-workbench.ts[AU8S]: F:管理分镜任务列表详情、URL选择、保存快照优先加载、状态轮询及有界单次操作反馈 | R:code:app/projects/[projectId]/episodes/[episodeId]/storyboard/types.ts,code:app/api/episodes/[episodeId]/storyboard/route.ts | A:useWorkbench | S:lifecycle、generation与读序号拒绝换集换任务迟到结果，同key读去重；隐藏页不轮询，保存内容先显示后核对；创建网络或5xx不确定时禁止重复创建，须刷新列表；创建已确认后列表刷新失败不改成未知；旧任务只读，未知未确认用量阻止新建
+view-state.ts[DU8S]: F:从任务、真实作业、采用范围、选择和用量计算分镜阶段、操作门禁及玻璃流程状态 | R:code:app/projects/[projectId]/episodes/[episodeId]/storyboard/types.ts | A:deriveView,derivePhaseSteps,executionLabel,candidateFeedback,formatElapsed,formatCount | S:完成按采用工作包去重，不以请求结束计完成；未知回包、源待核、修复停止与共享未知预算阻止付费；已确认本地风险不能解除共享暂停；旧任务可导出历史但不变更，活动显示只绑定真实执行
+workbench.module.css[FU5M]: F:提供第三阶段工具栏、状态面、规划候选、原文分镜阅读、执行诊断和移动布局样式 | R:code:app/projects/[projectId]/episodes/[episodeId]/storyboard/workbench.tsx | A:workbench,taskToolbar,readerLayout,originalText,diagnostics | S:视觉liveDot须由调用者真实状态控制；原始稿保留pre-wrap，减少动效关闭动画，窄屏增加吸顶栏滚动补偿
+workbench.tsx[EU8S]: F:编排第三阶段版本选择、创建与连续制作控制、暂停恢复、结果及执行记录面板 | R:code:app/projects/[projectId]/episodes/[episodeId]/storyboard/use-workbench.ts,code:app/projects/[projectId]/episodes/[episodeId]/storyboard/view-state.ts | A:StoryboardWorkbench | S:复制完整assembly不删改；创建不派发模型，下一步由用户启动；旧任务仅看稿；未知回包先恢复，风险确认明确仍可能计费且不解除共享预算；模型标签读取保存配置，玻璃动效与真实流程状态分离
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/[projectId]/foundation/export/===
+route.ts[EB7T]: F:导出成员可访问项目的完整资料、工作稿和历史调用JSON附件 | R:code:lib/foundation-export.ts,code:lib/auth.ts | A:GET | S:权限由路由核验；精确脱敏本机配置DeepSeek key而不按通用正则删原文；私有no-store，导出不生成AI总结或确认未知调用
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/[projectId]/foundation/handoff/download/===
+route.ts[EB7T]: F:下载有权限单集的当前制作交接资料，核验预览绑定修订和材料版本 | R:code:lib/episode-upstream-material.ts,code:lib/auth.ts | A:GET | S:集号只接受非负安全整数规范十进制；可选revision和materialVersion有差异返回409，读取两次不一致也拒混版，下载不启动生成
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/[projectId]/foundation/handoff/===
+page.tsx[EU7S]: F:按明确生产集预览原文、场次素材、采用设计、必要事实、来源依赖和前场线索交接包 | R:code:lib/episode-upstream-material.ts,code:lib/light-foundation-supply.ts | A:FoundationHandoffPage | S:可读不是制图许可或审批；仅选集才读包，下载回绑修订及materialVersion；采用只读参考说明不读像素，派生依赖不证明本集出现，前场状态不默认永久继承
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/[projectId]/preparation/===
+page.tsx[EU6T]: F:核验项目成员后并行加载剧本接收与全剧方向，提供第一阶段阅读定稿页面 | R:code:lib/script-resolution-service.ts,code:lib/series-direction-service.ts | A:PreparationPage | S:选集须非负安全整数否则不传；全剧方向仅明确确认后提供下游，页面阅读不改原句
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/[projectId]/production/===
+page.tsx[EU6T]: F:装载有权限项目的生产集与资产选项并呈现连续制作工作区 | R:code:lib/production-episodes.ts,code:lib/asset-prompt-service.ts | A:ProductionPage | S:集列表过滤生产范围，资产只投影key、名称、适用集和方式；打开工作区不启动连续任务
+types.ts[FU6T]: F:声明连续制作快照、就绪门禁、材料需求及共享预算投影，并映射动作文案和付费分类 | R:code:lib/production-workflow.ts | A:WorkflowAction,WorkflowSnapshot,EpisodeOption,AssetOption,actionLabel,paidAction | S:关键设计门、源冲突、技术问题与未知用量分别呈现；paidAction只识别模型派发动作，不表示调用已发生
+workspace.module.css[FU4T]: F:定义连续制作选集、资产、共享预算、质量核对与任务行的玻璃响应式布局 | R:code:app/projects/[projectId]/production/workspace.tsx | A:workspace,grid,panel,budget,episodeRows | S:800px以下单栏，集版本选择充满可用宽度，长待办与错误按任意位置换行
+workspace.tsx[EU8S]: F:编排连续制作选集与关键设计、共享预算、版本选择和逐次推进的客户端工作区 | R:code:lib/production-workflow.ts,code:app/projects/[projectId]/production/types.ts | A:ProductionWorkspace | S:创建只保存不派发；所有变更绑定workflow revision；旧窗口迟到读被拒绝，共享预算不按集重置；空关键设计不算确认，未知创建须刷新核对；质量核对需用户实际确认，暂停只阻止新派发
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/[projectId]/script-reception/===
+route.ts[EB7T]: F:为登录用户读取接收视图并转交确认、撤销和辅助判断命令 | R:code:lib/script-resolution-service.ts,code:lib/local-json-request.ts | A:GET,POST | S:POST同loopback来源且JSON限8000字节，actor取会话；确认权限与源版本由服务再次校验，JEV仅显式选用，不默认回退；返回私有不缓存
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/[projectId]/series-direction/===
+route.ts[EB7T]: F:提供登录用户全剧方向读取、草稿采用及候选生成恢复的JSON入口 | R:code:lib/series-direction-service.ts,code:lib/local-json-request.ts | A:GET,POST | S:Node动态执行；POST同源限32KiB，actor来自会话，权限与版本由服务校验；响应私有不缓存并禁MIME嗅探
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/[projectId]/source/download/===
+route.ts[EB7T]: F:按成员权限下载当前保真来源计划、阅读稿、外部整理材料或留存原上传 | R:code:lib/fidelity-store.ts,code:lib/fidelity-external.ts | A:GET | S:可选revision与当前快照不同返回409；original优先取最早SOURCE_IMPORT保留原文件字节，缺原文件仅导出明确命名的阅读文本；Markdown移空行但不作回导凭据
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/[projectId]/source/===
+fidelity-review-summary.tsx[EU6T]: F:展示保真凭据的程序检查、模型阅读状态、来源归属变化及未确认候选 | R:code:lib/fidelity-import.ts | A:FidelityReviewSummary | S:程序逐字校验不证明AI通读或语义归属；字符数为UTF16长度，称呼候选不当身份确认，外部问题不当用户决定
+page.tsx[EU8T]: F:提供有权限项目的逐行原文与完整审计视图、绑定修订下载和用户边界确认表单 | R:code:lib/fidelity-store.ts,code:lib/auth.ts | A:SourcePage | S:阅读隐藏空行而保留源行号；决定绑定来源快照、源hash与decisionVersion，不改原句；服务禁止移除已有集，有受影响下游或运行中任务拒绝保存；缺历史凭据明确显示，不补造AI阅读证据
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/new/===
+page.tsx[EU5T]: F:为登录用户加载可访问项目上下文和画风选项，呈现新建导入界面 | R:code:lib/project-library.ts,code:app/projects/new/project-create-form.tsx | A:NewProjectPage | S:查询projectId只在当前账号项目库内选中，不据外部ID创建导航权限
+project-create-form.tsx[EU7M]: F:选择原稿、导入方式、画风比例与执行渠道，先预览保真来源再提交创建 | R:code:app/actions.ts,code:app/ui/import-issue-summary.tsx | A:ProjectCreateForm | S:首次提交只预览，任何输入变动清预览；创建携带预览sourceVersion与originalHash并防重；旧外部决定需显式信任，未配对原稿不宣称保真；预览可截断，原上传保留，导入不调用AI
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/runner/===
+page.tsx[EU6T]: F:展示当前账号本机Codex连接入口及管理员DeepSeek凭证设置状态 | R:code:lib/auth.ts,code:app/runner/provider-connection-panel.tsx | A:RunnerPage | S:API项目使用本机管理员凭证，CLI使用本机登录；此页不是Sites设备令牌或云Runner协议，项目上下文仅取账号可访问库
+provider-connection-panel.tsx[EU7M]: F:保存移除DeepSeek连接配置，并由用户显式查询本机CLI登录、额度窗口和连接诊断 | R:code:app/actions.ts | A:ProviderConnectionPanel | S:保存前校验模型列表，成功清空密钥输入；CLI查询不调用生成；缺用量和额度显示未知，累计Token不外推当前费用；配置pending同步阻止保存移除竞争，凭证不放localStorage
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/ui/===
+account-menu.tsx[EU4T]: F:读取当前会话并显示账号名称、用户名和退出表单 | R:code:lib/auth.ts,code:app/auth-actions.ts | A:AccountMenu | S:无会话不渲染；头像只取名称首字符，不回显密码或会话令牌
+app-chrome.tsx[EU6S]: F:组成项目外壳、分集与移动导航、账号区域和可访问主内容标题 | R:code:app/ui/episode-sidebar.tsx,code:app/ui/account-menu.tsx | A:AppChrome | S:只给productionEligible或默认正集导航，production映射第三阶段；无生产集不造分镜入口，全剧页顶栏用p避免重复h1，Runner禁预取
+episode-sidebar.tsx[EU5S]: F:呈现分集路由、活动集和执行状态，并按项目恢复侧栏滚动位置 | R:code:app/ui/motion-selection.tsx,code:lib/episode-presentation.ts | A:EpisodeSidebar | S:零集始终指向新分镜入口；只有活动项离开可视区才滚入视口，存储失败不影响导航；组件本身不筛生产集，由调用者供范围
+import-issue-summary.tsx[EU4T]: F:按问题码合并导入诊断计数和相邻来源范围，以折叠卡展示 | R:- | A:ImportIssueSummary | S:仅显示前五范围及三种说明，不删除输入中的其余问题，确认仍到原文接收页
+motion-selection.tsx[CU5T]: F:在共享分组选中位置间移动玻璃高亮，保持真实标签和点击目标固定 | R:- | A:SelectionMotionProvider,MotionSelection | S:无aria选中项隐藏高亮；仅组内换key且容器宽差小于2px才插值，尺寸变化直接测量，减少动效取消动画
+page-transition.tsx[CU5T]: F:为页面切换提供进入动画与延迟导航等待提示，并保留跨路由选中高亮上下文 | R:code:app/ui/motion-selection.tsx | A:PageTransition | S:仅同源普通点击触发180ms后等待，10秒清理提示；只动画视口内最多五面，查询切换不移动固定标题，减少动效不做进入动画
+prompt-document.tsx[CU6T]: F:按提示词标题、上下文字段和镜头标记渲染可读文档而保留原始字符 | R:- | A:PromptDocument | S:只是显示标记，不二次编译；未知行、空白与LF/CRLF/CR原样渲染，复制编辑由调用者保留原string
+workbench-empty.tsx[CU3T]: F:提供镜头、单元、日志和问题空视图，展示说明与可选顺序步骤 | R:- | A:WorkbenchEmpty | S:仅显示输入说明，不判定制作或审查已经发生
+workflow-glass.module.css[FU5S]: F:定义流程玻璃卡、状态徽标、装饰扫光、真实运行活动层与响应式布局 | R:code:app/ui/workflow-glass.tsx | A:rail,cards,card,status,activity,motionToggle | S:扫光所有卡常开，不代表运行；activity只由running显示，用户减少动效和系统偏好都关闭；缺backdrop-filter回退实色
+workflow-glass.tsx[CU5T]: F:提供流程玻璃容器、状态卡和用户或系统减少动效控制 | R:code:app/ui/workflow-glass.module.css | A:WorkflowGlassRail,WorkflowGlassCard,WorkflowGlassState | S:装饰光不代表执行，只有running置aria-busy；存储失败仍保留当前偏好，动效开关不暂停任务
+workflow-guidance.tsx[CU4T]: F:渲染流程说明标题、描述、补充信息和可选操作入口 | R:code:app/vision-studio.css | A:WorkflowGuidance | S:传入action优先于href按钮；本组件只显示而不派发任务
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/app/projects/[projectId]/asset-prompts/image-browser/===
+route.ts[EB7T]: F:提供当前账号项目的Chrome执行器状态查询、启用暂停及连接刷新接口 | R:code:lib/image-browser-service.ts,code:lib/auth-service.ts,code:lib/local-json-request.ts | A:GET,POST | S:操作正文只允许action且限4KiB，同loopback来源；actor取会话，失败统一净化，私有不缓存；检查连接不发送生成
+
+===D:/EDY/Documents/CL/director-web-3008-stage2-images/docs/===
+3008-ASSET-DIRECTION-20261001.md[SB7S]: F:说明按集生产卡、方向知识索引、连续制作及精确需求候选供给与验证边界 | R:code:lib/asset-design-model-input.ts,code:lib/asset-material-candidates.ts,code:lib/production-workflow.ts | A:assetProductionCards,seriesKnowledge,materialNeeds,candidateDesigns | S:角色主张和采用增补不是原文事实，未读像素；候选按need隔离且不改基础卡版本；历史手填集数描述不是当前界面权威，替身测试不代表真实模型验收
+3008-CHARACTER-VARIANT-COVERAGE.md[SB6T]: F:记录F2和Q1最小造型规则、角色标签及准备用途与实际使用范围的区别 | R:code:prompts/foundation/F2.md,code:prompts/foundation/Q1.md | A:role,episodes,sceneRefs | S:不凑固定套数或伪造使用集，旧项目不自动重标重跑；合成小样不代表最终规则对全部剧本的真实验证
+3008-CHOICE-COLLECTION.md[SB6T]: F:说明必要选择逐项保存、末项统一排队的事务行为及验证范围 | R:code:lib/foundation-delivery.ts,code:app/actions.ts | A:confirmAndContinueFoundationDelivery,expectedTaskId,revision | S:剩余事项时零排队，末项并发只一次成功；一次启动不等于一次模型调用，旧答案和源权限保护保留，报告无真实用户点击验收

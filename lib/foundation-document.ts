@@ -176,14 +176,18 @@ function migrate(previous: FoundationDocument, input: Input): FoundationDocument
 }
 
 async function readDocument(db: Db, projectId: string, input: Input, includePrevious: boolean): Promise<{ document: FoundationDocument; previousDocument: FoundationDocument | null; sourceChanged: boolean; needsContextEdit: boolean }> {
-  const rows = await db.sceneSnapshot.findMany({ where: { projectId, sceneKey: { in: ['FOUNDATION_DOCUMENT', 'FOUNDATION_F1', 'FOUNDATION_F2', 'FOUNDATION_Q1'] } }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
-  const current = rows.filter(r => r.sceneKey === 'FOUNDATION_DOCUMENT').map(r => documentBody(json(r.content))).find(Boolean);
+  // Current working revisions are authoritative; old paid evidence is needed only
+  // when no readable working revision exists. A malformed newest revision still
+  // falls through to the earlier valid document, exactly as before.
+  const documents = await db.sceneSnapshot.findMany({ where: { projectId, sceneKey: 'FOUNDATION_DOCUMENT' }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+  const current = documents.map(r => documentBody(json(r.content))).find(Boolean);
   const empty = createEmptyDocument(input);
   if (current) {
     const sourceChanged = current.sourceVersion !== input.sourceVersion || input.interpretationAware !== false && !isDeepStrictEqual(current.sourceHashes, empty.sourceHashes);
     return { document: sourceChanged ? migrate(current, input) : current, previousDocument: sourceChanged ? current : null, sourceChanged,
       needsContextEdit: current.settingsFingerprint !== empty.settingsFingerprint };
   }
+  const rows = await db.sceneSnapshot.findMany({ where: { projectId, sceneKey: { in: ['FOUNDATION_F1', 'FOUNDATION_F2', 'FOUNDATION_Q1'] } }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
   const runs = await db.pipelineRun.findMany({ where: { projectId, episodeId: null, stageCode: { in: ['F1', 'F2', 'Q1'] } }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
   const bodies = new Map(rows.map(row => [row.id, json(row.content)]));
   const evidence = (run: typeof runs[number], version = input.sourceVersion) => { const log = json(run.log); return log.schema === 'FOUNDATION_RUN_EVIDENCE_V1' && log.runId === run.id && log.stageCode === run.stageCode && log.sourceVersion === version ? log : null; };

@@ -425,6 +425,8 @@ model SceneSnapshot {
 
   @@index([projectId])
   @@index([episodeId])
+  @@index([projectId, sceneKey, createdAt, id])
+  @@index([sceneKey, createdAt, id])
 }
 
 model TaskPackage {

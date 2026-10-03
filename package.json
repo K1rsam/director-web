@@ -7,6 +7,8 @@
     "preview:3180": "node examples/3180/serve.mjs",
     "build": "next build",
     "typecheck": "tsc --noEmit",
+    "verify:database-reads": "tsx scripts/verify-database-read-optimization.ts && tsx scripts/verify-project-library-summary.ts && tsx scripts/verify-image-job-reads.tsx",
+    "verify:stage2-images": "tsx scripts/verify-asset-image-jobs.ts && tsx scripts/verify-image-browser.ts && tsx scripts/verify-asset-design-adoption.ts && tsx scripts/verify-visual-facts-selection.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "database:migrate": "tsx --env-file=.env scripts/migrate-database.ts",

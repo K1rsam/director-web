@@ -15,7 +15,7 @@ stub('../lib/asset-prompt-automation',{launchAssetPromptAutomation:async()=>{dis
 stub('../lib/foundation-state',{loadFoundationInputs:async()=>({sourceVersion:'source'})});
 stub('../lib/episode-upstream-material',{readAssetPreparationReview:async()=>({schema:'ASSET_PREPARATION_REVIEW_V1',projectId:'fixture',episodes:[]})});
 const {POST,GET}=require('../app/projects/[projectId]/asset-prompts/api/route'),context={params:Promise.resolve({projectId:'fixture'})};
-const post=(input:any)=>POST(new Request('http://fixture.test/projects/fixture/asset-prompts/api',{method:'POST',headers:{'Content-Type':'application/json',origin:'http://fixture.test',host:'fixture.test'},body:JSON.stringify({revision:0,...input})}),context);
+const post=(input:any)=>POST(new Request('http://127.0.0.1:3008/projects/fixture/asset-prompts/api',{method:'POST',headers:{'Content-Type':'application/json',origin:'http://127.0.0.1:3008',host:'127.0.0.1:3008'},body:JSON.stringify({revision:0,...input})}),context);
 async function main(){
  for(const action of ['prepare-facts','resume-automation','generate-episodes','generate']){
   const result=await post({action,key:'warehouse'});
