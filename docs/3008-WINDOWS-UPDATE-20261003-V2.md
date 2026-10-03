@@ -31,6 +31,7 @@ npm run database:backup
 确认源码改动已安全保存、所有生成任务已结束后：
 
 ```powershell
+git remote set-branches --add origin handoff/3008-v2026.10.03.2
 git fetch origin
 git switch --create handoff/3008-v2026.10.03.2 --track origin/handoff/3008-v2026.10.03.2
 git log -1 --oneline
@@ -39,6 +40,8 @@ npm ci
 npm run prisma:generate
 npm run database:migrate
 ```
+
+第一行保留旧分支的拉取配置，仅追加新分支：兼容以前使用 `--single-branch` 安装、`git fetch origin` 只会读取旧分支的电脑。不使用 `git remote set-branches origin ...` 替换原范围。
 
 `node --version` 应为 **24.x**。如果本地已存在同名分支，不重复 `--create`；先查看它的提交，再用 `git switch handoff/3008-v2026.10.03.2`。如需拉取该分支后续更新，只用 `git pull --ff-only`，遇到分叉停止，不能强推或重置。
 
