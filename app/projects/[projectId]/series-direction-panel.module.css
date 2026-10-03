@@ -1,0 +1,50 @@
+.panel {
+  padding: clamp(18px, 2vw, 28px);
+  color: #303352;
+  border: 1px solid rgba(255, 255, 255, .28);
+  border-radius: 22px;
+  background: linear-gradient(145deg, rgba(255,255,255,.33), rgba(235,231,251,.14));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.56), 0 12px 30px rgba(77,69,125,.06);
+  backdrop-filter: blur(18px) saturate(138%);
+  min-width: 0;
+}
+.header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; flex-wrap: wrap; }
+.header h2 { margin: 4px 0 8px; font-size: 1.125rem; font-weight: 600; }
+.header p, .note, .warning, .error, .feedback { margin: 8px 0; line-height: 1.7; font-size: .875rem; }
+.eyebrow, .meta, .field small, .coverage small, .generation small, .preview small, .history small { font-size: .8125rem; color: #5b5f80; line-height: 1.6; }
+.eyebrow { color: #6858ab; }
+.badge { padding: 7px 12px; border-radius: 24px; font-size: .8125rem; background: rgba(217,213,239,.6); white-space: nowrap; }
+.badge[data-status="CONFIRMED"] { background: rgba(207,229,222,.7); color: #385e54; }
+.badge[data-status="STALE"] { background: rgba(244,225,196,.7); color: #75592f; }
+.actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 14px 0; }
+.actions button, .generation button { min-height: 40px; }
+.actions button:disabled { cursor: not-allowed; }
+.editor, .sources, .preview, .history, .generation { margin-top: 15px; border-radius: 14px; background: rgba(231,229,247,.45); padding: 14px 16px; }
+.editor > summary { font-size: 1rem; font-weight: 600; }
+.panel summary { cursor: pointer; line-height: 1.7; overflow-wrap: anywhere; }
+.panel summary:focus-visible, .panel button:focus-visible, .panel a:focus-visible { outline: 2px solid #7865b8; outline-offset: 4px; border-radius: 5px; }
+.preview, .history { background: rgba(229,226,245,.62); }
+.preview p, .history p { white-space: pre-wrap; font-size: .875rem; line-height: 1.75; margin: 12px 0 2px; overflow-wrap: anywhere; }
+.preview small, .history small { margin-left: 8px; font-weight: 400; }
+.formGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 24px; margin-top: 22px; }
+.field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.field label { font-size: .875rem; font-weight: 600; }
+.field input, .field textarea { width: 100%; box-sizing: border-box; border: 1px solid rgba(118,106,158,.23); border-radius: 11px; padding: 11px 13px; background: rgba(244,243,251,.55); box-shadow: inset 0 1px 2px rgba(78,70,115,.03); color: #303352; font: inherit; font-size: 1rem; line-height: 1.6; transition: border-color 180ms, box-shadow 180ms; }
+.field textarea { resize: vertical; min-height: 88px; }
+.field input:focus, .field textarea:focus { outline: none; border-color: #8f7cbe; box-shadow: 0 0 0 3px rgba(143,124,190,.12); }
+.wide { grid-column: 1 / -1; }
+.coverage { display: flex; gap: 11px; align-items: flex-start; font-size: .875rem; line-height: 1.7; margin: 20px 0 12px; cursor: pointer; }
+.coverage input { width: 18px; height: 18px; flex: 0 0 18px; margin-top: 4px; accent-color: #7865b8; }
+.coverage small { display: block; }
+.warning { color: #7c592f; }
+.error { color: #934a59; padding: 11px 14px; border-radius: 12px; background: rgba(247,221,227,.6); }
+.feedback { color: #4e655d; }
+.sources { font-size: .875rem; }
+.sources ul { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 5px 18px; padding-left: 20px; max-height: 220px; overflow: auto; }
+.sources a { color: #6858ab; }
+.generation { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; background: rgba(220,224,247,.55); }
+.generation p { flex: 1 1 100%; margin: 0; font-size: .875rem; line-height: 1.7; }
+.generation button { margin-left: auto; }
+.history > details { padding: 12px 0; border-bottom: 1px solid rgba(122,112,161,.12); }
+@media (max-width: 720px) { .formGrid { grid-template-columns: 1fr; } .panel { border-radius: 17px; } .editor, .sources, .preview, .history { padding: 12px; } .header { gap: 12px; } .actions { align-items: stretch; } .meta { flex-basis: 100%; } }
+@media (prefers-reduced-motion: reduce) { .field input, .field textarea { transition: none; } }

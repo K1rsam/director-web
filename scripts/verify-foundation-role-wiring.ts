@@ -35,8 +35,10 @@ async function main(){
   await runCliRoleJson({projectId:'offline',role,prompt,sessionMode:'ephemeral'});
   await runApiRoleJson({role,prompt,noSession:true});
   const cli=sentCli.at(-1)!,api=sentApi.at(-1)!;
+  assert.equal(cli.model,'gpt-6.1-sol','真实岗位请求必须发送统一的新模型，而不是旧岗位默认');
+  assert.equal(cli.reasoningEffort,'medium');
   assert.equal(cli.prompt,`### 岗位规则（内嵌指令）\n\n${systemPrompt}\n\n### 当前任务\n\n${prompt}`);
-  assert.equal(cli.instructionProfile,'foundation');assert.equal(cli.ephemeral,true);
+  assert.equal(cli.instructionProfile,'foundation-source');assert.equal(cli.ephemeral,true);
   const messages=api.messages as Array<{role:string;content:string}>;
   assert.equal(messages.filter(message=>message.role==='system').length,1);
   assert.equal(messages[0].content,systemPrompt);assert.equal(messages.at(-1)!.content,prompt);
@@ -47,6 +49,17 @@ async function main(){
   if(stage==='Q1')for(const text of ['只发实际差异patch','APPLY_DECISION','delivery.targets','没有实际完成的事项不得给关闭回执'])assert.ok(systemPrompt.includes(text),text);
  }
  assert.equal(sentCli.length,3);assert.equal(sentApi.length,3);
+ process.env.CLI_MODEL='gpt-5.6-terra';
+ process.env.CLI_REASONING_EFFORT='high';
+ for(const code of ['A15','A15_A','B15_B','A15_D','ASSET_MATERIAL_NEED','SCRIPT_RESOLUTION','E0','E1','E2','E3','E4','E5','P1','P2','F1','F2','Q1']){
+  process.env[`CLI_MODEL_${code}`]='gpt-6-astra';
+  process.env[`CLI_REASONING_${code}`]='low';
+  const systemPrompt=['F1','F2','Q1'].includes(code)?'   ':'明确岗位规则';
+  await runCliRoleJson({projectId:'offline',role:{code,skill:'',systemPrompt,model:'offline-model',reasoningEffort:'low'},prompt:'测试输入',sessionMode:'ephemeral'});
+  assert.equal(sentCli.at(-1)!.model,'gpt-6.1-sol',`${code}不能被旧环境变量或旧岗位配置覆盖`);
+  assert.equal(sentCli.at(-1)!.reasoningEffort,'medium');
+  assert.equal(sentCli.at(-1)!.instructionProfile,code.startsWith('A15')||code==='B15_B'?'foundation':undefined,'仅有自包含正文的 F1/F2/Q1 使用 source profile，资产和普通岗位不变');
+ }
  console.log('PASS P1/F2/Q1 real prompt loaders and CLI/API role runner: scoped actionable instructions reach intercepted provider requests; no DB/AI');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

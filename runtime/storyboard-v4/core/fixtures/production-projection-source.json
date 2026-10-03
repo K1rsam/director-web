@@ -1,0 +1,190 @@
+{
+  "text": "甲：我还在。\n\n△甲握紧绷带。\n",
+  "package": {
+    "schemaVersion": "DIRECTOR_STANDARD_SCRIPT_SLICE_V1",
+    "assemblerVersion": "standard-script-compiler-v1",
+    "binding": {
+      "sourceId": "episode-2",
+      "sourceVersion": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4",
+      "indexerVersion": "physical-lines-v1",
+      "sourceIndexDigest": "934c2ab0fea3e4c5df7526bf110b51a83e0778080a9a1e46401e1dfc8daa29fb",
+      "planDigest": "aba859019596f3ff2f98183507b750e0a401490b95ec2fcdc188d0ecf5f1711b"
+    },
+    "script": {
+      "entries": [
+        {
+          "id": "line-1",
+          "target": "BODY",
+          "kind": "DIALOGUE",
+          "sourceUnitIds": [
+            "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4:u1"
+          ],
+          "text": "我还在。",
+          "textAssembly": {
+            "parts": [
+              {
+                "kind": "SOURCE_SLICE",
+                "unitId": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4:u1",
+                "start": 2,
+                "end": 6
+              }
+            ]
+          },
+          "layout": [
+            {
+              "kind": "SOURCE_SLICE",
+              "unitId": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4:u1",
+              "start": 1,
+              "end": 2
+            },
+            {
+              "kind": "SOURCE_SEPARATOR",
+              "unitId": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4:u1",
+              "start": 6,
+              "end": 7
+            }
+          ],
+          "speaker": {
+            "text": "甲",
+            "parts": [
+              {
+                "kind": "SOURCE_SLICE",
+                "unitId": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4:u1",
+                "start": 0,
+                "end": 1
+              }
+            ]
+          },
+          "channel": "SPEECH",
+          "channelSource": null,
+          "cue": null
+        },
+        {
+          "id": "line-3",
+          "target": "BODY",
+          "kind": "ACTION",
+          "sourceUnitIds": [
+            "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4:u3"
+          ],
+          "text": "甲握紧绷带。",
+          "textAssembly": {
+            "parts": [
+              {
+                "kind": "SOURCE_SLICE",
+                "unitId": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4:u3",
+                "start": 9,
+                "end": 15
+              }
+            ]
+          },
+          "layout": [
+            {
+              "kind": "SOURCE_SLICE",
+              "unitId": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4:u3",
+              "start": 8,
+              "end": 9
+            },
+            {
+              "kind": "SOURCE_SEPARATOR",
+              "unitId": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4:u3",
+              "start": 15,
+              "end": 16
+            }
+          ]
+        }
+      ]
+    },
+    "annotations": [],
+    "exclusions": [
+      {
+        "id": "line-2",
+        "unitIds": [
+          "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4:u2"
+        ],
+        "category": "BLANK",
+        "reason": "原文空白行",
+        "text": "\n"
+      }
+    ],
+    "evidence": [
+      {
+        "id": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4:u1",
+        "start": 0,
+        "end": 7,
+        "text": "甲：我还在。\n",
+        "sourceVersion": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4",
+        "offsetUnit": "UTF16"
+      },
+      {
+        "id": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4:u2",
+        "start": 7,
+        "end": 8,
+        "text": "\n",
+        "sourceVersion": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4",
+        "offsetUnit": "UTF16"
+      },
+      {
+        "id": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4:u3",
+        "start": 8,
+        "end": 16,
+        "text": "△甲握紧绷带。\n",
+        "sourceVersion": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4",
+        "offsetUnit": "UTF16"
+      }
+    ],
+    "fidelity": {
+      "assignments": [
+        {
+          "unitId": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4:u1",
+          "target": "BODY",
+          "targetId": "line-1",
+          "fieldPath": "script.entries[0]"
+        },
+        {
+          "unitId": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4:u2",
+          "target": "EXCLUDE",
+          "targetId": "line-2",
+          "fieldPath": "exclusions[0]"
+        },
+        {
+          "unitId": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4:u3",
+          "target": "BODY",
+          "targetId": "line-3",
+          "fieldPath": "script.entries[1]"
+        }
+      ],
+      "receipt": {
+        "schemaVersion": "STANDARD_SCRIPT_MECHANICAL_RECEIPT_V1",
+        "status": "MECHANICALLY_VERIFIED",
+        "sourceId": "episode-2",
+        "sourceVersion": "src:d5feb51f72dd555cb1033d5801c268776c4040fd141f35040dad45cc5d5f48b4",
+        "indexerVersion": "physical-lines-v1",
+        "sourceIndexDigest": "934c2ab0fea3e4c5df7526bf110b51a83e0778080a9a1e46401e1dfc8daa29fb",
+        "planDigest": "aba859019596f3ff2f98183507b750e0a401490b95ec2fcdc188d0ecf5f1711b",
+        "packageDigest": "8f1244308451184d05fae1b7b4784cbdf978a69326dde227e9c670ad8a9b85c8",
+        "readingTextDigest": "c1279ff721383b53ef23394a742f4c03e287503f6ce4c9d245cc7ec37501816a",
+        "assemblerVersion": "standard-script-compiler-v1",
+        "checks": {
+          "unitCoverage": "VERIFIED",
+          "sourceOrder": "VERIFIED",
+          "sourceSlices": "VERIFIED",
+          "fieldBoundaries": "VERIFIED",
+          "exclusionShape": "VERIFIED",
+          "noTextPatches": "VERIFIED"
+        },
+        "semantic": "NOT_RUN",
+        "acceptedForDispatch": false
+      }
+    },
+    "readiness": {
+      "mechanical": "VERIFIED",
+      "semantic": "NOT_RUN",
+      "acceptedForDispatch": false,
+      "blockers": [
+        "SEMANTIC_REVIEW_NOT_RUN",
+        "PRODUCTION_INTEGRATION_NOT_IMPLEMENTED"
+      ]
+    },
+    "packageId": "standard:8f1244308451184d05fae1b7b4784cbdf978a69326dde227e9c670ad8a9b85c8"
+  }
+}

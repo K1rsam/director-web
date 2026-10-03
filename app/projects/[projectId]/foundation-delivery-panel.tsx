@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import { startFoundationDeliveryAction, stopFoundationDeliveryAction, preprocessProjectAction } from "@/app/actions";
+import { WorkflowGlassRail, WorkflowGlassCard, workflowGlassStyles as glass, type WorkflowGlassState } from "@/app/ui/workflow-glass";
 import type { FoundationDeliveryState } from "@/lib/foundation-delivery-types";
 import styles from "./foundation-delivery.module.css";
 
@@ -105,7 +106,6 @@ export function FoundationDeliveryPanel({ projectId, state, requiredChoiceCount,
   const startForm = <form id={`foundation-start-${projectId}`} key={state.expectedState} action={startFoundationDeliveryAction} className={compact ? "topbarStopForm" : styles.startForm}>
     <input name="projectId" type="hidden" value={projectId} />
     <input name="expectedState" type="hidden" value={state.expectedState} />
-    <input name="assetPromptOptionPresent" type="hidden" value="yes" />
     {unknown ? <label className={compact ? "biblePlaceholder" : styles.consent}>
       <input type="checkbox" name="allowUnknownRetry" value="yes" required />
       <span>我理解结果尚未确认，重发可能重复计费，同意重发并继续。</span>
@@ -162,15 +162,15 @@ export function FoundationDeliveryPanel({ projectId, state, requiredChoiceCount,
   </section>;
 }
 
-/** Visible operation rail; uses the current delivery, never the retired paid stage chain. */
-export function FoundationWorkflowStatus({ projectId, state, sourceReady, sceneCount, remaining }: {
-  projectId: string; state: PanelState; sourceReady: boolean; sceneCount: number; remaining: string[];
+/** Current delivery rail; completed healthy work is folded, active work and risks remain visible. */
+export function FoundationWorkflowStatus({ projectId, state, sourceReady, sceneCount, remaining, requiredChoiceCount = 0 }: {
+  projectId: string; state: PanelState; sourceReady: boolean; sceneCount: number; remaining: string[]; requiredChoiceCount?: number;
 }) {
   const unknown = state.action === "UNKNOWN_CONFIRM" || Boolean(state.task?.unknownOutcome);
   const blocked = technicalPause(state);
-  const message = state.busy ? "正在按当前步骤整理资料，自动校验和局部修复的进度会在这里更新。已有内容可继续阅读。"
-    : unknown ? `${state.task?.status === "INTERRUPTED" ? "处理已中断。" : ""}上次请求结果尚未确认，当前不会自动重发；重发可能重复计费，需要你明确同意。`
+  const message = unknown ? `${state.task?.status === "INTERRUPTED" ? "处理已中断。" : ""}上次请求结果尚未确认，当前不会自动重发；重发可能重复计费，需要你明确同意。`
       : blocked ? "整理遇到技术问题，当前已暂停，已保存资料仍可阅读。这类问题由工作流处理，无需你修改剧本格式；恢复前不会继续请求。"
+        : state.busy ? "正在按当前步骤整理资料，自动校验和局部修复的进度会在这里更新。已有内容可继续阅读。"
         : state.complete ? "资料已整理，可查看原文、资产与场次。"
           : state.task?.status === "WAITING_USER" ? "有内容需要你作创作取舍，请在必要取舍中确认；已有资料仍可阅读。"
             : state.action === "CONTINUE" ? "已有资料保留；继续仅处理未完成部分，可能新增模型调用费用。"
@@ -180,27 +180,33 @@ export function FoundationWorkflowStatus({ projectId, state, sourceReady, sceneC
   const activity = state.task?.status === "QUEUED" ? "排队中" : "正在工作";
   const paused = unknown ? "结果待确认" : blocked ? "已暂停" : state.task?.status === "WAITING_USER" ? "等待你的确认" : state.task?.status === "STOPPED" ? "已停止" : state.task?.status === "INTERRUPTED" ? "已中断" : null;
   const cards = [
-    { code: "P1", name: "接收与清洗", note: "保留原文 · 程序初检，按需 AI 辅助", status: sourceReady ? "原文已接收" : "待检查", href: "/projects/"+encodeURIComponent(projectId)+"/source", link: "查看原文与提示" },
+    { code: "P1", name: "接收与清洗", note: "保留原文 · 程序初检，按需 AI 辅助", status: sourceReady ? "原文已接收" : "待检查", href: "/projects/"+encodeURIComponent(projectId)+"/preparation#script-review", link: "剧本标准阅读" },
     { code: "P2", name: "拆集分场与必要事实", note: "按原文整理场次、背景与身份", status: sourceReady ? state.totalEpisodes+"集 / "+sceneCount+"场" : "待拆分", href: "#foundation-scenes", link: "查看场次" },
     { code: "P3", name: "素材整理与核对", note: "提取必要素材，完善已有资料", status: state.availableEpisodes+" / "+state.totalEpisodes+"集已保存", href: "#foundation-assets", link: "查看素材" },
-    { code: "P4", name: "按集交接", note: "原文、素材与待办汇入单集资料", status: state.complete ? "资料已整理" : "待整理完成", href: "/projects/"+encodeURIComponent(projectId)+"/foundation/handoff", link: "查看交接资料" }
+    { code: "P4", name: "按集交接", note: "原文、素材与待办自动汇入单集资料", status: state.complete ? "资料已整理" : "待整理完成", href: "/projects/"+encodeURIComponent(projectId)+"/foundation/handoff", link: "分镜输入检查（可选）" }
   ];
-  return <section className="foundationControlRoom" id="foundation-status" aria-label="第一阶段操作与状态">
-    <div className="sectionHeading"><div><h2>资料整理 · P1–P4</h2></div><p>一次开始，自动整理与核对；创作取舍和处理状态分别显示。</p></div>
-    <div className="foundationRail">{cards.map(card => {
+  const expanded = !state.complete || state.busy || unknown || blocked || remaining.length > 0 || requiredChoiceCount > 0 || state.needsContextEdit;
+  return <details className="foundationControlRoom" id="foundation-status" aria-label="第一阶段操作与状态" open={expanded}>
+    <summary className={styles.workflowSummary}><strong>资料整理 · P1–P4</strong><span>{unknown ? "结果待核对" : blocked ? "已暂停" : state.busy ? "正在整理" : state.complete ? "已完成" : "待完善"} · {state.availableEpisodes} / {state.totalEpisodes} 集已保存</span></summary>
+    <WorkflowGlassRail label="资料整理步骤" columns={4}>{cards.map((card, index) => {
       const selected = card.code === phaseCard && !state.complete;
-      const running = selected && live;
-      return <article className={`foundationRole automatic ${running ? `${styles.activeCard} ${state.task?.status === "QUEUED" ? "queued" : "running"}` : selected && paused ? styles.pausedCard : ""}`} key={card.code} aria-current={running ? "step" : undefined} aria-busy={running || undefined}>
-        <span>{card.code}</span><div><strong>{card.name}</strong><small>{card.note}</small></div><em>{running ? <><i className={state.task?.status === "QUEUED" ? styles.queuedDot : styles.workSpinner} aria-hidden="true" />{activity}</> : selected && paused ? paused : card.status}</em>
-        <a className="foundationCardAction" href={card.href}>{card.link}</a>
-        {card.code === "P3" ? <label style={{ gridColumn: "1 / -1", fontSize: "0.8rem", lineHeight: 1.6 }}>
-          <input key={`${state.task?.id ?? "new"}:${state.task?.autoAssetPrompts ?? true}`} type="checkbox" name="autoAssetPrompts" value="yes" form={`foundation-start-${projectId}`}
-            defaultChecked={state.task?.autoAssetPrompts ?? true} disabled={state.busy || state.complete} style={{ width: "auto", height: "auto", marginRight: 6 }} />
-          完成后整理资产视觉事实
-          <small style={{ display: "block" }}>独立后台整理，另计模型调用；不生成图片，不阻挡第二阶段。</small>
-        </label> : null}
-      </article>;
-    })}</div>
+      const running = selected && live && state.task?.status === "RUNNING";
+      const queued = selected && live && state.task?.status === "QUEUED";
+      const materialState: WorkflowGlassState = state.complete ? "complete" : selected && (unknown || blocked) ? "attention"
+        : running ? "running" : queued || selected && state.task?.status === "WAITING_USER" ? "waiting"
+          : selected && paused ? "paused" : card.code === "P1" && sourceReady ? "complete" : "idle";
+      return <WorkflowGlassCard key={card.code} index={index} state={materialState} aria-current={running || queued ? "step" : undefined}>
+        <span className={glass.number}>{card.code}</span>
+        <div className={glass.heading}><strong className={glass.title}>{card.name}</strong><em className={glass.status}>{running || queued ? activity : selected && paused ? paused : card.status}</em></div>
+        <p className={glass.detail}>{card.note}</p>
+        <a className={styles.workflowAction} href={card.href}>{card.link}</a>
+        {card.code === "P3" ? <div className={styles.workflowOption}>
+          <span>第二阶段按需补设计</span>
+          <small>已有文字生产卡直接交接，不自动生成全库视觉事实或提示词。</small>
+          <a href={`/projects/${encodeURIComponent(projectId)}/asset-prompts`}>查看与补充设计</a>
+        </div> : null}
+      </WorkflowGlassCard>;
+    })}</WorkflowGlassRail>
     {state.task ? <p className={styles.operationMessage}><FoundationTaskElapsed task={state.task} active={live} activeCallStartedAt={state.activeCallStartedAt} /></p> : null}
     {currentWork(state) ? <p className={styles.operationMessage} role="status" aria-live="polite"><strong>当前工作：{currentWork(state)}</strong>{state.busy ? ` · 处理范围：${episodeScope(state.task?.scope ?? [])}` : null}</p> : null}
     {blocked ? <p className={styles.operationError} role="status"><strong>{pausedWork(state)} · 系统处理问题</strong>。不是待填写的创作选择，无需修改来源范围或原文来绕过；请查看下方处理记录。</p> : null}
@@ -224,5 +230,5 @@ export function FoundationWorkflowStatus({ projectId, state, sourceReady, sceneC
       <summary>剩余事项（{remaining.length}）</summary>
       {remaining.length ? <ul>{remaining.map((note, index) => <li key={index}>{note}</li>)}</ul> : <p>{state.complete ? "当前没有待处理事项。" : "生成尚未完成；具体问题会随处理结果显示。"}</p>}
     </details>
-  </section>;
+  </details>;
 }

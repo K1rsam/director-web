@@ -10,6 +10,7 @@
  * 同岗位连续处理，只带压缩的 prior 状态，最后 Python 合并。
  */
 import type { Project, Episode, ScriptScene } from "@prisma/client";
+import { PRODUCTION_CLI_MODEL, PRODUCTION_CLI_REASONING } from "./production-model";
 import { buildSourcePackage, type SourceNode } from "@/lib/episode-pipeline-contracts";
 import { contractAppliesToAnyEpisode, parsePresentationEpisodeNumbers, presentationDecisionKey } from "@/lib/presentation-contracts";
 
@@ -20,11 +21,11 @@ export const PROJECT_FOUNDATION_STAGES: ReadonlyArray<{
   name: string;
   skill: string;
   model: string;
-  reasoningEffort: "high" | "max";
+  reasoningEffort: typeof PRODUCTION_CLI_REASONING;
   apiReasoner: boolean;
 }> = [
-  { code: "P1", name: "全剧基础策划", skill: "p1-project-planner", model: "gpt-5.6-terra", reasoningEffort: "high", apiReasoner: false },
-  { code: "P2", name: "全剧资产拆解", skill: "p2-asset-disassembler", model: "gpt-5.6-terra", reasoningEffort: "high", apiReasoner: true }
+  { code: "P1", name: "全剧基础策划", skill: "p1-project-planner", model: PRODUCTION_CLI_MODEL, reasoningEffort: PRODUCTION_CLI_REASONING, apiReasoner: false },
+  { code: "P2", name: "全剧资产拆解", skill: "p2-asset-disassembler", model: PRODUCTION_CLI_MODEL, reasoningEffort: PRODUCTION_CLI_REASONING, apiReasoner: true }
 ] as const;
 
 export const FOUNDATION_CHUNK_MAX_CHARS = 24_000;

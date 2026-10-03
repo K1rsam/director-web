@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef } from "react";
 import { MotionSelection } from "./motion-selection";
+import { episodePresentation } from "@/lib/episode-presentation";
 
 type EpisodeSidebarItem = {
   id: string;
@@ -31,11 +32,13 @@ function writeScrollTop(key: string, value: number) {
 export function EpisodeSidebar({
   projectId,
   episodes,
-  activeEpisodeId
+  activeEpisodeId,
+  target = "episode"
 }: {
   projectId: string;
   episodes: EpisodeSidebarItem[];
   activeEpisodeId?: string;
+  target?: "episode" | "storyboard";
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const storageKey = `director-studio:episode-sidebar:${projectId}`;
@@ -90,16 +93,16 @@ export function EpisodeSidebar({
       <MotionSelection as="div" containerRef={scrollRef} className="sidebarEpisodeScroller" label="分集列表" group={`episodes:${projectId}`} activeKey={activeEpisodeId ?? ""}>
         {episodes.map((episode) => (
           <Link
-            href={`/projects/${projectId}/episodes/${episode.id}`}
+            href={`/projects/${projectId}/episodes/${episode.id}${target === "storyboard" || episode.number === 0 ? "/storyboard" : ""}`}
             className={episode.id === activeEpisodeId ? "active" : ""}
             aria-current={episode.id === activeEpisodeId ? "page" : undefined}
-            aria-label={`第${episode.number}集 ${episode.title}${episode.state ? `，${episode.state}` : ""}`}
+            aria-label={`${episodePresentation(episode.number, episode.title).fullTitle}${episode.state ? `，${episode.state}` : ""}`}
             data-episode-id={episode.id}
             key={episode.id}
             onClick={() => writeScrollTop(storageKey, scrollRef.current?.scrollTop ?? 0)}
           >
             <b>{String(episode.number).padStart(2, "0")}</b>
-            <span>{episode.title}</span>
+            <span title={episodePresentation(episode.number, episode.title).fullTitle}>{episodePresentation(episode.number, episode.title).navigationTitle}</span>
             <i title={episode.state} aria-hidden="true">
               {episode.state === "已完成" || episode.state === "生成中" ? (
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" focusable="false">

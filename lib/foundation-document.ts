@@ -24,7 +24,7 @@ export type FoundationDocument = {
   fragmentProgress?: { sourceVersion: string; q1Basis?: string; q1Dependencies?:Record<string,string>; f2: { fragment: FoundationFragment; output: ProductionCatalog; runId: string }[]; q1: string[] };
   origins: { stage: 'F1' | 'F2' | 'Q1'; runId: string; snapshotId?: string; scope: number[]; kind: 'snapshot' | 'response' | 'delivery' }[];
 };
-type Input = Pick<Awaited<ReturnType<typeof loadFoundationInputs>>, 'sourceVersion' | 'sourceIndex' | 'sourceContext' | 'projectConditions'>;
+type Input = Pick<Awaited<ReturnType<typeof loadFoundationInputs>>, 'sourceVersion' | 'sourceIndex' | 'sourceContext' | 'projectConditions' | 'scriptInterpretationVersions' | 'interpretationAware'>;
 type Db = Pick<Prisma.TransactionClient, 'sceneSnapshot' | 'pipelineRun' | 'presentationContract' | 'episode'>;
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value), 'utf8').digest('hex');
 const union = (...parts: readonly number[][]) => [...new Set(parts.flat())].sort((a, b) => a - b);
@@ -36,7 +36,8 @@ const seed = (doc: FoundationDocument) => ({ ...doc, revision: `import-${digest(
 
 export function createEmptyDocument(input: Input): FoundationDocument {
   return seed({ schema: 'FOUNDATION_DOCUMENT_V1', revision: '', sourceVersion: input.sourceVersion, sourceContextVersion: input.sourceContext.version,
-    sourceHashes: Object.fromEntries(input.sourceIndex.episodes.map(({ number, title, content }) => [number, digest({ number, title, content })])),
+    sourceHashes: Object.fromEntries(input.sourceIndex.episodes.map(({ number, title, content }) => [number, digest({ number, title, content,
+      ...(input.scriptInterpretationVersions?.[number] ? {interpretation: input.scriptInterpretationVersions[number]} : {}) })])),
     settingsFingerprint: digest({ schema: 'FOUNDATION_EDIT_DEPENDENCIES_V1', style: input.projectConditions.style, aspectRatio: input.projectConditions.aspectRatio, background: input.sourceContext.background.map(part => part.text) }),
     f1: null, f2: null, overviewParts: [], editorialCoverage: [], editorialTodos: [], notes: [], appliedDecisions: {}, reviewedSuggestions: {}, requiredDecisionIds: [], origins: [] });
 }
@@ -170,7 +171,7 @@ function migrate(previous: FoundationDocument, input: Input): FoundationDocument
   if (f2Scope.length && previous.f2) next.f2 = sliceF2(previous.f2, f2Scope);
   const stableOverviews = previous.overviewParts.filter(p => p.coverage.every(n => f1Scope.includes(n))).flatMap(p => p.coverage);
   next.editorialCoverage = previous.editorialCoverage.filter(n => next.f2?.coverage.includes(n) && (previous.workflow === 'LIGHT_STAGE1_V1' || f1Scope.includes(n) && stableOverviews.includes(n)));
-  next.notes.push(`原文已变动；导航待更新集：${input.sourceIndex.episodes.filter(e => !f1Scope.includes(e.number)).map(e => e.number).join(',')}；目录待更新集：${input.sourceIndex.episodes.filter(e => !next.f2?.coverage.includes(e.number)).map(e => e.number).join(',')}。旧修订保留可读。`);
+  next.notes.push(`原文或解析归属已变动；导航待更新集：${input.sourceIndex.episodes.filter(e => !f1Scope.includes(e.number)).map(e => e.number).join(',')}；目录待更新集：${input.sourceIndex.episodes.filter(e => !next.f2?.coverage.includes(e.number)).map(e => e.number).join(',')}。旧修订保留可读。`);
   return seed(next);
 }
 
@@ -179,7 +180,7 @@ async function readDocument(db: Db, projectId: string, input: Input, includePrev
   const current = rows.filter(r => r.sceneKey === 'FOUNDATION_DOCUMENT').map(r => documentBody(json(r.content))).find(Boolean);
   const empty = createEmptyDocument(input);
   if (current) {
-    const sourceChanged = current.sourceVersion !== input.sourceVersion;
+    const sourceChanged = current.sourceVersion !== input.sourceVersion || input.interpretationAware !== false && !isDeepStrictEqual(current.sourceHashes, empty.sourceHashes);
     return { document: sourceChanged ? migrate(current, input) : current, previousDocument: sourceChanged ? current : null, sourceChanged,
       needsContextEdit: current.settingsFingerprint !== empty.settingsFingerprint };
   }
@@ -381,8 +382,11 @@ export async function saveFoundationDocument(db: PrismaClient, projectId: string
     const project = await tx.project.findUnique({ where: { id: projectId }, include: { episodes: { orderBy: { number: 'asc' } } } });
     if (!project) throw new Error('没有找到工作稿所属项目。');
     const sourceIndex = buildSourceIndex(project.episodes), sourceContext = await loadFoundationSourceContext(projectId, tx);
-    const input = { sourceIndex, sourceVersion: sourceIndex.version, sourceContext, projectConditions: { title: project.title, style: project.style ?? '未选择', aspectRatio: project.aspectRatio, unitMode: '', ruleVersion: project.ruleVersion } };
-    if (document.sourceVersion !== input.sourceVersion || !isDeepStrictEqual(document.sourceHashes, createEmptyDocument(input).sourceHashes)) throw new Error('原文 source 已变动，拒绝保存旧源工作稿。');
+    const resolved = await (await import('./script-resolution-service')).readCurrentResolvedPlans(projectId, project.episodes, tx);
+    const input = { sourceIndex, sourceVersion: sourceIndex.version, sourceContext,
+      scriptInterpretationVersions: Object.fromEntries([...resolved].map(([number, value]) => [number, value.hash])),
+      projectConditions: { title: project.title, style: project.style ?? '未选择', aspectRatio: project.aspectRatio, unitMode: '', ruleVersion: project.ruleVersion } };
+    if (document.sourceVersion !== input.sourceVersion || !isDeepStrictEqual(document.sourceHashes, createEmptyDocument(input).sourceHashes)) throw new Error('原文 source 或解析归属已变动，拒绝保存旧源工作稿。');
     const head = await loadFoundationDocument(tx, projectId, input);
     if (head.document.revision !== expectedRevision) throw new Error('工作稿 revision 已改变，请读取最新修订。');
     if (document.f1) requireF1Output(document.f1, sourceIndex, document.f1.coverage);

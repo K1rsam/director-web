@@ -13,14 +13,14 @@ async function main(){
  const {loadFoundationInputs}=await import('../lib/foundation-state');
  const {createEmptyDocument}=await import('../lib/foundation-document');
  const {resolveCliModel,resolveCliReasoning}=await import('../lib/role-runner');
- for(const role of ['F1','F2','Q1','A15_A','A15','A15_D','E0','E5']){assert.equal(resolveCliModel(role,'gpt-6-astra'),'gpt-5.6-terra');assert.equal(resolveCliReasoning(role,'high'),'medium');}
+ for(const role of ['F1','F2','Q1','A15_A','A15','A15_D','E0','E5']){assert.equal(resolveCliModel(role,'gpt-6-astra'),'gpt-6.1-sol');assert.equal(resolveCliReasoning(role,'high'),'medium');}
  const project=await prisma.project.create({data:{title:'synthetic single pass',episodes:{create:[{number:1,content:'人物甲穿白衣。'},{number:2,content:'人物甲穿蓝衣。'}]}}});const pid=project.id;
  const doc=createEmptyDocument(await loadFoundationInputs(pid));
  doc.f2={format:'ASSET_CATALOG_V1',coverage:[1,2],assets:[{key:'hero',name:'人物甲',type:'CH',aliases:[],description:'',sourceRefs:[],appearances:[],usageEpisodes:[1,2],variants:[]}],episodes:[{number:1,context:'',assetKeys:['hero']},{number:2,context:'',assetKeys:['hero']}],issues:[]};
  const document=await prisma.sceneSnapshot.create({data:{projectId:pid,sceneKey:'FOUNDATION_DOCUMENT',content:JSON.stringify(doc)}});
  let calls=0,tamper=false;let started:(()=>void)|undefined,release:(()=>void)|undefined;
  const scopes:(number|undefined)[][]=[];
- const runner:any=async(input:any)=>{calls++;assert.equal(input.role.code,'A15_A');assert.equal(input.role.model,'gpt-5.6-terra');const v=JSON.parse(input.prompt);scopes.push(v.chunks.map((c:any)=>c.episode));assert.equal(v.reviewContext,undefined);
+ const runner:any=async(input:any)=>{calls++;assert.equal(input.role.code,'A15_A');assert.equal(input.role.model,'gpt-6.1-sol');assert.equal(input.role.reasoningEffort,'medium');const v=JSON.parse(input.prompt);scopes.push(v.chunks.map((c:any)=>c.episode));assert.equal(v.reviewContext,undefined);
  if(started){const announce=started;started=undefined;announce();await new Promise<void>(r=>release=r);}
  const data={batches:v.chunks.map((c:any)=>({coveredChunkId:c.id,facts:[{subjectKey:'hero',attribute:'clothing',value:c.lines[0].text,scope:'STATE',versionKey:'hero',quote:tamper?'不存在的引用':c.lines[0].text,chunkId:c.id,startLine:c.lines[0].number,endLine:c.lines[0].number}],issues:[]}))};return {data,rawOutput:JSON.stringify(data),sessionId:null,stdout:JSON.stringify({type:'turn.completed',usage:{input_tokens:100,output_tokens:20}}),stderr:''};};
  const first=await ensureAssetVisualFacts(pid,runner);assert.equal(first.facts.length,2);assert.equal(calls,1);assert.deepEqual(scopes[0],[1,2]);await ensureAssetVisualFacts(pid,runner);assert.equal(calls,1);

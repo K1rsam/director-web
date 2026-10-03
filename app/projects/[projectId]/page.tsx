@@ -13,6 +13,8 @@ import { requireSessionUser } from "@/lib/auth";
 import { resolvePresentationContractScope } from "@/lib/presentation-contracts";
 import "@/app/page-surfaces.css";
 import "@/app/workbench-refinement.css";
+import { episodePresentation } from "@/lib/episode-presentation";
+import { isProductionEpisodeNumber, readProductionScope } from "@/lib/production-episodes";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +27,8 @@ export default async function ProjectStudioPage({ params, searchParams }: { para
 
   const delivery = await getFoundationDeliveryState(projectId);
   const sourceEpisodes = await prisma.episode.findMany({ where: { projectId }, orderBy: { number: "asc" }, select: { id: true, number: true, title: true, content: true } });
+  const productionScope = await readProductionScope(projectId);
+  const productionEpisodes = sourceEpisodes.filter(episode => isProductionEpisodeNumber(episode.number, productionScope));
   const sceneCounts = new Map(studio.episodes.map(episode => [episode.id, episode.scenes.length]));
   const foundationRuns = studio.firstPhase.stages;
   const deliveryView = { task: delivery.task, totalEpisodes: delivery.totalEpisodes, availableEpisodes: delivery.availableEpisodes, editedEpisodes: delivery.editedEpisodes,
@@ -44,13 +48,13 @@ export default async function ProjectStudioPage({ params, searchParams }: { para
         : foundationNotice === "worker-unchanged" ? "尚不能确认后台已退出；未停止任务，也未发起新调用。"
           : foundationNotice === "delivery-unavailable" ? "暂时无法接收这次操作，已保存资料和决定没有丢失；请稍后再试。" : null;
 
-  return <AppChrome title={studio.project.title} eyebrow="全剧资料工作台" projectId={projectId} activeSection="project"
+  return <AppChrome title={studio.project.title} eyebrow="全剧资料工作台" projectId={projectId} activeSection="project" projectLabel={studio.project.title} episodes={productionEpisodes.map(episode => ({ id: episode.id, number: episode.number, title: episode.title || "", productionEligible: true }))}
     primaryAction={<FoundationDeliveryPanel projectId={projectId} requiredChoiceCount={delivery.requiredChoices.length} state={deliveryView} compact />}
-    utility={<><ModeSwitch projectId={projectId} current={studio.project.executionMode} compact disabled={delivery.busy} /><div className="projectTopbarMeta" aria-label={`视觉风格 ${studio.project.style}，画幅 ${studio.project.aspectRatio}，${studio.episodes.length} 集`}><span>{studio.project.style}</span><span>{studio.project.aspectRatio}</span><span>{studio.episodes.length} 集</span></div></>}>
+    utility={<><ModeSwitch projectId={projectId} current={studio.project.executionMode} compact disabled={delivery.busy} /><div className="projectTopbarMeta" aria-label={`视觉风格 ${studio.project.style}，画幅 ${studio.project.aspectRatio}，${productionEpisodes.length} 集`}><span>{studio.project.style}</span><span>{studio.project.aspectRatio}</span><span>{productionEpisodes.length} 集</span></div></>}>
     <div className="projectDashboard">
       {decisionNotice ? <p role="status" className="biblePlaceholder">{decisionNotice} <a href="#presentation-contracts">查看确认区</a></p> : null}
       {notice ? <p role="status" className="biblePlaceholder">{notice}</p> : null}
-      <FoundationWorkflowStatus projectId={projectId} state={deliveryView} sourceReady={Boolean(studio.firstPhase.preprocessReady)} sceneCount={studio.episodes.reduce((count, episode) => count + episode.scenes.length, 0)}
+      <FoundationWorkflowStatus projectId={projectId} state={deliveryView} requiredChoiceCount={delivery.requiredChoices.length} sourceReady={Boolean(studio.firstPhase.preprocessReady)} sceneCount={studio.episodes.reduce((count, episode) => count + episode.scenes.length, 0)}
         remaining={[...new Set([...delivery.document.editorialTodos.filter(todo => todo.owner !== "STAGE2").map(todo => todo.note), ...delivery.issues.map(issue => issue.problem)])]} />
       <section className="studioSection" id="phase-one">
         <PresentationContracts projectId={projectId} pending={delivery.requiredChoices} confirmed={delivery.confirmedChoices}
@@ -61,11 +65,10 @@ export default async function ProjectStudioPage({ params, searchParams }: { para
         <div className="sectionHeading">
           <div><span className="sectionIndex">01</span><h2>全剧基础工程</h2></div>
           <p>原文按集查看，资产按名称管理；图片和后续分镜另行制作。</p>
-          <a className="quietButton" href={`/projects/${encodeURIComponent(projectId)}/asset-prompts`}>1.5 · 资产形象设计</a>
-          <a className="quietButton" href={`/projects/${encodeURIComponent(projectId)}/foundation/handoff`}>交接资料预览</a>
-          <a className="quietButton" href={`/projects/${encodeURIComponent(projectId)}/foundation/export`}>导出资料与历史 JSON</a>
+          <a className="studioButton" data-variant="secondary" href={`/projects/${encodeURIComponent(projectId)}/preparation`}>剧本阅读与全剧方向</a>
+          <a className="quietButton" href={`/projects/${encodeURIComponent(projectId)}/asset-prompts`}>第二阶段 · 资产形象设计</a>
         </div>
-        <LightFoundationDocumentViewer state={delivery} sourceEpisodes={sourceEpisodes.map(episode => ({ ...episode, sceneCount: sceneCounts.get(episode.id) ?? 0 }))} />
+        <LightFoundationDocumentViewer projectId={projectId} state={delivery} sourceEpisodes={sourceEpisodes.map(episode => ({ ...episode, sceneCount: sceneCounts.get(episode.id) ?? 0, productionEligible: isProductionEpisodeNumber(episode.number, productionScope) }))} />
         {delivery.document.editorialTodos.some(todo => todo.owner === "STAGE2") ? <details className="bibleSection"><summary className="bibleSectionHead">后续分镜提醒（不触发第一阶段重试）</summary>
           <div className="bibleBody">{delivery.document.editorialTodos.filter(todo => todo.owner === "STAGE2").map(todo => <p key={todo.id}>{todo.episodes?.length ? `第${todo.episodes.join("、")}集：` : ""}{todo.note}</p>)}</div>
         </details> : null}
@@ -73,6 +76,7 @@ export default async function ProjectStudioPage({ params, searchParams }: { para
           <summary className="bibleSectionHead">处理历史与调用用量</summary>
           <div className="bibleBody">
             <p>以下仅展示已保存的处理记录，不代表当前资料已完成。原文、旧稿和原始响应保留在导出文件中。</p>
+            <a className="quietButton" href={`/projects/${encodeURIComponent(projectId)}/foundation/export`}>导出资料与历史 JSON</a>
             {delivery.task ? <details><summary>本次处理记录</summary><p>{delivery.task.message}</p><p>本任务累计请求 {delivery.task.addedCalls} 次 · 自动修正 {delivery.task.repairCalls} 次</p>{delivery.task.error ? <p className="roleRunError">{delivery.task.error}</p> : null}</details> : null}
             {delivery.document.f1 || delivery.previousDocument ? <p>旧版分集导航与历史修订仍保留在导出资料中，不替代左侧原文。</p> : null}
             {delivery.document.notes.length ? <details><summary>整理说明</summary>{delivery.document.notes.map((note, index) => <p key={index}>{note}</p>)}</details> : null}
@@ -92,8 +96,11 @@ export default async function ProjectStudioPage({ params, searchParams }: { para
           weather: scene.weather ?? "未注明", timeLayer: scene.timeLayer, sourceText: scene.sourceText
         })))} /></div>
       </section>
-      <section className="studioSection" id="phase-two">
-        <div className="sectionHeading"><div><span className="sectionIndex">02</span><h2>后续阶段尚未启用</h2></div><p>这里整理的是制作资料；图片、分镜与视频制作尚未开始。</p></div>
+      <section className="studioSection" id="phase-three">
+        <div className="sectionHeading"><div><span className="sectionIndex">03</span><h2>分镜创作</h2></div><p>从本集原文开始：情绪统筹、完整主创、统一整编。进入工作台不会自动调用模型。</p></div>
+        {productionEpisodes.length?<div className="stageThreeEpisodeEntries"><a className="studioButton" data-variant="primary" href={`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(productionEpisodes[0].id)}/storyboard`}>进入分镜工作台</a><a className="studioButton" data-variant="secondary" href={`/projects/${encodeURIComponent(projectId)}/production`}>连续制作 · 选集与预算</a></div>:null}
+        <details className="bibleSection"><summary className="bibleSectionHead">选择其他剧集 · {productionEpisodes.length} 集</summary><div className="stageThreeEpisodeEntries" aria-label="进入第三阶段">{productionEpisodes.map(episode => <a className="studioButton" data-variant="secondary" href={`/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episode.id)}/storyboard`} key={episode.id}>{episodePresentation(episode.number, episode.title, { sceneCount: sceneCounts.get(episode.id) }).fullTitle}</a>)}</div></details>
+        {!productionEpisodes.length ? <p className="biblePlaceholder">先准备可用分集原文，再进入第三阶段。第二阶段为资产形象设计。</p> : null}
       </section>
     </div>
   </AppChrome>;

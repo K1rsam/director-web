@@ -11,6 +11,8 @@ import { loadFoundationSourceContext } from './foundation-source';
 import { assertSourceVersion, buildNumberedSource, buildSourceIndex, FoundationContractError, type SourceIndex, type FoundationIssue } from './project-foundation-contracts';
 import { projectProductionCatalog, assertUnresolvedSourceScopes, type ProductionCatalog, type SceneFieldPatch, type Preparation, unresolvedOwner, unresolvedEpisodeScope } from './foundation-production-contracts';
 import type { FoundationDocument } from './foundation-document';
+import { knownScriptSpeakers, prepareEpisodeReception, type ScriptInputProtocol } from './standard-script-reception';
+import { buildEpisodeBoundarySeed, type EpisodeBoundarySeed } from './episode-boundary-seed';
 
 type Db = Prisma.TransactionClient;
 class LightSceneSourceError extends Error {}
@@ -74,44 +76,48 @@ export async function applyLightScenePatches(projectId: string, db: Db, patches:
 }
 
 /** A short previous-scene receipt, not an AI synopsis or automatic state inheritance. */
-export function buildLightBoundaryContext(index: SourceIndex, catalog: ProductionCatalog | null, scenes: LightScene[], scope: number[]) {
+export function buildLightBoundaryContext(index: SourceIndex, catalog: ProductionCatalog | null, scenes: LightScene[], scope: number[], options: { legacy?: boolean; episodeBoundary?: EpisodeBoundarySeed } = {}) {
   if (!scope.length) return null;
   const first = Math.min(...scope), current = index.episodes.find(episode => episode.number === first);
   const previous = index.episodes.filter(episode => episode.number < first).at(-1);
   const scene = previous && scenes.filter(scene => scene.episode === previous.number).at(-1);
   if (!current || !previous) return null;
+  const seed = options.episodeBoundary ?? buildEpisodeBoundarySeed(index, scenes, first, { knownSpeakers: knownScriptSpeakers(catalog) });
+  const previousSource = seed.previousSource!;
   const gaps: string[] = [];
   if (previous.number + 1 !== first) gaps.push(`第${previous.number}集与第${first}集不相邻，中间来源缺失，不推断连续状态。`);
-  if (!scene) return { previousSource: { episode: previous.number, sceneKey: null, location: null, timeOfDay: null, interiorExterior: null,
-    startLine: null, endLine: null, text: '', clipped: true, adjacentEpisode: previous.number + 1 === first }, priorStates: [], gaps: [...gaps, '前一集末场尚未定位，未将整集冒充前场。'] };
-  const lines = buildNumberedSource(index, [previous.number]).episodes[0].lines;
-  const sourceLines = lightSceneInput(index, [scene], [previous.number])[0].sourceLines;
-  let selected = lines.filter(([number]) => number >= sourceLines.startLine && number <= sourceLines.endLine);
-  let size = selected.reduce((sum, [, text]) => sum + text.length, 0);
-  while (selected.length > 1 && size > 2400) size -= selected.shift()![1].length;
-  const clipped = size > 2400 || selected[0][0] !== sourceLines.startLine;
-  if (clipped) gaps.push('前场原文过长，仅提供末段；可能缺少前文，不是完整前场引述。');
+  if (!scene) gaps.push('前一集末场尚未定位到已保存场次；已从标准结构或完整原文节点回退，未将整集冒充前场。');
+  if (previousSource.clipped) gaps.push('前场原文过长，仅提供完整尾部节点；可能缺少前文，不是完整前场引述。');
+  if (previousSource.budgetExceeded) gaps.push('单个完整源节点超过软预算，保留全文，未按字符硬截。');
   const firstScene = scenes.find(scene => scene.episode === first), firstText = firstScene ? current.content.slice(firstScene.sourceRange.start, firstScene.sourceRange.end) : '';
   if (!firstScene) gaps.push('本集首场尚未定位，不用整集正文推断相关旧状态。');
-  const inPreviousScene = (refs?: { episode: number; sceneKey: string }[]) => refs?.some(ref => ref.episode === previous.number && ref.sceneKey === scene.sceneKey);
-  const priorStates = (catalog?.assets ?? []).filter(asset => (inPreviousScene(asset.sceneRefs) || asset.variants.some(variant => inPreviousScene(variant.sceneRefs))) && (asset.type === 'LOC'
-    || [asset.name, asset.name.split(/[|｜]/)[0], ...asset.aliases].some(name => name && (firstScene?.characters.includes(name) || name.length > 1 && firstText.includes(name)))))
+  const inPreviousScene = (refs?: { episode: number; sceneKey: string }[]) => Boolean(scene && refs?.some(ref => ref.episode === previous.number && ref.sceneKey === scene.sceneKey));
+  const inCurrentScene = (refs?: { episode: number; sceneKey: string }[]) => Boolean(firstScene && refs?.some(ref => ref.episode === first && ref.sceneKey === firstScene.sceneKey));
+  const priorStates = (catalog?.assets ?? []).filter(asset => {
+    if (!(inPreviousScene(asset.sceneRefs) || asset.variants.some(variant => inPreviousScene(variant.sceneRefs)))) return false;
+    const nameMatch = [asset.name, asset.name.split(/[|｜]/)[0], ...asset.aliases].some(name => name && (firstScene?.characters.includes(name) || name.length > 1 && firstText.includes(name)));
+    if (options.legacy) return asset.type === 'LOC' || nameMatch;
+    // Names cannot transfer state between distinct catalog identities. Current refs are mandatory.
+    return (inCurrentScene(asset.sceneRefs) || asset.variants.some(variant => inCurrentScene(variant.sceneRefs))) && (asset.type === 'PROP' || asset.type === 'LOC' || nameMatch);
+  })
     .map(asset => ({ assetKey: asset.key, name: asset.name, type: asset.type, preparation: asset.preparation,
       variants: asset.variants.filter(variant => inPreviousScene(variant.sceneRefs)).map(variant => ({ key: variant.key, name: variant.name, note: variant.note, preparation: variant.preparation })) }));
-  return { previousSource: { episode: previous.number, sceneKey: scene.sceneKey, location: scene.location, timeOfDay: scene.timeOfDay, interiorExterior: scene.interiorExterior,
-    startLine: selected[0][0], endLine: selected.at(-1)![0], text: selected.map(([, text]) => text).join('').slice(-2400), clipped,
+  return { previousSource: { ...previousSource, sceneKey: scene ? previousSource.sceneKey : null,
     adjacentEpisode: previous.number + 1 === first }, priorStates, gaps };
 }
 
 type LightAssetIdentity = { key: string; baseKey: string; name: string; type: ProductionCatalog['assets'][number]['type']; kind: 'BASE' | 'VARIANT'; preparation?: Preparation };
 
-export async function buildLightEpisodePackets(projectId: string, document: FoundationDocument, db: Db, scope?: number[], input?: Awaited<ReturnType<typeof loadFoundationInputs>>) {
+export async function buildLightEpisodePackets(projectId: string, document: FoundationDocument, db: Db, scope?: number[], input?: Awaited<ReturnType<typeof loadFoundationInputs>>, options: {protocol?: ScriptInputProtocol;inlinePerformance?:boolean} = {}) {
   if (input && input.project.id !== projectId) throw new Error('交接输入不属于当前项目。');
   const [episodes, sourceContext] = input ? [input.project.episodes, input.sourceContext] : await Promise.all([db.episode.findMany({ where: { projectId }, orderBy: { number: 'asc' } }), loadFoundationSourceContext(projectId, db)]);
   if (scope?.some(number => !Number.isSafeInteger(number) || !episodes.some(episode => episode.number === number))) throw new Error('交接集号不存在。');
   const index = input?.sourceIndex ?? buildSourceIndex(episodes);
   assertSourceVersion(index, document.sourceVersion);
-  const factStore = cachedFoundationFacts(index, sourceContext, document.f2);
+  const legacy = options.protocol === 'legacy';
+  const postColonCue = options.protocol !== 'standard-episode-v1';
+  const syntax=options.protocol==='standard-episode-v1'?'legacy':'current';
+  const factStore = cachedFoundationFacts(index, sourceContext, document.f2, {standard: !legacy, resolutions: input?.scriptResolutions, postColonCue,syntax});
   const choices = await loadFoundationChoices(db, projectId, index.version);
   if (document.editorialTodos.some(todo=>todo.applicationScope || todo.evidenceRefs?.length)) {
     const sceneRefs = await db.scriptScene.findMany({where:{episode:{projectId}},select:{sceneKey:true,episode:{select:{number:true}}}});
@@ -128,9 +134,13 @@ export async function buildLightEpisodePackets(projectId: string, document: Foun
   return Promise.all(episodes.filter(episode => scope === undefined || scope.includes(episode.number)).map(async episode => {
     const previous = episodes.filter(other => other.number < episode.number).at(-1);
     const [currentScenes, previousScenes] = await Promise.all([readScenes(episode.number), previous ? readScenes(previous.number) : Promise.resolve({ scenes: [], gaps: [] })]);
-    const boundaryContext = buildLightBoundaryContext(index, document.f2, [...previousScenes.scenes, ...currentScenes.scenes], [episode.number]);
+    const boundaryScenes = [...previousScenes.scenes, ...currentScenes.scenes];
+    const episodeBoundary = buildEpisodeBoundarySeed(index, boundaryScenes, episode.number, { resolutions: input?.scriptResolutions, knownSpeakers: knownScriptSpeakers(document.f2), syntax });
+    episodeBoundary.unknowns.push(...previousScenes.gaps, ...currentScenes.gaps);
+    const boundaryContext = buildLightBoundaryContext(index, document.f2, boundaryScenes, [episode.number], {legacy, episodeBoundary});
     if (boundaryContext) boundaryContext.gaps.push(...previousScenes.gaps);
-    const assets = document.f2?.coverage.includes(episode.number) ? projectProductionCatalog(document.f2, [episode.number]).assets : [];
+    const catalogProjection = document.f2?.coverage.includes(episode.number) ? projectProductionCatalog(document.f2, [episode.number]) : null;
+    const assets = catalogProjection?.assets ?? [], materialCandidates = catalogProjection?.materialCandidates ?? [];
     const identities = new Map<string, LightAssetIdentity>((document.f2?.assets ?? []).flatMap(asset => [
       { key: asset.key, baseKey: asset.key, name: asset.name, type: asset.type, kind: 'BASE' as const, preparation: asset.preparation },
       ...asset.variants.map(variant => ({ key: variant.key, baseKey: asset.key, name: `${asset.name} · ${variant.name}`, type: asset.type, kind: 'VARIANT' as const, preparation: variant.preparation }))
@@ -150,6 +160,7 @@ export async function buildLightEpisodePackets(projectId: string, document: Foun
     };
     for (const key of currentKeys) visit(key);
     return { schema: 'LIGHT_EPISODE_SUPPLY_V2' as const, documentRevision: document.revision, sourceVersion: document.sourceVersion,
+      ...(!legacy ? prepareEpisodeReception(episode, document.f2, input?.scriptResolutions?.[episode.number], {postColonCue,syntax,inlinePerformance:options.inlinePerformance}) : {}),
       episode: episode.number, title: episode.title, sourceText: episode.content,
       sourceContextVersion: sourceContext.version, facts: selectFoundationFacts(factStore, index, [episode.number]),
       productionEligible: true, materialStatus: 'TEXT_ONLY' as const,
@@ -159,8 +170,8 @@ export async function buildLightEpisodePackets(projectId: string, document: Foun
           const variants = asset.variants.filter(variant => matches(variant.sceneRefs));
           return [...(matches(asset.sceneRefs) || variants.length ? [asset.key!] : []), ...variants.map(variant => variant.key!)];
         }) };
-      }), assets, materialDependencies, gaps: currentScenes.gaps, warnings: sourceContext.notices.map(notice => notice.message),
-      boundaryContext,
+      }), assets, materialDependencies, materialCandidates, gaps: currentScenes.gaps, warnings: sourceContext.notices.map(notice => notice.message),
+      boundaryContext, episodeBoundary,
       decisions: choices.confirmed.filter(c=>scopeApplies(readApplicationScope(c.applicationScope, c.episodes), episode.number)),
       followUps: document.editorialTodos.filter(todo => unresolvedOwner(todo) === 'STAGE2' && scopeApplies(readApplicationScope(todo.applicationScope, unresolvedEpisodeScope(todo)), episode.number)).map(todo => ({ ...todo, applicationScope: readApplicationScope(todo.applicationScope, unresolvedEpisodeScope(todo)), sourceVersion: document.sourceVersion })) };
   }));

@@ -1,0 +1,158 @@
+import assert from 'node:assert/strict';
+import {existsSync, mkdtempSync, mkdirSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {execFileSync} from 'node:child_process';
+import {DatabaseSync} from 'node:sqlite';
+import {createRequire} from 'node:module';
+
+async function main() {
+  assert.ok(existsSync('lib/asset-design-adoption.ts'), 'RED: explicit asset design adoption is not implemented');
+  const directory = mkdtempSync(path.join(tmpdir(), 'director-adoption-'));
+  process.env.DATABASE_URL = `file:${path.join(directory, 'test.db')}`;
+  process.env.DIRECTOR_ASSET_REFERENCE_DIR = path.join(directory, 'references');
+  new DatabaseSync(path.join(directory, 'test.db')).close();
+  execFileSync(process.execPath, ['node_modules/prisma/build/index.js', 'db', 'push', '--skip-generate'], {env: process.env, stdio: 'pipe'});
+  const {prisma} = await import('../lib/prisma');
+  const {createEmptyDocument} = await import('../lib/foundation-document');
+  const {loadFoundationInputs} = await import('../lib/foundation-state');
+  const {loadAssetPromptWorkspace, saveAssetPrompt, saveAssetStyle} = await import('../lib/asset-prompt-service');
+  const {readAssetDesignAdoptions, adoptAssetDesign, revokeAssetDesign, restoreAssetDesign, readAssetDesignHandoff} = await import('../lib/asset-design-adoption');
+  try {
+    const project = await prisma.project.create({data: {title: 'synthetic adoption', episodes: {create: {number: 1, content: '甲穿白衣。甲换上蓝衣。石桥在河上。'}}}});
+    const users = await Promise.all(['ADMIN', 'REVIEWER', 'OPERATOR', 'OUTSIDER'].map(async role => {
+      const user = await prisma.user.create({data: {username: role, email: `${role}@example.invalid`, passwordHash: 'test-only'}});
+      if (role !== 'OUTSIDER') await prisma.projectRole.create({data: {userId: user.id, projectId: project.id, role: role as 'ADMIN' | 'REVIEWER' | 'OPERATOR'}});
+      return user;
+    }));
+    const [admin, reviewer, operator, outsider] = users;
+    const document = createEmptyDocument(await loadFoundationInputs(project.id));
+    document.f2 = {format: 'ASSET_CATALOG_V1', coverage: [1], assets: [
+      {key: 'hero', name: '甲', type: 'CH', aliases: [], description: '', sourceRefs: [], appearances: [], usageEpisodes: [1], variants: [
+        {key: 'hero-blue', name: '蓝衣形象', episodes: [1], note: '', preparation: {mode: 'DERIVE', fromKey: 'hero'}},
+      ]},
+      {key: 'bridge', name: '石桥', type: 'LOC', aliases: [], description: '', sourceRefs: [], appearances: [], usageEpisodes: [1], variants: []},
+    ], episodes: [{number: 1, context: '', assetKeys: ['hero-blue', 'bridge']}], issues: []};
+    const foundation = await prisma.sceneSnapshot.create({data: {projectId: project.id, sceneKey: 'FOUNDATION_DOCUMENT', content: JSON.stringify(document)}});
+    await saveAssetPrompt(project.id, 'hero', 0, '白衣黑发。' + '完整提示词只留在第二阶段。'.repeat(80));
+    await saveAssetPrompt(project.id, 'hero-blue', 0, '沿用甲的五官，换成蓝衣。');
+    await saveAssetPrompt(project.id, 'bridge', 0, '灰色石拱桥，桥头朝南。');
+    const view = () => readAssetDesignAdoptions(project.id, admin.id);
+    const input = async (key: string, brief = '白衣、黑发，身份不变。', referenceIds: string[] = []) => {
+      const state = (await view()).assets[key];
+      return {assetKey: key, expectedRevision: state.revision, expectedMaterialToken: state.materialToken, brief, referenceIds};
+    };
+    assert.equal((await view()).assets.hero.status, 'UNADOPTED', 'READY prompt does not imply human adoption');
+    assert.equal((await readAssetDesignAdoptions(project.id, operator.id)).canAdopt, false);
+    await assert.rejects(() => readAssetDesignAdoptions(project.id, outsider.id), /无权/);
+    await assert.rejects(async () => adoptAssetDesign(project.id, operator.id, await input('hero')), /采用权限/);
+    await assert.rejects(async () => adoptAssetDesign(project.id, outsider.id, await input('hero')), /无权/);
+    for (const brief of ['', ' ', '字'.repeat(601)]) await assert.rejects(async () => adoptAssetDesign(project.id, admin.id, await input('hero', brief)), /简述/);
+    await assert.rejects(async () => adoptAssetDesign(project.id, admin.id, await input('hero', '白衣。', ['33333333-3333-4333-8333-333333333333'])), /参考图/);
+    const before = await input('hero');
+    await adoptAssetDesign(project.id, reviewer.id, before);
+    const first = (await view()).assets.hero;
+    assert.equal(first.status, 'TEXT_ADOPTED');
+    assert.equal(first.current?.actor.id, reviewer.id, 'actor comes from checked membership, never request body');
+    assert.equal(first.current?.brief, before.brief);
+    assert.equal(first.current?.promptRevision, 1);
+    assert.ok(first.current?.factsFingerprint && first.current?.sourceFingerprint);
+    const busyWorkspace = {...await loadAssetPromptWorkspace(project.id), busy: true};
+    assert.equal((await readAssetDesignAdoptions(project.id, admin.id, busyWorkspace)).assets.hero.status, 'TEXT_ADOPTED', 'unrelated running work is not a material change');
+    await assert.rejects(() => adoptAssetDesign(project.id, admin.id, before), /另一窗口|已更新/);
+    const concurrent = await input('bridge', '灰石拱桥，桥头朝南。');
+    const attempts = await Promise.allSettled([adoptAssetDesign(project.id, admin.id, concurrent), adoptAssetDesign(project.id, reviewer.id, concurrent)]);
+    assert.equal(attempts.filter(result => result.status === 'fulfilled').length, 1, 'one CAS winner');
+    await adoptAssetDesign(project.id, admin.id, await input('hero-blue', '甲的蓝衣形象；保持五官、黑发一致。'));
+    const handoff = await readAssetDesignHandoff(project.id, ['hero-blue']);
+    assert.deepEqual(handoff.map(item => item.assetKey).sort(), ['hero', 'hero-blue']);
+    assert.ok(handoff.every(item => item.materialAvailability === 'TEXT_ONLY'));
+    assert.ok(!JSON.stringify(handoff).includes('完整提示词只留在第二阶段'));
+    assert.ok(!JSON.stringify(handoff).includes('bridge'), 'unrelated assets stay out of episode handoff');
+    await saveAssetPrompt(project.id, 'bridge', 1, '灰色石桥，栏杆略有风化。');
+    assert.equal((await view()).assets.hero.status, 'TEXT_ADOPTED');
+    assert.equal((await view()).assets['hero-blue'].status, 'TEXT_ADOPTED');
+    assert.equal((await view()).assets.bridge.status, 'STALE');
+    await saveAssetPrompt(project.id, 'hero', 1, '白衣、黑发、窄袖。');
+    assert.equal((await view()).assets.hero.status, 'STALE');
+    assert.equal((await view()).assets['hero-blue'].status, 'STALE');
+    assert.equal((await readAssetDesignHandoff(project.id, ['hero-blue']))[0].brief, undefined, 'stale brief is not supplied');
+    await assert.rejects(async () => adoptAssetDesign(project.id, admin.id, await input('hero-blue')), /提示词|来源/);
+    await adoptAssetDesign(project.id, admin.id, await input('hero', '白衣窄袖、黑发。'));
+    const toRevoke = (await view()).assets.hero;
+    await revokeAssetDesign(project.id, admin.id, {assetKey: 'hero', expectedRevision: toRevoke.revision});
+    const revoked = (await view()).assets.hero;
+    assert.equal(revoked.status, 'UNADOPTED');
+    assert.equal(revoked.history.length, 3, 'adopt/re-adopt/revoke are immutable history');
+    assert.equal(revoked.history[0].brief, before.brief);
+    await restoreAssetDesign(project.id, admin.id, {...await input('hero', '核对后恢复：白衣窄袖、黑发。'), version: toRevoke.current!.version});
+    assert.equal((await view()).assets.hero.current?.restoredFromVersion, toRevoke.current?.version);
+    assert.equal((await view()).assets.hero.history.length, 4);
+    const styleInput = await input('hero');
+    await saveAssetStyle(project.id, '新的画风', 0);
+    assert.equal((await view()).assets.hero.status, 'STALE');
+    await assert.rejects(() => adoptAssetDesign(project.id, admin.id, styleInput), /来源|画风|已更新/);
+    await adoptAssetDesign(project.id, admin.id, await input('hero'));
+    document.f2.assets[0].relationNote = '本资产来源说明变化';
+    await prisma.sceneSnapshot.update({where: {id: foundation.id}, data: {content: JSON.stringify(document)}});
+    assert.equal((await view()).assets.hero.status, 'STALE');
+    await saveAssetPrompt(project.id, 'hero', 2, '白衣黑发，保留当前源文约束。');
+    const {createHash} = await import('node:crypto');
+    const referenceId = '11111111-1111-4111-8111-111111111111';
+    const optionsId = `ai15_${createHash('sha256').update(JSON.stringify([project.id, 'hero'])).digest('hex').slice(0, 40)}`;
+    const options = {revision: 1, templateId: 'none', templateText: '', references: [{id: referenceId, name: 'https://private.invalid/?secret=do-not-export', mime: 'image/png', width: 2, height: 2, size: 16}]};
+    await prisma.sceneSnapshot.create({data: {id: optionsId, projectId: project.id, sceneKey: 'ASSET_IMAGE_OPTIONS_V1', title: 'hero', content: JSON.stringify(options)}});
+    await adoptAssetDesign(project.id, admin.id, await input('hero', '白衣黑发。', [referenceId]));
+    assert.equal((await view()).assets.hero.status, 'REFERENCE_ADOPTED', 'explicitly selected upload can be an adopted reference, not generated art');
+    const missingFile = (await readAssetDesignHandoff(project.id, ['hero']))[0];
+    assert.equal(missingFile.materialAvailability, 'TEXT_ONLY', 'missing file must not claim a real available image');
+    assert.equal(missingFile.references[0].available, false);
+    assert.equal(missingFile.references[0].source, 'USER_UPLOADED_REFERENCE');
+    assert.ok(!JSON.stringify(missingFile).includes('secret=') && !JSON.stringify(missingFile).includes('outputs/'));
+    const fixturePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6sH0AAAAASUVORK5CYII=', 'base64');
+    mkdirSync(process.env.DIRECTOR_ASSET_REFERENCE_DIR, {recursive: true});
+    writeFileSync(path.join(process.env.DIRECTOR_ASSET_REFERENCE_DIR, referenceId), fixturePng);
+    options.references[0] = {...options.references[0], width: 1, height: 1, size: fixturePng.length};
+    options.revision++;
+    await prisma.sceneSnapshot.update({where: {id: optionsId}, data: {content: JSON.stringify(options)}});
+    await adoptAssetDesign(project.id, admin.id, await input('hero', '白衣黑发。', [referenceId]));
+    assert.equal((await readAssetDesignHandoff(project.id, ['hero']))[0].materialAvailability, 'REFERENCE_AVAILABLE');
+    options.revision++;
+    options.references.push({...options.references[0], id: '22222222-2222-4222-8222-222222222222'});
+    await prisma.sceneSnapshot.update({where: {id: optionsId}, data: {content: JSON.stringify(options)}});
+    assert.equal((await view()).assets.hero.status, 'REFERENCE_ADOPTED', 'unselected reference and image setting changes do not expire adopted material');
+    await saveAssetPrompt(project.id, 'hero-blue', 1, '沿用甲当前的身份，蓝衣。');
+    await adoptAssetDesign(project.id, admin.id, await input('hero-blue', '沿用甲的身份，蓝衣。'));
+    options.revision++;
+    options.references = [];
+    await prisma.sceneSnapshot.update({where: {id: optionsId}, data: {content: JSON.stringify(options)}});
+    assert.equal((await view()).assets.hero.status, 'STALE');
+    assert.equal((await view()).assets['hero-blue'].status, 'STALE', 'stale explicitly adopted dependency must not be hidden from its variant');
+    const empty = await readAssetDesignHandoff(project.id, ['not-in-catalog']);
+    assert.equal(empty[0].status, 'UNADOPTED');
+    assert.equal(empty[0].materialAvailability, 'TEXT_ONLY');
+    assert.equal((await loadAssetPromptWorkspace(project.id)).records.hero.body, '白衣黑发，保留当前源文约束。', 'adoption does not rewrite prompt');
+    const require = createRequire(import.meta.url), authPath = require.resolve('../lib/auth'), originalAuth = require.cache[authPath];
+    let sessionActor: {id: string} | null = null;
+    require.cache[authPath] = {id: authPath, filename: authPath, loaded: true, exports: {getCurrentUser: async () => sessionActor}} as NodeModule;
+    try {
+      const route = require('../app/projects/[projectId]/asset-prompts/adoption/route') as typeof import('../app/projects/[projectId]/asset-prompts/adoption/route');
+      const context = {params: Promise.resolve({projectId: project.id})}, url = `http://adoption.test/projects/${project.id}/asset-prompts/adoption`;
+      const post = (body: unknown, origin = 'http://adoption.test') => route.POST(new Request(url, {method: 'POST', headers: {'content-type': 'application/json', origin}, body: JSON.stringify(body)}), context);
+      assert.equal((await route.GET(new Request(url), context)).status, 401);
+      sessionActor = outsider;
+      assert.equal((await route.GET(new Request(url), context)).status, 403);
+      sessionActor = operator;
+      assert.equal((await route.GET(new Request(url), context)).status, 200);
+      assert.equal((await post({action: 'adopt', ...await input('hero'), actorId: admin.id})).status, 403, 'forged payload actor cannot elevate operator');
+      sessionActor = admin;
+      assert.equal((await post({action: 'adopt', ...await input('hero')}, 'https://evil.invalid')).status, 403);
+      assert.equal((await post(null)).status, 400);
+      const response = await post({action: 'adopt', ...await input('hero'), actorId: reviewer.id});
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).assets.hero.current.actor.id, admin.id);
+    } finally {if (originalAuth) require.cache[authPath] = originalAuth; else delete require.cache[authPath];}
+    console.log('PASS asset-design-adoption: isolated SQLite; permissions, human brief, CAS, immutable history, restore, scoped stale dependencies, safe episode handoff, uploaded/missing reference distinction; model/image calls 0');
+  } finally { await prisma.$disconnect(); }
+}
+main().catch(error => {console.error(error); process.exitCode = 1;});

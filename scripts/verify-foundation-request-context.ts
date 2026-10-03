@@ -14,4 +14,20 @@ const doc:any={revision:'test',f2:{format:'ASSET_CATALOG_V2',coverage:[1,2],asse
 const result=buildDeliveryInput('Q1','EDIT',input,doc,[1],[],[],[],[]);
 assert.equal(result.humanChoiceRegistry.length,0);assert.equal(result.source.episodes.length,1);
 assert.equal(costFingerprint('Q1',result),costFingerprint('Q1',{...result,humanChoiceRegistry:choices}),'legacy irrelevant choices must not force repurchase');
+for (const [stage,phase] of [['F2','GENERATE_F2'],['Q1','EDIT']] as const) {
+ const empty=buildDeliveryInput(stage,phase,input,doc,[1],[],[],[],[]);
+ assert.doesNotMatch(empty.delivery.instructions,/resolvedSuggestions|appliedDecisions/,'没有相应事项不附回执说明，F2不消费Q1回执');
+ assert.match(empty.delivery.instructions,/humanChoices/,'新人工选择出口始终保留');
+ assert.match(empty.delivery.instructions,/REPAIR.*targets/,'局部返修边界保留');
+}
+const local:any={id:'exact-1',decisionKey:'local',episodes:[1],applicationScope:{kind:'EPISODES',episodes:[1]}};
+const withSuggestion=buildDeliveryInput('Q1','EDIT',input,doc,[1],[local],[],[],[]);
+assert.match(withSuggestion.delivery.instructions,/resolvedSuggestions/);assert.doesNotMatch(withSuggestion.delivery.instructions,/appliedDecisions/);
+const withDecision=buildDeliveryInput('Q1','APPLY_DECISION',input,doc,[1],[],[local],[],[]);
+assert.match(withDecision.delivery.instructions,/appliedDecisions/);assert.doesNotMatch(withDecision.delivery.instructions,/resolvedSuggestions/);
+assert.match(withDecision.delivery.instructions,/applicationScope.*changeTargets/,'决定适用范围和字段权限同时生效');
+assert.ok('confirmedDecisions' in withDecision);
+assert.deepEqual(withDecision.confirmedDecisions,[local]);
+const elsewhere=buildDeliveryInput('Q1','EDIT',input,doc,[1],[{...local,episodes:[2],applicationScope:{kind:'EPISODES',episodes:[2]}}],[{...local,episodes:[2],applicationScope:{kind:'EPISODES',episodes:[2]}}],[],[]);
+assert.doesNotMatch(elsewhere.delivery.instructions,/resolvedSuggestions|appliedDecisions/,'其它集事项未实际供给本批，不携带回执协议');
 console.log('PASS scoped choice and issue input, explicit globals, unresolved nonbroadcast, legacy paid fingerprint parity');

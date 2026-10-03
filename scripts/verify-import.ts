@@ -50,7 +50,7 @@ async function main() {
   ]);
   assert.deepEqual(duplicate.sourceStructure.issues.map((issue) => issue.code), ["DUPLICATE_EPISODE_NUMBER"]);
   const doubleHeading = splitEpisodes("第1集 主标题\n\n第一集 副标题\n正文");
-  assert.deepEqual(doubleHeading.map((episode) => [episode.number, episode.title, episode.content]), [[1, "第1集 主标题", "第1集 主标题\n\n第一集 副标题\n正文"]], "相邻双标题应合为同一逻辑分集");
+  assert.deepEqual(doubleHeading.map((episode) => [episode.number, episode.title, episode.content]), [[1, "第1集 主标题", "第1集 主标题\n第一集 副标题\n正文"]], "相邻双标题应合为同一逻辑分集，工作正文只移除空行");
   assert.equal((await parseScriptBuffer("source.md", Buffer.from(raw))).sourceText, raw);
 
   const dir = await mkdtemp(path.join(os.tmpdir(), "director-import-"));

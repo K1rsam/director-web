@@ -1,20 +1,16 @@
 import Link from "next/link";
+import { episodePresentation } from "@/lib/episode-presentation";
 import { WorkbenchEmpty } from "@/app/ui/workbench-empty";
 import { notFound } from "next/navigation";
-import { prepareEpisodeAction, repairOpenIssuesAction, runSingleStageAction, resetEpisodeShotsAction, stopPipelineAction, acknowledgeIssueAction, acknowledgeRepairRegressionAction, acknowledgeAllSuggestionsAction } from "@/app/actions";
 import { getEpisodeStudio } from "@/lib/studio";
 import { formatDialogueEntries } from "@/lib/shot-cells";
 import { AppChrome } from "@/app/ui/app-chrome";
 import { MotionSelection } from "@/app/ui/motion-selection";
-import { EpisodePipelineButton } from "./episode-pipeline-button";
-import { ResetEpisodeButton } from "./reset-episode-button";
-import { StopPipelineButton } from "./stop-pipeline-button";
-import { ModeSwitch } from "../../../../mode-switch";
 import { UnitPromptCard } from "./unit-prompt-card";
 import { ExportEpisodeButtons } from "./export-episode";
 import { WorkspaceGrid } from "./workspace-grid";
 import { requireSessionUser } from "@/lib/auth";
-import { executionErrorSource, formatExecutionErrorForUser } from "@/lib/execution-errors";
+import { isProductionEpisodeNumber, readProductionScope } from "@/lib/production-episodes";
 
 export const dynamic = "force-dynamic";
 
@@ -30,118 +26,28 @@ export default async function EpisodeStudioPage({
   const currentUser = await requireSessionUser(`/projects/${projectId}/episodes/${episodeId}`);
   const studio = await getEpisodeStudio(projectId, episodeId, currentUser.id);
   if (!studio) notFound();
+  const productionScope = await readProductionScope(projectId);
+  const productionEpisodes = studio.episodeNav.filter(episode => isProductionEpisodeNumber(episode.number, productionScope));
+  const productionEligible = isProductionEpisodeNumber(studio.episode.number, productionScope);
   const shotCount = studio.scenes.reduce((sum, scene) => sum + scene.shots.length, 0);
 
   return (
     <AppChrome
-      title={`第${studio.episode.number}集 · ${studio.episode.title.replace(/^\s*第\s*(\d+)\s*集[\s·・:：—-]*/u, (prefix, number: string) => Number(number) === studio.episode.number ? "" : prefix)}`}
+      title={episodePresentation(studio.episode.number, studio.episode.title).fullTitle}
       eyebrow={studio.project.title}
       projectId={projectId}
       projectLabel={studio.project.title}
       activeSection="episode"
       activeEpisodeId={episodeId}
-      episodes={studio.episodeNav.map((episode) => ({ id: episode.id, number: episode.number, title: episode.title, state: episode.status }))}
+      episodes={productionEpisodes.map((episode) => ({ id: episode.id, number: episode.number, title: episode.title, state: episode.status, productionEligible: true }))}
       utility={<>
-        <ModeSwitch projectId={projectId} current={studio.project.executionMode} compact />
+        {productionEligible ? <Link className="quietButton" href={`/projects/${projectId}/episodes/${episodeId}/storyboard`}>进入第三阶段 · 新版分镜</Link> : null}
         <span className="episodeTopbarMeta"><span>{studio.project.style}</span><span>{studio.project.aspectRatio}</span><span>{shotCount} 镜</span><span>{studio.units.length} 单元</span></span>
-        <form action={prepareEpisodeAction} className="episodeTopbarAction">
-          <input name="projectId" type="hidden" value={projectId} />
-          <input name="episodeId" type="hidden" value={episodeId} />
-          <button type="submit" className="episodeToolButton" title="用最新项目资料更新本集上下文">更新信息包</button>
-        </form>
-        <form action={resetEpisodeShotsAction} className="episodeTopbarAction">
-          <input name="projectId" type="hidden" value={projectId} />
-          <input name="episodeId" type="hidden" value={episodeId} />
-          <ResetEpisodeButton active={studio.pipelineActive} />
-        </form>
-        <span className="topbarStatus"><i className={studio.pipelineActive ? "live" : ""} />{studio.pipelineActive ? "生成中" : "本集已就绪"}</span>
-        <form action={stopPipelineAction} className="topbarStopForm">
-          <input name="projectId" type="hidden" value={projectId} />
-          <input name="episodeId" type="hidden" value={episodeId} />
-          <StopPipelineButton active={studio.pipelineActive} />
-        </form>
+        <span className="topbarStatus">历史记录 · 只读</span>
       </>}
-      primaryAction={<EpisodePipelineButton
-        projectId={projectId}
-        episodeId={episodeId}
-        active={studio.pipelineActive}
-        hasContent={studio.episodeHasContent}
-        released={studio.units.length > 0 && studio.units.every((unit) => unit.versions[0]?.syncStatus === "RELEASE_COMPILED")}
-        activeLabel={studio.activePipeline?.label}
-      />}
     >
       <div className="episodeWorkspace episodeDashboard episodeSurface">
-      {studio.otherEpisodesRunning.length > 0 ? (
-        <p className="parallelRunningHint">
-          ⚠ 第 {studio.otherEpisodesRunning.join("、")} 集正在并行执行流水线（不同集可并行是设计行为，本页按钮不受影响）。
-          若这不是你主动发起的，可等它们跑完后再操作。
-        </p>
-      ) : null}
-
-      <details className="episodeRoleDeck" open>
-        <summary><span className="episodeDeckTitle">制作流程 <small>E0–E5</small></span><b>{studio.roles.filter((role) => role.status === "已完成").length}/6 完成</b></summary>
-      <section className="roleProgressRail" aria-label="岗位进度">
-        {studio.roles.map((role) => {
-          const failedRun = studio.runs.find((run) => run.stageCode === role.code && run.error);
-          const errorText = failedRun?.error
-            ? formatExecutionErrorForUser(failedRun.error, { source: executionErrorSource(failedRun.provider) })
-            : null;
-          const actionLabel = role.status === "已完成" ? "重跑" : role.status === "失败" ? "再试一次" : "运行";
-          return (
-            <form action={runSingleStageAction} className="roleStageForm" key={role.code}>
-              <input name="projectId" type="hidden" value={projectId} />
-              <input name="episodeId" type="hidden" value={episodeId} />
-              <input name="stageCode" type="hidden" value={role.code} />
-              <button
-                type="submit"
-                className="roleCardHitArea"
-                disabled={studio.pipelineActive}
-                aria-label={`${actionLabel} ${role.code} ${role.name}`}
-                title={`点击整张卡片${actionLabel} ${role.code} · ${role.name} · ${role.model} · ${role.duration}`}
-                aria-describedby={errorText && role.status === "失败" ? `role-error-${role.code}` : undefined}
-              />
-              <article className={`roleProgress ${role.status === "已完成" ? "done" : role.status === "进行中" ? "running" : role.status === "失败" ? "failed" : ""}`}>
-                <span className="episodeRoleCode">{role.code}</span>
-                <div className="episodeRoleOverview">
-                  <span className="episodeRoleIcon" aria-hidden="true">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                      <path d={({
-                        E0: "M3 12h4l3-8 4 16 3-8h4",
-                        E1: "M4 4h16v16H4z M4 9h16 M9 9v11 M8 4l3 5 M14 4l3 5",
-                        E2: "M9 7a3 3 0 1 0 6 0 3 3 0 0 0-6 0 M5 21v-2a7 7 0 0 1 14 0v2 M3 10l3 3-3 3 M21 10l-3 3 3 3",
-                        E3: "M4 9h4l5-4v14l-5-4H4z M17 8a6 6 0 0 1 0 8 M20 5a10 10 0 0 1 0 14",
-                        E4: "M9 4h6l2 3h4v13H3V7h4z M8 13a4 4 0 1 0 8 0 4 4 0 0 0-8 0",
-                        E5: "M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6z M8 12l3 3 5-6"
-                      } as Record<string, string>)[role.code] ?? "M5 5h14v14H5z"} />
-                    </svg>
-                  </span>
-                  <div className="episodeRoleCopy">
-                    <strong>{role.name}</strong>
-                    <small className="episodeRoleDuty">{({
-                      E0: "节奏骨架 · 时长预算",
-                      E1: "拆镜结构 · 镜号时长",
-                      E2: "人物表演 · 空间调度",
-                      E3: "单元编排 · 声画转场",
-                      E4: "摄影策略 · 单元布光",
-                      E5: "问题定位 · 质量放行"
-                    } as Record<string, string>)[role.code]}</small>
-                  </div>
-                </div>
-                <div className="episodeRoleFoot">
-                  <em>{role.status}</em>
-                  <small className="episodeRoleModel" title={role.model}>{role.model.replace(/^gpt-[\d.]+-/, "")}</small>
-                  <span className="episodeRoleDuration" title={`执行耗时：${role.duration}`}>
-                    {role.duration.replace(/(\d+)分(\d+)秒/, (_, minutes: string, seconds: string) => `${minutes}:${seconds.padStart(2,"0")}`)}
-                  </span>
-                  <span className="roleCardAction" aria-hidden="true">{role.status === "进行中" ? "执行中" : role.status === "排队中" ? "排队中" : actionLabel}</span>
-                </div>
-              </article>
-              {role.status === "失败" && errorText ? <p id={`role-error-${role.code}`} className="episodeRoleError">{errorText}</p> : null}
-            </form>
-          );
-        })}
-      </section>
-      </details>
+      <p className="biblePlaceholder">旧版 E0–E5 历史只读，保留正文、版本、问题和导出；新制作请进入第三阶段。</p>
 
       <WorkspaceGrid
         canvas={(
@@ -184,7 +90,7 @@ export default async function EpisodeStudioPage({
                     </tr>
                   )))}
                   {!studio.scenes.some((scene) => scene.shots.length) ? (
-                    <tr><td colSpan={9} className="emptyTableCell"><WorkbenchEmpty kind="shots" title={studio.pipelineActive ? "分镜正在制作中" : "从本集的第一个镜头开始"} description={studio.pipelineActive ? "镜号、画面和声音会随制作进度逐步呈现。" : "在右上角开始本集制作，镜号、画面与声画安排将在这里逐步呈现。"} steps={["梳理节奏", "完成分镜", "审阅画面"]} /></td></tr>
+                    <tr><td colSpan={9} className="emptyTableCell"><WorkbenchEmpty kind="shots" title="此历史版本未保存分镜" description="新制作请使用顶部的第三阶段入口；这里不继续旧版任务。" /></td></tr>
                   ) : null}
                 </tbody>
               </table>
@@ -195,7 +101,7 @@ export default async function EpisodeStudioPage({
             <div className="unitList">
               {studio.units.length ? (
                 <ExportEpisodeButtons
-                  episodeTitle={`第${studio.episode.number}集 · ${studio.episode.title}`}
+                  episodeTitle={episodePresentation(studio.episode.number, studio.episode.title).fullTitle}
                   units={studio.units
                     .map((unit) => ({ unitKey: unit.unitKey, content: unit.versions[0]?.content ?? "" }))
                     .filter((unit) => Boolean(unit.content))}
@@ -226,12 +132,13 @@ export default async function EpisodeStudioPage({
                           syncStatus: version.syncStatus
                         }))}
                         currentVersionId={currentVersion.id}
-                        pipelineActive={studio.pipelineActive}
+                        pipelineActive={false}
+                      readOnly
                       />
                     ) : (
                       <div className="unitGuide">
                         <h3>本单元提示词未编译</h3>
-                        <p>E1–E4 填写分镜表后会自动编译草稿；E5 审查通过后标记为已放行。</p>
+                        <p>此历史版本未保存可复制的提示词；旧引擎不会继续编译，新制作请使用第三阶段。</p>
                       </div>
                     )}
                     <details className="unitInternals">
@@ -242,7 +149,7 @@ export default async function EpisodeStudioPage({
                 );
               })}
               {!studio.units.length ? (
-                <WorkbenchEmpty kind="units" title={studio.pipelineActive ? "单元提示词正在制作中" : "让这一集进入画面"} description={studio.pipelineActive ? "完成的单元会陆续显示在这里，可随时查看制作进度。" : "在右上角开始本集制作。完成后，即可在这里审阅、编辑和复制单元提示词。"} steps={["完成分镜", "生成单元", "审阅与复制"]} />
+                <WorkbenchEmpty kind="units" title="此历史版本未保存单元" description="新制作请使用顶部的第三阶段入口；这里不继续旧版任务。" />
               ) : null}
             </div>
           ) : null}
@@ -250,7 +157,7 @@ export default async function EpisodeStudioPage({
           {view === "logs" ? (
             <div className="logView">
               <section><div className="cardHeader"><div><span>PIPELINE RUNS</span><h3>执行记录</h3></div><em>{studio.runs.length}条</em></div>
-                <div className="logEntries">{studio.runs.length ? studio.runs.map((run) => <article className="logRow" key={run.id}><b>{run.stageCode}</b><div><strong>{run.roleName}</strong><small>{run.provider} · {run.model} · {run.duration}</small></div><span>{run.status}</span><details><summary>查看输入、输出与执行日志</summary><h4>输入摘要</h4><pre>{run.inputSummary ?? "暂无"}</pre><h4>岗位输出</h4><pre>{run.outputSummary ?? "暂无"}</pre><h4>用户提示</h4><pre>{run.error ?? "无错误"}</pre><h4>技术执行日志</h4><pre>{run.log ?? "暂无"}</pre></details></article>) : <WorkbenchEmpty kind="logs" title="还没有执行记录" description="开始制作后，这里会记录各阶段的进度、耗时与结果。" />}</div>
+                <div className="logEntries">{studio.runs.length ? studio.runs.map((run) => <article className="logRow" key={run.id}><b>{run.stageCode}</b><div><strong>{run.roleName}</strong><small>{run.provider} · {run.model} · {run.duration}</small></div><span>{run.status}</span><details><summary>查看输入、输出与执行日志</summary><h4>输入摘要</h4><pre>{run.inputSummary ?? "暂无"}</pre><h4>岗位输出</h4><pre>{run.outputSummary ?? "暂无"}</pre><h4>用户提示</h4><pre>{run.error ?? "无错误"}</pre><h4>技术执行日志</h4><pre>{run.log ?? "暂无"}</pre></details></article>) : <WorkbenchEmpty kind="logs" title="此历史版本未保存执行记录" description="新版第三阶段的执行记录在对应任务中查看。" />}</div>
               </section>
               <section><div className="cardHeader"><div><span>ISSUES</span><h3>问题与修订</h3></div><em>全部 {studio.issues.length} · 未解决 {studio.issues.filter((issue) => issue.status === "OPEN").length}</em></div>
                 <div className="issueEntries">{studio.issues.length ? (
@@ -258,72 +165,34 @@ export default async function EpisodeStudioPage({
                     <div className="issueFilters">
                       <Link className={issues === "open" ? "active" : ""} href={`?view=logs&issues=open`}>未解决 <b>{studio.issues.filter((issue) => issue.status === "OPEN").length}</b></Link>
                       <Link className={issues === "all" ? "active" : ""} href={`?view=logs&issues=all`}>全部 <b>{studio.issues.length}</b></Link>
-                      {studio.issues.some((issue) => issue.status === "OPEN") ? (
-                        <div className="issueRerunForms">
-                          <form action={repairOpenIssuesAction} className="issueRerunForm">
-                            <input name="projectId" type="hidden" value={projectId} />
-                            <input name="episodeId" type="hidden" value={episodeId} />
-                            <button type="submit" disabled={studio.pipelineActive} title="只跑有 BLOCKER 卡的岗位（每岗一次调用带全部卡），最后 E5 复审统一销卡">修复严重问题</button>
-                          </form>
-                          <form action={repairOpenIssuesAction} className="issueRerunForm">
-                            <input name="projectId" type="hidden" value={projectId} />
-                            <input name="episodeId" type="hidden" value={episodeId} />
-                            <input name="includeSuggestions" type="hidden" value="1" />
-                            <button type="submit" disabled={studio.pipelineActive} title="BLOCKER 与 MAJOR 建议卡的归属岗位一起跑（每岗一次调用带全部卡），最后 E5 复审统一销卡">连建议一起修</button>
-                          </form>
-                        </div>
-                      ) : null}
                     </div>
                     {(() => {
                       const visible = studio.issues.filter((issue) => issues === "all" || issue.status === "OPEN");
                       const blockers = visible.filter((issue) => issue.severity === "BLOCKER");
                       const suggestions = visible.filter((issue) => issue.severity !== "BLOCKER");
-                      const openSuggestions = suggestions.filter((issue) => issue.status === "OPEN");
                       const renderRow = (issue: (typeof studio.issues)[number]) => (
                         <article className={`issueRow ${issue.status === "OPEN" ? "issueOpen" : issue.status === "EXCEPTED" ? "issueExcepted" : "issueResolved"}`} key={issue.id}>
                           <div><span>{issue.severity}</span><span className={`issueStatus ${issue.status === "OPEN" ? "open" : issue.status === "EXCEPTED" ? "excepted" : "resolved"}`}>{issue.status === "OPEN" ? "OPEN" : issue.status === "EXCEPTED" ? "已豁免" : "已解决"}</span><b>{issue.coordinate}</b><em>归属 {issue.ownerRole}</em>
                             {issue.status === "OPEN" && ["E1", "E2", "E3", "E4"].includes(issue.ownerRole) ? (
-                              <em className="issueOwnerBadge">随修复轮处理</em>
+                              <em className="issueOwnerBadge">历史归属保留</em>
                             ) : null}
                           </div>
                           <p>{issue.evidence}</p>
                           <small>要求：{issue.requestedEffect}</small>
-                          {issue.status === "OPEN" && issue.code === "REPAIR_REGRESSION" ? (
-                            <form action={acknowledgeRepairRegressionAction} className="issueAckForm">
-                              <input name="projectId" type="hidden" value={projectId} />
-                              <input name="episodeId" type="hidden" value={episodeId} />
-                              <input name="issueId" type="hidden" value={issue.id} />
-                              <button type="submit" className="studioButton quietButton" data-variant="secondary" disabled={studio.pipelineActive} title="确认本轮已恢复到安全快照，然后允许下一轮按当前问题卡定向返修">确认回滚结果</button>
-                            </form>
-                          ) : issue.status === "OPEN" && issue.severity !== "BLOCKER" ? (
-                            <form action={acknowledgeIssueAction} className="issueAckForm">
-                              <input name="projectId" type="hidden" value={projectId} />
-                              <input name="episodeId" type="hidden" value={episodeId} />
-                              <input name="issueId" type="hidden" value={issue.id} />
-                              <button type="submit" className="quietButton" disabled={studio.pipelineActive} title="确认这条建议不需要修，豁免后不再显示为待处理">确认保留</button>
-                            </form>
-                          ) : null}
                         </article>
                       );
                       return (
                         <>
                           {blockers.length > 0 ? (
                             <section className="issueGroup">
-                              <h4 className="issueGroupTitle issueGroupBlockers">严重（必须修，阻塞放行）· {blockers.length} 条</h4>
+                              <h4 className="issueGroupTitle issueGroupBlockers">历史严重问题 · {blockers.length} 条</h4>
                               {blockers.map(renderRow)}
                             </section>
                           ) : null}
                           {suggestions.length > 0 ? (
                             <section className="issueGroup">
                               <div className="issueGroupHead">
-                                <h4 className="issueGroupTitle issueGroupSuggestions">建议（不阻塞放行；可随「连建议一起修」处理，或确认保留）· {suggestions.length} 条</h4>
-                                {openSuggestions.length > 0 ? (
-                                  <form action={acknowledgeAllSuggestionsAction} className="issueAckForm">
-                                    <input name="projectId" type="hidden" value={projectId} />
-                                    <input name="episodeId" type="hidden" value={episodeId} />
-                                    <button type="submit" className="quietButton" disabled={studio.pipelineActive} title="本集所有开放的建议卡一次性豁免">全部确认保留</button>
-                                  </form>
-                                ) : null}
+                                <h4 className="issueGroupTitle issueGroupSuggestions">历史建议 · {suggestions.length} 条</h4>
                               </div>
                               {suggestions.map(renderRow)}
                             </section>
@@ -334,7 +203,7 @@ export default async function EpisodeStudioPage({
                     })()}
                   </>
                 ) : <WorkbenchEmpty kind="issues" title={studio.runs.length ? "暂无问题记录" : "问题记录等待制作开始"} description={studio.runs.length ? "后续审查发现的问题会集中在这里，方便逐项定位与处理。" : "制作与审查产生的问题会集中在这里，尚未开始审查。"} />}
-                {studio.issues.some((issue) => issue.status === "OPEN") ? <p className="issueRepairHint">批量阶段不会自动返修。这里每次点击只执行一轮定向返修：修复严重问题只处理 BLOCKER；连建议一起修会把 MAJOR 也交给对应岗位，最后由 E5 复审。完成后请先查看问题数量和具体卡片，再决定是否进行下一轮；不需要修的建议用「确认保留」豁免。</p> : studio.units.length > 0 && studio.units.every((unit) => unit.versions[0]?.syncStatus === "RELEASE_COMPILED") ? <p className="issueRepairHint">当前单元已通过审查并放行。</p> : null}</div>
+                {studio.issues.some((issue) => issue.status === "OPEN") ? <p className="issueRepairHint">历史问题和原处理结果均保留；这里不执行旧版返修，不影响新版第三阶段的任务。</p> : studio.units.length > 0 && studio.units.every((unit) => unit.versions[0]?.syncStatus === "RELEASE_COMPILED") ? <p className="issueRepairHint">当前单元已通过审查并放行。</p> : null}</div>
               </section>
             </div>
           ) : null}

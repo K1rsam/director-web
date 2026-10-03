@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { resolveCodexExecutable, runCodexJson } from "@/lib/codex-cli";
+import { PRODUCTION_CLI_MODEL, PRODUCTION_CLI_REASONING } from "@/lib/production-model";
 import { classifyExecutionError, formatExecutionErrorForUser, isQuotaError } from "@/lib/execution-errors";
 
 void (async () => {
@@ -29,8 +33,8 @@ void (async () => {
         promptReceived: { type: "boolean" }
       }
     },
-    model: "fake-model",
-    reasoningEffort: "medium",
+    model: PRODUCTION_CLI_MODEL,
+    reasoningEffort: PRODUCTION_CLI_REASONING,
     executable: process.execPath,
     executableArgs: [path.join(process.cwd(), "scripts/fixtures/fake-codex.mjs")],
     cwd: process.cwd()
@@ -40,6 +44,8 @@ void (async () => {
   assert.equal(result.sessionId, "fake-session-001");
   assert.ok(result.durationMs >= 0);
   const freshArgs = readFakeArgs(result.stdout);
+  assert.equal(freshArgs[freshArgs.indexOf("--model") + 1], "gpt-6.1-sol");
+  assert.ok(freshArgs.includes('model_reasoning_effort="medium"'));
   assert.ok(freshArgs.includes("--disable"), "岗位调用应启用精简运行参数");
   assert.ok(freshArgs.includes("apps"), "岗位调用应关闭 Apps");
   assert.ok(freshArgs.includes("--sandbox"), "新会话应使用只读沙箱");
@@ -128,8 +134,102 @@ void (async () => {
   });
   assert.ok(!readFakeArgs(promptJson.stdout).includes("--output-schema"), "岗位模式不应发送不完整的通用 schema");
 
+  await verifyFoundationSourceProfile();
   console.log("codex cli adapter verification passed");
 })();
+
+async function verifyFoundationSourceProfile() {
+  const scratch = await mkdtemp(path.join(os.tmpdir(), "foundation-cli-profile-test-"));
+  const globalConfigPath = path.join(process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex"), "config.toml");
+  const fingerprint = async () => readFile(globalConfigPath).then(value => createHash("sha256").update(value).digest("hex")).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  const before = await fingerprint();
+  const request = {
+    prompt: "测试输入（自包含资料岗）", schema: null, model: "fake-model", reasoningEffort: "medium" as const,
+    executable: process.execPath, cwd: process.cwd(), ephemeral: true, minimalRuntime: true,
+  };
+  const fixture = path.join(process.cwd(), "scripts/fixtures/fake-codex.mjs");
+  const configArgs = (args: string[]) => args.filter((_, index) => args[index - 1] === "--config");
+  try {
+    const callsPath = path.join(scratch, "source-calls.jsonl");
+    const result = await runCodexJson({ ...request, instructionProfile: "foundation-source", executableArgs: [fixture, `--fixture-calls=${callsPath}`] });
+    const args = readFakeArgs(result.stdout);
+    assert.deepEqual(configArgs(args), [
+      "skills.include_instructions=false", "project_doc_max_bytes=0",
+      "features.plugins=false", "features.memories=false",
+      "mcp_servers.node_repl.enabled=false", "mcp_servers.custom-server_2.enabled=false",
+      'model_reasoning_effort="medium"',
+    ]);
+    assert.equal(args[args.indexOf("--model") + 1], "fake-model");
+    assert.equal(args[args.indexOf("--sandbox") + 1], "read-only");
+    for (const flag of ["--ignore-user-config", "--ignore-rules", "--full-auto"]) assert.ok(!args.includes(flag));
+    assert.doesNotMatch(JSON.stringify(result), /fixture-secret-inventory-token|fixture\.invalid/);
+    const calls = (await readFile(callsPath, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]);
+    assert.equal(calls.length, 2, "资料岗只增加一次零模型清单查询");
+    assert.deepEqual(calls[0], [`--fixture-calls=${callsPath}`, "--config", "features.plugins=false", "mcp", "list", "--json"]);
+    assert.ok(calls[1].includes("exec"));
+
+    for (const instructionProfile of [undefined, "foundation"] as const) {
+      const oldCallsPath = path.join(scratch, `${instructionProfile ?? "default"}-calls.jsonl`);
+      const old = await runCodexJson({ ...request, instructionProfile, executableArgs: [fixture, `--fixture-calls=${oldCallsPath}`] });
+      assert.deepEqual(configArgs(readFakeArgs(old.stdout)), [
+        ...(instructionProfile ? ["skills.include_instructions=false", "project_doc_max_bytes=0"] : []),
+        'model_reasoning_effort="medium"',
+      ], "普通与原 foundation 配置不变");
+      assert.equal((await readFile(oldCallsPath, "utf8")).trim().split("\n").length, 1, "旧配置不查询 MCP");
+    }
+    const savedMinimalRuntime = process.env.CODEX_CLI_MINIMAL_RUNTIME;
+    try {
+      for (const minimalRuntime of [false, undefined]) {
+        if (minimalRuntime === undefined) process.env.CODEX_CLI_MINIMAL_RUNTIME = "0";
+        const optOutCallsPath = path.join(scratch, `opt-out-${minimalRuntime}-calls.jsonl`);
+        const optOut = await runCodexJson({ ...request, instructionProfile: "foundation-source", minimalRuntime, executableArgs: [fixture, `--fixture-calls=${optOutCallsPath}`] });
+        const optOutArgs = readFakeArgs(optOut.stdout);
+        assert.ok(!optOutArgs.includes("--disable"), "保留显式和环境变量的精简模式退出选择");
+        assert.deepEqual(configArgs(optOutArgs), ["skills.include_instructions=false", "project_doc_max_bytes=0", 'model_reasoning_effort="medium"']);
+        assert.equal((await readFile(optOutCallsPath, "utf8")).trim().split("\n").length, 1, "关闭精简模式时不查询 MCP、不覆盖插件/记忆");
+      }
+    } finally {
+      if (savedMinimalRuntime === undefined) delete process.env.CODEX_CLI_MINIMAL_RUNTIME;
+      else process.env.CODEX_CLI_MINIMAL_RUNTIME = savedMinimalRuntime;
+    }
+    for (const session of [{ ephemeral: false }, { ephemeral: false, sessionId: "legacy-session" }, { ephemeral: true, sessionId: "legacy-session" }]) {
+      const sessionCallsPath = path.join(scratch, `session-${session.ephemeral}-${session.sessionId}-calls.jsonl`);
+      await assert.rejects(runCodexJson({ ...request, ...session, instructionProfile: "foundation-source", executableArgs: [fixture, `--fixture-calls=${sessionCallsPath}`] }), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal((error as Error & { requestOutcome?: string }).requestOutcome, "NOT_SENT");
+        assert.match(error.message, /临时/);
+        return true;
+      });
+      await assert.rejects(readFile(sessionCallsPath), { code: "ENOENT" }, "非临时或续接 source profile 在任何子进程启动前拒绝");
+    }
+
+    for (const mode of ["bad-json", "bad-shape", "bad-entry", "unsafe-name", "exit", "large", "timeout"]) {
+      const failureCallsPath = path.join(scratch, `${mode}-calls.jsonl`);
+      let captured = false;
+      await assert.rejects(runCodexJson({
+        ...request, instructionProfile: "foundation-source", timeoutMs: mode === "timeout" ? 500 : 5_000,
+        executableArgs: [fixture, `--fixture-calls=${failureCallsPath}`, `--fixture-mcp=${mode}`],
+        onRawOutput: () => { captured = true; },
+      }), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal((error as Error & { requestOutcome?: string }).requestOutcome, "NOT_SENT");
+        assert.match(error.message, /MCP.*未发送/);
+        assert.doesNotMatch(`${error.stack}\n${JSON.stringify(error)}`, /fixture-secret-inventory-token|fixture\.invalid/);
+        return true;
+      });
+      assert.equal(captured, false, "预检清单不能进入模型正文回调");
+      const failureCalls = (await readFile(failureCallsPath, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]);
+      assert.equal(failureCalls.length, 1, `${mode} 清单失败不得启动 exec`);
+      assert.ok(!failureCalls[0].includes("exec"));
+    }
+    assert.equal(await fingerprint(), before, "调用前后全局配置保持原样（仅比较摘要）");
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
 
 function readFakeArgs(stdout: string): string[] {
   for (const line of stdout.split("\n")) {

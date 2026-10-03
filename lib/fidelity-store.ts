@@ -37,7 +37,8 @@ export async function applyFidelityDecision(request:FidelityDecisionRequest,db:P
  if(request.sceneNumber!==undefined&&(!Number.isSafeInteger(request.sceneNumber)||request.sceneNumber<1))throw new Error('场号须为正整数。');
  const decision:FidelityDecision={start:rows[first-1].index!,end:rows[last-1].index!+rows[last-1][0].length,kind,note:'用户在来源预览中明确确认',...(kind==='body'?{episodeNumber:request.episodeNumber,sceneNumber:request.sceneNumber??1}:{})};
  const decisions=[...outsideDecisionRange(current.receipt.decisions,decision),decision].sort((a,b)=>a.start-b.start);
- const prepared=prepareFidelityReading({...original,readingView:current.receipt.reader},current.receipt.mode,decisions,current.receipt.originalHash);
+ const sourceBranchDecisions=[...outsideDecisionRange(current.receipt.sourceBranchDecisions??[],decision),decision].sort((a,b)=>a.start-b.start);
+ const prepared=prepareFidelityReading({...original,readingView:current.receipt.reader},current.receipt.mode,decisions,current.receipt.originalHash,undefined,sourceBranchDecisions);
  prepared.receipt={...current.receipt,...prepared.receipt,guarantee:current.receipt.guarantee};
  // Reading evidence stays valid: this operation changes no source characters. The user wins over
  // pending AI proposals only where their ranges overlap; completed batches are not repurchased.

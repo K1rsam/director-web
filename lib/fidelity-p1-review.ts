@@ -2,10 +2,11 @@ import type { FidelityDecision } from './fidelity-import';
 import { createFidelityExternalMaterial } from './fidelity-external';
 import type { SourceAssistRequest } from './source-preparation';
 import type {P1OwnershipCorrection} from './fidelity-p1-ownership';
+import {expandP1WireEvidence} from './fidelity-p1-wire';
 
 export type P1CandidateWarning={index:number|null;reason:string;sourceVersion:string;batch:{firstBlock:string;lastBlock:string;index:number;total:number};repairAttempt?:number;runId?:string};
 export type P1ReviewState = {
- status:'PENDING'|'COMPLETE'; reviewedSourceVersion?:string;
+ status:'PENDING'|'COMPLETE'; method?:'PROGRAM'|'AI'; reviewedSourceVersion?:string;
  completedRanges?:Array<{start:number;end:number}>; runIds?:string[];
  pendingDecisions?:FidelityDecision[];
  repairAttempts?:number;
@@ -13,6 +14,8 @@ export type P1ReviewState = {
  aliases?:Array<{alias:string;canonicalCandidate:string;start:number;end:number;note:string}>;
  candidateWarnings?:P1CandidateWarning[];
  ownershipCorrections?:P1OwnershipCorrection[];
+ batchContinuityCorrections?:import('./fidelity-p1-batch-continuity').P1BatchContinuityCorrection[];
+ batchContinuityDiagnostics?:import('./fidelity-p1-batch-continuity').P1BatchContinuityDiagnostic[];
 };
 type Block = ReturnType<typeof createFidelityExternalMaterial>['blocks'][number];
 export type P1ReviewRequest = SourceAssistRequest & {reviewMode:'FULL_STRUCTURE_V1';repairAttempt?:number;batch:{firstBlock:string;lastBlock:string;index:number;total:number};baseline:unknown[]};
@@ -45,10 +48,27 @@ export function projectP1ReviewRequest(request:P1ReviewRequest):P1ReviewWireRequ
 }
 /** Old full-request logs and new compact logs must enter the identical paid-work fingerprint. */
 export function projectP1ReviewEvidenceRequest(request:Record<string,unknown>):Record<string,unknown>{
+ request=expandP1WireEvidence(request);
  if(request.reviewMode==='FULL_STRUCTURE_V1')return projectP1ReviewRequest(request as unknown as P1ReviewRequest);
  // Normalize old compact logs too: changing transport density never creates
  // new paid work for an identical source/batch/diagnostic relation.
  return request.reviewMode==='FULL_STRUCTURE_BLOCKS_V1'&&Array.isArray(request.issues)?{...request,issues:compactP1ReviewIssues(request.issues)}:request;
+}
+/** Recover coordinates from the unchanged source, never from a guessed block ID.
+ * Used for read-only validation of a saved provider response; it neither changes
+ * the saved envelope nor turns a response into an accepted checkpoint. */
+export function restoreP1ReviewRequest(value:Record<string,unknown>,sourceText:string):P1ReviewRequest {
+ const wire=projectP1ReviewEvidenceRequest(value) as unknown as P1ReviewWireRequest;
+ if(wire.reviewMode!=='FULL_STRUCTURE_BLOCKS_V1'||typeof wire.sourceVersion!=='string'||!wire.batch||!Array.isArray(wire.blocks)||!wire.blocks.length||!Array.isArray(wire.baseline))throw new Error('P1历史请求缺少可验证的完整原文块。');
+ const lookup=new Map(createFidelityExternalMaterial(sourceText).blocks.map(b=>[b.id,b]));let previousEnd=-1;
+ const sections=wire.blocks.map(row=>{
+  if(!Array.isArray(row)||row.length!==2)throw new Error('P1历史请求的原文块格式无效。');
+  const block=lookup.get(row[0]);
+  if(!block||block.text!==row[1]||block.start<previousEnd)throw new Error('P1历史原文块与当前源稿不一致。');
+  previousEnd=block.end;return {key:block.id,start:block.start,end:block.end,text:block.text};
+ });
+ if(wire.batch.firstBlock!==sections[0].key||wire.batch.lastBlock!==sections.at(-1)!.key||!Number.isSafeInteger(wire.batch.index)||wire.batch.index<1||!Number.isSafeInteger(wire.batch.total)||wire.batch.total<wire.batch.index)throw new Error('P1历史请求的通读批次无效。');
+ return {reviewMode:'FULL_STRUCTURE_V1',sourceVersion:wire.sourceVersion,sourceLength:sourceText.length,batch:{...wire.batch},sections,issues:wire.issues??[],baseline:wire.baseline,...(wire.repairAttempt?{repairAttempt:wire.repairAttempt}:{})};
 }
 /** Adjacent selected blocks share one pair of neighboring excerpts. */
 export function p1RepairSections(text:string,blocks:Block[]):SourceAssistRequest['sections']{
@@ -57,7 +77,8 @@ export function p1RepairSections(text:string,blocks:Block[]):SourceAssistRequest
   ...(blocks[index+1]?.start===b.end?{}:{after:text.slice(b.end,Math.min(blocks[index+1]?.start??text.length,b.end+400))})}));
 }
 export function p1StructureIssues(state:P1ReviewState){
- return (state.unresolved??[]).filter(i=>i.kind!=='semantic'&&!(i.routing?.kind==='QUESTION'&&i.routing.basis==='EXPLICIT_SOURCE_OWNERSHIP'&&i.routing.sourceVersion===state.reviewedSourceVersion)).map(i=>({code:'P1_STRUCTURE_UNRESOLVED',message:i.note,start:i.start,end:i.end}));
+ return [...(state.unresolved??[]).filter(i=>i.kind!=='semantic'&&!(i.routing?.kind==='QUESTION'&&i.routing.basis==='EXPLICIT_SOURCE_OWNERSHIP'&&i.routing.sourceVersion===state.reviewedSourceVersion)).map(i=>({code:'P1_STRUCTURE_UNRESOLVED',message:i.note,start:i.start,end:i.end})),
+  ...(state.batchContinuityDiagnostics??[]).filter(i=>i.status==='UNRESOLVED').map(i=>({code:'P1_BATCH_CONTINUITY_UNRESOLVED',message:`跨批内部场索引尚不能安全协调（${i.reason}）；保留回包，由程序检查承接证据，不自动追加模型请求。`,start:i.start,end:i.end}))];
 }
 /** Complete lines are stable blocks; a long line is never split or normalized. */
 export function planP1ReviewBatches(text:string,maxChars=24000) {
@@ -69,6 +90,12 @@ export function planP1ReviewBatches(text:string,maxChars=24000) {
  }
  if(batch.length)batches.push(batch);
  return batches;
+}
+// Decimal strings are a transport representation, not permission to infer an
+// episode/scene. No whitespace, signs, exponents, leading zeros or coercion.
+function exactIndex(value:unknown,min:number):number|undefined {
+ const number=typeof value==='number'?value:typeof value==='string'&&/^(0|[1-9]\d*)$/.test(value)?Number(value):NaN;
+ return Number.isSafeInteger(number)&&number>=min?number:undefined;
 }
 export function validateP1ReviewPlan(value:unknown,request:P1ReviewRequest) {
  const raw=value as Record<string,unknown>;
@@ -86,8 +113,11 @@ export function validateP1ReviewPlan(value:unknown,request:P1ReviewRequest) {
  const decisions=raw.assignments.map((item):FidelityDecision=>{
   const row=item as Record<string,unknown>;
   if(!row||Object.keys(row).some(k=>!['firstBlock','lastBlock','kind','episodeNumber','sceneNumber','note'].includes(k))||!['body','context'].includes(String(row.kind)))throw new Error('P1归属只能引用原文块并声明正文/资料，不能携带替换文本。');
-  if(row.kind==='body'&&(!Number.isInteger(row.episodeNumber)||Number(row.episodeNumber)<0)||row.sceneNumber!==undefined&&(!Number.isInteger(row.sceneNumber)||Number(row.sceneNumber)<1||row.kind!=='body')||row.kind==='context'&&(row.episodeNumber!==undefined||row.sceneNumber!==undefined))throw new Error('P1集场归属无效。');
-  return {...range(row),kind:row.kind as 'body'|'context',note:note(row),...(row.episodeNumber===undefined?{}:{episodeNumber:Number(row.episodeNumber)}),...(row.sceneNumber===undefined?{}:{sceneNumber:Number(row.sceneNumber)})};
+  const episodeNumber=exactIndex(row.episodeNumber,0),sceneNumber=exactIndex(row.sceneNumber,1);
+  if((row.kind==='body'||row.episodeNumber!==undefined)&&episodeNumber===undefined||row.sceneNumber!==undefined&&sceneNumber===undefined)throw new Error('P1集场归属无效。');
+  // kind is authoritative. Context's valid source-number hints stay in the
+  // original provider receipt only; they never route context into a body scene.
+  return {...range(row),kind:row.kind as 'body'|'context',note:note(row),...(row.kind==='body'?{episodeNumber,...(row.sceneNumber===undefined?{}:{sceneNumber})}:{})};
  });
  const unresolved=raw.unresolved.map(item=>{
   const row=item as Record<string,unknown>;

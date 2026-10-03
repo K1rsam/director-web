@@ -429,7 +429,7 @@ export async function getEpisodeStudio(projectId: string, episodeId: string, use
       content: episode.content,
       infoPackage: episode.taskPackages[0]?.payload ?? "尚未生成本集信息包。"
     },
-    episodeNav: episode.project.episodes.filter((item) => item.number >= 1).map((item) => ({
+    episodeNav: episode.project.episodes.map((item) => ({
       id: item.id,
       number: item.number,
       title: cleanEpisodeTitle(item.title, item.number),

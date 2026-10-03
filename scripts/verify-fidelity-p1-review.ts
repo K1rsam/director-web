@@ -46,7 +46,9 @@ async function main(){
   const directOut=await prepareFidelitySourceAssisted(directPending.id,db,options);
   assert.equal(calls,1);assert.equal(directOut.backendPending?.reason,'DIRECT_STRUCTURE_PENDING');
   const legacy=await create(source,'fidelity',false);await prepareFidelitySourceAssisted(legacy.id,db,options);assert.equal(calls,1,'old clean project not automatically reviewed');
-  const longText='第1集\n1-1 客厅 日 内\n'+'甲：原样保留😀。\n'.repeat(7000),long=await create(longText);
+  // Keep an actual standard-reception ambiguity so this fixture exercises paid
+  // batch recovery rather than the clean-source program fast path.
+  const longText='第1集\n1-1 客厅 日 内\n'+'小甲：原样保留😀。\n'.repeat(7000),long=await create(longText);
   let seen:string[]=[];let fail=true;
   const longOptions={...options,assist:async(request:any,validate:any)=>{
    seen.push(request.batch.firstBlock);if(request.batch.index===2&&fail)throw new Error('模拟中断');

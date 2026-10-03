@@ -1,15 +1,11 @@
 .panel, .document, .documentSection, .history, .source { min-width: 0; overflow-wrap: anywhere; }
 .operationMessage, .operationError { margin: 12px 0; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
 .operationMessage { color: #536178; }
-.activeCard.activeCard { outline: 2px solid rgba(104, 88, 171, .5); outline-offset: -2px; }
-.activeCard.activeCard::before { height: 3px; background: #7865b8; }
-.pausedCard.pausedCard { outline: 1px solid rgba(141, 98, 52, .4); outline-offset: -1px; }
-.activeCard em::before { display: none; }
-.workSpinner { display: inline-block; flex: 0 0 auto; width: 12px; height: 12px; border: 2px solid rgba(104, 88, 171, .22); border-top-color: #6858ab; border-radius: 50%; animation: foundationWorking 1s linear infinite; }
-.queuedDot { width: 6px; height: 6px; border-radius: 50%; background: #8d6234; }
+.workflowAction { display: inline-flex; align-items: center; justify-self: start; min-height: 38px; padding: 5px 9px; border: 1px solid #ffffff66; border-radius: 10px; background: linear-gradient(145deg,#ffffff52,#ffffff21); color: #6858ab; font-size: .8125rem; line-height: 1.6; text-decoration: none; }
+.workflowAction:hover { background: #eee9ff80; }
+.workflowOption { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0,1fr); align-items: start; gap: 4px; font-size: .8rem; line-height: 1.6; color: #5f5c75; }
+.workflowOption small { display: block; font-size: .75rem; }
 .elapsed { font-variant-numeric: tabular-nums; }
-@keyframes foundationWorking { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .workSpinner { animation: none; } }
 .operationError { color: #98494b; white-space: pre-wrap; }
 .operationLinks { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: 12px; color: #68758c; }
 .operationLinks form { margin: 0; }
@@ -57,6 +53,14 @@
 .episode summary b { margin-right: 14px; }
 .episode summary span { font-size: 14px; }
 .source, .history { padding: 20px 24px; border: 1px solid #dce3e9; border-radius: 14px; color: #556c80; font-size: 14px; line-height: 1.8; }
+.workflowSummary { cursor: pointer; color: #303352; min-height: 38px; line-height: 1.65; }
+.workflowSummary strong { font-size: 1.125rem; font-weight: 650; margin-inline: 6px 18px; }
+.workflowSummary span { color: #5b5f80; font-size: .8125rem; }
+:global(.foundationControlRoom[open]) > .workflowSummary { margin-bottom: 18px; }
+.workflowSummary:focus-visible, .sourceReaderLink:focus-visible { outline: 3px solid #6858ab; outline-offset: 4px; }
+.sourceReaderLink { text-decoration: none; color: inherit; min-height: 44px; border-radius: 8px; }
+.sourceReaderLink:hover { background: rgba(255, 255, 255, .18); }
+.sourceIndex { align-content: start; }
 .source details { margin-top: 12px; }
 .history > .documentSection { margin-top: 16px; }
 .panel button:focus-visible, .panel a:focus-visible, .panel input:focus-visible, .panel summary:focus-visible, .document summary:focus-visible { outline: 3px solid #577eb0; outline-offset: 4px; }

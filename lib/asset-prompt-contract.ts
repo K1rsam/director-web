@@ -18,6 +18,7 @@ export type PromptRecord = {
 };
 export type PromptWorkspace = {
   projectId: string; title: string; style: string; stylePrefix: string; styleRevision: number;
+  seriesDirection?: {status:'CONFIRMED'|'UNCONFIRMED'|'STALE'; brief:string|null; cardHash?:string};
   visualFactsStatus?:'MISSING'|'READY'|'REVIEW'; visualFactIssues?:VisualIssue[]; assets: PromptAsset[]; records: Record<string, PromptRecord>; busy: boolean; imageOptions?:Record<string,AssetImageOptions>;automation?:AssetPromptAutomation;
 };
 export function composeAssetPrompt(prefix: string, body: string) {
@@ -43,7 +44,8 @@ export function emptyPrompt(key: string): PromptRecord {
 }
 export function validatePromptOutput(value: Record<string, unknown>, expectedKey: string) {
   if (value.key !== expectedKey) throw new Error('返回的资产编号不匹配，已保留原始结果。');
-  for (const field of ['body', 'facts', 'suggestions']) if (typeof value[field] !== 'string' || (value[field] as string).length > 14000) throw new Error(`返回的 ${field} 字段无效，已保留原始结果。`);
+  for (const field of ['body', 'suggestions']) if (typeof value[field] !== 'string' || (value[field] as string).length > 14000) throw new Error(`返回的 ${field} 字段无效，已保留原始结果。`);
+  if (value.facts !== undefined && (typeof value.facts !== 'string' || value.facts.length > 14000)) throw new Error('返回的 facts 字段无效，已保留原始结果。');
   if (!(value.body as string).trim()) throw new Error('模型没有返回外观提示词，已保留原始结果。');
-  return { body: (value.body as string).trim(), facts: (value.facts as string).trim(), suggestions: (value.suggestions as string).trim() };
+  return { body: (value.body as string).trim(), facts: typeof value.facts === 'string' ? value.facts.trim() : '', suggestions: (value.suggestions as string).trim() };
 }

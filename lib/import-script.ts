@@ -3,15 +3,16 @@ import path from "node:path";
 import JSZip from "jszip";
 import mammoth from "mammoth";
 import { parseSourceText } from "@/lib/source-parser";
+import { cleanupScriptText, removeBlankScriptLines, type ScriptBlankLineCleanup } from './source-cleaning';
 
 export type ImportedEpisode = { number: number; title: string; content: string };
 export type SourceSection = { key: string; kind: "BACKGROUND" | "EPISODE" | "UNRESOLVED"; start: number; end: number; episodeNumber?: number; boundaryBasis?: "EXPLICIT_HEADING" | "SUPPLEMENT_HEADING" | "SCENE_NUMBER" };
 export type SourceStructure = { version: "SOURCE_STRUCTURE_V1"; sections: SourceSection[]; issues: { code: string; message: string; sectionKeys: string[] }[] };
-export type SourceReadingView = { kind: "TEXT" | "DOCX"; encoding?: "utf-8" | "gb18030"; view: string; warnings: string[] };
+export type SourceReadingView = { kind: "TEXT" | "DOCX"; encoding?: "utf-8" | "gb18030"; view: string; warnings: string[]; blankLineCleanup?: ScriptBlankLineCleanup };
 export type OriginalFileSnapshot = { encoding: "base64"; mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" | "text/plain" | "text/markdown"; base64: string };
 export type ImportedScript = {
   sourceName: string;
-  /** Text read from the supplied source. The original upload is kept separately for recovery only. */
+  /** Unchanged reading text for audit/offsets; new working episodes exclude recorded blank lines. */
   sourceText: string;
   episodes: ImportedEpisode[];
   sourceStructure: SourceStructure;
@@ -48,7 +49,7 @@ export async function parseScriptBuffer(sourceName: string, buffer: Buffer, opti
 export function parseScriptContent(sourceName: string, text: string, options: { readingView?: SourceReadingView; originalFile?: OriginalFileSnapshot; readIssues?: SourceReadIssue[] } = {}): ImportedScript {
   const { episodes, sourceStructure, boundaryNotes } = parseSourceText(text, options.readIssues ?? []);
   const readingView = options.readingView ?? { kind: "TEXT" as const, view: "IN_MEMORY_TEXT", warnings: [] };
-  return { sourceName, sourceText: text, episodes, sourceStructure, readingView: { ...readingView, warnings: [...readingView.warnings, ...boundaryNotes] }, originalFile: options.originalFile };
+  return { sourceName, sourceText: text, episodes: episodes.map(episode => ({...episode, content: removeBlankScriptLines(episode.content)})), sourceStructure, readingView: { ...readingView, warnings: [...readingView.warnings, ...boundaryNotes], blankLineCleanup: {version: 'SCRIPT_BLANK_LINES_V1', removedRanges: cleanupScriptText(text).removedRanges} }, originalFile: options.originalFile };
 }
 
 export async function readScriptText(filePath: string, ext = path.extname(filePath).toLowerCase()) {
@@ -58,7 +59,7 @@ export async function readScriptText(filePath: string, ext = path.extname(filePa
 
 /** Compatibility export for callers that only require materialized numbered episodes. */
 export function splitEpisodes(text: string): ImportedEpisode[] {
-  return parseSourceText(text).episodes;
+  return parseSourceText(text).episodes.map(episode => ({...episode, content: removeBlankScriptLines(episode.content)}));
 }
 
 function decodeTextBuffer(buffer: Buffer) {
@@ -114,38 +115,5 @@ function renderMammothNode(value: unknown, paragraphSeparator: string): string {
   return node.type === "paragraph" ? `${children}${paragraphSeparator}` : children;
 }
 
-export function parseEpisodeNumber(value: string): number | null {
-  const compact = value.trim();
-  const repeated = compact.match(/^([零〇一二两三四五六七八九十百]+)(\d+)$/);
-  if (repeated) { const chinese = parseChineseNumber(repeated[1]); return chinese === Number(repeated[2]) ? chinese : null; }
-  return /^\d+$/.test(compact) ? Number(compact) : parseChineseNumber(compact);
-}
-
-function parseChineseNumber(value: string): number | null {
-  const digits: Record<string, number> = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
-  if ([...value].every((char) => char in digits)) return Number([...value].map((char) => digits[char]).join(""));
-  const hundredIndex = value.indexOf("百");
-  if (hundredIndex >= 0) {
-    const hundreds = value.slice(0, hundredIndex) ? digits[value.slice(0, hundredIndex)] : 1;
-    const rest = value.slice(hundredIndex + 1) ? parseChineseNumber(value.slice(hundredIndex + 1)) : 0;
-    return hundreds === undefined || rest === null ? null : hundreds * 100 + rest;
-  }
-  const tenIndex = value.indexOf("十");
-  if (tenIndex >= 0) {
-    const tens = value.slice(0, tenIndex) ? digits[value.slice(0, tenIndex)] : 1;
-    const ones = value.slice(tenIndex + 1) ? digits[value.slice(tenIndex + 1)] : 0;
-    return tens === undefined || ones === undefined ? null : tens * 10 + ones;
-  }
-  return null;
-}
-
-const EPISODE_NORMALIZATION_NOTE = /（原集号(?:为第[^）]*?集，不是有效集号|与前文重复)，已自动整理为第\d+集）/g;
-const GENERIC_EPISODE_TITLE = /^第\s*(?:\d+|[零〇一二两三四五六七八九十百]+)\s*集(?:\s*(?:页眉|标题|正文))?$/;
-
-/** 仅清理界面标题中的系统规范化说明，保留数据库里的原始导入信息。 */
-export function cleanEpisodeTitle(title: string | null | undefined, fallbackNumber?: number) {
-  const cleaned = (title ?? "").replace(EPISODE_NORMALIZATION_NOTE, "").replace(/\s{2,}/g, " ").trim();
-  // 标题只展示数据库中保留的正式集号；第0集可以作为前置资料正常显示。
-  if (fallbackNumber !== undefined && GENERIC_EPISODE_TITLE.test(cleaned)) return `第${fallbackNumber}集`;
-  return cleaned || (fallbackNumber !== undefined ? `第${fallbackNumber}集` : "未命名集");
-}
+// Presentation helpers remain browser-safe and share one numbering/title policy.
+export { parseEpisodeNumber, cleanEpisodeTitle } from "./episode-presentation";

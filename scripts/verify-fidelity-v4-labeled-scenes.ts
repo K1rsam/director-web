@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {normalize,validatePlan} from '../.agents/skills/screenplay-fidelity/scripts/fidelity.mjs';
+import {CONTRACT_VERSION,normalize,validatePlan} from '../.agents/skills/screenplay-fidelity/scripts/fidelity.mjs';
 import {normalize as oldNormalize} from '../lib/fidelity-v3.mjs';
 import {prepareFidelityImport,type FidelityResult} from '../lib/fidelity-import';
 import {routeFidelityQuestions} from '../lib/fidelity-question-routing';
@@ -21,7 +21,7 @@ async function main(){
  assert.equal(validatePlan(old.source,old.plan).ok,false);
  const body={source:old.source,plan:old.plan},bytes=Buffer.from(JSON.stringify(body));
  const upgraded=await prepareFidelityImport('v3.json',bytes,'direct');
- assert.equal(upgraded.receipt.result.contractVersion,'fidelity/4');
+ assert.equal(upgraded.receipt.result.contractVersion,CONTRACT_VERSION);
  assert.equal(upgraded.receipt.readingHash,old.source.sourceVersion);
  assert.equal(upgraded.receipt.result.source.text,text);
  for(const mutate of [(p:any)=>p.issues=[],(p:any)=>p.segments[0].kind='body',(p:any)=>p.contractVersion='fidelity/4']){

@@ -24,7 +24,8 @@ export function UnitPromptCard({
   openIssueCount,
   versions,
   currentVersionId,
-  pipelineActive
+  pipelineActive,
+  readOnly = false
 }: {
   projectId: string;
   episodeId: string;
@@ -33,6 +34,7 @@ export function UnitPromptCard({
   versions: UnitPromptVersion[];
   currentVersionId: string;
   pipelineActive: boolean;
+  readOnly?: boolean;
 }) {
   const [selectedId, setSelectedId] = useState(currentVersionId);
   const [editing, setEditing] = useState(false);
@@ -72,7 +74,7 @@ export function UnitPromptCard({
             </button>
           );
         })}
-        <button
+        {!readOnly && <button
           type="button"
           className={`promptVersionChip edit ${editing ? "active" : ""}`}
           onClick={() => setEditing((value) => !value)}
@@ -80,10 +82,10 @@ export function UnitPromptCard({
           title="就地编辑，保存为手动新版本"
         >
           ✎ 编辑
-        </button>
+        </button>}
       </div>
 
-      {!isCurrent && !editing ? (
+      {!isCurrent && !editing && !readOnly ? (
         <div className="promptVersionRestore">
           <span>正在预览 V{selected.version}（当前为 V{currentVersion?.version ?? "?"}）。恢复后此版本将设为当前显示。</span>
           <form action={restorePromptVersionAction}>
@@ -95,7 +97,7 @@ export function UnitPromptCard({
         </div>
       ) : null}
 
-      {editing ? (
+      {editing && !readOnly ? (
         <form action={saveManualPromptVersionAction} className="promptManualEdit">
           <input name="projectId" type="hidden" value={projectId} />
           <input name="episodeId" type="hidden" value={episodeId} />

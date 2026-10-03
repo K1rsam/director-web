@@ -55,11 +55,36 @@ const scalar = requireProductionOptimization({ format: 'FOUNDATION_OPTIMIZATION_
 assert.deepEqual(applyDocumentEdit(patched, scalar, index).scenePatches, [{ episode: 1, sceneKey: '1-1', location: '大厅', characters: ['主角'], weather: '雨' }], '省略的场景标量不得清除旧值');
 
 const prompt = buildLightFoundationPrompt('F2', { scope: [1] });
-const q1Prompt = buildLightFoundationPrompt('Q1', { scope: [1] });
+const q1Prompt = buildLightFoundationPrompt('Q1', { scope: [1], pendingChoices: [], programTasks: [], editorialSuggestions: [], confirmedDecisions: [], candidates: { f2: { repairItems: [] } } });
 assert.ok(LIGHT_ASSET_METHOD_VERSION.length >= 8);
 assert.match(prompt, /这是自包含资料任务/);
 assert.doesNotMatch(prompt, /持续可见实体/, '资产方法只在F2岗位规则，不在task重复');
-for (const receipt of ['resolvedSuggestions', 'appliedDecisions', 'resolvedUnresolved', 'resolvedCatalogIssues']) assert.match(q1Prompt, new RegExp(receipt));
+const receiptFields = ['resolvedSuggestions', 'appliedDecisions', 'resolvedUnresolved', 'resolvedCatalogIssues'] as const;
+const outputSchema = (prompt: string) => JSON.parse(prompt.match(/OUTPUT_SCHEMA[^\n]*\n([^\n]+)/)![1]);
+for (const receipt of receiptFields) assert.doesNotMatch(q1Prompt, new RegExp(receipt), '空待办不发送无用回执协议');
+assert.ok(outputSchema(q1Prompt).humanChoices.length, '无既存待办仍可提出新人工选择');
+assert.ok(outputSchema(q1Prompt).unresolved.length, '无既存待办仍可提出有范围的新未决');
+const source = { version: 'exact', episodes: [{ number: 1, lineCount: 1, lines: [[1, '  甲（VO）：原文\r\n😀  ']] }] };
+const receiptCases = [
+  ['resolvedUnresolved', { pendingChoices: [{ id: 'todo-1', episodes: [1], note: '已存在未决' }] }],
+  ['resolvedUnresolved', { programTasks: [{ id: 'program-1', owner: 'PROGRAM', episodes: [1], note: '有据拆场' }] }],
+  ['resolvedSuggestions', { editorialSuggestions: [{ id: 'suggestion-1', applicationScope: { kind: 'EPISODES', episodes: [1] } }] }],
+  ['appliedDecisions', { confirmedDecisions: [{ id: 'decision-1', applicationScope: { kind: 'SCENES', scenes: [{ episode: 1, sceneKey: '1-1' }] }, changeTargets: { assetKeys: [], assetFields: [], sceneFields: ['weather'] } }] }],
+  ['resolvedCatalogIssues', { candidates: { f2: { repairItems: [{ id: 'catalog-1', assetKey: 'a', episodes: [1] }] } } }]
+] as const;
+for (const [field, supplied] of receiptCases) {
+  const request = { scope: [1], source, ...supplied, delivery: { mode: 'REPAIR', targets: { episodes: [1], keys: ['a'] } } };
+  const before = JSON.stringify(request), prompt = buildLightFoundationPrompt('Q1', request), schema = outputSchema(prompt);
+  assert.deepEqual(receiptFields.filter(key => key in schema), [field], '只提供实际已有事项对应的回执schema');
+  const wire = JSON.parse(prompt.split('INPUT_JSON:\n').at(-1)!);
+  assert.deepEqual(wire, request, '准确id、权限、范围、原文及输入结构不因裁协议而变化');
+  assert.equal(JSON.stringify(request), before, '不修改调用方输入');
+  assert.match(prompt, /scope.*delivery\.targets.*applicationScope\/changeTargets/);
+  assert.ok(schema.humanChoices[0].changeTargets && schema.humanChoices[0].applicationScope && schema.unresolved[0].applicationScope);
+  if ('programTasks' in supplied) assert.match(JSON.stringify(schema.resolvedUnresolved), /programTasks/);
+}
+const allReceipts = buildLightFoundationPrompt('Q1', Object.assign({ scope: [1], source }, ...receiptCases.map(([, supplied]) => supplied)));
+assert.deepEqual(receiptFields.filter(key => key in outputSchema(allReceipts)), receiptFields, '混合待办保留全部实际需要的回执通道');
 assert.match(LIGHT_ASSET_METHOD, /持续可见且需要引用的实体/);
 assert.match(LIGHT_ASSET_METHOD, /有真实人形、有名字或有稳定戏份的个体/);
 assert.match(LIGHT_ASSET_METHOD, /只有需要锁定稳定身份、新外观或持续连续性才独立备图/);

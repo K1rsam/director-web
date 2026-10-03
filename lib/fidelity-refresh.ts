@@ -25,7 +25,7 @@ export async function refreshFidelitySource(projectId:string, db:PrismaClient, o
  const original=projectPinnedFidelitySource(JSON.parse(current.sourceSnapshot.content),current.receipt);
  if(original.sourceText!==current.receipt.result.source.text||hash(original.sourceText)!==current.receipt.readingHash)throw new Error('保真来源校验失败，未覆盖原文。');
  const decisions=options.decisions??current.receipt.decisions;
- const prepared=prepareFidelityReading({...original,readingView:current.receipt.reader},current.receipt.mode,decisions,current.receipt.originalHash);
+ const prepared=prepareFidelityReading({...original,readingView:current.receipt.reader},current.receipt.mode,decisions,current.receipt.originalHash,undefined,current.receipt.sourceBranchDecisions??[]);
  if(!prepared.receipt.result.validation.ok||prepared.receipt.result.source.text!==original.sourceText||prepared.receipt.result.segments.map(segment=>segment.text).join('')!==original.sourceText)throw new Error('新来源结构未能逐字覆盖完整原文，未更新派生集。');
  if(!options.decisions&&!options.p1Review&&JSON.stringify(prepared.receipt.result)===JSON.stringify(current.receipt.result))return {changed:false};
  prepared.receipt={...current.receipt,...prepared.receipt,...(options.p1Review?{p1Review:options.p1Review}:{})};
@@ -65,7 +65,7 @@ export async function refreshFidelitySource(projectId:string, db:PrismaClient, o
     if(!snapshot.sceneKey?.startsWith('RETIRED_P0_SCENE-'))return false;
     try{const meta=JSON.parse(snapshot.metadata??'{}'),detail=meta.metadata;
      return meta.schema==='RETIRED_P0_SCENE_V1'&&detail&&typeof detail==='object'&&!Array.isArray(detail)&&Object.keys(detail).every(key=>['characters','props','sourceHash','sourceSceneKey','sceneKeyAmbiguous'].includes(key))
-      &&(!detail.sourceHash||detail.sourceHash===hash(snapshot.content))&&snapshot.content.length>0&&original.sourceText.includes(snapshot.content);
+      &&(!detail.sourceHash||detail.sourceHash===hash(snapshot.content))&&snapshot.content.length>0&&(original.readingView.blankLineCleanup?original.episodes.some(episode=>episode.content.includes(snapshot.content)):original.sourceText.includes(snapshot.content));
     }catch{return false;}
    };
    const allowed=(key:string)=>['SOURCE_IMPORT','FIDELITY_IMPORT','FOUNDATION_SOURCE','FOUNDATION_DELIVERY_TASK','SOURCE_STRUCTURE_RESOLUTION'].includes(key)||key.startsWith('RETIRED_P0_SCENE-')||key.startsWith('RETIRED_FIDELITY_EPISODE-');

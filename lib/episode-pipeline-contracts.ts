@@ -1,10 +1,12 @@
+import { PRODUCTION_CLI_MODEL, PRODUCTION_CLI_REASONING } from "./production-model";
+
 export type PipelineStageCode = "E0" | "E1" | "E2" | "E3" | "E4" | "E5";
 
 export type StageModelConfig = {
   code: PipelineStageCode;
   name: string;
   skill: string;
-  model: "gpt-5.6-terra" | "gpt-5.6-sol";
+  model: typeof PRODUCTION_CLI_MODEL;
   reasoningEffort: "medium" | "high" | "max";
 };
 
@@ -14,12 +16,12 @@ export type StageModelConfig = {
  *  单元级写 17 次比逐镜写 57 次更可能认真且专业；编译层把单元级 + 镜级差异合并进 Seedance 提示词。
  *  E0 只跑首轮全量（queueEpisodePipeline），返修轮不重切 Beat。 */
 export const PIPELINE_STAGE_CONFIGS: readonly StageModelConfig[] = [
-  { code: "E0", name: "叙事节奏", skill: "e0-narrative-rhythm-director", model: "gpt-5.6-terra", reasoningEffort: "high" },
-  { code: "E1", name: "结构导演", skill: "e1-structure-director", model: "gpt-5.6-terra", reasoningEffort: "high" },
-  { code: "E2", name: "表演调度", skill: "e2-performance-blocking-director", model: "gpt-5.6-terra", reasoningEffort: "high" },
-  { code: "E3", name: "单元视听", skill: "e3-unit-audiovisual-director", model: "gpt-5.6-terra", reasoningEffort: "high" },
-  { code: "E4", name: "摄影光影", skill: "e4-cinematography-light-director", model: "gpt-5.6-terra", reasoningEffort: "high" },
-  { code: "E5", name: "审查总控", skill: "e5-review-controller", model: "gpt-5.6-sol", reasoningEffort: "high" }
+  { code: "E0", name: "叙事节奏", skill: "e0-narrative-rhythm-director", model: PRODUCTION_CLI_MODEL, reasoningEffort: PRODUCTION_CLI_REASONING },
+  { code: "E1", name: "结构导演", skill: "e1-structure-director", model: PRODUCTION_CLI_MODEL, reasoningEffort: PRODUCTION_CLI_REASONING },
+  { code: "E2", name: "表演调度", skill: "e2-performance-blocking-director", model: PRODUCTION_CLI_MODEL, reasoningEffort: PRODUCTION_CLI_REASONING },
+  { code: "E3", name: "单元视听", skill: "e3-unit-audiovisual-director", model: PRODUCTION_CLI_MODEL, reasoningEffort: PRODUCTION_CLI_REASONING },
+  { code: "E4", name: "摄影光影", skill: "e4-cinematography-light-director", model: PRODUCTION_CLI_MODEL, reasoningEffort: PRODUCTION_CLI_REASONING },
+  { code: "E5", name: "审查总控", skill: "e5-review-controller", model: PRODUCTION_CLI_MODEL, reasoningEffort: PRODUCTION_CLI_REASONING }
 ] as const;
 
 export type SourceNode = {

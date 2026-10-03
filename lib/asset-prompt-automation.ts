@@ -2,8 +2,9 @@ import {spawn} from 'node:child_process';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {prisma} from './prisma';
+import type {AssetProductionScope} from './asset-visual-facts-planner';
 export const AUTOMATION_KEY='ASSET_PROMPT_AUTOMATION_V1';
-export type AssetPromptAutomation={id:string;sourceVersion:string;mode?:'FACTS'|'PROMPTS';status:'RUNNING'|'COMPLETE'|'STOPPED'|'FAILED';done:number;failed:number;total:number;error:string;updatedAt:string;workerPid?:number};
+export type AssetPromptAutomation={id:string;sourceVersion:string;mode?:'FACTS'|'PROMPTS';scope?:AssetProductionScope;status:'RUNNING'|'COMPLETE'|'STOPPED'|'FAILED';done:number;failed:number;total:number;error:string;updatedAt:string;workerPid?:number};
 export function automationWorkerAlive(pid:number){try{process.kill(pid,0);return true;}catch(e){return (e as NodeJS.ErrnoException).code!=='ESRCH';}}
 export function effectiveAutomationState(state:AssetPromptAutomation):AssetPromptAutomation{
  if(state.status!=='RUNNING')return state;
@@ -27,7 +28,7 @@ export async function stopAssetPromptAutomation(projectId:string,db:Pick<typeof 
 // A stable per-project row is the database lock; state.id identifies one execution.
 export async function launchAssetPromptAutomation(projectId:string,sourceVersion:string,deps={db:prisma,spawnWorker:(rowId:string,token:string)=>{
  const child=spawn(process.execPath,['--import','tsx',path.join(process.cwd(),'scripts/asset-prompt-worker.ts'),projectId,rowId,token],{cwd:process.cwd(),env:process.env,detached:true,windowsHide:true,stdio:'ignore'});child.unref();return child;
-}},mode:'FACTS'|'PROMPTS'='FACTS'){
+}},mode:'FACTS'|'PROMPTS'='FACTS',scope?:AssetProductionScope){
  const rowId='apjob_'+createHash('sha256').update(projectId).digest('hex').slice(0,40);
  const existing=await deps.db.sceneSnapshot.findUnique({where:{id:rowId}});
  const legacy=existing??await deps.db.sceneSnapshot.findFirst({where:{projectId,sceneKey:AUTOMATION_KEY},orderBy:{createdAt:'desc'}});
@@ -35,7 +36,7 @@ export async function launchAssetPromptAutomation(projectId:string,sourceVersion
   if(old.status==='RUNNING')return;
   if(old.status==='STOPPED'&&old.workerPid&&automationWorkerAlive(old.workerPid))throw new Error('上一轮单项仍在收尾，请等待保存完成后继续。');
  }
- const state:AssetPromptAutomation={id:randomUUID(),sourceVersion,mode,status:'RUNNING',done:0,failed:0,total:0,error:'',updatedAt:new Date().toISOString()};
+ const state:AssetPromptAutomation={id:randomUUID(),sourceVersion,mode,...(scope?{scope}:{}),status:'RUNNING',done:0,failed:0,total:0,error:'',updatedAt:new Date().toISOString()};
  const content=JSON.stringify(state);
  if(existing){const won=await deps.db.sceneSnapshot.updateMany({where:{id:rowId,content:existing.content},data:{content}});if(won.count!==1)return;}
  else{try{await deps.db.sceneSnapshot.create({data:{id:rowId,projectId,sceneKey:AUTOMATION_KEY,title:'P3 后的独立资产任务',content}});}catch(error){if((error as {code?:string}).code==='P2002')return;throw error;}}

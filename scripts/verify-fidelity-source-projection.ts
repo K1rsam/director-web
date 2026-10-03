@@ -14,6 +14,18 @@ async function main(){
   assert.deepEqual(projectPinnedFidelitySource(prepared.imported,receipt),prepared.imported);
  }
  assert.equal('episodes' in compact,false,'hydrate never mutates compact evidence');
+ const skipped=await prepareFidelityImport('skipped.txt',Buffer.from('第5集\n5-1 日 外 门口\n甲：先来。\n第7集\n7-1 夜 内 房间\n乙：后来。\n'),'fidelity');
+ assert.equal(skipped.receipt.episodeNumbering,'SOURCE_NUMBER_V1');
+ const {episodes:sourceEpisodes,...sourceCompact}=skipped.imported;
+ assert.deepEqual(projectPinnedFidelitySource(sourceCompact,skipped.receipt),skipped.imported,'source-number projection must not be matched against internal ordinals');
+ const oldReceipt=structuredClone(skipped.receipt);delete oldReceipt.episodeNumbering;
+ const sourceToOrdinal=new Map(oldReceipt.result.episodes.filter(e=>e.productionEligible).map(e=>[Number(e.sourceNumber),e.number]));
+ const oldImported={...skipped.imported,episodes:sourceEpisodes.map(e=>({...e,number:sourceToOrdinal.get(e.number)!})),sourceStructure:{...skipped.imported.sourceStructure,sections:skipped.imported.sourceStructure.sections.map(s=>s.kind==='EPISODE'?{...s,episodeNumber:sourceToOrdinal.get(s.episodeNumber!)!}:s)}};
+ assert.deepEqual(projectPinnedFidelitySource(oldImported,oldReceipt),oldImported,'untagged old evidence keeps its original ordinal projection');
+ assert.throws(()=>projectPinnedFidelitySource(oldImported,skipped.receipt),'source tag cannot silently accept ordinal projection');
+ const crossed=await prepareFidelityImport('crossed.txt',Buffer.from('第10集\n10-1 日 外 门口\n甲：十。\n第1集\n1-1 夜 内 房间\n乙：一。\n'),'fidelity');
+ assert.deepEqual(projectPinnedFidelitySource(crossed.imported,crossed.receipt),crossed.imported,'source 1 must not select internal ordinal 1 belonging to episode10');
+ assert.throws(()=>projectPinnedFidelitySource(compact,{...prepared.receipt,episodeNumbering:'UNKNOWN' as never}));
  const malformed=[
   {...compact,sourceText:raw+'改'},
   {...compact,sourceStructure:{...compact.sourceStructure,sections:[]}},

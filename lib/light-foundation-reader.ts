@@ -8,14 +8,15 @@ import { loadFoundationChoices, type FoundationChoiceView } from './foundation-c
 import { workingReadiness } from './foundation-delivery-assets';
 import { unresolvedOwner, unresolvedEpisodeScope } from './foundation-production-contracts';
 import { buildLightEpisodePackets, collectLightSceneIssues, resolveLightAsset } from './light-foundation-supply';
+import type { ScriptInputProtocol } from './standard-script-reception';
 
-export async function readLightEpisodeFoundation(projectId: string, episodeNumber: number, db: Prisma.TransactionClient = prisma) {
+export async function readLightEpisodeFoundation(projectId: string, episodeNumber: number, db: Prisma.TransactionClient = prisma, options: {protocol?: ScriptInputProtocol;inlinePerformance?:boolean} = {}) {
   if (!Number.isSafeInteger(episodeNumber) || episodeNumber < 0) throw new Error('无效的交接集号。');
   const episode = await db.episode.findFirst({ where: { projectId, number: episodeNumber }, select: { id: true } });
   if (!episode) throw new Error('交接集号不存在。');
-  const input = await loadFoundationInputs(projectId, db);
+  const input = await loadFoundationInputs(projectId, db, {includeResolutions: options.protocol === undefined || options.protocol === 'upstream-material-v2'});
   const { document, needsContextEdit } = await loadFoundationDocument(db, projectId, input);
-  const [packet] = await buildLightEpisodePackets(projectId, document, db, [episodeNumber], input);
+  const [packet] = await buildLightEpisodePackets(projectId, document, db, [episodeNumber], input, options);
   const choices = await loadFoundationChoices(db, projectId, input.sourceVersion, true);
   const currentContext = !needsContextEdit || document.contextCoverage?.fingerprint === createEmptyDocument(input).settingsFingerprint && document.contextCoverage.episodes.includes(episodeNumber);
   const contextPending = !input.sourceContext.complete || !currentContext;
@@ -30,6 +31,7 @@ export async function readLightEpisodeFoundation(projectId: string, episodeNumbe
   ].filter(choice => choice.episodes.length);
   const reasons = [
     ...packet.gaps,
+    ...(packet.scriptReception?.diagnostics ?? []).map(d => `第${d.line}行：${d.message}`),
     // Unlinked background stays in packet evidence; only actual source gaps or
     // scoped production decisions below affect this episode's readiness.
     // A bounded excerpt is intentional; missing or nonadjacent source is a real handoff gap.

@@ -1,11 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { PRODUCTION_CLI_MODEL, PRODUCTION_CLI_REASONING } from './production-model';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import {readAssetVisualFacts} from './asset-visual-facts-service';
+import {readAssetVisualFacts,ensureAssetVisualFacts} from './asset-visual-facts-service';
+import {normalizeAssetProductionScope,type AssetProductionScope} from './asset-visual-facts-planner';
+import {readProductionScope,isProductionEpisodeNumber} from './production-episodes';
+import {planAssetPromptQueue} from './asset-prompt-queue';
 import {selectAssetVisualFacts} from './asset-visual-facts-selection';
 import {effectiveAutomationState} from './asset-prompt-automation';
 import {normalizeImageOptions,type AssetImageOptions} from './asset-image-options';
 import { prisma } from './prisma';
+import {projectAssetDesignFacts} from './asset-design-model-input';
+import {generateScopedAssetMaterialCandidates,type AssetMaterialNeed} from './asset-material-candidates';
+import {readProjectSeriesDirectionProjection} from './series-direction-service';
 import { loadFoundationInputs } from './foundation-state';
 import { loadFoundationDocument } from './foundation-document';
 import { getFoundationDeliveryState } from './foundation-delivery';
@@ -29,11 +36,12 @@ function currentPrompt(record:PromptRecord):PromptRecord{
   return {...record,...(legacyProvenance?{previousDesignAudit:auditDesign(record)}:{}),facts:'',suggestions:'',...(['READY','EMPTY'].includes(record.status)?{rawOutput:undefined}:{})};
 }
 
-export async function loadAssetPromptWorkspace(projectId: string): Promise<PromptWorkspace> {
+export async function loadAssetPromptWorkspace(projectId: string,scope?:AssetProductionScope): Promise<PromptWorkspace> {
   const input = await loadFoundationInputs(projectId);
-  const [{ document, needsContextEdit }, delivery, rows] = await Promise.all([
+  const [{ document, needsContextEdit }, delivery, rows, direction] = await Promise.all([
     loadFoundationDocument(prisma, projectId, input), getFoundationDeliveryState(projectId),
-    prisma.sceneSnapshot.findMany({ where: { projectId, sceneKey: {in:[rowKey,'ASSET_IMAGE_OPTIONS_V1','ASSET_PROMPT_AUTOMATION_V1']} },orderBy:{createdAt:'asc'} })
+    prisma.sceneSnapshot.findMany({ where: { projectId, sceneKey: {in:[rowKey,'ASSET_IMAGE_OPTIONS_V1','ASSET_PROMPT_AUTOMATION_V1']} },orderBy:{createdAt:'asc'} }),
+    readProjectSeriesDirectionProjection(projectId)
   ]);
   const records: Record<string, PromptRecord> = {};
   const imageOptions:Record<string,AssetImageOptions>={};
@@ -57,11 +65,12 @@ export async function loadAssetPromptWorkspace(projectId: string): Promise<Promp
         description:base.description,note:[base.relationNote,variant&&'note' in item?item.note:'',item.preparation?.note,!variant&&base.variants.length?`以下状态另有子形象，不要混入基础形象：${base.variants.map(v=>v.name).join('、')}`:''].filter(Boolean).join('\n'),
         visualFacts:selected.facts,visualIssues,evidence,reasons:readiness.get(item.key)?.pendingReasons ?? ['尚未完成资产资料'],eligible:readiness.get(item.key)?.readyForImages ?? false,fingerprint:'',sceneRefs:item.sceneRefs};
       const {sceneRefs: _refs,...designEntry}=entry;
-      entry.fingerprint=digest({entry:designEntry,visualProtocol:'AB-v1',designSkill:digest(designSkills[variant?1:0]),factsReady:Boolean(visual),decisions:selectAssetPromptDecisions(input.presentationConditions,entry)});
+      entry.fingerprint=digest({entry:designEntry,visualProtocol:'AB-v1',designSkill:digest(designSkills[variant?1:0]),factsReady:Boolean(visual),decisions:selectAssetPromptDecisions(input.presentationConditions,entry),...(direction.projection?{seriesDirection:direction.projection.cardHash}:{})});
       assets.push(entry);
     }
   }
-  return {projectId,title:input.project.title,style:input.project.style??'',stylePrefix:settings?.prefix??defaultStylePrefix(input.project.style??''),styleRevision:settings?.revision??0,visualFactsStatus:visual?.complete===false?'MISSING':visual?.status??'MISSING',visualFactIssues:visual?.issues??[],assets,records,busy:delivery.busy,imageOptions,automation:automation?effectiveAutomationState(automation):undefined};
+  const scoped=scope?await readAssetVisualFacts(projectId,true,scope):visual;
+  return {projectId,title:input.project.title,style:input.project.style??'',stylePrefix:settings?.prefix??defaultStylePrefix(input.project.style??''),styleRevision:settings?.revision??0,seriesDirection:{status:direction.status,brief:direction.projection?.brief??null,...(direction.projection?{cardHash:direction.projection.cardHash}:{})},visualFactsStatus:scoped?.complete===false?'MISSING':scoped?.status??'MISSING',visualFactIssues:scoped?.issues??[],assets,records,busy:delivery.busy,imageOptions,automation:automation?effectiveAutomationState(automation):undefined};
 }
 
 async function compareWrite(projectId: string, key: string, expectedRevision: number, value: PromptRecord | Setting) {
@@ -96,11 +105,15 @@ export async function saveAssetPrompt(projectId:string,key:string,revision:numbe
   await compareWrite(projectId,key,revision,next);return next;
 }
 
-export async function generateAssetPrompt(projectId:string,key:string,revision:number,runner=runRoleByProvider) {
-  const workspace=await loadAssetPromptWorkspace(projectId),asset=workspace.assets.find(a=>a.key===key);
+export async function generateAssetPrompt(projectId:string,key:string,revision:number,runner=runRoleByProvider,scope?:AssetProductionScope) {
+  const workspace=await loadAssetPromptWorkspace(projectId);
+  let asset=workspace.assets.find(a=>a.key===key);
+  const scopedFacts=scope?await readAssetVisualFacts(projectId,false,scope):null;
+  if(scope){const plan=await planEpisodeAssetProduction(projectId,scope.episodeNumbers);if(!plan.assetKeys.includes(key))throw new Error('此资产不在明确选集或必需来源形象范围内。');}
   if(workspace.busy)throw new Error('第一阶段仍在整理，请完成后再生成提示词。');
   if(!asset||!asset.eligible)throw new Error(asset?.reasons.join('；')||'当前资产无需独立制图。');
-  if(workspace.visualFactsStatus==='MISSING')throw new Error('请先整理剧本视觉事实，完成后再生成初版提示词。');
+  if(scope?!scopedFacts?.complete:workspace.visualFactsStatus==='MISSING')throw new Error('请先整理所选范围的剧本视觉事实，完成后再生成初版提示词。');
+  if(scopedFacts){const versions=workspace.assets.filter(a=>a.baseKey===asset!.baseKey).map(a=>({key:a.key,fromKey:a.fromKey})),selected=selectAssetVisualFacts(asset.baseKey,asset.key,scopedFacts.facts,versions);asset={...asset,visualFacts:selected.facts,visualIssues:[...scopedFacts.issues.filter(i=>!i.subjectKey||i.subjectKey===asset!.baseKey),...selected.issues],evidence:selected.facts.map(f=>({label:f.sourceLabel??f.chunkId,text:f.attribute+'：'+f.value+'\n原文：'+f.quote}))};}
   const blockingIssues=asset.visualIssues?.filter(i=>i.blocking!==false)??[];
   if(blockingIssues.length)throw new Error('该资产的剧本事实仍需核对：'+blockingIssues.map(i=>i.message).join('；'));
   if(asset.variant&&!asset.visualFacts?.some(f=>f.versionKey===asset.key))throw new Error('尚未核对出该子形象的明确差异，请先核对剧本事实或手动编写变化提示词。');
@@ -116,8 +129,8 @@ export async function generateAssetPrompt(projectId:string,key:string,revision:n
   try {
     const [project,systemPrompt,input]=await Promise.all([prisma.project.findUniqueOrThrow({where:{id:projectId}}),readFile(path.join(process.cwd(),asset.variant?'prompts/asset-image-derive-v1.md':'prompts/asset-image-design-v1.md'),'utf8'),loadFoundationInputs(projectId)]);
     const decisions=selectAssetPromptDecisions(input.presentationConditions,asset);
-    const result=await runner({projectId,provider:resolveProvider(project.executionMode),role:{code:asset.variant?'A15_D':'A15',skill:'',systemPrompt,model:'gpt-6-astra',reasoningEffort:'low'},sessionMode:'ephemeral',
-      prompt:JSON.stringify({asset:{key:asset.key,name:asset.name,type:asset.type,variant:asset.variant},lockedFacts:[...new Map((asset.visualFacts??[]).map(f=>[JSON.stringify([f.subjectKey,f.attribute,f.value,f.versionKey,f.scope]),f])).values()],style:workspace.stylePrefix,decisions,referenceDesign:reference?{key:dependencyKey,body:reference.body}:null,evidencePolicy:'lockedFacts是唯一已核对剧本事实；资产名称只是目录标识，不能从其补写剧情事实。基础设计只补未限定的美术细节；变体仅依来源图形象与明确的版本事实写变化，不重新设计五官。没有事实表示当前核对未提取到明示外观，不代表原文绝对没有。不得把设计补足写成剧本事实。'})});
+    const result=await runner({projectId,provider:resolveProvider(project.executionMode),role:{code:asset.variant?'A15_D':'A15',skill:'',systemPrompt,model:PRODUCTION_CLI_MODEL,reasoningEffort:PRODUCTION_CLI_REASONING},sessionMode:'ephemeral',
+      prompt:JSON.stringify({asset:{key:asset.key,name:asset.name,type:asset.type,variant:asset.variant},...projectAssetDesignFacts(asset.visualFacts??[]),style:workspace.stylePrefix,...(workspace.seriesDirection?.status==='CONFIRMED'?{seriesDirection:workspace.seriesDirection.brief}:{}),decisions,referenceDesign:reference?{key:dependencyKey,body:reference.body}:null,evidencePolicy:'原文引用是事实依据，提取记录不是用户确认；资产名称只是目录标识。全剧方向仅约束表达气质，不是外貌或剧情事实。基础设计只补未限定的美术细节；变体仅依来源形象与明确版本事实写变化，不重新设计五官。未提取到外观不代表原文绝对没有；冲突留待核对，设计补足不得冒充剧本事实。'})});
     rawOutput=result.rawOutput??JSON.stringify(result.data);
     const content={...validatePromptOutput(result.data,key),facts:asset.evidence.map(e=>e.label+'\n'+e.text).join('\n\n')};
     const current=await loadAssetPromptWorkspace(projectId);
@@ -131,6 +144,38 @@ export async function generateAssetPrompt(projectId:string,key:string,revision:n
     const failed:PromptRecord={...running,status:'FAILED',error:captured.message||'生成失败',rawOutput:rawOutput||captured.rawOutput||'',revision:running.revision+1,updatedAt:new Date().toISOString()};
     await compareWrite(projectId,key,running.revision,failed);return failed;
   }
+}
+
+/** Explicit scope entry. The full catalogue is read only as an index; only these keys enter generation. */
+export async function planEpisodeAssetProduction(projectId:string,episodeNumbers:number[],requestedAssetKeys?:string[]){
+ const [workspace,input,production]=await Promise.all([loadAssetPromptWorkspace(projectId),loadFoundationInputs(projectId),readProductionScope(projectId)]);
+ const scope=normalizeAssetProductionScope({episodeNumbers},input.sourceIndex.episodes.filter(e=>isProductionEpisodeNumber(e.number,production)).map(e=>e.number));
+ const actual=workspace.assets.filter(asset=>asset.episodes.some(n=>scope.episodeNumbers.includes(n))).map(asset=>asset.key);
+ let keys=new Set(actual);const visiting=new Set<string>();
+ const visit=(key:string)=>{if(visiting.has(key))throw new Error('资产来源存在循环，请先核对。');const asset=workspace.assets.find(a=>a.key===key);if(!asset)throw new Error('来源资产不存在，请先核对。');const parent=asset.fromKey??(asset.variant?asset.baseKey:undefined);if(!parent)return;visiting.add(key);if(!keys.has(parent)){keys.add(parent);visit(parent);}else if(visiting.has(parent))throw new Error('资产来源存在循环，请先核对。');visiting.delete(key);};
+ actual.forEach(visit);
+ if(requestedAssetKeys!==undefined){if(!Array.isArray(requestedAssetKeys)||requestedAssetKeys.some(key=>typeof key!=='string'||!keys.has(key)))throw new Error('请求资产越出明确选集及必要来源范围。');keys=new Set(requestedAssetKeys);requestedAssetKeys.forEach(visit);}
+ return {scope:{...scope,assetKeys:[...keys]},assetKeys:[...keys],actualAssetKeys:actual.filter(key=>keys.has(key)),materialSourceOnlyKeys:[...keys].filter(key=>!actual.includes(key)),eligibleKeys:[...keys].filter(key=>workspace.assets.find(a=>a.key===key)?.eligible),sourceVersion:input.sourceVersion};
+}
+
+/** Called only by an explicitly authorized production action; never by a read or preview. */
+export async function generateAssetPromptsForEpisodes(projectId:string,episodeNumbers:number[],options:{assetKeys?:string[];materialNeeds?:AssetMaterialNeed[];runner?:typeof runRoleByProvider;shouldContinue?:()=>Promise<boolean>}={}){
+ const plan=await planEpisodeAssetProduction(projectId,episodeNumbers,options.assetKeys),runner=options.runner??runRoleByProvider;
+ const check=async()=>{if(options.shouldContinue&&!await options.shouldContinue())throw new Error('所选范围的后续资产任务已停止。');if((await loadFoundationInputs(projectId)).sourceVersion!==plan.sourceVersion)throw new Error('原文已更新，未继续后续资产任务。');};
+ await check();
+ if(options.materialNeeds!==undefined){
+  if(options.assetKeys===undefined)throw new Error('局部材料需求必须明确限定资产键，不默认扫描全库。');
+  return {...plan,results:await generateScopedAssetMaterialCandidates(projectId,plan,await loadAssetPromptWorkspace(projectId),options.materialNeeds,runner,check)};
+ }
+ if(!plan.eligibleKeys.length)return {...plan,results:[] as PromptRecord[]};
+ const before=await loadAssetPromptWorkspace(projectId),needed=plan.eligibleKeys.filter(key=>{const asset=before.assets.find(a=>a.key===key)!,record=before.records[key];return !record?.body||record.status!=='READY'||promptNeedsReview(asset,before.records,before.assets);});
+ if(!needed.length)return {...plan,results:[] as PromptRecord[]};
+ if(needed.some(key=>before.records[key]?.origin==='MANUAL'&&before.records[key].body))throw new Error('人工提示词已保留，请先核对来源并保存，不自动覆盖。');
+ await ensureAssetVisualFacts(projectId,runner,{scope:plan.scope,shouldContinue:async()=>{await check();return true;}});
+ const workspace=await loadAssetPromptWorkspace(projectId),requested=plan.eligibleKeys.filter(key=>{const asset=workspace.assets.find(a=>a.key===key)!;const record=workspace.records[key];return !record?.body||record.status!=='READY'||promptNeedsReview(asset,workspace.records,workspace.assets);});
+ const keys=planAssetPromptQueue(workspace,requested),results:PromptRecord[]=[];
+ for(const key of keys){await check();const current=(await loadAssetPromptWorkspace(projectId)).records[key];if(current?.origin==='MANUAL'&&current.body)throw new Error('人工提示词已保留，请先核对来源并保存，不自动覆盖。');const result=await generateAssetPrompt(projectId,key,current?.revision??0,runner,plan.scope);results.push(result);if(result.status!=='READY')break;}
+ return {...plan,results};
 }
 
 export async function recoverAssetPrompt(projectId:string,key:string,revision:number) {

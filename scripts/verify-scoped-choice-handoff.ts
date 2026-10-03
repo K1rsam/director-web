@@ -250,8 +250,8 @@ async function main() {
       const longIndex = structuredClone(input.sourceIndex), previous = longIndex.episodes.find(episode => episode.number === 7)!;
       previous.content = '原文长行'.repeat(700); const longScenes = structuredClone(scenes); longScenes[0].sourceRange = { start: 0, end: previous.content.length };
       const clipped = supply.buildLightBoundaryContext(buildSourceIndex(longIndex.episodes), catalog, longScenes, [8]);
-      assert.ok(clipped?.previousSource.clipped && clipped.gaps.length, '超长一行不得悄悄变成无前场');
-      assert.ok(clipped.previousSource.text.length <= 2400);
+      assert.ok(clipped && !clipped.previousSource.clipped && clipped.previousSource.budgetExceeded, '完整超长节点只超软预算，不冒充已截取');
+      assert.equal(clipped.previousSource.text, previous.content, '超长一行必须原样保留，不得截断节点');
     });
     await check('本集末尾原文漏出场次时可读但必须PARTIAL', async () => {
       await readDraft(() => {}, 'READY');

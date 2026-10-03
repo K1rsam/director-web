@@ -50,6 +50,7 @@ export type DeepSeekJsonResult<T> = {
   sessionId: null;
   stdout: string;
   stderr: string;
+  usage?: { inputTokens: number | null; outputTokens: number | null; totalTokens: number | null; cachedInputTokens: number | null };
 };
 
 const DEFAULT_TIMEOUT_MS = 15 * 60_000;
@@ -155,6 +156,7 @@ async function runDeepSeekJsonOnce<T>(request: DeepSeekJsonRequest): Promise<Dee
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), request.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   let requestOutcome: "UNKNOWN" | "RESPONDED" = "UNKNOWN";
+  let nativeUsage: DeepSeekJsonResult<T>['usage'];
   try {
     const response = await fetch(`${apiBase}/chat/completions`, {
       method: "POST",
@@ -189,6 +191,14 @@ async function runDeepSeekJsonOnce<T>(request: DeepSeekJsonRequest): Promise<Dee
       };
       choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
     };
+    const tokenCount = (n: unknown): number | null => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : null;
+    const inputTokens = tokenCount(payload?.usage?.prompt_tokens), outputTokens = tokenCount(payload?.usage?.completion_tokens);
+    const reportedTotalValue = payload?.usage?.total_tokens;
+    const reportedTotal = tokenCount(reportedTotalValue);
+    const consistent = inputTokens !== null && outputTokens !== null && Number.isSafeInteger(inputTokens + outputTokens)
+      && (reportedTotalValue === undefined || reportedTotal !== null && reportedTotal === inputTokens + outputTokens);
+    nativeUsage = { inputTokens, outputTokens, totalTokens: consistent ? inputTokens + outputTokens : null,
+      cachedInputTokens: tokenCount(payload?.usage?.prompt_cache_hit_tokens) };
     if (!payload || typeof payload !== "object" || Array.isArray(payload)
       || !Array.isArray(payload.choices) || typeof payload.choices[0]?.message?.content !== "string") {
       throw new Error("DeepSeek API 响应结构异常：缺少字符串 choices[0].message.content，完整响应已保留供诊断。");
@@ -221,13 +231,14 @@ async function runDeepSeekJsonOnce<T>(request: DeepSeekJsonRequest): Promise<Dee
       data,
       sessionId: null,
       stdout: "",
-      stderr: `[DeepSeek ${request.model} ${Date.now() - startedAt}ms ${usage} finish=${finishReason} request=${payload.id ?? "?"}]`
+      stderr: `[DeepSeek ${request.model} ${Date.now() - startedAt}ms ${usage} finish=${finishReason} request=${payload.id ?? "?"}]`,
+      usage: nativeUsage
     };
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw Object.assign(new Error(`DeepSeek API 调用超过${Math.round((request.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 60_000)}分钟，已停止本岗位。`), { requestOutcome });
     }
-    if (error instanceof Error) Object.assign(error, { requestOutcome });
+    if (error instanceof Error) Object.assign(error, { requestOutcome, ...(nativeUsage ? {usage:nativeUsage} : {}) });
     throw error;
   } finally {
     clearTimeout(timer);

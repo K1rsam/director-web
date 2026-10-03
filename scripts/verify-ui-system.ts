@@ -15,6 +15,7 @@ const foundationDelivery = readFileSync(join(root, "app/projects/[projectId]/fou
 const homePage = readFileSync(join(root, "app/page.tsx"), "utf8");
 const newPage = readFileSync(join(root, "app/projects/new/page.tsx"), "utf8");
 const episodePage = readFileSync(join(root, "app/projects/[projectId]/episodes/[episodeId]/page.tsx"), "utf8");
+const storyboardWorkbench = readFileSync(join(root, "app/projects/[projectId]/episodes/[episodeId]/storyboard/workbench.tsx"), "utf8");
 const workspaceGrid = readFileSync(join(root, "app/projects/[projectId]/episodes/[episodeId]/workspace-grid.tsx"), "utf8");
 const resetButton = readFileSync(join(root, "app/projects/[projectId]/episodes/[episodeId]/reset-episode-button.tsx"), "utf8");
 const sceneTable = readFileSync(join(root, "app/projects/[projectId]/scene-structure-table.tsx"), "utf8");
@@ -111,8 +112,11 @@ if (chrome.includes('activeSection === "projects" && projectLabel ? projectLabel
   throw new Error("Project context navigation must keep the project name on API and new-project pages");
 }
 
-for (const token of ["roleStageForm", "roleCardHitArea", "roleCardAction", "episodeTopbarAction", "topbarStopForm"]) {
-  if (!episodePage.includes(token)) throw new Error(`Episode workspace is missing the direct interaction ${token}`);
+for (const token of ["runSingleStageAction", "resetEpisodeAction", "stopEpisodePipelineAction", "repairEpisodeAction", "acknowledgeIssueAction", "roleStageForm", "topbarStopForm"]) {
+  if (episodePage.includes(token)) throw new Error(`Legacy read-only workspace exposes a retired mutation: ${token}`);
+}
+for (const token of ["useWorkbench", 'work.act("start", { mode: "all" })', 'work.act("pause")', "WorkflowGlassRail", "ProductionPanel"]) {
+  if (!storyboardWorkbench.includes(token)) throw new Error(`Current third-stage workspace lost the real interaction ${token}`);
 }
 
 if (episodePage.includes('<i aria-hidden="true">↗</i>')) {
@@ -201,7 +205,7 @@ if (providerPanel.includes("runnerLauncherPanel") || providerPanel.includes("本
 if (providerPanel.includes("runnerRefreshButton") || providerPanel.includes("刷新检测")) {
   throw new Error("本机 CLI 检测面板不应保留重复的刷新检测按钮");
 }
-for (const token of ["status.account.email", "status.usage.lifetimeTokens", "formatRemaining(primary)", "formatRemaining(secondary)"]) {
+for (const token of ["status.account.email", "status.usage.lifetimeTokens", "formatRemaining(window)", "formatQuotaWindowLabel(window.windowDurationMins)"]) {
   if (!providerPanel.includes(token)) throw new Error(`本机 CLI 状态面板没有绑定 /status 字段：${token}`);
 }
 if (providerPanel.includes("accessToken") || providerPanel.includes("rawStatus")) {
@@ -215,16 +219,16 @@ if (visionStyles.includes(".appChrome:not(.episodeShell) .appTopbar") || visionS
   throw new Error("First-level pages must retain the same floating chrome geometry as episode pages");
 }
 
-if (!chrome.includes("episodeShell") || !episodePage.includes("episodeRoleDeck") || !episodePage.includes("episodeTopbarMeta")) {
-  throw new Error("Episode page must merge duplicate heading controls into the topbar and expose a collapsible role deck");
+if (!chrome.includes("episodeShell") || !episodePage.includes("episodeDashboard") || !episodePage.includes("episodeTopbarMeta")) {
+  throw new Error("Historical episode page must retain the shared reading chrome and compact metadata");
 }
 
 if (episodePage.includes('className="episodePageHeading"')) {
   throw new Error("Episode page must not repeat its title and controls below the shared topbar");
 }
 
-if (!episodePage.includes('<details className="episodeRoleDeck" open>') || /episodeRoleDeck"\s+open=\{/.test(episodePage)) {
-  throw new Error("Episode role status must default open without changing its initial state by pipeline status");
+if (episodePage.includes("episodeRoleDeck") || !episodePage.includes("历史只读") || !episodePage.includes("readOnly")) {
+  throw new Error("Historical episode page must be read-only and not expose the retired role deck");
 }
 
 if (!/\.episodeShell \.unitList\s*\{[^}]*grid-auto-rows:\s*max-content/s.test(visionStyles)) {

@@ -40,7 +40,12 @@ export type SceneAssetRef = { episode: number; sceneKey: string };
 export type CatalogAssetWire = { key?: string; name: string; type: F2Asset['type']; role?: string; relationNote?: string; aliases?: string[]; episodes: number[]; sceneRefs?: SceneAssetRef[]; preparation?: Preparation; variants?: { name: string; episodes: number[]; sceneRefs?: SceneAssetRef[]; note?: string; preparation?: Preparation }[] };
 export type CatalogWire = { format: 'ASSET_CATALOG_V1' | 'ASSET_CATALOG_V2'; coverage: number[]; assets: CatalogAssetWire[]; humanChoices?: HumanChoice[]; repairItems?: CatalogRepairItem[] };
 /** Program-supplied keys are read-only references, not author-assigned variant identities. */
-export type CatalogProjection = Omit<CatalogWire, 'assets'> & { assets: (Omit<CatalogAssetWire, 'variants'> & { variants: (NonNullable<CatalogAssetWire['variants']>[number] & { readonly key?: string })[] })[] };
+export type CatalogMaterialCandidate = {
+  key: string; baseKey: string; baseName?: string; name: string; type: F2Asset['type']; kind: 'BASE' | 'VARIANT'; episodes: number[];
+  use: 'CANDIDATE_ONLY'; reason: 'UNLOCATED_USAGE'; preparation?: Preparation; note?: string;
+  [field: string]: unknown;
+};
+export type CatalogProjection = Omit<CatalogWire, 'assets'> & { assets: (Omit<CatalogAssetWire, 'variants'> & { variants: (NonNullable<CatalogAssetWire['variants']>[number] & { readonly key?: string })[] })[]; materialCandidates?: CatalogMaterialCandidate[] };
 export type ProductionVariant = { key: string; name: string; episodes: number[]; sceneRefs?: SceneAssetRef[]; note: string; preparation?: Preparation };
 export interface ProductionAsset extends F2Asset { role?: string; relationNote?: string; usageEpisodes: number[]; sceneRefs?: SceneAssetRef[]; variants: ProductionVariant[]; preparation?: Preparation }
 export interface ProductionCatalog extends F2Output { format: CatalogWire['format']; assets: ProductionAsset[]; repairItems?: CatalogRepairItem[] }
@@ -203,9 +208,16 @@ export function isProductionCatalog(value: unknown): value is ProductionCatalog 
 }
 export function projectProductionCatalog(output: ProductionCatalog, scope: readonly number[]): CatalogProjection {
   if (new Set(scope).size !== scope.length || scope.some(n => !output.coverage.includes(n))) fail('scope', '投影超出目录覆盖范围');
-  if (output.format === PRODUCTION_CATALOG_FORMAT) return { format: output.format, coverage: [...scope], assets: output.assets.filter(a => !a.usageEpisodes.length || a.usageEpisodes.some(n => scope.includes(n))).map(a => ({ key: a.key, name: a.name, type: a.type, ...readClassification(a, 'asset'), aliases: [...a.aliases], episodes: a.usageEpisodes.filter(n => scope.includes(n)), ...(a.sceneRefs === undefined ? {} : { sceneRefs: a.sceneRefs.filter(ref => scope.includes(ref.episode)) }), preparation: structuredClone(a.preparation), variants: a.variants.filter(v => !v.episodes.length || v.episodes.some(n => scope.includes(n))).map(v => ({ key: v.key, name: v.name, episodes: v.episodes.filter(n => scope.includes(n)), ...(v.sceneRefs === undefined ? {} : { sceneRefs: v.sceneRefs.filter(ref => scope.includes(ref.episode)) }), note: v.note, preparation: structuredClone(v.preparation) })) })),
+  // Empty usage means not located, never all episodes. Keep full definitions separately,
+  // including unknown metadata and derivation links, without claiming an appearance.
+  const materialCandidates: CatalogMaterialCandidate[] = output.assets.flatMap(a => [
+    ...(!a.usageEpisodes.length ? [{ ...structuredClone(a), baseKey: a.key, kind: 'BASE' as const, episodes: [], use: 'CANDIDATE_ONLY' as const, reason: 'UNLOCATED_USAGE' as const }] : []),
+    ...a.variants.filter(v => !v.episodes.length).map(v => ({ ...structuredClone(v), baseKey: a.key, baseName: a.name, type: a.type, kind: 'VARIANT' as const, use: 'CANDIDATE_ONLY' as const, reason: 'UNLOCATED_USAGE' as const }))
+  ]);
+  const candidates = materialCandidates.length ? { materialCandidates } : {};
+  if (output.format === PRODUCTION_CATALOG_FORMAT) return { format: output.format, coverage: [...scope], ...candidates, assets: output.assets.filter(a => a.usageEpisodes.some(n => scope.includes(n))).map(a => ({ key: a.key, name: a.name, type: a.type, ...readClassification(a, 'asset'), aliases: [...a.aliases], episodes: a.usageEpisodes.filter(n => scope.includes(n)), ...(a.sceneRefs === undefined ? {} : { sceneRefs: a.sceneRefs.filter(ref => scope.includes(ref.episode)) }), preparation: structuredClone(a.preparation), variants: a.variants.filter(v => v.episodes.some(n => scope.includes(n))).map(v => ({ key: v.key, name: v.name, episodes: v.episodes.filter(n => scope.includes(n)), ...(v.sceneRefs === undefined ? {} : { sceneRefs: v.sceneRefs.filter(ref => scope.includes(ref.episode)) }), note: v.note, preparation: structuredClone(v.preparation) })) })),
     ...repairFields((output.repairItems ?? []).filter(item => item.episodes.some(number => scope.includes(number)))) };
-  return { format: 'ASSET_CATALOG_V1', coverage: [...scope], assets: output.assets.filter(a => a.usageEpisodes.some(n => scope.includes(n))).map(a => ({ key: a.key, name: a.name, type: a.type, aliases: [...a.aliases], episodes: a.usageEpisodes.filter(n => scope.includes(n)), variants: a.variants.filter(v => v.episodes.some(n => scope.includes(n))).map(v => ({ name: v.name, episodes: v.episodes.filter(n => scope.includes(n)), note: v.note })) })) };
+  return { format: 'ASSET_CATALOG_V1', coverage: [...scope], ...candidates, assets: output.assets.filter(a => a.usageEpisodes.some(n => scope.includes(n))).map(a => ({ key: a.key, name: a.name, type: a.type, aliases: [...a.aliases], episodes: a.usageEpisodes.filter(n => scope.includes(n)), variants: a.variants.filter(v => v.episodes.some(n => scope.includes(n))).map(v => ({ name: v.name, episodes: v.episodes.filter(n => scope.includes(n)), note: v.note })) })) };
 }
 /** Provider/author boundary: canonical-looking extra fields never grant trusted identity. */
 export function requireProductionCatalogAuthor(value: unknown, index: SourceIndex, scope: readonly number[], priorAssets: readonly F2Asset[] = []): ProductionCatalog {

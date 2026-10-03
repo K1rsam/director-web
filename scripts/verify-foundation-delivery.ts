@@ -36,15 +36,58 @@ async function main() {
     return saveFoundationDocument(db, projectId, createEmptyDocument(state).revision, doc, 'light fixture');
   };
   try {
+    const legacyAuto = await create('legacy automatic asset generation is retired');
+    const legacyTask = await api.queueFoundationDelivery(legacyAuto.id, { autoAssetPrompts: true }, db);
+    assert.equal(legacyTask.autoAssetPrompts, false, 'Legacy form/options cannot silently restore the retired full-catalogue dispatch');
+    await api.stopFoundationDelivery(legacyAuto.id, legacyTask.id, db);
+    assert.equal((await api.queueFoundationDelivery(legacyAuto.id, {}, db)).autoAssetPrompts, false);
     // Zero F1, real parsed scenes and per-scene consumer-ready asset supply.
     const ordinary = await create('light ordinary start'), before = await db.episode.findMany({ where: { projectId: ordinary.id }, orderBy: { number: 'asc' } }), ordinaryCalls: string[] = [];
-    const ordinaryTask = await api.queueFoundationDelivery(ordinary.id, {}, db); await assert.rejects(api.queueFoundationDelivery(ordinary.id, {}, db), /运行|处理中|进行|状态/);
+    const ordinaryTask = await api.queueFoundationDelivery(ordinary.id, {}, db);
+    assert.equal(ordinaryTask.autoAssetPrompts, false, 'Stage 1 never defaults to full-catalogue paid asset preparation');
+    await assert.rejects(api.queueFoundationDelivery(ordinary.id, {}, db), /运行|处理中|进行|状态/);
     await api.executeFoundationDelivery(ordinary.id, ordinaryTask.id, { db, stageRunner: async (stage, prompt) => { const value = input(prompt); ordinaryCalls.push(stage);
       assert.ok(value.scenes.every((scene: { sceneKey: string; sourceText?: string; sourceLines?: unknown }) => scene.sceneKey && !scene.sourceText && scene.sourceLines));
       if (stage === 'F2') return out(f2(value.scope)); assert.equal(value.candidates.f1, undefined); return out(q1(value.scope, { scenes: [{ episode: 1, sceneKey: '1-1', weather: '雨' }] }));
     } });
     let state = await api.getFoundationDeliveryState(ordinary.id, db); assert.deepEqual(ordinaryCalls, ['F2', 'Q1']); assert.equal(state.task?.status, 'COMPLETE'); assert.equal(state.document.f1, null); assert.equal(state.document.workflow, 'LIGHT_STAGE1_V1'); assert.equal(state.document.assetMethodVersion, LIGHT_ASSET_METHOD_VERSION); assert.equal(state.complete, true); assert.deepEqual(await db.episode.findMany({ where: { projectId: ordinary.id }, orderBy: { number: 'asc' } }), before);
     assert.equal((await db.scriptScene.findFirstOrThrow({ where: { episode: { projectId: ordinary.id, number: 1 }, sceneKey: '1-1' } })).weather, '雨');
+
+    // Completion is free to read and cannot be turned into a second paid review by clicking again.
+    const completedDocument = structuredClone(state.document), completedTask = structuredClone(state.task);
+    const completedRuns = await db.pipelineRun.count({ where: { projectId: ordinary.id } });
+    for (const options of [{}, { expectedState: state.expectedState }, { allowUnknownRetry: true }]) {
+      await assert.rejects(api.queueFoundationDelivery(ordinary.id, options, db), /已整理完成|无需重复调用/);
+      const unchanged = await api.getFoundationDeliveryState(ordinary.id, db);
+      assert.equal(unchanged.complete, true);
+      assert.deepEqual(unchanged.document, completedDocument);
+      assert.deepEqual(unchanged.task, completedTask);
+      assert.equal(await db.pipelineRun.count({ where: { projectId: ordinary.id } }), completedRuns);
+    }
+    await db.project.update({ where: { id: ordinary.id }, data: { title: 'only a display title changed' } });
+    assert.equal((await api.getFoundationDeliveryState(ordinary.id, db)).complete, true, 'A display title is not a new semantic review dependency');
+    await assert.rejects(api.queueFoundationDelivery(ordinary.id, {}, db), /已整理完成|无需重复调用/);
+    assert.equal(await db.pipelineRun.count({ where: { projectId: ordinary.id } }), completedRuns);
+
+    // Mechanical validity cannot prove semantic completeness: retain the first Q1 source review.
+    const semantic = await create('semantic omission with no mechanical blocker');
+    await db.episode.updateMany({ where: { projectId: semantic.id, number: 1 }, data: { content: '第1集\n1-1 客厅 日 内\n人物：甲\n△甲把电棍放在桌上。\n甲：别碰它。\n' } });
+    await preprocessProject(semantic.id, db); await seed(semantic.id);
+    const semanticBefore = await api.getFoundationDeliveryState(semantic.id, db);
+    assert.deepEqual(semanticBefore.issues, [], 'This source-to-catalogue omission is not a mechanical format failure');
+    const semanticSource = await db.episode.findMany({ where: { projectId: semantic.id }, orderBy: { number: 'asc' } });
+    const semanticTask = await api.queueFoundationDelivery(semantic.id, {}, db), semanticCalls: string[] = [];
+    await api.executeFoundationDelivery(semantic.id, semanticTask.id, { db, stageRunner: async (stage, prompt) => {
+      const value = input(prompt); semanticCalls.push(stage);
+      assert.equal(stage, 'Q1'); assert.equal(value.delivery.mode, 'EDIT');
+      assert.match(JSON.stringify(value.source), /甲把电棍放在桌上/);
+      return out(q1(value.scope, { assets: [{ name: '电棍', type: 'PROP', episodes: [1], sceneRefs: refs([1]), preparation: { mode: 'REFERENCE' } }] }));
+    } });
+    const semanticAfter = await api.getFoundationDeliveryState(semantic.id, db);
+    assert.deepEqual(semanticCalls, ['Q1'], 'Reuse the existing catalogue but do not skip its first semantic review');
+    assert.equal(semanticAfter.complete, true, semanticAfter.task?.error ?? '');
+    assert.ok(semanticAfter.document.f2?.assets.some(asset => asset.name === '电棍'));
+    assert.deepEqual(await db.episode.findMany({ where: { projectId: semantic.id }, orderBy: { number: 'asc' } }), semanticSource);
 
     // Real provider suggestions are not erased: each true chunk must receipt only its own scope.
     const suggestion = await create('suggestion receipt scopes', true); await seed(suggestion.id); const suggestionInput = await loadFoundationInputs(suggestion.id, db);
@@ -58,7 +101,7 @@ async function main() {
     await api.executeFoundationDelivery(decision.id, decisionTask.id, { db, stageRunner: async (_stage, prompt) => out(q1(input(prompt).scope, {}, { humanChoices: [choice] })) });
     state = await api.getFoundationDeliveryState(decision.id, db); const required = state.requiredChoices[0]; assert.ok(required); assert.equal(state.task?.status, 'WAITING_USER');
     const resumed = await api.confirmAndContinueFoundationDelivery(db, { projectId: decision.id, contractId: required.id, revision: required.revision, optionIndex: '1' }); assert.ok(resumed, 'the only required choice queues continuation'); assert.equal(resumed.id, decisionTask.id);
-    await api.executeFoundationDelivery(decision.id, resumed.id, { db, stageRunner: async (_stage, prompt) => { const value = input(prompt); assert.deepEqual(value.scope, [1]); return out(q1(value.scope, { scenes: [{ episode: 1, sceneKey: '1-1', characters: ['甲'] }] }, { appliedDecisions: value.confirmedDecisions.map((c: { id: string }) => ({ id: c.id, note: '已在实际场次采用用户方案。' })) })); } });
+    await api.executeFoundationDelivery(decision.id, resumed.id, { db, stageRunner: async (_stage, prompt) => { const value = input(prompt); assert.deepEqual(value.scope, [1]); assert.deepEqual(value.source.episodes.map((episode: { number: number }) => episode.number), [1], 'A local decision must not reread every episode'); return out(q1(value.scope, { scenes: [{ episode: 1, sceneKey: '1-1', characters: ['甲'] }] }, { appliedDecisions: value.confirmedDecisions.map((c: { id: string }) => ({ id: c.id, note: '已在实际场次采用用户方案。' })) })); } });
     state = await api.getFoundationDeliveryState(decision.id, db); assert.equal(state.task?.status, 'COMPLETE'); assert.ok(state.document.appliedDecisions[required.id]); assert.equal(state.confirmedChoices[0].userAnswer, '采用乙');
 
     // No-progress repair stays durably blocked; ordinary continue cannot reset its calls or budget.

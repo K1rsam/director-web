@@ -1,5 +1,6 @@
 node_modules/
 .next/
+/.next-*/
 dist/
 coverage/
 .wrangler/
@@ -38,9 +39,13 @@ outputs/
 prisma/backup-before-stale-episode-errors-20260829/
 
 runtime-3008/
+.storyboard-stage3/
+.storyboard-v4/
 uploads/
 
 .next-qa/
+.next-upstream-qa/
+.next-three-stage-qa/
 
 # 单机样本审计与一次性修复；不属于跨平台产品入口
 integration-merge-report.json
@@ -50,5 +55,10 @@ scripts/verify-payload-recovery-local.ts
 scripts/audit-foundation-output.ts
 scripts/audit-foundation-payload.ts
 scripts/audit-foundation-scene-wire.ts
+# 单次已保存样稿的局部候选，不作为通用产品脚本上传
+scripts/prepare-stage3-local-revision-20261002.mjs
 __pycache__/
 *.pyc
+.production-ledgers/
+.production-workflows/
+.storyboard-stage3-v2/

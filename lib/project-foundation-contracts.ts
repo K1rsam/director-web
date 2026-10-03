@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readHumanChoices, mergeHumanChoices, type HumanChoice } from "@/lib/foundation-human-choices";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { PRODUCTION_CLI_MODEL, PRODUCTION_CLI_REASONING } from "./production-model";
 
 export type FoundationStageCode = "F1" | "F2" | "Q1";
 export const PROJECT_FOUNDATION_STAGES: ReadonlyArray<{
@@ -11,12 +12,12 @@ export const PROJECT_FOUNDATION_STAGES: ReadonlyArray<{
   name: string;
   skill: "";
   model: string;
-  reasoningEffort: "high";
+  reasoningEffort: typeof PRODUCTION_CLI_REASONING;
   apiReasoner: boolean;
 }> = [
-  { code: "F1", uiStage: "P1", name: "全剧与分集导航", skill: "", model: "gpt-5.6-terra", reasoningEffort: "high", apiReasoner: false },
-  { code: "F2", uiStage: "P2", name: "资产目录与必要变体", skill: "", model: "gpt-5.6-terra", reasoningEffort: "high", apiReasoner: true },
-  { code: "Q1", uiStage: "P3", name: "资料最终优化", skill: "", model: "gpt-5.6-sol", reasoningEffort: "high", apiReasoner: false }
+  { code: "F1", uiStage: "P1", name: "全剧与分集导航", skill: "", model: PRODUCTION_CLI_MODEL, reasoningEffort: PRODUCTION_CLI_REASONING, apiReasoner: false },
+  { code: "F2", uiStage: "P2", name: "资产目录与必要变体", skill: "", model: PRODUCTION_CLI_MODEL, reasoningEffort: PRODUCTION_CLI_REASONING, apiReasoner: true },
+  { code: "Q1", uiStage: "P3", name: "资料最终优化", skill: "", model: PRODUCTION_CLI_MODEL, reasoningEffort: PRODUCTION_CLI_REASONING, apiReasoner: false }
 ];
 
 export const FOUNDATION_CHUNK_MAX_CHARS = 24_000;

@@ -1,6 +1,17 @@
 import type {VisualChunk} from './asset-visual-facts-contract';
 export const VISUAL_FACT_PLANNER_VERSION='SINGLE_EXTRACT_V4';
 type Identity={key:string;name:string;aliases:string[];usageEpisodes?:number[];variants:{key:string;name:string;episodes?:number[]}[]};
+export type AssetProductionScope={episodeNumbers:number[];assetKeys?:string[]};
+export function normalizeAssetProductionScope(scope:AssetProductionScope,availableEpisodes:number[]):AssetProductionScope{
+ if(!scope||!Array.isArray(scope.episodeNumbers)||!scope.episodeNumbers.length||scope.episodeNumbers.some(n=>!Number.isSafeInteger(n)||!availableEpisodes.includes(n)))throw new Error('请明确选择存在的制作集数；选集范围不能为空。');
+ if(scope.assetKeys!==undefined&&(!Array.isArray(scope.assetKeys)||!scope.assetKeys.length||scope.assetKeys.some(key=>typeof key!=='string'||!key.trim())))throw new Error('资产范围不能为空或包含无效身份。');
+ return {episodeNumbers:[...new Set(scope.episodeNumbers)].sort((a,b)=>a-b),...(scope.assetKeys?{assetKeys:[...new Set(scope.assetKeys)].sort()}: {})};
+}
+/** Program index only. A scoped request never falls back to the entire series catalogue. */
+export function scopedVisualIdentities<T extends Identity>(identities:T[],scope:AssetProductionScope):T[]{
+ return identities.filter(item=>(!scope.assetKeys||scope.assetKeys.includes(item.key)||item.variants.some(v=>scope.assetKeys!.includes(v.key)))&&(item.usageEpisodes?.some(n=>scope.episodeNumbers.includes(n))||item.variants.some(v=>v.episodes?.some(n=>scope.episodeNumbers.includes(n)))||Boolean(scope.assetKeys?.includes(item.key))))
+  .map(item=>({...item,variants:item.variants.filter(v=>v.episodes?.some(n=>scope.episodeNumbers.includes(n))||scope.assetKeys?.includes(v.key))}));
+}
 function names(identity:Identity){
  return [...new Set([identity.name,...identity.aliases,...identity.variants.map(v=>v.name)].flatMap(name=>[name.trim(),name.split(/[|｜]/)[0].trim()]).filter(name=>name.length>=1))];
 }

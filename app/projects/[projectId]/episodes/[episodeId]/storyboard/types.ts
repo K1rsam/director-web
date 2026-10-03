@@ -1,0 +1,43 @@
+export type Mode = "off" | "all" | "recommended" | "review";
+export type SourceRow = { id: string; text: string; kind?: string };
+export type DialogueSource = { id: string; speaker?: string; channel?: string; cue?: string; kind?: string };
+export type RunError = { code?: string; message?: string; detail?: unknown; at?: string };
+export type Fantasy = { id: string; anchorRefs: string[]; subject: string; emotionPurpose: string; recommended: boolean; proposal: string; screenSecondsRange?: number[]; extraSecondsRange?: number[] };
+export type WorkPackage = { id: string; sourceRefs: string[]; eventId?: string; emotionContract: { subject: string; contextTone: string; audienceEffect: string; change: string; landing: string; retain: string[] }; dependsOn: string[] };
+export type Plan = { emotionArc: string; events?: { id: string; title?: string }[]; workPackages: WorkPackage[]; provisionalUnits: { id: string; packageId: string; sourceRefs: string[]; secondsRange: number[] }[]; fantasyCandidates: Fantasy[] };
+export type Usage = { inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; complete: boolean; knownTokens?: number; unknownAttempts?: number; acknowledgedUnknownAttempts?: number };
+export type ExecutionDiagnostics = { timeoutMs: number; startedAt: string; endedAt: string | null; lastActivityAt: string | null; eventCount: number; stdoutBytes: number; stderrBytes: number; failureCategory: string | null };
+export type TimeoutPolicy = { plan: number; author: number; finish: number };
+export type Operation = { attemptId: string; stage: string; packageIds: string[]; status: string; createdAt: string; feedbackRepair?: boolean; localPhase?: "queued" | "executing" | "preparing" | null; execution?: {phase:string;startedAt?:string;lastEventAt?:string|null;lastProgressAt?:string|null}; localSettledAt?: string; cancelRequestedAt?: string; recoveryAt?: string; requestOutcome?: string | null; durationMs?: number; error?: string | RunError; cancelAcknowledgement?: { at: string; acceptUnknownUsage: true; reason?: "TIMEOUT" | "ABORTED" }; canRecoverSaved?: boolean; usage?: Partial<Usage> | null; diagnostics?: ExecutionDiagnostics | null; diagnosticsUnavailable?: boolean };
+export type Candidate = { id: string; attemptId: string; stage: string; packageIds: string[]; status: string; errors?: unknown[]; validation?: unknown; requiredPackageIds?: string[]; resolvedBy?: string; canRecheck?: boolean };
+export type Shot = { id: string; duration: number; camera: string; picture: string; lighting: string; sound: string; transition: string; sourceRefs: string[]; dialogueParts: { lineId: string; text: string; presentation: string; delivery: string; voiceStart: number; voiceEnd: number }[] };
+export type Unit = { id: string; title: string; scene: string; props: string[]; participants: string[]; lighting: string; initialState: string; exitState: string; intent?: { subject: string; change: string; landing: string; retain: string[] }; shots: Shot[] };
+export type Run = {
+  id: string; title?: string; status: string; phase?: string | null; createdAt: string; active: boolean; sourceStale: boolean; directorNotes?: string;
+  legacyReadOnly?: boolean;
+  repairControl?: {blocked:boolean;needsRecheck:boolean;reason:'SCOPE'|'LIMIT'|'NO_PROGRESS'|null}|null;
+  production?: {boundary:{status:string;actualVersion?:string|null;reason?:string;changedKeys?:string[];missingKeys?:string[]}|null;materialNeeds:{stage:1|2|3;target:string;purpose:string;packageIds:string[];sourceRefs:string[];blocking:boolean;supplyUpdated?:boolean}[];sharedBudget:{maxCalls:number;maxTokens:number;calls:number;knownTokens:number;unknownAttempts:number;inFlight:number;complete:boolean}|{unavailable:true}|null;pendingRepair:{packageIds:string[];reason:string;changedKeys:string[]}|null;blocking:boolean;chainComplete:boolean;chainMode:'SINGLE'|'CHAIN'};
+  settings: { maxUnitSeconds: 15 | 30; fantasyMode: Mode; model?: string; reasoning?: string };
+  error?: RunError | null; preparation?: { ready: boolean; checking?:boolean; error?: string; code?: string }; sourceCheckPending?:boolean; blocked?: boolean; sourceRows: SourceRow[]; dialogue?: DialogueSource[]; sourceWarnings?: string[]; plan?: Plan | null;
+  choice: { mode: Mode; overrides?: Record<string, boolean>; unitOverrides?: Record<string, boolean> };
+  selection?: { status: string; selectedIds: string[]; fingerprint: string; unfulfilledUnitIds?: string[] } | null;
+  adopted: { packageIds: string[]; stage: string; unitCount: number; shotCount: number; seconds: number }[];
+  operations: Operation[]; candidates: Candidate[];
+  cancellations?: { attemptId: string; canAcknowledge: boolean; reason: string; code?: string; kind?: "timeout" | "user_stop" }[];
+  assembly?: { text: string; errors: unknown[]; warnings: unknown[]; stats?: unknown; draft?: { units: Unit[]; fantasyRealization?: unknown[] } } | null;
+  usage: Usage; budget: { maxCalls: number; maxTokens: number; maxRepairs: number };
+};
+export type RunIndex = { runs: { id: string; title: string; status: string; createdAt: string; active?: boolean;legacyReadOnly?:boolean }[]; model: string; reasoning: string; maxConcurrent: number; runner: { ready: boolean; message: string; timeoutPolicy?: TimeoutPolicy; configurationError?: boolean }; sourceWarnings: string[]; preparation?: { ready: boolean; checking?:boolean; error?: string; code?: string } };
+export type NewSettings = { maxUnitSeconds: 15 | 30; fantasyMode: Mode; notes: string; maxCalls: number; maxTokens: number };
+export const DEFAULT_SETTINGS: NewSettings = { maxUnitSeconds: 30, fantasyMode: "recommended", notes: "", maxCalls: 32, maxTokens: 300000 };
+export const MODE_LABELS: Record<Mode, string> = { off: "不加额外幻想", all: "全部加入", recommended: "按推荐加入", review: "推荐后我来选" };
+export const MODE_HINTS: Record<Mode, string> = { off: "保留源剧情要求，专注真实表演", all: "每个初排单元都安排合适表达", recommended: "采用推荐位置，减少中间确认", review: "先看方案，再决定哪些加入" };
+export const STAGE_LABELS: Record<string, string> = { plan: "情绪统筹", author: "完整主创", finish: "统一整编" };
+export const operationLabel = (operation: Pick<Operation, 'stage' | 'feedbackRepair'>) => operation.feedbackRepair ? '局部回执修复' : STAGE_LABELS[operation.stage] || '作业记录';
+export const STATUS_LABELS: Record<string, string> = { created: "等待分析", running: "正在处理", planned: "规划已就绪", drafting: "正文创作中", needs_finish: "等待整编", awaiting_confirmation: "等待你的选择", needs_design: "有位置待设计", waiting_dependencies: "等待前置工作包", pausing: "正在保存后暂停", paused: "已暂停", stopped: "已中断", cancelled: "已中断", unknown: "回包结果待核对", interrupted: "执行状态待核对", budget_stop: "已到运行停止线", source_stale: "资料已更新", failed: "需要处理问题", needs_repair: "候选需要修整", needs_dependency_repair: "需要关联修整", assembly_failed: "整稿装配待处理", rechecking: "重新核查中", text_ready_for_review: "文字稿待审看", received: "候选已收到", adopted: "已采纳", stale: "旧版本候选", cancelled_late: "中断后返回", completed: "记录已结束" };
+export const statusLabel = (value: string) => STATUS_LABELS[value] || "状态待核对";
+export const messageOf = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") { const p = value as RunError; if (p.code === "TIMEOUT") return "本次执行达到本地时限，请以已保存的回包和用量记录为准；已有结果保留。"; return [p.at, p.message, typeof p.detail === "object" ? JSON.stringify(p.detail) : p.detail].filter(Boolean).join("：") || p.code || "请查看执行记录"; }
+  return value === undefined || value === null ? "未提供详细说明" : String(value);
+};

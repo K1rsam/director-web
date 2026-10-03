@@ -55,6 +55,7 @@ void (async () => {
     await writeFile(fakeCliPath, `#!${process.execPath}
 import { writeFile } from "node:fs/promises";
 const args = process.argv.slice(2);
+if (args[args.indexOf("mcp") + 1] === "list") { process.stdout.write("[]"); process.exit(0); }
 let prompt = "";
 process.stdin.setEncoding("utf8");
 for await (const chunk of process.stdin) prompt += chunk;

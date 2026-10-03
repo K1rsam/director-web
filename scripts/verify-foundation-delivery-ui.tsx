@@ -52,6 +52,32 @@ let checks = 0;
 function check(name: string, test: () => void) { checks += 1; try { test(); } catch (error) { failures.push(`${name}: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`); } }
 const before = JSON.stringify(base);
 
+check("P4自动交接仅提供可选的分镜输入检查", () => {
+  const html = renderToStaticMarkup(createElement(FoundationWorkflowStatus, { projectId: "project-1", state: base, sourceReady: true, sceneCount: 3, remaining: [] }));
+  assert.equal((html.match(/href="\/projects\/project-1\/foundation\/handoff"/g) ?? []).length, 1);
+  assert.ok(html.includes("分镜输入检查（可选）") && html.includes("自动汇入"));
+  assert.doesNotMatch(html, /查看交接资料/);
+});
+
+check("完成的P1–P4收起，运行与异常自动展开且不丢记录", () => {
+  const status = (state: FoundationDeliveryState, remaining: string[] = []) => renderToStaticMarkup(createElement(FoundationWorkflowStatus, { projectId: "project-1", state, sourceReady: true, sceneCount: 3, remaining }));
+  const done = status({ ...base, complete: true, action: "NONE", availableEpisodes: 3, editedEpisodes: 3 });
+  assert.match(done, /<details[^>]*id="foundation-status"[^>]*>/);
+  assert.doesNotMatch(done.match(/<details[^>]*id="foundation-status"[^>]*>/)![0], /\bopen=/);
+  assert.ok(done.includes("P4") && done.includes("运行记录与用量"));
+  for (const html of [status(base), status({ ...base, complete: true }, ["关键范围待核对"]), status({ ...base, busy: true, task: task() }), status({ ...base, action: "UNKNOWN_CONFIRM", task: task({ status: "INTERRUPTED", unknownOutcome: true }) })]) {
+    assert.match(html, /<details[^>]*id="foundation-status"[^>]*open=""/);
+  }
+});
+
+check("结果未知优先于残留忙态，不再把待核对显示为整理中", () => {
+  const html = renderToStaticMarkup(createElement(FoundationWorkflowStatus, { projectId: "project-1", state: { ...base, busy: true, task: task({ status: "INTERRUPTED", unknownOutcome: true }) }, sourceReady: true, sceneCount: 3, remaining: [] }));
+  const summary = html.match(/<summary[^>]*>[\s\S]*?<\/summary>/)?.[0] ?? "";
+  assert.ok(summary.includes("结果待核对") && !summary.includes("正在整理"));
+  assert.ok(html.includes("当前不会自动重发"));
+  assert.doesNotMatch(html, /data-workflow-state="running"|正在按当前步骤整理资料/);
+});
+
 check("紧凑阶段与真实范围进度可见，等待不伪造百分比", () => {
   for (const [phase, label] of [["PREPARE_SOURCE", "P1 · 原文结构检查"], ["GENERATE_F1", "P2 · 拆集分场"], ["GENERATE_F2", "P3 · 素材提取"], ["EDIT", "P3 · 自动校验"], ["REPAIR", "P3 · 局部修复"], ["APPLY_DECISION", "P3 · 应用决定"]] as const) {
     const state = { ...base, busy: true, totalEpisodes: 70, availableEpisodes: 31, editedEpisodes: 0, task: task({ phase, scope: Array.from({ length: 27 }, (_, i) => i + 32) }) };
@@ -228,7 +254,7 @@ check("确认按钮逐项保存，全部完成后整理", () => {
   const confirmed = renderToStaticMarkup(createElement(PresentationContracts, { projectId: "project-1", pending: [], confirmed: [{ ...choice, userAnswer: "保留两人", decidedAt: new Date(0) }], mode: "delivery" }));
   assert.ok(confirmed.includes("已确认的决定") && confirmed.includes("保留两人"));
 });
-check("主页面鉴权后只读加载，旧岗位无普通入口", () => {
+check("主页面鉴权后只读加载，旧岗位无普通入口，第三阶段仅导航", () => {
   const page = read("app/projects/[projectId]/page.tsx");
   assert.ok(page.includes("await getFoundationDeliveryState(projectId)"));
   assert.ok(page.indexOf("await requireSessionUser") < page.indexOf("await getFoundationDeliveryState"));
@@ -238,7 +264,8 @@ check("主页面鉴权后只读加载，旧岗位无普通入口", () => {
   assert.ok(page.includes('"decision-continued"') && page.includes("blockedReason="));
   assert.ok(page.includes('"delivery-unavailable"') && page.includes("已保存资料和决定没有丢失"));
   assert.ok(page.includes("处理历史") && page.includes("<FoundationUsage") && page.includes("<SceneStructureTable") && page.includes("/foundation/export"));
-  assert.ok(page.includes("后续阶段尚未启用") && !page.includes("runEpisode"));
+  assert.ok(page.includes('id="phase-three"') && page.includes("/storyboard") && page.includes("进入工作台不会自动调用模型") && !page.includes("runEpisode"));
+  assert.ok(page.includes("第二阶段 · 资产形象设计"), "资产形象设计使用第二阶段编号");
 });
 check("项目列表与当前工作稿完成状态一致且先限定用户项目", () => {
   const home = read("app/page.tsx");
@@ -259,7 +286,7 @@ check("技术故障展开诊断，正文不转交底层修复，未知结果优�
   const technical = "请修 JSON sceneKey，再缩减资料 <script>诊断</script>";
   const failed = { ...base, action: "BLOCKED" as const, continuationBlocker: technical, task: task({ status: "PARTIAL", message: technical, error: technical }) };
   const rail = (state: FoundationDeliveryState) => renderToStaticMarkup(createElement(FoundationWorkflowStatus, { projectId: "project-1", state, sourceReady: true, sceneCount: 3, remaining: ["人物身份需创作确认"] }));
-  const visible = (html: string) => html.replace(/<details\b[^>]*>[\s\S]*?<\/details>/g, "");
+  const visible = (html: string) => html.replace(/<details\b[^>]*><summary>(?:技术诊断与处理记录|处理与调用说明)<\/summary>[\s\S]*?<\/details>/g, "");
   for (const html of [render(failed), rail(failed)]) {
     assert.ok(visible(html).includes("当前已暂停") && visible(html).includes("已保存资料"));
     assert.doesNotMatch(visible(html), /sceneKey|JSON|请修|缩减资料|修复成功/);
@@ -309,7 +336,7 @@ check("四卡只突出真实当前岗位，计时恢复且非活动状态冻结"
   const badRequest = rail({ ...requestClock, activeCallStartedAt: 'bad' });
   assert.ok(badRequest.includes('本任务历时（含等待）：2分 5秒'));
   assert.doesNotMatch(badRequest, /NaN/);
-  assert.match(read("app/projects/[projectId]/foundation-delivery.module.css"), /prefers-reduced-motion: reduce/);
+  assert.match(read("app/ui/workflow-glass.module.css"), /prefers-reduced-motion: reduce/);
 });
 
 check("worker消失后中断与未知结果同时可见，不能显示普通继续或活动计时", () => {

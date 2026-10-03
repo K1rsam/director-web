@@ -119,15 +119,15 @@ const shots = mergeShotPatches(
 );
 assert.equal((shots[0].e2 as Record<string, unknown>).action_chain, "苏远拿起手机");
 
-assert.equal(readStageModel("E5").model, "gpt-5.6-sol");
+assert.equal(readStageModel("E5").model, "gpt-6.1-sol");
 assert.equal(PIPELINE_STAGE_CONFIGS.length, 6, "E0-E5 六岗流水线");
-assert.equal(PIPELINE_STAGE_CONFIGS.every((stage) => isProductionCliModel(stage.model)), true, "生产岗位只能使用 terra/sol");
+assert.equal(PIPELINE_STAGE_CONFIGS.every((stage) => isProductionCliModel(stage.model) && stage.reasoningEffort === "medium"), true, "生产岗位统一使用6.1 Sol中档");
 const savedCliModel = process.env.CLI_MODEL;
 const savedCliModelE0 = process.env.CLI_MODEL_E0;
 process.env.CLI_MODEL = "gpt-5.6-luna";
 process.env.CLI_MODEL_E0 = "gpt-5.6-luna";
 try {
-  assert.equal(resolveCliModel("E0", "gpt-5.6-terra"), "gpt-5.6-terra", "快速模型覆盖不得进入生产岗位");
+  assert.equal(resolveCliModel("E0", "gpt-5.6-terra"), "gpt-6.1-sol", "旧模型或环境变量不得覆盖当前生产模型");
 } finally {
   if (savedCliModel === undefined) delete process.env.CLI_MODEL;
   else process.env.CLI_MODEL = savedCliModel;

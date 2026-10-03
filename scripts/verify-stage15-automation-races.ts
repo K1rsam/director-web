@@ -41,6 +41,11 @@ async function main(){
  const previousCalls=calls;let factCalls=0;
  const factJob=launches.at(-1)!;await runAssetPromptWorker(projectId,factJob.row,factJob.token,{...deps,facts:async(_p,_r,control)=>{factCalls++;assert.equal(await control?.shouldContinue?.(),true);await control?.onProgress?.(1,2);await control?.onProgress?.(2,2);return {facts:[],issues:[],basis:'b',status:'READY'};}});
  assert.equal(factCalls,1);assert.equal(calls,previousCalls);assert.equal((await state()).status,'COMPLETE');assert.equal((await state()).done,2);assert.equal((await state()).total,2);
+ const selectedScope={episodeNumbers:[1],assetKeys:['location']};
+ w.assets=[{...asset('location'),type:'LOC'},{...asset('future'),episodes:[2]}];w.records={};
+ await launchAssetPromptAutomation(projectId,'s',launchDeps,'PROMPTS',selectedScope);let scopedFacts=0;const selectedKeys:string[]=[];
+ const selectedJob=launches.at(-1)!;await runAssetPromptWorker(projectId,selectedJob.row,selectedJob.token,{...deps,facts:async(_p,_r,control)=>{scopedFacts++;assert.deepEqual(control?.scope,selectedScope);assert.equal(await control?.shouldContinue?.(),true);return {facts:[],issues:[],basis:'scoped',status:'READY',complete:true,scope:selectedScope};},generate:async(p,key,revision,runner,scope)=>{assert.deepEqual(scope,selectedScope);selectedKeys.push(key);return deps.generate(p,key);}});
+ assert.equal(scopedFacts,1,'explicit scoped prompt workflow first prepares only its required facts');assert.deepEqual(selectedKeys,['location'],'selected LOC participates and the unrelated future asset does not');
  console.log('PASS: 8 concurrent starts, delayed old worker, missing dependency, stale manual preservation, stop/resume in-flight, resume remaining only; real model calls 0');
  await db.$disconnect();
 }main().catch(e=>{console.error(e);process.exitCode=1;});

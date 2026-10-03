@@ -4,9 +4,7 @@
  * E1–E5 与 P1/P2 共用同一套 provider 解析、模型解析和会话/调用逻辑；
  * 岗位差异只体现在 RoleConfig（skill / systemPrompt / model / reasoningEffort / apiReasoner）。
  *
- * 环境变量（CLI 侧）：
- *   CLI_MODEL_<岗位> > CLI_MODEL > 配置默认
- *   CLI_REASONING_<岗位> > CLI_REASONING_EFFORT > 配置默认
+ * CLI 侧固定使用3008当前生产配置；旧环境变量、岗位默认值不覆盖它。
  * 环境变量（API 侧）：
  *   DEEPSEEK_API_MODEL / DEEPSEEK_API_MODEL_REASONER / DEEPSEEK_API_REASONER_STAGES / DEEPSEEK_API_MAX_TOKENS
  */
@@ -16,6 +14,8 @@ import { loadStageSkillText } from "@/lib/pipeline-skills";
 import { getProjectDeepSeekCredential } from "@/lib/provider-credentials";
 import { prisma } from "@/lib/prisma";
 import { recordLocalDiagnosticLog } from "@/lib/local-diagnostic-log";
+import { budgetedProductionCall, currentProductionBudget } from './production-budget';
+import { PRODUCTION_CLI_MODEL, PRODUCTION_CLI_REASONING } from './production-model';
 
 export type PipelineProvider = "CLI" | "API";
 export type RoleSessionMode = "fresh" | "resume" | "ephemeral";
@@ -25,7 +25,7 @@ export type RoleConfig = {
   skill: string;
   /** 显式岗位规则：API 原文作为 system；CLI 内嵌同一正文，不依赖 Skill 发现。 */
   systemPrompt?: string;
-  /** CLI 默认模型（如 gpt-5.6-terra） */
+  /** CLI 岗位声明；实际派单仍受当前生产配置约束。 */
   model: string;
   /** CLI 默认推理强度 */
   reasoningEffort: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
@@ -40,6 +40,8 @@ export type RoleRunResult = {
   stderr: string;
   /** 新显式岗位保留的完整模型正文（API content / CLI -o 文件），不以事件日志代替。 */
   rawOutput?: string;
+  /** Native provider receipt only; never parsed from model-authored JSON. */
+  usage?: { inputTokens: number | null; outputTokens: number | null; totalTokens: number | null; cachedInputTokens?: number | null };
 };
 
 const MAX_SESSION_INPUT_CHARS = 260_000;
@@ -47,10 +49,9 @@ const CLI_SESSION_STALE_MS = 30 * 60_000;
 const DEFAULT_REASONER_STAGES: string[] = [];
 
 /**
- * 生产流水线允许的 CLI 模型。gpt-5.6-luna 等快速/轻量模型只用于显式冒烟测试，
- * 不能通过 CLI_MODEL 或 CLI_MODEL_<岗位> 覆盖生产 E0–E5/P1–P2。
+ * 当前生产流水线仅允许用户指定的模型；历史模型只保留在历史记录中。
  */
-export const PRODUCTION_CLI_MODELS = ["gpt-6-astra", "gpt-5.6-terra", "gpt-5.6-sol"] as const;
+export const PRODUCTION_CLI_MODELS = [PRODUCTION_CLI_MODEL] as const;
 const PRODUCTION_CLI_MODEL_SET = new Set<string>(PRODUCTION_CLI_MODELS);
 
 export function isProductionCliModel(model: string) {
@@ -63,16 +64,16 @@ export function resolveProvider(executionMode: string | null | undefined): Pipel
 }
 
 export function resolveCliModel(roleCode: string, fallback: string): string {
-  return "gpt-5.6-terra";
+  return PRODUCTION_CLI_MODEL;
 }
 
-// This isolated 3008 handoff pins all CLI roles to Terra / medium.
+// All future 3008 CLI roles use the same explicit model and reasoning effort.
 
 export function resolveCliReasoning(
   roleCode: string,
   fallback: "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
 ): "low" | "medium" | "high" | "xhigh" | "max" | "ultra" {
-  return "medium";
+  return PRODUCTION_CLI_REASONING;
 }
 
 export function resolveApiModel(roleCode: string, apiReasoner: boolean): string {
@@ -142,7 +143,10 @@ export async function runCliRoleJson(input: {
       cwd: process.cwd(),
       sessionId: canResume ? stored?.sessionId : null,
       ephemeral: sessionMode === "ephemeral",
-      instructionProfile: sessionMode === "ephemeral" && ["F1", "F2", "Q1", "A15", "A15_A", "B15_B", "A15_D"].includes(role.code) && role.systemPrompt?.trim() ? "foundation" : undefined,
+      instructionProfile: sessionMode === "ephemeral" && role.systemPrompt?.trim()
+        ? ["F1", "F2", "Q1"].includes(role.code) ? "foundation-source"
+          : ["A15", "A15_A", "B15_B", "A15_D"].includes(role.code) ? "foundation" : undefined
+        : undefined,
       onRawOutput: role.systemPrompt === undefined ? undefined : (content) => { rawOutput = content; }
     });
   } catch (error) {
@@ -260,7 +264,7 @@ export async function runApiRoleJson(input: {
     apiKey: projectCredential?.apiKey,
     apiBase: projectCredential?.apiBase,
     projectId: input.projectId,
-    retry: role.systemPrompt === undefined,
+    retry: role.systemPrompt === undefined && !currentProductionBudget(),
     onRawOutput: role.systemPrompt === undefined ? undefined : (content) => { rawOutput = content; }
   }).catch((error: unknown) => {
     if (role.systemPrompt !== undefined && error instanceof Error) {
@@ -299,6 +303,7 @@ export async function runApiRoleJson(input: {
   }
   return {
     data: result.data, sessionId: null, stdout: rawOutput ?? result.stdout, stderr: result.stderr,
+    usage: result.usage,
     ...(rawOutput === undefined ? {} : { rawOutput })
   };
 }
@@ -312,6 +317,11 @@ export async function runRoleByProvider(input: {
   prompt: string;
   sessionMode?: RoleSessionMode;
 }): Promise<RoleRunResult> {
+  return budgetedProductionCall({ projectId: input.projectId, stage: input.role.code, provider: input.provider,
+    model: input.provider === 'CLI' ? resolveCliModel(input.role.code, input.role.model) : undefined }, () => runUnbudgetedRoleByProvider(input));
+}
+
+async function runUnbudgetedRoleByProvider(input: Parameters<typeof runRoleByProvider>[0]): Promise<RoleRunResult> {
   const result = input.provider === "API"
     ? runApiRoleJson({
         role: input.role,

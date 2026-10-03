@@ -1,6 +1,6 @@
 /** Frozen-v2 verification precedes current interpretation; no database or provider. */
 import assert from 'node:assert/strict';
-import { createSource, normalize, validatePlan } from '../.agents/skills/screenplay-fidelity/scripts/fidelity.mjs';
+import { CONTRACT_VERSION, createSource, normalize, validatePlan } from '../.agents/skills/screenplay-fidelity/scripts/fidelity.mjs';
 import { normalize as normalizeV2, proposePlan as proposeV2, validatePlan as validateV2 } from '../lib/fidelity-v2.mjs';
 import { prepareFidelityImport, type FidelityResult } from '../lib/fidelity-import';
 import { createFidelityExternalMaterial } from '../lib/fidelity-external';
@@ -13,7 +13,7 @@ async function main() {
   assert.equal(old.episodes.reduce((n, episode) => n + episode.scenes.length, 0), 0);
   const body = { source, plan: old.plan }, original = JSON.stringify(body);
   const upgraded = await prepareFidelityImport('v2.json', Buffer.from(original), 'direct');
-  assert.equal(upgraded.receipt.result.contractVersion, 'fidelity/4');
+  assert.equal(upgraded.receipt.result.contractVersion, CONTRACT_VERSION);
   assert.deepEqual(upgraded.receipt.result.episodes.map(episode => episode.scenes.length), [2, 1]);
   assert.equal(upgraded.receipt.readingHash, old.source.sourceVersion);
   assert.equal(upgraded.receipt.result.source.text, text);

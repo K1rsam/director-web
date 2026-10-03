@@ -28,7 +28,9 @@ async function main(){
   await executeFoundationDelivery(project.id,task.id,{db:failingDb,stageRunner:runner});
   const interrupted=await getFoundationDeliveryState(project.id,db);assert.match(interrupted.task?.error??'',/paid fragment save failure/);
   const recovery=await queueFoundationDelivery(project.id,{},db);await executeFoundationDelivery(project.id,recovery.id,{db,stageRunner:runner});
-  const state=await getFoundationDeliveryState(project.id,db);assert.equal(state.task?.status,'COMPLETE',state.task?.error??'');
+  const state=await getFoundationDeliveryState(project.id,db);
+  if(state.task?.status!=='COMPLETE')console.log(JSON.stringify({failurePhase:state.task?.phase,failureScope:state.task?.scope,sent:seen.map(({stage,scope,fragment})=>({stage,scope,fragment}))}));
+  assert.equal(state.task?.status,'COMPLETE',state.task?.error??'');
   for(const stage of ['F2','Q1']){const calls=seen.filter(c=>c.stage===stage);const short=calls.filter(c=>!c.fragment);assert.equal(short.length,2);assert.deepEqual(short.map(c=>c.scope),[[1],[3,4]]);const long=calls.filter(c=>c.fragment);assert.ok(long.length>1);assert.ok(long.every(c=>c.scope.length===1&&c.scope[0]===2));assert.equal(long.map(c=>c.text).join(''),episodes[1].content);assert.ok(calls.indexOf(short[1])>calls.indexOf(long.at(-1)!),'短/长按源顺序执行');}
   assert.deepEqual(state.document.editorialCoverage,[1,2,3,4]);
   const {loadFoundationChoices,syncFoundationChoices}=await import('../lib/foundation-choice-store');

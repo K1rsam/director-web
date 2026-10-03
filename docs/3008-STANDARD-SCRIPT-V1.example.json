@@ -1,0 +1,379 @@
+{
+  "schemaVersion": "DIRECTOR_STANDARD_SCRIPT_V1",
+  "packageId": "fiction-format-example-only-v1",
+  "binding": {
+    "projectId": "fiction-example-project",
+    "episodeId": "fiction-example-episode",
+    "sourceVersion": "fiction-example-source-v1",
+    "revision": 1,
+    "assemblerVersion": "contract-example-v1-not-production"
+  },
+  "script": {
+    "number": 1,
+    "title": "回信",
+    "scenes": [
+      {
+        "id": "scene-1",
+        "sourceLabel": "1-1",
+        "locationKey": "place-living-room",
+        "timeOfDay": "NIGHT",
+        "interiorExterior": "INT",
+        "timeLayer": "PRESENT",
+        "presence": [
+          {
+            "entityId": "person-a",
+            "mode": "physical",
+            "sourceRefs": [
+              "ev-action"
+            ]
+          }
+        ],
+        "props": [
+          {
+            "entityId": "prop-letter",
+            "state": "unopened",
+            "sourceRefs": [
+              "ev-action"
+            ]
+          }
+        ],
+        "body": [
+          {
+            "id": "body-action-1",
+            "kind": "ACTION",
+            "text": "△甲握着尚未拆封的信封。",
+            "sourceRefs": [
+              "ev-action"
+            ],
+            "textAssembly": {
+              "parts": [
+                {
+                  "kind": "SOURCE_SLICE",
+                  "evidenceId": "ev-action"
+                }
+              ],
+              "patchRefs": []
+            }
+          },
+          {
+            "id": "body-dialogue-1",
+            "kind": "DIALOGUE",
+            "speakerId": "person-a",
+            "sourceSpeaker": "甲",
+            "channel": "SPEECH",
+            "cue": "低声",
+            "text": "他说：“别拆：等我回来。”",
+            "sourceRefs": [
+              "ev-dialogue-1"
+            ],
+            "textAssembly": {
+              "parts": [
+                {
+                  "kind": "SOURCE_SLICE",
+                  "evidenceId": "ev-dialogue-1"
+                }
+              ],
+              "patchRefs": []
+            }
+          },
+          {
+            "id": "body-dialogue-2",
+            "kind": "DIALOGUE",
+            "speakerId": "person-a",
+            "sourceSpeaker": "甲",
+            "channel": "SPEECH",
+            "cue": null,
+            "text": "我等了这么久，\n还要再等吗？",
+            "sourceRefs": [
+              "ev-dialogue-2a",
+              "ev-dialogue-2b"
+            ],
+            "textAssembly": {
+              "parts": [
+                {
+                  "kind": "SOURCE_SLICE",
+                  "evidenceId": "ev-dialogue-2a"
+                },
+                {
+                  "kind": "SOURCE_SEPARATOR",
+                  "evidenceId": "ev-linebreak-5"
+                },
+                {
+                  "kind": "SOURCE_SLICE",
+                  "evidenceId": "ev-dialogue-2b"
+                }
+              ],
+              "patchRefs": []
+            }
+          }
+        ],
+        "annotationIds": [
+          "note-continuity-1",
+          "note-emotion-1",
+          "note-guidance-1"
+        ],
+        "sourceRefs": [
+          "ev-scene"
+        ]
+      }
+    ],
+    "sourceRefs": [
+      "ev-heading"
+    ]
+  },
+  "entities": [
+    {
+      "id": "person-a",
+      "type": "PERSON",
+      "name": "甲",
+      "aliases": []
+    },
+    {
+      "id": "place-living-room",
+      "type": "LOCATION",
+      "name": "客厅",
+      "aliases": []
+    },
+    {
+      "id": "prop-letter",
+      "type": "PROP",
+      "name": "信封",
+      "aliases": []
+    }
+  ],
+  "evidence": [
+    {
+      "id": "ev-heading",
+      "domain": "CURRENT_SOURCE",
+      "sourceVersion": "fiction-example-source-v1",
+      "location": {
+        "sourceId": "fiction-example",
+        "unitId": "u1",
+        "start": 0,
+        "end": 6,
+        "offsetUnit": "UTF16"
+      },
+      "text": "第一集：回信"
+    },
+    {
+      "id": "ev-scene",
+      "domain": "CURRENT_SOURCE",
+      "sourceVersion": "fiction-example-source-v1",
+      "location": {
+        "sourceId": "fiction-example",
+        "unitId": "u2",
+        "start": 7,
+        "end": 17,
+        "offsetUnit": "UTF16"
+      },
+      "text": "1-1 客厅 夜 内"
+    },
+    {
+      "id": "ev-action",
+      "domain": "CURRENT_SOURCE",
+      "sourceVersion": "fiction-example-source-v1",
+      "location": {
+        "sourceId": "fiction-example",
+        "unitId": "u3",
+        "start": 18,
+        "end": 30,
+        "offsetUnit": "UTF16"
+      },
+      "text": "△甲握着尚未拆封的信封。"
+    },
+    {
+      "id": "ev-dialogue-1",
+      "domain": "CURRENT_SOURCE",
+      "sourceVersion": "fiction-example-source-v1",
+      "location": {
+        "sourceId": "fiction-example",
+        "unitId": "u4",
+        "start": 37,
+        "end": 50,
+        "offsetUnit": "UTF16"
+      },
+      "text": "他说：“别拆：等我回来。”"
+    },
+    {
+      "id": "ev-dialogue-2a",
+      "domain": "CURRENT_SOURCE",
+      "sourceVersion": "fiction-example-source-v1",
+      "location": {
+        "sourceId": "fiction-example",
+        "unitId": "u5",
+        "start": 53,
+        "end": 60,
+        "offsetUnit": "UTF16"
+      },
+      "text": "我等了这么久，"
+    },
+    {
+      "id": "ev-dialogue-2b",
+      "domain": "CURRENT_SOURCE",
+      "sourceVersion": "fiction-example-source-v1",
+      "location": {
+        "sourceId": "fiction-example",
+        "unitId": "u6",
+        "start": 61,
+        "end": 67,
+        "offsetUnit": "UTF16"
+      },
+      "text": "还要再等吗？"
+    },
+    {
+      "id": "ev-linebreak-5",
+      "domain": "CURRENT_SOURCE",
+      "sourceVersion": "fiction-example-source-v1",
+      "location": {
+        "sourceId": "fiction-example",
+        "unitId": "u5",
+        "start": 60,
+        "end": 61,
+        "offsetUnit": "UTF16"
+      },
+      "text": "\n"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "note-continuity-1",
+      "kind": "CONTINUITY",
+      "text": "开场信封尚未拆封。",
+      "scope": {
+        "sceneIds": [
+          "scene-1"
+        ],
+        "at": "opening"
+      },
+      "origin": "SOURCE",
+      "authority": "FACT",
+      "sourceRefs": [
+        "ev-action"
+      ],
+      "decisionRefs": []
+    },
+    {
+      "id": "note-emotion-1",
+      "kind": "EMOTION_CLUE",
+      "text": "等待带来的委屈与克制，可作为理解线索；不是新增的剧情事实。",
+      "scope": {
+        "sceneIds": [
+          "scene-1"
+        ],
+        "at": "body-dialogue-2"
+      },
+      "origin": "INTERPRETATION",
+      "authority": "ADVISORY",
+      "sourceRefs": [
+        "ev-dialogue-2a",
+        "ev-dialogue-2b"
+      ],
+      "decisionRefs": []
+    },
+    {
+      "id": "note-guidance-1",
+      "kind": "CREATIVE_GUIDANCE",
+      "text": "可先关注握信封的手，再进入对白；由第三阶段判断是否采用。",
+      "scope": {
+        "sceneIds": [
+          "scene-1"
+        ],
+        "at": "opening"
+      },
+      "origin": "DESIGN_PROPOSAL",
+      "authority": "ADVISORY",
+      "sourceRefs": [
+        "ev-action"
+      ],
+      "decisionRefs": []
+    }
+  ],
+  "assetDesigns": [],
+  "decisions": [],
+  "issues": [
+    {
+      "id": "example-fidelity-not-run",
+      "code": "FIDELITY_NOT_VERIFIED",
+      "severity": "BLOCKER",
+      "fieldPath": "/fidelity/receipt",
+      "scope": {
+        "sceneIds": [
+          "scene-1"
+        ]
+      },
+      "message": "格式设计示例没有生产保真回执，不可据此派发模型。"
+    }
+  ],
+  "readiness": {
+    "structure": "VALIDATED",
+    "evidence": "VALIDATED",
+    "blockingIssueIds": [
+      "example-fidelity-not-run"
+    ],
+    "warningIds": [],
+    "materialStatus": "TEXT_ONLY",
+    "fidelity": "NOT_RUN",
+    "acceptedForDispatch": false
+  },
+  "fidelity": {
+    "sourceIndex": {
+      "uri": "3008-STANDARD-SCRIPT-V1.source-index.example.json",
+      "sourceVersion": "fiction-example-source-v1",
+      "sourceId": "fiction-example"
+    },
+    "assignments": [
+      {
+        "unitId": "u1",
+        "disposition": "STRUCTURE",
+        "targetPaths": [
+          "/script/number",
+          "/script/title"
+        ]
+      },
+      {
+        "unitId": "u2",
+        "disposition": "STRUCTURE",
+        "targetPaths": [
+          "/script/scenes/0/sourceLabel",
+          "/script/scenes/0/locationKey",
+          "/script/scenes/0/timeOfDay",
+          "/script/scenes/0/interiorExterior"
+        ]
+      },
+      {
+        "unitId": "u3",
+        "disposition": "BODY",
+        "targetPaths": [
+          "/script/scenes/0/body/0"
+        ]
+      },
+      {
+        "unitId": "u4",
+        "disposition": "BODY",
+        "targetPaths": [
+          "/script/scenes/0/body/1/sourceSpeaker",
+          "/script/scenes/0/body/1/cue",
+          "/script/scenes/0/body/1/text"
+        ]
+      },
+      {
+        "unitId": "u5",
+        "disposition": "BODY",
+        "targetPaths": [
+          "/script/scenes/0/body/2/sourceSpeaker",
+          "/script/scenes/0/body/2/text"
+        ]
+      },
+      {
+        "unitId": "u6",
+        "disposition": "BODY",
+        "targetPaths": [
+          "/script/scenes/0/body/2/text"
+        ]
+      }
+    ],
+    "exclusions": [],
+    "patchRefs": [],
+    "receipt": null
+  }
+}

@@ -6,6 +6,7 @@ import { fidelityReviewCandidates } from './fidelity-review-candidates';
 import type { Prisma, SceneSnapshot, PipelineRun } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { FOUNDATION_CLI_INSTRUCTION_PROFILE } from "@/lib/codex-cli";
+import {readCurrentResolvedPlans} from './script-resolution-service';
 import { foundationChoiceCondition, loadFoundationChoices } from "@/lib/foundation-choice-store";
 import { collectProductionRepairIssues, isProductionCatalog, PRODUCTION_CATALOG_FORMAT, type Preparation, type ProductionCatalog, type ProductionVariant } from "@/lib/foundation-production-contracts";
 import { loadFoundationSourceContext, type FoundationSourceContext } from "@/lib/foundation-source";
@@ -89,11 +90,14 @@ export function foundationJson(value: string | null | undefined): Record<string,
   } catch { return {}; }
 }
 
-export async function loadFoundationInputs(projectId: string, db: FoundationDb = prisma) {
+export async function loadFoundationInputs(projectId: string, db: FoundationDb = prisma, options: {includeResolutions?:boolean} = {}) {
   const project = await db.project.findUnique({ where: { id: projectId }, include: { episodes: { orderBy: { number: "asc" } } } });
   if (!project) throw new Error("没有找到项目。");
   const sourceContext = await loadFoundationSourceContext(projectId, db);
   const sourceIndex = buildSourceIndex(project.episodes);
+  const resolved = options.includeResolutions === false ? new Map() : await readCurrentResolvedPlans(projectId, project.episodes, db);
+  const scriptResolutions = Object.fromEntries([...resolved].map(([number, value]) => [number, value.prepared]));
+  const scriptInterpretationVersions = Object.fromEntries([...resolved].map(([number, value]) => [number, value.hash]));
   const fidelity=await readFidelityReceipt(projectId,db);
   const sourceReviewCandidates=fidelity?fidelityReviewCandidates(fidelity.receipt):[];
   const choices = await loadFoundationChoices(db, projectId, sourceIndex.version);
@@ -112,12 +116,14 @@ export async function loadFoundationInputs(projectId: string, db: FoundationDb =
   const taskContract = FOUNDATION_TASK_CONTRACT;
   const sharedProductionContract = { version: PRODUCTION_TASK_CONTRACT.version, purpose: PRODUCTION_TASK_CONTRACT.purpose };
   const inputVersion = crypto.createHash("sha256").update(JSON.stringify({ sourceVersion: sourceIndex.version, projectConditions, presentationConditions, presentationScopeVersions, taskContract,
-    productionContract: sharedProductionContract, sourceContextVersion: sourceContext.version, ...(sourceReviewCandidates.length?{sourceReviewCandidates}:{}) })).digest("hex");
+    productionContract: sharedProductionContract, sourceContextVersion: sourceContext.version, ...(sourceReviewCandidates.length?{sourceReviewCandidates}:{}),
+    ...(resolved.size ? {scriptInterpretationVersions} : {}) })).digest("hex");
   const methodVersions = Object.fromEntries(PROJECT_FOUNDATION_STAGES.map(({ code }) => [code, hashFoundationPrompt(JSON.stringify({
     systemPrompt: promptHashes[code], task: PRODUCTION_TASK_CONTRACT[code], schema: PRODUCTION_OUTPUT_SCHEMAS[code],
     cliInstructionProfile: FOUNDATION_CLI_INSTRUCTION_PROFILE
   }))])) as Record<FoundationStageCode, string>;
-  return { project, sourceIndex, sourceContext, sourceVersion: sourceIndex.version, inputVersion, methodVersions, projectConditions, presentationConditions, choiceRegistry: choices.registry, systemPrompts, promptHashes, taskContract, sourceReviewCandidates };
+  return { project, sourceIndex, sourceContext, sourceVersion: sourceIndex.version, inputVersion, methodVersions, projectConditions, presentationConditions, choiceRegistry: choices.registry, systemPrompts, promptHashes, taskContract, sourceReviewCandidates,
+    ...(resolved.size ? {scriptResolutions,scriptInterpretationVersions} : {}), ...(options.includeResolutions === false ? {interpretationAware:false as const} : {}) };
 }
 
 /** Structural readiness only; semantic omissions still need the independent editor. */

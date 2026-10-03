@@ -22,8 +22,8 @@ export type CodexJsonRequest = {
   ephemeral?: boolean;
   /** 岗位只做结构化文本推理，默认关闭无关的 Apps/浏览器/图像/多代理能力。 */
   minimalRuntime?: boolean;
-  /** 仅自包含F1/F2/Q1资料调用：关闭自动技能目录与项目开发说明注入，不改变权限或全局配置。 */
-  instructionProfile?: "foundation";
+  /** 自包含岗位关闭技能/项目说明注入；source 另关闭插件、记忆及已发现 MCP，仅供临时资料岗。 */
+  instructionProfile?: "foundation" | "foundation-source";
   /** 可选捕获完整 -o 输出文件（解析前）；不等同于有长度上限的 stdout JSONL。 */
   onRawOutput?: (content: string) => void;
 };
@@ -172,22 +172,29 @@ export async function runCodexJson<T>(request: CodexJsonRequest): Promise<CodexJ
   if (request.ephemeral && request.sessionId) {
     throw Object.assign(new Error("临时 CLI 会话不能续接已有 sessionId。"), { requestOutcome: "NOT_SENT" });
   }
+  if (request.instructionProfile === "foundation-source" && !request.ephemeral) {
+    throw Object.assign(new Error("资料岗 CLI 配置仅支持自包含的临时会话。"), { requestOutcome: "NOT_SENT" });
+  }
   const startedAt = Date.now();
+  const executable = request.executable ?? resolveCodexExecutable();
+  const useMinimalRuntime = request.minimalRuntime ?? (process.env.CODEX_CLI_MINIMAL_RUNTIME !== "0");
+  const sourceRuntimeArgs = request.instructionProfile === "foundation-source" && useMinimalRuntime
+    ? await readFoundationSourceRuntimeArgs(executable, request)
+    : [];
   const notSent = (error: unknown): never => { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { requestOutcome: "NOT_SENT" }); };
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "seedance-codex-")).catch(notSent);
   const schemaPath = path.join(tempDir, "schema.json");
   const outputPath = path.join(tempDir, "output.json");
   if (request.schema) await writeFile(schemaPath, JSON.stringify(request.schema), "utf8").catch(notSent);
 
-  const executable = request.executable ?? resolveCodexExecutable();
-  const useMinimalRuntime = request.minimalRuntime ?? (process.env.CODEX_CLI_MINIMAL_RUNTIME !== "0");
   const args = [
     ...(request.executableArgs ?? []),
     "exec",
     ...(request.sessionId ? ["resume"] : []),
     ...(useMinimalRuntime ? MINIMAL_RUNTIME_ARGS : []),
-    ...(request.instructionProfile === "foundation"
+    ...(request.instructionProfile === "foundation" || request.instructionProfile === "foundation-source"
       ? Object.entries(FOUNDATION_CLI_INSTRUCTION_PROFILE.overrides).flatMap(([key, value]) => ["--config", `${key}=${JSON.stringify(value)}`]) : []),
+    ...sourceRuntimeArgs,
     "--model",
     request.model,
     "--config",
@@ -238,6 +245,36 @@ export async function runCodexJson<T>(request: CodexJsonRequest): Promise<CodexJ
     throw error;
   } finally {
     await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+/** 每次只读当前 CLI 的清单，不缓存或改写全局配置；清单可能含凭据，绝不进入结果/诊断。 */
+async function readFoundationSourceRuntimeArgs(executable: string, request: CodexJsonRequest): Promise<string[]> {
+  let failureReason = "清单命令失败或返回格式无效";
+  try {
+    const { stdout } = await runCommand(executable, [
+      ...(request.executableArgs ?? []), "--config", "features.plugins=false", "mcp", "list", "--json"
+    ], request.cwd, Math.min(request.timeoutMs ?? 10_000, 10_000), 256 * 1024);
+    const inventory: unknown = JSON.parse(stdout);
+    if (!Array.isArray(inventory)) throw new Error("invalid inventory");
+    const names = new Set<string>();
+    for (const value of inventory) {
+      const server = asRecord(value);
+      if (!server || typeof server.name !== "string" || !server.name.trim()
+        || (server.enabled !== undefined && typeof server.enabled !== "boolean")) throw new Error("invalid inventory entry");
+      if (server.enabled !== false) {
+        // CLI 的 -c key-path 不解析 TOML 引号；只接受已证实安全的 bare ID。
+        if (!/^[A-Za-z0-9_-]+$/.test(server.name)) {
+          failureReason = "服务标识包含不支持安全覆盖的字符（仅支持字母、数字、下划线和连字符）";
+          throw new Error("unsupported inventory name");
+        }
+        names.add(server.name);
+      }
+    }
+    return ["--config", "features.plugins=false", "--config", "features.memories=false",
+      ...[...names].flatMap(name => ["--config", `mcp_servers.${name}.enabled=false`])];
+  } catch {
+    throw Object.assign(new Error(`Codex CLI MCP 预检失败：${failureReason}；资料岗请求未发送。`), { requestOutcome: "NOT_SENT" });
   }
 }
 
@@ -673,7 +710,7 @@ function readCliError(stdout: string): string | null {
   return null;
 }
 
-async function runCommand(executable: string, args: string[], cwd: string, timeoutMs: number) {
+async function runCommand(executable: string, args: string[], cwd: string, timeoutMs: number, maxOutputBytes = Infinity) {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
     const invocation = resolveSpawnInvocation(executable, args);
     const child = spawn(invocation.executable, invocation.args, {
@@ -685,14 +722,25 @@ async function runCommand(executable: string, args: string[], cwd: string, timeo
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let outputBytes = 0;
+    let outputTooLarge = false;
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGKILL");
     }, timeoutMs);
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
-    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+    const capture = (chunk: string, isError: boolean) => {
+      if (outputTooLarge) return;
+      outputBytes += Buffer.byteLength(chunk);
+      if (outputBytes > maxOutputBytes) {
+        outputTooLarge = true;
+        child.kill("SIGKILL");
+      } else if (isError) stderr += chunk;
+      else stdout += chunk;
+    };
+    child.stdout.on("data", (chunk: string) => capture(chunk, false));
+    child.stderr.on("data", (chunk: string) => capture(chunk, true));
     child.on("error", (error) => {
       clearTimeout(timer);
       reject(formatSpawnError(error, executable));
@@ -700,6 +748,7 @@ async function runCommand(executable: string, args: string[], cwd: string, timeo
     child.on("close", (code) => {
       clearTimeout(timer);
       if (timedOut) reject(new Error(`命令超过${Math.round(timeoutMs / 1000)}秒。`));
+      else if (outputTooLarge) reject(new Error("命令输出超过读取上限。"));
       else if (code === 0) resolve({ stdout, stderr });
       else reject(new Error((stderr || stdout || `退出码 ${code ?? "null"}`).trim()));
     });

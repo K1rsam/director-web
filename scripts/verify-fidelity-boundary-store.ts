@@ -13,6 +13,7 @@ async function main(){
  try{
   const user=await db.user.create({data:{email:'fidelity-audit@example.test',username:'fidelity-audit',passwordHash:'isolated-test-no-login'}});
   const text='  张三（OS）：他转身离开。😀\r\n\r\n  他转身离开。  \r\n';
+  const cleanText='  张三（OS）：他转身离开。😀\r\n  他转身离开。  \r\n';
   const prepared=await prepareFidelityImport('原稿.txt',Buffer.from(text),'fidelity');
   prepared.receipt.p1Review={status:'PENDING'};
   const {project}=await importParsedProject({ownerUserId:user.id,title:'边界确认',sourceName:'原稿.txt',fidelityReceipt:prepared.receipt},prepared.imported,db);
@@ -42,15 +43,15 @@ async function main(){
   await applyFidelityDecision(request,db);
   const next=(await readFidelityReceipt(project.id,db))!,body=JSON.parse(next.sourceSnapshot!.content);
   assert.equal(body.originalFile.base64,prepared.imported.originalFile!.base64);assert.equal(next.receipt.originalHash,prepared.receipt.originalHash);
-  assert.equal(body.sourceText,text);assert.equal((await db.episode.findFirstOrThrow({where:{projectId:project.id}})).content,text);
-  assert.equal((await db.scriptScene.findMany({where:{episode:{projectId:project.id}},orderBy:{sortOrder:'asc'}})).map(s=>s.sourceText).join(''),text);
+  assert.equal(body.sourceText,text);assert.equal((await db.episode.findFirstOrThrow({where:{projectId:project.id}})).content,cleanText);
+  assert.equal((await db.scriptScene.findMany({where:{episode:{projectId:project.id}},orderBy:{sortOrder:'asc'}})).map(s=>s.sourceText).join(''),cleanText);
   assert.equal(next.receipt.result.episodes[0].sourceNumber,'0');assertFidelityMaterialization(body,next.receipt);
   await assert.rejects(()=>applyFidelityDecision(request,db),/版本/);
   const revised={...request,revision:next.snapshot.id,sourceRevision:next.sourceSnapshot!.id,decisionVersion:String(next.receipt.result.plan.decisionVersion),kind:'context' as const};
   const count=await db.sceneSnapshot.count({where:{projectId:project.id}});await assert.rejects(()=>applyFidelityDecision(revised,db),/不能移除/);assert.equal(await db.sceneSnapshot.count({where:{projectId:project.id}}),count);
   const packet=Buffer.from(JSON.stringify({source:next.receipt.result.source,plan:next.receipt.result.plan}));
   await assert.rejects(()=>prepareFidelityImport('return.json',packet,'direct'),/尚未获得采用权限/);
-  const accepted=await prepareFidelityImport('return.json',packet,'direct',[],true);assert.equal(accepted.imported.episodes[0].content,text);
+  const accepted=await prepareFidelityImport('return.json',packet,'direct',[],true);assert.equal(accepted.imported.episodes[0].content,cleanText);
   const paired=await prepareFidelityImport('return.json',packet,'direct',[],true,{name:'原稿.txt',bytes:Buffer.from(text)});assert.equal(paired.imported.originalFile?.base64,prepared.imported.originalFile?.base64);assert.equal(paired.imported.sourceName,'原稿.txt');assert(paired.receipt.externalPackage?.hash);
   await assert.rejects(()=>prepareFidelityImport('return.json',packet,'direct',[],true,{name:'错稿.txt',bytes:Buffer.from(text+'改')}),/不一致/);
   const bad=JSON.parse(packet.toString());bad.plan.segments[0].end--;await assert.rejects(()=>prepareFidelityImport('return.json',Buffer.from(JSON.stringify(bad)),'direct',[],true),/保真校验/);
@@ -66,10 +67,11 @@ async function main(){
   const zp=await importParsedProject({ownerUserId:user.id,title:'零集确认',sourceName:'裸零.txt',fidelityReceipt:uncertain.receipt},uncertain.imported,db),zc=(await readFidelityReceipt(zp.project.id,db))!;
   await applyFidelityDecision({projectId:zp.project.id,revision:zc.snapshot.id,sourceRevision:zc.sourceSnapshot!.id,sourceVersion:zc.receipt.readingHash,decisionVersion:String(zc.receipt.result.plan.decisionVersion),firstLine:1,lastLine:2,kind:'context'},db);
   assert.equal(await db.episode.count({where:{projectId:zp.project.id}}),0);assert.equal((await readFidelityReceipt(zp.project.id,db))!.receipt.result.contextText,'第0集\n作者自述。\n');
-  const duplicate=await prepareFidelityImport('重号.txt',Buffer.from('第1集\n1-1 客厅 日 内\n甲：正稿。\n第1集\n1-1 客厅 日 内\n甲：异稿。\n'),'fidelity');assert.equal(duplicate.imported.episodes.length,1);
+  const duplicate=await prepareFidelityImport('重号.txt',Buffer.from('第1集\n1-1 客厅 日 内\n甲：正稿。\n第1集\n1-1 客厅 日 内\n甲：异稿。\n'),'fidelity');assert.equal(duplicate.imported.episodes.length,0);assert.equal(duplicate.receipt.sourceEpisodeBranches?.[0].candidates.length,2,'没有用户决定时不能默认选第一份');
   const dp=await importParsedProject({ownerUserId:user.id,title:'重复号确认',sourceName:'重号.txt',fidelityReceipt:duplicate.receipt},duplicate.imported,db),du=(await readFidelityReceipt(dp.project.id,db))!;
   await applyFidelityDecision({projectId:dp.project.id,revision:du.snapshot.id,sourceRevision:du.sourceSnapshot!.id,sourceVersion:du.receipt.readingHash,decisionVersion:String(du.receipt.result.plan.decisionVersion),firstLine:4,lastLine:6,kind:'context'},db);
   assert.equal(await db.episode.count({where:{projectId:dp.project.id}}),1);assert(!(await readFidelityReceipt(dp.project.id,db))!.receipt.result.validation.issues.some(i=>i.code==='DUPLICATE_EPISODE_NUMBER'));
+  assert.equal((await readFidelityReceipt(dp.project.id,db))!.receipt.sourceBranchDecisions?.length,1,'only the validated local user decision establishes branch authority');
   const zip=new JSZip();zip.file('[Content_Types].xml','<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>');zip.file('_rels/.rels','<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');zip.file('word/document.xml','<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:tbl><w:tr><w:tc><w:p><w:r><w:t>甲：你好。</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>');
   const docx=await prepareFidelityImport('表格.docx',await zip.generateAsync({type:'nodebuffer'}),'fidelity');assert(docx.receipt.reader.warnings.some(w=>w.includes('表格')));
   const docProject=await importParsedProject({ownerUserId:user.id,title:'DOCX',sourceName:'表格.docx',fidelityReceipt:docx.receipt},docx.imported,db);
@@ -84,7 +86,7 @@ async function main(){
    if(stage==='F1'){assert.equal(input.reviewMode,'FULL_STRUCTURE_BLOCKS_V1');const data={sourceVersion:input.sourceVersion,reviewed:{firstBlock:input.batch.firstBlock,lastBlock:input.batch.lastBlock},assignments:[{firstBlock:input.batch.firstBlock,lastBlock:input.batch.lastBlock,kind:'body',episodeNumber:1,sceneNumber:1,note:'测试明确完整范围'}],unresolved:[],aliases:[]};return {data,rawOutput:JSON.stringify(data),stdout:'',stderr:'',sessionId:null};}
    throw Object.assign(new Error('bounded first F2 reached'),{requestOutcome:'NOT_SENT'});
   }});
-  assert.deepEqual(stages,['F1','F2'],JSON.parse((await db.sceneSnapshot.findUniqueOrThrow({where:{id:'foundation-delivery-'+auto.project.id}})).content).error);assert.equal((await db.episode.findFirstOrThrow({where:{projectId:auto.project.id}})).content,text);
+  assert.deepEqual(stages,['F1','F2'],JSON.parse((await db.sceneSnapshot.findUniqueOrThrow({where:{id:'foundation-delivery-'+auto.project.id}})).content).error);assert.equal((await db.episode.findFirstOrThrow({where:{projectId:auto.project.id}})).content,cleanText);
   const {refreshFidelitySource}=await import('../lib/fidelity-refresh');
   const snapshotCount=await db.sceneSnapshot.count({where:{projectId:auto.project.id}});
   await assert.rejects(()=>refreshFidelitySource(auto.project.id,db,{expectedReceiptId:'stale-assist-receipt',decisions:[]}),/来源|决定/);

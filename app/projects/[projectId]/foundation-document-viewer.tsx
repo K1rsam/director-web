@@ -1,5 +1,7 @@
 import type { FoundationDeliveryState } from "@/lib/foundation-delivery-types";
 import type { FoundationDocument } from "@/lib/foundation-document";
+import { episodePresentation } from "@/lib/episode-presentation";
+import { compactSourceDisplay } from "@/lib/source-display";
 import { unresolvedOwner } from "@/lib/foundation-production-contracts";
 import { FoundationAssetCatalog } from "./foundation-asset-catalog";
 import { AssetIndexTabs, type AssetIndexRow } from "./asset-index-tabs";
@@ -70,11 +72,11 @@ export function FoundationDocumentViewer({ state }: { state: Pick<FoundationDeli
   </div>;
 }
 
-type SourceEpisode = { id: string; number: number; title: string | null; content: string; sceneCount: number };
+type SourceEpisode = { id: string; number: number; title: string | null; content: string; sceneCount: number; productionEligible?: boolean };
 type LightViewerState = Pick<FoundationDeliveryState, "document" | "sourceContext" | "codes" | "issues" | "requiredChoices" | "confirmedChoices" | "needsContextEdit"> & { needsAssetRefresh?: boolean };
 
 /** The light workflow reads numbered source directly; old AI navigation remains in history. */
-export function LightFoundationDocumentViewer({ state, sourceEpisodes }: { state: LightViewerState; sourceEpisodes: SourceEpisode[] }) {
+export function LightFoundationDocumentViewer({ state, sourceEpisodes, projectId }: { state: LightViewerState; sourceEpisodes: SourceEpisode[]; projectId?: string }) {
   const { document, sourceContext } = state;
   const choices = [...state.requiredChoices, ...state.confirmedChoices.filter(choice => document.appliedDecisions[choice.id] !== choice.revision)];
   const activeTodos = document.editorialTodos.filter(todo => unresolvedOwner(todo) !== "STAGE2");
@@ -103,13 +105,19 @@ export function LightFoundationDocumentViewer({ state, sourceEpisodes }: { state
   }
   const assets: AssetIndexRow[] = entries.map(({ item, parentKey, role }) => ({ id: item.key, code: state.codes[item.key] ?? "未核编号", type: item.type,
     name: item.name, parentId: parentKey, role, status: "working", statusLabel: pending.has(item.key) ? "待完善" : "已整理" }));
+  const explicitScope = Boolean(projectId) && sourceEpisodes.every(episode => typeof episode.productionEligible === "boolean");
+  const productionCount = sourceEpisodes.filter(episode => episode.productionEligible === true).length;
+  const otherCount = sourceEpisodes.length - productionCount;
+  const indexCount = explicitScope ? `${productionCount} 集${otherCount ? ` · ${otherCount} 段其他原文` : ""}` : `${sourceEpisodes.length} 集`;
   return <div className="studioGrid twoColumns" id="foundation-document">
     <article className="studioCard">
-      <div className="cardHeader"><div><span>SOURCE INDEX</span><h3>原文与分集索引</h3></div><em>{sourceEpisodes.length} 集</em></div>
-      <div className="bibleViewer studioTableScroll compactTable">
-        {sourceEpisodes.map(episode => <details className="bibleSection" key={episode.id}>
-          <summary className="bibleSectionHead"><b>第{episode.number}集</b>{episode.title ? <span>{episode.title}</span> : null}<em>{episode.sceneCount} 场 · 查看原文</em></summary>
-          <p className="bibleBody" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{episode.content}</p>
+      <div className="cardHeader"><div><span>SOURCE INDEX</span><h3>原文与分集索引</h3></div><em>{indexCount} · 按集阅读</em></div>
+      <div className={`bibleViewer studioTableScroll compactTable ${styles.sourceIndex}`}>
+        {sourceEpisodes.map(episode => projectId && episode.productionEligible === true ? <div className="bibleSection" key={episode.id}>
+          <a className={`bibleSectionHead ${styles.sourceReaderLink}`} href={`/projects/${encodeURIComponent(projectId)}/preparation?episode=${episode.number}#script-review`}><b>{episodePresentation(episode.number, episode.title).fullTitle}</b><em>{episode.sceneCount} 场 · 标准稿／原文</em></a>
+        </div> : <details className="bibleSection" key={episode.id}>
+          <summary className="bibleSectionHead"><b>{projectId && episode.productionEligible === false ? `其他原文 · ${episode.title?.trim() || `原记录 ${episode.number}`}` : episodePresentation(episode.number, episode.title).fullTitle}</b><em>{episode.sceneCount} 场 · 查看原文</em></summary>
+          <p className="bibleBody" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{compactSourceDisplay(episode.content)}</p>
         </details>)}
         {!sourceEpisodes.length ? <p className="biblePlaceholder">尚无分集原文，请先检查导入内容。</p> : null}
       </div>
@@ -117,7 +125,7 @@ export function LightFoundationDocumentViewer({ state, sourceEpisodes }: { state
         <summary className="bibleSectionHead">原文读取说明</summary>
         <div className="bibleBody">
           {sourceContext.issues.map((issue, index) => <p key={index}>{issue.message}</p>)}
-          {[...sourceContext.background, ...sourceContext.unresolved].map(section => <p key={section.key} style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{section.text}</p>)}
+          {[...sourceContext.background, ...sourceContext.unresolved].map(section => <p key={section.key} style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{compactSourceDisplay(section.text)}</p>)}
           {sourceContext.notices.map((notice, index) => <p key={index}>{notice.message}</p>)}
         </div>
       </details> : null}

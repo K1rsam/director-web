@@ -57,7 +57,7 @@ function verifyTextDecodingAndSourceStructure() {
 function verifyClassificationAndBoundaries() {
   const adjacent = parseScriptContent("adjacent.txt", "人物小传\n\n第1集\n\n第一集\n\n1-1 客厅 日 内\n苏远：回来。\n第2集\n2-1 走廊 日 外\n赵清雅：等等。\n");
   assert.deepEqual(adjacent.episodes.map((episode) => episode.number), [1, 2], "紧邻的第1集/第一集标签仅隔空白时必须合为一个逻辑边界");
-  assert.match(adjacent.episodes[0]!.content, /第1集\n\n第一集/, "两个原标签必须保留在原文切片中");
+  assert.match(adjacent.episodes[0]!.content, /第1集\n第一集/, "两个原标签必须保留在工作正文中，仅移除空行");
   assert.equal(adjacent.sourceStructure.sections[0]!.kind, "BACKGROUND", "未编号人物前言不得夹入首集");
   assert.equal(sectionText(adjacent), adjacent.sourceText, "背景、正剧区间拼接不得静默丢块");
 

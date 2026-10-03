@@ -77,7 +77,10 @@ const planned = requireProductionCatalogAuthor({ format: 'ASSET_CATALOG_V2', cov
 const plannedVersion = planned.assets[0].variants[0];
 assert.deepEqual(plannedVersion.episodes, []);
 assert.deepEqual(plannedVersion.sceneRefs, []);
-assert.deepEqual(projectProductionCatalog(planned, [1]).assets[0].variants[0].sceneRefs, [], '交接投影不把准备证据变成实际场引用');
+const plannedProjection = projectProductionCatalog(planned, [1]);
+assert.deepEqual(plannedProjection.assets[0].variants, [], '未定位准备用途不冒充本集实际变体');
+assert.deepEqual(plannedProjection.materialCandidates![0].sceneRefs, [], '准备材料单列且不补造实际场引用');
+assert.equal(plannedProjection.materialCandidates![0].use, 'CANDIDATE_ONLY');
 assert.equal(filterAssetCatalog(planned, { query: '', episode: '', type: '', view: 'all', layer: 'variant' }).length, 1, '准备用途保留可查看');
 assert.equal(filterAssetCatalog(planned, { query: '', episode: '1', type: '', view: 'all', layer: 'variant' }).length, 0, '准备造型不冒充本集实际使用');
 assert.equal(filterAssetCatalog(planned, { query: '', episode: '', type: '', view: 'queue', layer: 'variant' }).length, 0, '未定位准备不自动列入必备图队列');

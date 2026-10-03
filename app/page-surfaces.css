@@ -473,3 +473,5 @@
   .pageSurface.loginSurface .loginWorkflow { display: none; }
   .pageSurface.loginSurface .loginCard { border-left: 0; border-top: 1px solid var(--surface-line); padding: 30px 28px; }
 }
+.stageThreeEpisodeEntries{display:flex;flex-wrap:wrap;gap:10px;padding:4px 0 14px}
+.stageThreeEpisodeEntries a{max-width:100%;overflow-wrap:anywhere}

@@ -2150,7 +2150,7 @@ dialog.infoPanelBackdrop::backdrop {background:rgba(70,65,107,.2);backdrop-filte
 @media(max-width:820px) {
   :root {--vision-workspace-offset:0px;}
   .appChrome .appSidebar {display:none;} .appChrome .appWorkspace {margin-left:0;padding:12px;height:100dvh;}
-  .mobileNav {display:block;}.mobileNav summary {display:grid;min-width:40px;min-height:40px;place-items:center;border-radius:12px;background:rgba(237,233,252,.55);}
+  .mobileNav {display:block;}.mobileNav>summary {display:grid;min-width:40px;min-height:40px;place-items:center;border-radius:12px;background:rgba(237,233,252,.55);}
   .mobileNav nav {width:min(22rem,calc(100vw - 32px));max-height:calc(100dvh - 130px);overflow:auto;border:1px solid rgba(255,255,255,.75);border-radius:18px;background:var(--vision-solid);box-shadow:var(--vision-shadow-float);}
   .mobileNav nav a {min-height:44px;font-size:.875rem;}
   .appChrome .appTopbar {margin:0;padding:18px;border-radius:18px;}

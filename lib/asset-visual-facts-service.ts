@@ -1,4 +1,5 @@
 import {createHash,randomUUID} from 'node:crypto';
+import {PRODUCTION_CLI_MODEL,PRODUCTION_CLI_REASONING} from './production-model';
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {prisma} from './prisma';
@@ -6,24 +7,31 @@ import {loadFoundationInputs} from './foundation-state';
 import {loadLatestStoredFoundationDocument} from './foundation-document';
 import {runRoleByProvider,resolveProvider,type RoleRunResult} from './role-runner';
 import {buildVisualChunks,validateVisualBatch,visualFactSourceLabel,findVisualFactReviewIssues,type VisualChunk,type VisualBatchResult,type VisualFact,type VisualIssue} from './asset-visual-facts-contract';
-import {selectVisualIdentities,groupVisualFactBatches,VISUAL_FACT_PLANNER_VERSION} from './asset-visual-facts-planner';
+import {selectVisualIdentities,groupVisualFactBatches,VISUAL_FACT_PLANNER_VERSION,normalizeAssetProductionScope,scopedVisualIdentities,type AssetProductionScope} from './asset-visual-facts-planner';
+import {readProductionScope,isProductionEpisodeNumber} from './production-episodes';
 
 const CACHE_KEY='ASSET_VISUAL_FACT_BATCH_V1';
 export const VISUAL_FACT_CALL_KEY='ASSET_VISUAL_FACT_CALL_V1';
 const hash=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 type BatchCache={schema:typeof CACHE_KEY;cacheKey:string;status:'RUNNING'|'READY'|'FAILED';requestId:string;workerPid?:number;updatedAt:string;error:string;usedIdentities?:{key:string;signature:string}[];auditContextHash?:string;extracted?:VisualBatchResult;audited?:VisualBatchResult};
-export type AssetVisualFacts={facts:VisualFact[];issues:VisualIssue[];basis:string;status:'READY'|'REVIEW';complete?:boolean};
-export type VisualFactsControl={shouldContinue?:()=>Promise<boolean>;onProgress?:(done:number,total:number)=>Promise<void>};
+export type AssetVisualFacts={facts:VisualFact[];issues:VisualIssue[];basis:string;status:'READY'|'REVIEW';complete?:boolean;scope?:AssetProductionScope};
+export type VisualFactsControl={shouldContinue?:()=>Promise<boolean>;onProgress?:(done:number,total:number)=>Promise<void>;scope?:AssetProductionScope};
 class MissingCatalogue extends Error {}
 
-async function currentBasis(projectId:string){
+async function currentBasis(projectId:string,requestedScope?:AssetProductionScope){
  const [input,document,extractSkill]=await Promise.all([loadFoundationInputs(projectId),loadLatestStoredFoundationDocument(prisma,projectId),readFile(path.join(process.cwd(),'prompts/asset-visual-extract-v1.md'),'utf8')]);
  if(!document?.f2)throw new MissingCatalogue('请先完成 P3 资产名称目录，再整理资产外观事实。');
  const identities=document.f2.assets.map(a=>({key:a.key,name:a.name,type:a.type,baseVersion:{key:a.key,name:a.name},aliases:[...a.aliases].sort(),usageEpisodes:[...a.usageEpisodes].sort((a,b)=>a-b),variants:a.variants.map(v=>({key:v.key,name:v.name,episodes:[...v.episodes].sort((a,b)=>a-b)})).sort((a,b)=>a.key.localeCompare(b.key))})).sort((a,b)=>a.key.localeCompare(b.key));
- const chunks=buildVisualChunks({background:input.sourceContext.background,episodes:input.sourceIndex.episodes});
+ const productionScope=requestedScope?await readProductionScope(projectId):undefined;
+ const scope=requestedScope?normalizeAssetProductionScope(requestedScope,input.sourceIndex.episodes.filter(e=>isProductionEpisodeNumber(e.number,productionScope!)).map(e=>e.number)):undefined;
+ const scopedIdentities=scope?scopedVisualIdentities(identities,scope):identities;
+ if(scope?.assetKeys?.some(key=>!scopedIdentities.some(i=>i.key===key||i.variants.some(v=>v.key===key))))throw new Error('所选资产不在本次制作集或明确材料范围中。');
+ const names=scopedIdentities.flatMap(i=>[i.name,...i.aliases,...i.variants.map(v=>v.name)]).filter(Boolean);
+ const chunks=buildVisualChunks({background:input.sourceContext.background,episodes:input.sourceIndex.episodes.filter(e=>!scope||scope.episodeNumbers.includes(e.number))})
+  .filter(chunk=>!scope||chunk.domain==='EPISODE'||names.some(name=>chunk.lines.some(line=>line.text.includes(name))));
  const skills=hash([extractSkill]);
- const batches=chunks.map(chunk=>{const local=selectVisualIdentities(chunk,identities);const cacheKey=hash({schema:CACHE_KEY,protocol:VISUAL_FACT_PLANNER_VERSION,chunk,identities:local,skills});return {chunk,identities:local,cacheKey,id:'avfb_'+hash([projectId,cacheKey]).slice(0,40)};});
- return {input,identities,extractSkill,batches,basis:hash(batches.map(b=>b.cacheKey))};
+ const batches=chunks.map(chunk=>{const local=selectVisualIdentities(chunk,scopedIdentities);const cacheKey=hash({schema:CACHE_KEY,protocol:VISUAL_FACT_PLANNER_VERSION,chunk,identities:local,skills});return {chunk,identities:local,cacheKey,id:'avfb_'+hash([projectId,cacheKey]).slice(0,40)};});
+ return {input,identities,extractSkill,batches,...(scope?{scope}:{}),basis:hash(batches.map(b=>b.cacheKey))};
 }
 type Batch=Awaited<ReturnType<typeof currentBasis>>['batches'][number];
 type Identity=Awaited<ReturnType<typeof currentBasis>>['identities'][number];
@@ -51,29 +59,29 @@ function validatePackage(value:unknown,batches:Batch[],identities:Identity[]):Ma
  const list=(value as {batches:unknown[]}).batches;
  if(list.length!==batches.length)throw new Error('视觉事实返回的批次数量不匹配。');
  const results=new Map<string,VisualBatchResult>();
- for(const raw of list){const chunkId=(raw as {coveredChunkId?:string})?.coveredChunkId;const batch=batches.find(b=>b.chunk.id===chunkId);if(!batch||results.has(batch.chunk.id))throw new Error('视觉事实存在未知或重复的批次回执。');results.set(batch.chunk.id,validateVisualBatch(raw,batch.chunk,identities));}
+ for(const raw of list){const chunkId=(raw as {coveredChunkId?:string})?.coveredChunkId;const batch=batches.find(b=>b.chunk.id===chunkId);if(!batch||results.has(batch.chunk.id))throw new Error('视觉事实存在未知或重复的批次回执。');results.set(batch.chunk.id,validateVisualBatch(raw,batch.chunk,batch.identities));}
  return results;
 }
 
 /** Read only: a partial or outdated batch set is never presented as current facts. */
-export async function readAssetVisualFacts(projectId:string,allowPartial=false):Promise<AssetVisualFacts|null>{
+export async function readAssetVisualFacts(projectId:string,allowPartial=false,scope?:AssetProductionScope):Promise<AssetVisualFacts|null>{
  let basis:Awaited<ReturnType<typeof currentBasis>>;
- try{basis=await currentBasis(projectId);}catch(error){if(error instanceof MissingCatalogue)return null;throw error;}
- const rows=await prisma.sceneSnapshot.findMany({where:{projectId,sceneKey:CACHE_KEY,id:{in:basis.batches.map(b=>b.id)}}});
+ try{basis=await currentBasis(projectId,scope);}catch(error){if(error instanceof MissingCatalogue)return null;throw error;}
+ const rows=await prisma.sceneSnapshot.findMany({where:{projectId,sceneKey:CACHE_KEY,...(!scope&&allowPartial?{}:{id:{in:basis.batches.map(b=>b.id)}})},orderBy:{createdAt:'desc'}});
  const results=new Map<string,VisualBatchResult>();
  let complete=true;
- for(const batch of episodeFirst(basis.batches)){const row=rows.find(r=>r.id===batch.id);if(!row){if(!allowPartial)return null;complete=false;continue;}
-  const cached=JSON.parse(row.content) as BatchCache;if(cached.status!=='READY'||cached.cacheKey!==batch.cacheKey||!cached.audited||!dependenciesMatch(cached,basis.identities)){if(!allowPartial)return null;complete=false;continue;}
+ for(const batch of episodeFirst(basis.batches)){let row=rows.find(r=>r.id===batch.id);if(!row&&!scope&&allowPartial){row=rows.find(r=>{const state=JSON.parse(r.content) as BatchCache;return state.status==='READY'&&state.audited?.coveredChunkId===batch.chunk.id&&dependenciesMatch(state,basis.identities);});if(row)complete=false;}if(!row){if(!allowPartial)return null;complete=false;continue;}
+  const cached=JSON.parse(row.content) as BatchCache;if(cached.status!=='READY'||(row.id===batch.id&&cached.cacheKey!==batch.cacheKey)||!cached.audited||!dependenciesMatch(cached,basis.identities)){if(!allowPartial)return null;complete=false;continue;}
   results.set(batch.chunk.id,validateVisualBatch(cached.audited,batch.chunk,basis.identities));
  }
- const latest=await currentBasis(projectId);if(latest.basis!==basis.basis||rows.some(row=>!dependenciesMatch(JSON.parse(row.content) as BatchCache,latest.identities)))return null;
+ const latest=await currentBasis(projectId,scope);if(latest.basis!==basis.basis)return null;
  if(!results.size)return null;
- return {...aggregate(basis.batches.flatMap(b=>results.has(b.chunk.id)?[results.get(b.chunk.id)!]:[]),basis.basis,basis.batches.map(b=>b.chunk)),complete};
+ return {...aggregate(basis.batches.flatMap(b=>results.has(b.chunk.id)?[results.get(b.chunk.id)!]:[]),basis.basis,basis.batches.map(b=>b.chunk)),complete,...(basis.scope?{scope:basis.scope}:{})};
 }
 
 /** Preserve per-chunk cache/ownership while packing missing work into bounded single-pass requests. */
 export async function ensureAssetVisualFacts(projectId:string,runner=runRoleByProvider,control:VisualFactsControl={}):Promise<AssetVisualFacts>{
- const basis=await currentBasis(projectId),results=new Map<string,VisualBatchResult>(),pending:Batch[]=[];
+ const basis=await currentBasis(projectId,control.scope),results=new Map<string,VisualBatchResult>(),pending:Batch[]=[];
  const checkContinue=async()=>{if(control.shouldContinue&&!await control.shouldContinue())throw new Error('外观事实任务已停止，已完成的提取缓存仍保留，可稍后继续。');};
  const progress=()=>control.onProgress?.(results.size,basis.batches.length);
  await progress();
@@ -90,7 +98,7 @@ export async function ensureAssetVisualFacts(projectId:string,runner=runRoleByPr
   await prisma.sceneSnapshot.create({data:{id,projectId,sceneKey:VISUAL_FACT_CALL_KEY,title:code,content:JSON.stringify(audit)}});
   let result:RoleRunResult|undefined;
   try{
-   result=await runner({projectId,provider:resolveProvider(basis.input.project.executionMode),role:{code,skill:'',systemPrompt,model:'gpt-5.6-terra',reasoningEffort:'medium'},sessionMode:'ephemeral',prompt});
+   result=await runner({projectId,provider:resolveProvider(basis.input.project.executionMode),role:{code,skill:'',systemPrompt,model:PRODUCTION_CLI_MODEL,reasoningEffort:PRODUCTION_CLI_REASONING},sessionMode:'ephemeral',prompt});
    audit.output=result.rawOutput??result.data;audit.outputChars=(result.rawOutput??JSON.stringify(result.data)).length;audit.usage=reportedUsage(result.stdout);
    let valid:Map<string,VisualBatchResult>;try{valid=validatePackage(result.data,batches,basis.identities);}catch(error){throw new Error(`模型处理包校验未通过，原始结果已保存，不会自动重复调用：${(error as Error).message}`,{cause:error});}audit.status='READY';return valid;
   }catch(error){audit.status='FAILED';audit.error=error instanceof Error?error.message:String(error);if(!result){const captured=error as {rawOutput?:string;stdout?:string};audit.output=captured.rawOutput??null;audit.outputChars=captured.rawOutput?.length??0;audit.usage=reportedUsage(captured.stdout??'');}throw error;}
@@ -131,7 +139,7 @@ export async function ensureAssetVisualFacts(projectId:string,runner=runRoleByPr
   await progress();
  }
  await checkContinue();
- if((await currentBasis(projectId)).basis!==basis.basis)throw new Error('整理期间原文、资产目录或事实规则已更新，已保留批次缓存，请继续整理当前版本。');
- const current=await readAssetVisualFacts(projectId);if(!current||current.basis!==basis.basis)throw new Error('整理期间事实归属目录已更新，已保留有效批次，请继续整理。');
+ if((await currentBasis(projectId,control.scope)).basis!==basis.basis)throw new Error('整理期间原文、资产目录或事实规则已更新，已保留批次缓存，请继续整理当前版本。');
+ const current=await readAssetVisualFacts(projectId,false,control.scope);if(!current||current.basis!==basis.basis)throw new Error('整理期间事实归属目录已更新，已保留有效批次，请继续整理。');
  return current;
 }

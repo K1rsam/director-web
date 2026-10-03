@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-export const CONTRACT_VERSION = 'fidelity/4';
+export const CONTRACT_VERSION = 'fidelity/5';
 const hash = text => createHash('sha256').update(text, 'utf8').digest('hex');
 const same = (a,b) => JSON.stringify(a) === JSON.stringify(b);
 export function createSource(text) {
@@ -15,6 +15,15 @@ function labels(text) {
   // A lexical label is not a semantic character identity. Never interpret a clock's colon as dialogue.
   return [...text.matchAll(/(?:^|[\s；;])([\p{L}·・]{1,24}(?:[（(][^\r\n()（）:：]{1,24}[）)])?)\s*[：:]/gu)]
     .map(m=>m[1]).filter(label=>!['时间','时刻','场景','地点','人物','道具'].includes(label));
+}
+const separatedTime=/(?:^|[\s,，、/／|｜])(?:日|夜|昼|晨|黄昏|清晨|凌晨|傍晚|白天|夜晚)(?=$|[\s,，、/／|｜])/;
+const separatedInterior=/(?:^|[\s,，、/／|｜])(?:内|外|内景|外景|INT\.?|EXT\.?)(?=$|[\s,，、/／|｜])/i;
+const metadataOnly=text=>text.length<=160&&!/[：:△▲。！？!?“”「」]/.test(text)&&separatedTime.test(text)&&separatedInterior.test(text);
+function hasSceneMetadata(text) {
+  // Retain the existing whitespace grammar. The new punctuation grammar is
+  // narrower: an explicit separator, time AND interior/exterior, no prose.
+  return /(?:^|\s)(?:日|夜|昼|晨|黄昏|清晨|凌晨|傍晚|白天|夜晚|内|外|内景|外景|INT\.?|EXT\.?)(?=\s|$)/i.test(text)
+    || /^[\s,，、/／|｜]/.test(text)&&/[,，、/／|｜]/.test(text)&&metadataOnly(text);
 }
 function canonical(source, options={}, groupBoundaryIssues=true) {
   const decisions = options.decisions ?? [];
@@ -59,28 +68,35 @@ function canonical(source, options={}, groupBoundaryIssues=true) {
     const prologue=/^(?:#{1,6}\s*)?(?:序章|序幕)(?:\s|[：:｜|]|$)/.test(t);
     // Numeric pairs require scene metadata; bare scores and prices remain body text.
     const pair=t.match(/^(?:#{1,6}\s*)?\d+\s*[-－.．]\s*\d+(?![\d.．])(.*)$/);
-    const sceneMetadata=pair && /(?:^|\s)(?:日|夜|昼|晨|黄昏|清晨|凌晨|傍晚|白天|夜晚|内|外|内景|外景|INT\.?|EXT\.?)(?=\s|$)/i.test(pair[1]);
+    const sceneMetadata=pair && hasSceneMetadata(pair[1]);
     // A combined episode/scene declaration still owns one complete source line.
     // Search only a short, non-dialogue episode title prefix, never arbitrary body text.
     const combined=ep?.[2].match(/^(.*?)\s*场\s*(\d+)\s*[-－.．]\s*(\d+)(?![\d.．])(.*)$/);
     const inlineTagged=combined&&combined[1].length<=80&&!/[。！？!?“”「」△:：]/.test(combined[1])?[combined[0],combined[2],combined[3],combined[4]]:null;
     const tagged=ep?inlineTagged:t.match(/^(?:#{1,6}\s*)?场\s*(\d+)\s*[-－.．]\s*(\d+)(?![\d.．])(.*)$/);
-    const taggedMetadata=tagged&&Number(tagged[2])>0&&/(?:^|\s)(?:日|夜|昼|晨|黄昏|清晨|凌晨|傍晚|白天|夜晚|内|外|内景|外景|INT\.?|EXT\.?)(?=\s|$)/i.test(tagged[3]);
+    const taggedMetadata=tagged&&Number(tagged[2])>0&&hasSceneMetadata(tagged[3]);
     const currentNumber=ep?numberValue(ep[1]):sourceNumber===null?NaN:numberValue(sourceNumber);
+    // Some scripts repeat only the episode number before explicit time / side /
+    // location fields. This declares an unnumbered scene, not a fabricated N.1.
+    const episodeMetadata=t.match(/^(?:#{1,6}\s*)?(\d+)(?:\s+|[,，、]\s*)(.+)$/);
+    const fields=episodeMetadata?.[2].trim().split(/[\s,，、/／|｜]+/)??[];
+    const timeField=value=>/^(?:日|夜|昼|晨|黄昏|清晨|凌晨|傍晚|白天|夜晚)$/.test(value);
+    const interiorField=value=>/^(?:内|外|内景|外景|INT\.?|EXT\.?)$/i.test(value);
+    const episodeMetadataOnly=episodeMetadata&&metadataOnly(episodeMetadata[2])&&fields.length>=3
+      &&(timeField(fields[0])&&interiorField(fields[1])||interiorField(fields[0])&&timeField(fields[1]));
+    const unnumberedScene=episodeMetadataOnly&&Number.isFinite(currentNumber)&&Number(episodeMetadata[1])===currentNumber;
     // Bare hyphen scene numbers require a separate, explicit metadata-only line.
     // Keep both complete source lines intact; decimals/scores and dialogue are not evidence.
     const bare=t.match(/^(?:#{1,6}\s*)?(?:场\s*)?(\d+)\s*[-－]\s*(\d+)\s*[:：]?$/);
     const following=bare?rows.slice(rowIndex+1).find(r=>r.text.trim()):null;
     const followingText=following?.text.trim()??'';
-    const separateMetadata=bare&&Number(bare[2])>0&&followingText.length<=160&&!/[：:△▲。！？!?“”「」]/.test(followingText)&&!episodePattern.test(followingText)
-      &&/(?:^|[\s/／|｜])(?:日|夜|昼|晨|黄昏|清晨|凌晨|傍晚|白天|夜晚)(?=$|[\s/／|｜])/.test(followingText)
-      &&/(?:^|[\s/／|｜])(?:内|外|内景|外景|INT\.?|EXT\.?)(?=$|[\s/／|｜])/i.test(followingText);
+    const separateMetadata=bare&&Number(bare[2])>0&&!episodePattern.test(followingText)&&metadataOnly(followingText);
     const separateScene=separateMetadata&&Number(bare[1])===currentNumber;
     if(separateScene)continuedSceneHeaders.add(following.start);
-    const taggedMismatch=(taggedMetadata&&Number.isFinite(currentNumber)&&Number(tagged[1])!==currentNumber)||(separateMetadata&&Number.isFinite(currentNumber)&&Number(bare[1])!==currentNumber);
+    const taggedMismatch=(taggedMetadata&&Number.isFinite(currentNumber)&&Number(tagged[1])!==currentNumber)||(separateMetadata&&Number.isFinite(currentNumber)&&Number(bare[1])!==currentNumber)||(episodeMetadataOnly&&Number.isFinite(currentNumber)&&Number(episodeMetadata[1])!==currentNumber);
     const taggedScene=taggedMetadata&&Number(tagged[1])===currentNumber;
     const inlineBody=taggedScene&&(/(?:人物|出场人物)\s*[:：]|[△▲]/.test(tagged[3])||labels(tagged[3]).length>0);
-    const scene=separateScene || taggedScene || sceneMetadata || t.match(/^(?:#{1,6}\s*)?(?:第\s*([零〇一二三四五六七八九十百\d]+)\s*场(?:\s|[：:｜|]|$)|([零〇一二三四五六七八九十百\d]+)[.．、]\s+(?!\d)\S)/);
+    const scene=separateScene || taggedScene || sceneMetadata || unnumberedScene || t.match(/^(?:#{1,6}\s*)?(?:第\s*([零〇一二三四五六七八九十百\d]+)\s*场(?:\s|[：:｜|]|$)|([零〇一二三四五六七八九十百\d]+)[.．、]\s+(?!\d)\S)/);
     // An explicit location label is a scene boundary without an authored number.
     // Keep its exact label in the source slice; normalized scene ordinals are view data.
     const locationLabel=t.match(/^(?:#{1,6}\s*)?场景(?:\s*[:：]\s*|\s+)(\S.*)$/);

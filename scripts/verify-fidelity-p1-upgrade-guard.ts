@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import { normalize as normalizeV2 } from '../lib/fidelity-v2.mjs';
+import { normalize as normalizeV4 } from '../lib/fidelity-v4.mjs';
 import { CONTRACT_VERSION } from '../.agents/skills/screenplay-fidelity/scripts/fidelity.mjs';
 import { planP1ReviewBatches, type P1ReviewState } from '../lib/fidelity-p1-review';
 
@@ -19,14 +20,15 @@ async function main() {
   const { readFidelityReceipt } = await import('../lib/fidelity-store');
   const { refreshFidelitySource } = await import('../lib/fidelity-refresh');
   try {
-    assert.equal(CONTRACT_VERSION, 'fidelity/4', 'regression exercises a real parser-version upgrade');
-    const text = '第一集\r\n场1-1 日 外 门口\r\n' + '甲乙：逐字保留 é😀。  \r\n'.repeat(1800);
+    assert.equal(CONTRACT_VERSION, 'fidelity/5', 'regression exercises a real parser-version upgrade');
+    for(const [legacyVersion,normalizeOld,heading] of [['fidelity/2',normalizeV2,'场1-1 日 外 门口'],['fidelity/4',normalizeV4,'1.1 日，内，道观']] as const){
+    const text = `第一集\r\n${heading}\r\n` + '甲乙：逐字保留 é😀。  \r\n'.repeat(1800);
     const batches = planP1ReviewBatches(text);
     assert(batches.length > 1);
     const bounds = batches.map(blocks => ({ start: blocks[0].start, end: blocks.at(-1)!.end }));
     const prepared = await prepareFidelityImport('offline-guard.txt', Buffer.from(text), 'fidelity');
-    prepared.receipt.result = normalizeV2(text) as typeof prepared.receipt.result;
-    assert.equal(prepared.receipt.result.contractVersion, 'fidelity/2');
+    prepared.receipt.result = normalizeOld(text) as typeof prepared.receipt.result;
+    assert.equal(prepared.receipt.result.contractVersion, legacyVersion);
     assert(prepared.receipt.result.validation.issues.some(issue => issue.code === 'SCENE_BOUNDARY_UNCONFIRMED'));
     const checkpoint: P1ReviewState = { status: 'PENDING', reviewedSourceVersion: prepared.receipt.readingHash, completedRanges: [bounds[0]], runIds: ['offline-paid-p1-first'], pendingDecisions: [], aliases: [] };
     prepared.receipt.p1Review = checkpoint;
@@ -49,7 +51,7 @@ async function main() {
     const changed = await refreshFidelitySource(project.id, db, { expectedReceiptId: receipt.id, expectedSourceId: source.id, p1Review: completed });
     assert.equal(changed.changed, true);
     const after = (await readFidelityReceipt(project.id, db))!;
-    assert.equal(after.receipt.result.contractVersion, 'fidelity/4');
+    assert.equal(after.receipt.result.contractVersion, CONTRACT_VERSION);
     assert.notEqual(after.snapshot.id, before.snapshot.id);
     assert.notEqual(after.sourceSnapshot!.id, before.sourceSnapshot!.id);
     assert.equal(after.receipt.readingHash, before.receipt.readingHash);
@@ -65,7 +67,8 @@ async function main() {
     assert.deepEqual(await db.sceneSnapshot.findUniqueOrThrow({ where: { id: source.id } }), source, 'old source evidence is immutable');
     assert.deepEqual(await db.sceneSnapshot.findUniqueOrThrow({ where: { id: receipt.id } }), receipt, 'old paid checkpoint receipt is immutable');
     assert.equal(await db.pipelineRun.count({ where: { projectId: project.id } }), 0, 'local refresh does not fabricate or execute provider calls');
-    console.log('PASS v2 checkpoint ordinary refresh pinned; explicit P1 completion upgrades to current contract; exact source, episode identities, old evidence and completed run/ranges preserved; no AI');
+    console.log(`PASS ${legacyVersion} checkpoint ordinary refresh pinned; explicit P1 completion upgrades to current contract; exact source, episode identities, old evidence and completed run/ranges preserved; no AI`);
+    }
   } finally {
     await db.$disconnect();
     assert.equal(path.dirname(path.resolve(directory)), path.resolve(tmpdir()));

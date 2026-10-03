@@ -32,13 +32,14 @@ const {AssetPromptWorkspace:Interactive}=require(componentPath) as typeof import
 function nodes(value:any):any[]{return Array.isArray(value)?value.flatMap(nodes):value&&typeof value==='object'?[value,...nodes(value.props?.children)]:[];}
 function text(value:any):string{return Array.isArray(value)?value.map(text).join(''):typeof value==='string'||typeof value==='number'?String(value):value?.props?text(value.props.children):'';}
 async function click(label:string,workspace:PromptWorkspace){
- const tree=Interactive({initial:workspace});const button=nodes(tree).find(node=>node.type==='button'&&text(node.props.children).startsWith(label));assert.ok(button,`${label} exists`);assert.ok(!button.props.disabled,`${label} enabled`);await button.props.onClick();
+ const selected:PromptWorkspace={...workspace,automation:{id:'scope-fixture',sourceVersion:'source',mode:'FACTS',status:'COMPLETE',done:0,failed:0,total:1,error:'',updatedAt:new Date(0).toISOString(),scope:{episodeNumbers:[1]}}};
+ const tree=Interactive({initial:selected});const button=nodes(tree).find(node=>node.type==='button'&&text(node.props.children).startsWith(label));assert.ok(button,`${label} exists`);assert.ok(!button.props.disabled,`${label} enabled`);await button.props.onClick();
 }
 async function main(){
  const originalFetch=globalThis.fetch;const actions:string[]=[];let current=base;
  globalThis.fetch=(async(_url,init)=>{if(!init?.method)return new Response(JSON.stringify(current));const payload=JSON.parse(String(init.body));assert.ok(Number.isSafeInteger(payload.revision)&&payload.revision>=0,'POST includes required revision');actions.push(payload.action);return new Response(JSON.stringify(payload.action==='generate'?{...emptyPrompt('hero'),status:'READY',body:'可编辑设计',revision:2,fingerprint:'f'}:{...current,automation:automation('FACTS','RUNNING')}));}) as typeof fetch;
  try{
-  for(const label of ['生成初版提示词','补齐提示词']){actions.length=0;stateUpdates.length=0;await click(label,base);assert.deepEqual(actions,['prepare-facts']);assert.ok(stateUpdates.some(value=>typeof value==='string'&&value.includes('完成后请再点击生成提示词')));}
+  for(const label of ['生成初版提示词','批量生图提示词（可选）']){actions.length=0;stateUpdates.length=0;await click(label,base);assert.deepEqual(actions,['prepare-facts']);assert.ok(stateUpdates.some(value=>typeof value==='string'&&value.includes('所需事实与材料依赖')&&value.includes('不自动生成美术提示词')));}
   actions.length=0;await click('整理剧本事实',base);assert.deepEqual(actions,['prepare-facts'],'Explicit preparation never generates art prompts');
   current={...base,visualFactsStatus:'REVIEW',visualFactIssues:[{subjectKey:'other',message:'其他人物问题'}]};actions.length=0;await click('生成初版提示词',current);assert.deepEqual(actions,['generate'],'Unrelated REVIEW issues do not block this asset');
   console.log('PASS: fact statuses and scoped issues rendered; missing single/batch generation prepares facts only with explicit notice; explicit preparation never generates prompts; unrelated review permits generation. No browser or model calls.');

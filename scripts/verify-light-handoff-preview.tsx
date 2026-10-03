@@ -47,7 +47,7 @@ async function main() {
     const { LIGHT_ASSET_METHOD_VERSION } = require('../lib/foundation-production-prompts');
     const user = await db.user.create({ data: { username: 'preview-owner', email: 'preview-owner@local.invalid', passwordHash: 'disabled' } });
     const other = await db.user.create({ data: { username: 'preview-other', email: 'preview-other@local.invalid', passwordHash: 'disabled' } });
-    const content = '第8集\n8-1 日 内 收容所\n人物：甲\n甲：<script>整座城？</script>\n第9集\n9-1 夜 内 宴会厅\n人物：甲\n△无关礼服不可泄漏。\n';
+    const content = '第8集\n\n8-1 日 内 收容所\n\t　\n人物：甲\n\n甲：<script>整座城？</script>\n第9集\n9-1 夜 内 宴会厅\n人物：甲\n△无关礼服不可泄漏。\n';
     const { project } = await importProjectFromText({ ownerUserId: user.id, title: '交接鉴权测试', sourceName: 'synthetic.txt', sourceText: content }, db);
     await preprocessProject(project.id, db);
     const input = await loadFoundationInputs(project.id, db), empty = createEmptyDocument(input);
@@ -71,9 +71,29 @@ async function main() {
     assert.equal(writes, 0);
     token = ownerSession.token;
     const html = renderToStaticMarkup(await page());
-    for (const text of ['交接资料预览', '本集原文', '逐场基础与变体', '准备方式', '后续提醒', '保留本句停顿。']) assert.ok(html.includes(text), text);
+    for (const text of ['分镜输入检查', '不是进入第三阶段的必经步骤', '本集原文', '逐场基础与变体', '准备方式', '后续提醒', '保留本句停顿。']) assert.ok(html.includes(text), text);
+    for (const title of ['全剧方向与已采用设计', '必要事实与跨集状态', '本集原文', '逐场基础与变体', '前场事实']) {
+      const details = html.match(new RegExp(`<details\\b([^>]*)>\\s*<summary[^>]*>${title}`));
+      assert.ok(details, `${title} can be expanded on demand`);
+      assert.doesNotMatch(details[1], /\bopen(?:\s|=|$)/, `${title} is collapsed by default`);
+    }
     assert.ok(html.includes('&lt;script&gt;整座城？&lt;/script&gt;') && !html.includes('<script>整座城？'));
     assert.equal((html.match(/整座城？/g) ?? []).length, 1, '原文只展示一份');
+    assert.ok(html.includes('第8集\n8-1 日 内 收容所\n人物：甲\n甲：&lt;script&gt;整座城？&lt;/script&gt;'), 'Read-only handoff display folds blank lines but keeps each source line');
+    const { readLightEpisodeFoundation } = require('../lib/light-foundation-reader');
+    const packet = (await readLightEpisodeFoundation(project.id, 8, db)).packet;
+    const {readProductionEpisodeHandoff}=require('../lib/episode-upstream-material');
+    const {GET:download}=require('../app/projects/[projectId]/foundation/handoff/download/route');
+    const materials=await readProductionEpisodeHandoff(project.id,8);
+    const downloadContext={params:Promise.resolve({projectId:project.id})};
+    const downloaded=await download(new Request(`http://localhost/projects/${project.id}/foundation/handoff/download?episode=8&materialVersion=${materials.materialVersion}`),downloadContext);
+    assert.equal(downloaded.status,200);
+    assert.equal((await downloaded.json()).materialVersion,materials.materialVersion,'download and preview use the same scoped material');
+    assert.equal((await download(new Request(`http://localhost/projects/${project.id}/foundation/handoff/download?episode=8&materialVersion=stale`),downloadContext)).status,409);
+    const beforeInvalid=protectedReads;
+    assert.equal((await download(new Request(`http://localhost/projects/${project.id}/foundation/handoff/download?episode=`),downloadContext)).status,400);
+    assert.equal(protectedReads,beforeInvalid,'blank input is invalid, not episode zero and must not start reading a production packet');
+    assert.equal(packet.sourceText, before.find(episode => episode.number === 8)?.content, 'Actual downstream packet retains the full original spacing');
     assert.ok(!html.includes('无关礼服') && !html.includes('pipelineRuns') && !html.includes('INPUT_JSON'));
     assert.ok(!/action="[^"]*generate|生成视频|生成分镜/.test(html));
     assert.equal(writes, 0, '正常预览零源写、零模型记录');
@@ -83,7 +103,8 @@ async function main() {
     assert.match(renderToStaticMarkup(await page('abc')), /无效|选择/);
     assert.match(renderToStaticMarkup(await Page({ params: Promise.resolve({ projectId: project.id }), searchParams: Promise.resolve({}) })), /选择.*集/);
     const projectPage = readFileSync('app/projects/[projectId]/page.tsx', 'utf8');
-    assert.ok(projectPage.includes('交接资料预览') && projectPage.includes('/foundation/handoff'));
+    assert.ok(!projectPage.includes('/foundation/handoff'), 'P4 owns the only prominent input-check entry on the project page');
+    assert.ok(projectPage.indexOf('/foundation/export') > projectPage.indexOf('id="foundation-history"'), 'full JSON export remains in the collapsed history area');
     console.log('PASS readonly preview: actual page/reader/auth, denied login and cross-account, one source copy, escaped text, no mutation/model calls');
   } finally { await db.$disconnect(); rmSync(directory, { recursive: true, force: true }); }
 }

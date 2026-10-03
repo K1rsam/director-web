@@ -5,14 +5,14 @@ import path from 'node:path';
 import JSZip from 'jszip';
 import {prepareFidelityImport} from '../lib/fidelity-import';
 import {parseScriptBuffer} from '../lib/import-script';
-import {createSource,proposePlan} from '../.agents/skills/screenplay-fidelity/scripts/fidelity.mjs';
+import {CONTRACT_VERSION,createSource,proposePlan} from '../.agents/skills/screenplay-fidelity/scripts/fidelity.mjs';
 import {proposePlan as legacyPlan} from '../lib/fidelity-legacy.mjs';
 const hash=(b:Buffer)=>createHash('sha256').update(b).digest('hex');
 const text='山海图鉴：收容所开局\n第零集\n故事大纲：\n背景\n第一集\n1-1收容所 夜 内\n张三：  é😀\n第二集\n2-1日 内 走廊\n李四：来。\n';
 const bytes=Buffer.from(text);
 const bundle=(value=text,legacy=false)=>{const source=createSource(value);return {source,plan:(legacy?legacyPlan:proposePlan)(source)};};
 async function archive(entries:Record<string,string|Buffer>){const zip=new JSZip();for(const [name,data] of Object.entries(entries))zip.file(name,data);return zip.generateAsync({type:'nodebuffer'});}
-function check(result:Awaited<ReturnType<typeof prepareFidelityImport>>,original:Buffer,episodes=2,scenes=2){assert.equal(result.imported.episodes.length,episodes);assert.deepEqual(result.imported.episodes.map(e=>e.number),Array.from({length:episodes},(_,i)=>i+1));assert.equal(result.receipt.result.episodes.reduce((n,e)=>n+e.scenes.length,0),scenes);assert.equal(result.receipt.result.validation.issues.length,0);assert.equal(result.receipt.originalHash,hash(original));assert.equal(hash(Buffer.from(result.imported.originalFile!.base64,'base64')),hash(original));assert.equal(result.receipt.result.segments.map(s=>s.text).join(''),result.imported.sourceText);assert.equal(result.receipt.result.contractVersion,'fidelity/4');}
+function check(result:Awaited<ReturnType<typeof prepareFidelityImport>>,original:Buffer,episodes=2,scenes=2){assert.equal(result.imported.episodes.length,episodes);assert.deepEqual(result.imported.episodes.map(e=>e.number),Array.from({length:episodes},(_,i)=>i+1));assert.equal(result.receipt.result.episodes.reduce((n,e)=>n+e.scenes.length,0),scenes);assert.equal(result.receipt.result.validation.issues.length,0);assert.equal(result.receipt.originalHash,hash(original));assert.equal(hash(Buffer.from(result.imported.originalFile!.base64,'base64')),hash(original));assert.equal(result.receipt.result.segments.map(s=>s.text).join(''),result.imported.sourceText);assert.equal(result.receipt.result.contractVersion,CONTRACT_VERSION);}
 async function main(){
  for(const ext of ['txt','md'])check(await prepareFidelityImport(`clean.${ext}`,bytes,'direct'),bytes);
  const external=Buffer.from(JSON.stringify(bundle()));

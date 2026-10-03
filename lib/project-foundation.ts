@@ -132,6 +132,17 @@ type RunEvidence = {
   recovery?: FoundationRecoveryOptions;
 };
 
+function savedReplayModelSettings(source: PipelineRun, evidence: RunEvidence) {
+  const model = source.model;
+  const reasoning = evidence.calls?.[0]?.reasoningEffort;
+  if (typeof model !== "string" || !model.trim() || typeof reasoning !== "string" || !reasoning.trim()
+    || !Array.isArray(evidence.calls) || !evidence.calls.length
+    || evidence.calls.some((call) => !isRecord(call) || call.model !== model || call.reasoningEffort !== reasoning)) {
+    throw new Error(`${source.stageCode}复用拒绝：只复验要求原记录的模型与全部回包的模型、推理档位完整一致。`);
+  }
+  return { model, reasoning };
+}
+
 function requireStage(value: string): FoundationStageCode {
   if (value !== "F1" && value !== "F2" && value !== "Q1") throw new Error("无效第一阶段岗位；仅允许F1、F2、Q1。");
   return value;
@@ -224,10 +235,11 @@ async function queueStages(projectId: string, request: { singleStage?: Foundatio
         || !isDeepStrictEqual(currentInput.methodVersions, input.methodVersions)
         || resolveProvider(currentInput.project.executionMode) !== provider || foundationContinuationStamp(currentState) !== foundationContinuationStamp(state)) throw new FoundationContinuationStateChangedError("继续排队前原文、上游或执行记录已变化，拒绝回退重跑。");
     }
-    if (recovery) await prepareFoundationRecovery(stages[0].code, tx, projectId, input, upstreams, provider, recovery, await publishedIdentityHistory(tx, projectId));
+    const checkedRecovery = recovery ? await prepareFoundationRecovery(stages[0].code, tx, projectId, input, upstreams, provider, recovery, await publishedIdentityHistory(tx, projectId)) : undefined;
     for (const stage of stages) await tx.pipelineRun.create({ data: {
     projectId, episodeId: null, stageCode: stage.code, roleName: stage.name, provider: provider === "API" ? "DeepSeek API" : "Codex CLI",
-    model: provider === "API" ? resolveApiModel(stage.code, stage.apiReasoner) : resolveCliModel(stage.code, stage.model),
+    model: recovery?.replayOnly && checkedRecovery && stage.code === stages[0].code ? checkedRecovery.model
+      : provider === "API" ? resolveApiModel(stage.code, stage.apiReasoner) : resolveCliModel(stage.code, stage.model),
     status: "QUEUED", inputSummary: JSON.stringify({ batchToken, provider, foundation: true, singleStage: Boolean(singleStage), sourceVersion: input.sourceVersion, inputVersion: input.inputVersion, methodVersion: input.methodVersions[stage.code],
       ...(production ? { workflow: PRODUCTION_FOUNDATION_VERSION } : {}),
       ...(continuation ? { continuation: true, continuationStages: stages.map((stage) => stage.code) } : {}),
@@ -339,8 +351,9 @@ async function prepareF2Recovery(db: FoundationDb, projectId: string, input: Inp
   const production = summary.workflow === PRODUCTION_FOUNDATION_VERSION;
   const currentProtocol = production ? PRODUCTION_F2_PROTOCOL_VERSION : F2_PROTOCOL_VERSION;
   const role = roleFor("F2", input);
-  const model = provider === "API" ? resolveApiModel("F2", role.apiReasoner ?? false) : resolveCliModel("F2", role.model);
-  const reasoning = provider === "CLI" ? resolveCliReasoning("F2", role.reasoningEffort) : /reasoner/i.test(model) ? "provider-reasoner" : "provider-default";
+  const replaySettings = recovery.replayOnly ? savedReplayModelSettings(source, original) : undefined;
+  const model = replaySettings?.model ?? (provider === "API" ? resolveApiModel("F2", role.apiReasoner ?? false) : resolveCliModel("F2", role.model));
+  const reasoning = replaySettings?.reasoning ?? (provider === "CLI" ? resolveCliReasoning("F2", role.reasoningEffort) : /reasoner/i.test(model) ? "provider-reasoner" : "provider-default");
   const reject = (reason: string): never => { throw new Error(`F2复用拒绝：${reason}`); };
   if (original.schema !== "FOUNDATION_RUN_EVIDENCE_V1" || original.runId !== source.id || original.stageCode !== "F2" || !Array.isArray(original.calls)) reject("来源执行证据不完整。");
   if (production && (original.workflow !== PRODUCTION_FOUNDATION_VERSION || original.protocolVersion !== currentProtocol || upstreams.f1?.workflow !== PRODUCTION_FOUNDATION_VERSION)) reject("新版目录的执行方式或协议不一致。");
@@ -473,7 +486,7 @@ async function prepareF2Recovery(db: FoundationDb, projectId: string, input: Inp
   if (unknownIndex >= 0 && calls.length !== unknownIndex) reject("未知调用前缀绑定不匹配，不能承诺保留已保存片。");
   if (!calls.length && !(recovery.allowUnknownRetry && unknownIndex === 0)) reject("没有连续完整且经当前校验合法的响应可续跑。");
   if (recovery.replayOnly && calls.length !== chunks.length) reject("只复验响应未完整覆盖全部分片。");
-  return { runId: source.id, calls, totalChunks: chunks.length };
+  return { runId: source.id, calls, totalChunks: chunks.length, model, reasoningEffort: reasoning };
 }
 
 /** Read-only availability; all stages share their execution validator, not optimistic counters. */
@@ -503,7 +516,7 @@ export async function previewFoundationRecoveries(projectId: string, input: Inpu
   return result;
 }
 
-async function prepareFoundationRecovery(stage: FoundationStageCode, db: FoundationDb, projectId: string, input: Inputs, supplied: Upstreams, provider: PipelineProvider, recovery: FoundationRecoveryOptions, publishedPrior: unknown[], executingRunId?: string): Promise<{ runId: string; calls: CallEvidence[]; totalChunks: number }> {
+async function prepareFoundationRecovery(stage: FoundationStageCode, db: FoundationDb, projectId: string, input: Inputs, supplied: Upstreams, provider: PipelineProvider, recovery: FoundationRecoveryOptions, publishedPrior: unknown[], executingRunId?: string): Promise<{ runId: string; calls: CallEvidence[]; totalChunks: number; model: string; reasoningEffort: string }> {
   if (stage === "F2") return prepareF2Recovery(db, projectId, input, supplied, provider, recovery, publishedPrior, executingRunId);
   const upstreams = stage === "F1" ? {} : supplied;
   const reject = (message: string): never => { throw new Error(`${stage}复用拒绝：${message}`); };
@@ -518,8 +531,9 @@ async function prepareFoundationRecovery(stage: FoundationStageCode, db: Foundat
   const signedMethod = production || original.methodVersion !== undefined || summary.methodVersion !== undefined;
   if (signedMethod && (original.methodVersion !== input.methodVersions[stage] || summary.methodVersion !== input.methodVersions[stage])) reject("岗位方法版本不匹配或缺失。");
   if (production !== (stage === "F1" || upstreams.f1?.workflow === PRODUCTION_FOUNDATION_VERSION)) reject("当前执行方式与来源不一致，不能用新任务复用旧任务响应。");
-  const model = provider === "API" ? resolveApiModel(stage, role.apiReasoner ?? false) : resolveCliModel(stage, role.model);
-  const reasoning = provider === "CLI" ? resolveCliReasoning(stage, role.reasoningEffort) : /reasoner/i.test(model) ? "provider-reasoner" : "provider-default";
+  const replaySettings = recovery.replayOnly ? savedReplayModelSettings(source, original) : undefined;
+  const model = replaySettings?.model ?? (provider === "API" ? resolveApiModel(stage, role.apiReasoner ?? false) : resolveCliModel(stage, role.model));
+  const reasoning = replaySettings?.reasoning ?? (provider === "CLI" ? resolveCliReasoning(stage, role.reasoningEffort) : /reasoner/i.test(model) ? "provider-reasoner" : "provider-default");
   const upstreamIds = { ...(upstreams.f1 ? { f1: upstreams.f1.id } : {}), ...(upstreams.f2 ? { f2: upstreams.f2.id } : {}) };
   if (original.schema !== "FOUNDATION_RUN_EVIDENCE_V1" || original.runId !== source.id || original.stageCode !== stage || !Array.isArray(original.calls)
     || original.batchToken !== summary.batchToken || original.sourceVersion !== input.sourceVersion || original.inputVersion !== input.inputVersion
@@ -587,7 +601,7 @@ async function prepareFoundationRecovery(stage: FoundationStageCode, db: Foundat
   }
   if (unknownIndex >= 0 && calls.length !== unknownIndex) reject("未知调用前缀绑定不匹配，不能承诺保留已保存片。");
   if ((!calls.length && !(recovery.allowUnknownRetry && unknownIndex === 0)) || (recovery.replayOnly && calls.length !== chunks.length)) reject("没有完整有效的成功前缀，或只复验缺片。");
-  return { runId: source.id, calls, totalChunks: chunks.length };
+  return { runId: source.id, calls, totalChunks: chunks.length, model, reasoningEffort: reasoning };
 }
 
 /** Reads are repeated around every external call and inside the publication transaction. */
@@ -692,8 +706,10 @@ export async function executeProjectFoundation(projectId: string, batchToken: st
       evidence.upstreamSnapshotIds = { ...(upstreams.f1 ? { f1: upstreams.f1.id } : {}), ...(upstreams.f2 ? { f2: upstreams.f2.id } : {}) };
       await writeEvidence(db, run.id, evidence);
       const role = roleFor(stage.code, input);
-      const model = provider === "API" ? resolveApiModel(stage.code, role.apiReasoner ?? false) : resolveCliModel(stage.code, role.model);
-      const reasoningEffort = provider === "CLI" ? resolveCliReasoning(stage.code, role.reasoningEffort) : /reasoner/i.test(model) ? "provider-reasoner" : "provider-default";
+      const publishedPrior = stage.code === "F2" ? await publishedIdentityHistory(db, projectId) : [];
+      const reusable = recovery ? await prepareFoundationRecovery(stage.code, db, projectId, input, upstreams, provider, recovery, publishedPrior, run.id) : undefined;
+      const model = recovery?.replayOnly && reusable ? reusable.model : provider === "API" ? resolveApiModel(stage.code, role.apiReasoner ?? false) : resolveCliModel(stage.code, role.model);
+      const reasoningEffort = recovery?.replayOnly && reusable ? reusable.reasoningEffort : provider === "CLI" ? resolveCliReasoning(stage.code, role.reasoningEffort) : /reasoner/i.test(model) ? "provider-reasoner" : "provider-default";
       await db.$transaction(async (tx) => {
         const currentRun = await tx.pipelineRun.findUniqueOrThrow({ where: { id: run.id } });
         await tx.pipelineRun.update({ where: { id: run.id }, data: { model, inputSummary: JSON.stringify({ ...foundationJson(currentRun.inputSummary), sourceVersion: input.sourceVersion, inputVersion: input.inputVersion, methodVersion: input.methodVersions[stage.code], promptHashes: input.promptHashes, upstreamSnapshotIds: evidence.upstreamSnapshotIds, ...(stage.code === "F2" ? { protocolVersion: stageProtocol } : {}) }) } });
@@ -705,8 +721,6 @@ export async function executeProjectFoundation(projectId: string, batchToken: st
         if (!authorRun) throw new Error("Q1缺少绑定F1原作者运行，不能猜测拆分全剧概述。");
         authorChunks = requireBoundF1AuthorChunks({ projectId, index: input.sourceIndex, candidate: upstreams.f1!, run: authorRun });
       }
-      const publishedPrior = stage.code === "F2" ? await publishedIdentityHistory(db, projectId) : [];
-      const reusable = recovery ? await prepareFoundationRecovery(stage.code, db, projectId, input, upstreams, provider, recovery, publishedPrior, run.id) : undefined;
       const outputs: Array<F1Output | F2Output | Q1Output> = [];
       const chunks = authorChunks ? authorChunks.map((chunk) => ({ episodes: chunk.scope, chars: chunk.sourceChars, oversized: chunk.oversized })) : buildFoundationChunks(input.sourceIndex);
       for (const [index, chunk] of chunks.entries()) {

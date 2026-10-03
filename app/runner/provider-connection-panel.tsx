@@ -166,8 +166,9 @@ export function ProviderConnectionPanel({ initialApi }: { initialApi: InitialApi
 
 function CodexCliStatusView({ status, note }: { status: CliStatus; note?: string }) {
   const limit = status.limits.find((item) => item.id === "codex") ?? status.limits[0] ?? null;
-  const primary = limit?.primary ?? null;
-  const secondary = limit?.secondary ?? null;
+  const windows = [limit?.primary, limit?.secondary].filter(
+    (window): window is NonNullable<CliStatus["limits"][number]["primary"]> => window != null
+  );
   const credits = limit?.credits ?? null;
 
   return (
@@ -186,16 +187,19 @@ function CodexCliStatusView({ status, note }: { status: CliStatus; note?: string
           <strong>{status.account.email ?? "本机登录账号"}</strong>
           <small>{formatPlanType(status.account.planType)} · {status.version}</small>
         </article>
-        <article>
-          <span>5 小时额度</span>
-          <strong>{formatRemaining(primary)}</strong>
-          <small>{formatUsed(primary)} · {formatReset(primary?.resetsAt ?? null)}</small>
-        </article>
-        <article>
-          <span>7 天额度</span>
-          <strong>{formatRemaining(secondary)}</strong>
-          <small>{formatUsed(secondary)} · {formatReset(secondary?.resetsAt ?? null)}</small>
-        </article>
+        {windows.length ? windows.map((window, index) => (
+          <article key={`${window.windowDurationMins ?? "unknown"}-${index}`}>
+            <span>{formatQuotaWindowLabel(window.windowDurationMins)}</span>
+            <strong>{formatRemaining(window)}</strong>
+            <small>{formatUsed(window)} · {formatReset(window.resetsAt)}</small>
+          </article>
+        )) : (
+          <article>
+            <span>额度窗口</span>
+            <strong>暂不可读</strong>
+            <small>当前未返回额度窗口信息</small>
+          </article>
+        )}
         <article>
           <span>累计用量</span>
           <strong>{formatTokenCount(status.usage.lifetimeTokens)}</strong>
@@ -209,6 +213,13 @@ function CodexCliStatusView({ status, note }: { status: CliStatus; note?: string
       {status.warnings.length ? <p className="runnerCliStatusWarning">提示：{status.warnings.join(" ")}</p> : null}
     </section>
   );
+}
+
+function formatQuotaWindowLabel(minutes: number | null): string {
+  if (minutes === null || !Number.isFinite(minutes) || minutes <= 0) return "额度窗口";
+  if (minutes % 1440 === 0) return `${minutes / 1440} 天额度`;
+  if (minutes % 60 === 0) return `${minutes / 60} 小时额度`;
+  return `${minutes} 分钟额度`;
 }
 
 function formatPlanType(value: string | null): string {

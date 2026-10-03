@@ -44,7 +44,7 @@ const renderDocument = (extra = {}) => {
 const buttons = (html: string) => [...html.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)].map(match => ({ attributes: match[1], text: match[2] }));
 const failures: string[] = [];
 let count = 0;
-async function check(name: string, run: () => void | Promise<void>) { count++; try { await run(); } catch (error) { failures.push(`${name}: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`); } }
+async function check(name: string, run: () => void | Promise<void>) { if (process.argv[2] && !name.includes(process.argv[2])) return; count++; try { await run(); } catch (error) { failures.push(`${name}: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`); } }
 
 async function main() {
   await check("紧凑入口没有大面板或进度条且正常续作只有一个提交", () => {
@@ -85,7 +85,7 @@ async function main() {
     const checkbox = html.match(/<input[^>]*type="checkbox"[^>]*>/)?.[0] ?? "";
     assert.ok(checkbox.includes('name="allowUnknownRetry"') && checkbox.includes("required") && !checkbox.includes("checked"));
     assert.ok(html.includes("可能重复计费") && html.includes("确认重发并继续"));
-    assert.ok(read("app/projects/[projectId]/foundation-delivery-panel.tsx").includes("<form key={state.expectedState}"));
+    assert.match(read("app/projects/[projectId]/foundation-delivery-panel.tsx"), /<form\b[^\n]*\bkey=\{state.expectedState\}/);
   });
   await check("双栏直接复用3000卡片和简表，null F1正常可读", () => {
     const html = renderDocument();
@@ -94,6 +94,27 @@ async function main() {
     assert.ok(html.includes("原题一") && html.includes("3 场") && html.includes("第2集原文全文"));
     assert.ok(!html.includes("<progress") && !html.includes("目录视图") && !html.includes("制图队列") && !html.includes("名称／别名"));
     assert.ok(!html.includes("<img src=x") && html.includes("&lt;img src=x") && html.includes("&lt;b&gt;版本1&lt;/b&gt;"));
+  });
+  await check("原文索引统一进入标准阅读，背景与旧消费者仍可读", () => {
+    const input = { projectId: "p1", state, sourceEpisodes: sources.map(source => ({ ...source, productionEligible: source.number === 1 })) };
+    const before = JSON.stringify(input);
+    const html = renderToStaticMarkup(createElement(LightFoundationDocumentViewer, input));
+    assert.ok(html.includes('href="/projects/p1/preparation?episode=1#script-review"'));
+    assert.ok(html.includes("标准稿／原文") && !html.includes("逐字保留，不是AI摘要。"));
+    assert.ok(html.includes('1 集 · 1 段其他原文'), "非制作资料不能继续冒充多一集");
+    assert.ok(html.includes("第2集原文全文"), "非制作原文不丢失，也不送往仅接收正篇的阅读接口");
+    assert.ok(!html.includes('preparation?episode=2'));
+    assert.ok(renderDocument().includes("逐字保留，不是AI摘要。"), "旧消费者未提供项目路由时仍能阅读原文");
+    assert.equal(JSON.stringify(input), before);
+  });
+  await check("原文阅读只收起空白行，保留动作对白换行和行内空格且不改输入", () => {
+    const content = "\r\n第一集：\r\n\r\n1-1 天台 日 外\r\n\t　\r\n　△甲停下。  \r\n甲：留住  两个空格。\r\n\r\n（OS）另一行仍独立。\r\n";
+    const input = { state, sourceEpisodes: [{ ...sources[0], content }] };
+    const snapshot = JSON.stringify(input);
+    const html = renderToStaticMarkup(createElement(LightFoundationDocumentViewer, input));
+    const displayed = html.match(/<p class="bibleBody"[^>]*>([\s\S]*?)<\/p>/)?.[1];
+    assert.equal(displayed, "第一集：\n1-1 天台 日 外\n　△甲停下。  \n甲：留住  两个空格。\n（OS）另一行仍独立。");
+    assert.equal(JSON.stringify(input), snapshot, "Display cleanup must never rewrite saved input");
   });
   await check("简表映射当前key、真实编号、父子和角色而不伪造确认", () => {
     const html = renderDocument();
@@ -169,25 +190,29 @@ async function main() {
   });
   await check("必要选择仍精确绑定revision和task并采纳续作", () => {
     const html = renderToStaticMarkup(createElement(PresentationContracts, { projectId: "p1", pending: [choice], confirmed: [], mode: "delivery", expectedTaskId: "task-current" }));
-    for (const text of ["确认并继续", 'value="revision-2"', 'value="task-current"', "&lt;script&gt;原文依据"]) assert.ok(html.includes(text));
+    for (const text of ["保存选择", "全部必要选择保存后", 'value="revision-2"', 'value="task-current"', "&lt;script&gt;原文依据"]) assert.ok(html.includes(text));
     assert.ok(!html.includes('checked=""'));
   });
-  await check("页面鉴权后只读查询原文，紧凑入口在顶部且第二阶段仍关闭", async () => {
+  await check("页面鉴权后只读查询原文，紧凑入口在顶部且第三阶段仅导航", async () => {
     const reads: string[] = [];
     let owned = true;
     stub("../lib/auth", { requireSessionUser: async () => { reads.push("auth"); return { id: "owner" }; } });
     stub("../lib/studio", { getProjectStudio: async (_id: string, userId: string) => { assert.equal(userId, "owner"); reads.push("owned-project"); return owned ? { project: { id: "p1", title: "项目", style: "3D", aspectRatio: "16:9", executionMode: "AUTO" }, episodes: sources.map(source => ({ ...source, title: source.title ?? `第${source.number}集`, scenes: [], roles: [], shotCount: 0 })), assets: [{ code: "OLD-ASSET", name: "旧表不是当前资料" }], firstPhase: { stages: [] } } : null; } });
     stub("../lib/foundation-delivery", { getFoundationDeliveryState: async () => { reads.push("delivery"); return state; } });
+    stub("../lib/production-episodes", { readProductionScope: async () => new Set([1, 2]), isProductionEpisodeNumber: (number: number) => [1, 2].includes(number) });
     stub("../lib/prisma", { prisma: { episode: { findMany: async (args: unknown) => { reads.push("source-read"); assert.deepEqual(args, { where: { projectId: "p1" }, orderBy: { number: "asc" }, select: { id: true, number: true, title: true, content: true } }); return sources.map(({ sceneCount: _count, ...source }) => source); } } } });
     stub("../app/ui/app-chrome", { AppChrome: ({ utility, primaryAction, children }: { utility?: ReactNode; primaryAction?: ReactNode; children?: ReactNode }) => createElement("div", null, createElement("header", null, utility, primaryAction), children) });
     const Page = require("../app/projects/[projectId]/page").default;
     const html = renderToStaticMarkup(await Page({ params: Promise.resolve({ projectId: "p1" }) }));
     assert.ok(reads.indexOf("auth") < reads.indexOf("owned-project") && reads.indexOf("owned-project") < reads.indexOf("source-read"));
-    assert.ok(html.includes("原文与分集索引") && html.includes("后续阶段尚未启用"));
+    assert.ok(html.includes("原文与分集索引") && html.includes("第三阶段"));
     assert.ok(html.indexOf('id="foundation-delivery"') < html.indexOf("</header>"));
     assert.ok(html.indexOf("executionModeSwitch") < html.indexOf("</header>"), "运行渠道必须在首屏可见，不再藏进历史折叠");
     const workflow = html.split('id="foundation-status"')[1]?.split('id="foundation-document"')[0] ?? '';
-    for (const text of ["P1", "P2", "P3", "P4", "接收与清洗", "拆集分场与必要事实", "素材整理与核对", "按集交接", "重新检查原文", "查看素材", "查看场次", "查看交接资料"]) assert.ok(workflow.includes(text), `首屏缺少可见操作/状态 ${text}`);
+    for (const text of ["P1", "P2", "P3", "P4", "接收与清洗", "拆集分场与必要事实", "素材整理与核对", "按集交接", "重新检查原文", "查看素材", "查看场次", "分镜输入检查（可选）"]) assert.ok(workflow.includes(text), `首屏缺少可见操作/状态 ${text}`);
+    assert.equal((html.match(/href="\/projects\/p1\/foundation\/handoff"/g) ?? []).length, 1, "主页面不重复展示输入检查入口");
+    const history = html.match(/<details\b([^>]*)id="foundation-history"[^>]*>([\s\S]*?)<\/details>/);
+    assert.ok(history && !/\bopen(?:\s|=|$)/.test(history[1]) && history[2].includes('/foundation/export'), "历史 JSON 导出仍在折叠历史区内");
     assert.ok(html.indexOf('id="foundation-status"') < html.indexOf('id="foundation-document"'));
     assert.ok(!html.includes("<progress") && !html.includes("进入本集") && !html.includes("LEGACY_AI_"));
     const mainAssets = html.split("资产名称简表")[1]?.split("</article>")[0] ?? "";
@@ -198,6 +223,7 @@ async function main() {
   });
   await check("不改输入且没有提交或模型调用", () => { assert.equal(JSON.stringify({ state, sources }), before); assert.equal(actionCalls, 0); });
   for (const failure of failures) console.error(`FAIL ${failure}`);
+  assert.ok(count > 0, "没有匹配的验证项目");
   assert.equal(failures.length, 0, `${failures.length}/${count} light UI checks failed`);
   console.log(`PASS ${count} light UI checks: compact 3000 layout, exact original source, current asset identity table, nullable F1 and action guards (SSR fixtures only)`);
 }

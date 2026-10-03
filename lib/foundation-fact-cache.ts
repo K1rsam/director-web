@@ -4,9 +4,10 @@ import { buildFoundationFacts } from './foundation-facts';
 /** Only mechanical facts are cached. Identity names and aliases are extraction dependencies. */
 const cache = new Map<string, ReturnType<typeof buildFoundationFacts>>();
 export function cachedFoundationFacts(...args: Parameters<typeof buildFoundationFacts>) {
-  const [index, context, catalog] = args;
+  const [index, context, catalog, options] = args;
   const key = createHash('sha256').update(JSON.stringify([index.version, context.version,
-    (catalog?.assets ?? []).map(a => [a.name, [...a.aliases].sort()]).sort((a,b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))])).digest('hex');
+    (catalog?.assets ?? []).map(a => [a.name, [...a.aliases].sort(), ...(options?.standard ? [a.type] : [])]).sort((a,b) => JSON.stringify(a).localeCompare(JSON.stringify(b))), options?.standard === true,
+    options?.resolutions ? Object.entries(options.resolutions).map(([n,p])=>[n,p.plan,p.diagnostics]) : null, options?.standard ? options.syntax??(options.postColonCue===false?'legacy':'current') : null])).digest('hex');
   let facts = cache.get(key);
   if (!facts) {
     facts = buildFoundationFacts(...args);

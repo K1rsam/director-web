@@ -3,9 +3,10 @@ import type { ReactNode } from "react";
 import { AccountMenu } from "./account-menu";
 import { EpisodeSidebar } from "./episode-sidebar";
 import { MotionSelection } from "./motion-selection";
+import { episodePresentation } from "@/lib/episode-presentation";
 
-type EpisodeLink = { id: string; number: number; title: string; state?: string };
-type NavigationSection = "projects" | "project" | "episode" | "new" | "runner";
+type EpisodeLink = { id: string; number: number; title: string; state?: string; productionEligible?: boolean };
+type NavigationSection = "projects" | "project" | "production" | "episode" | "assets" | "storyboard" | "new" | "runner";
 type NavigationItem = { section: NavigationSection; href: string; label: string };
 
 function NavigationIcon({ name }: { name: NavigationSection | "menu" }) {
@@ -13,7 +14,10 @@ function NavigationIcon({ name }: { name: NavigationSection | "menu" }) {
     projects: <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>,
     project: <><path d="M3 7h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><path d="M3 7V5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2" /></>,
     new: <path d="M12 5v14M5 12h14" />,
+    production: <><circle cx="5" cy="12" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="12" cy="19" r="2"/><path d="m7 10 3-3m4 0 3 3m0 4-3 3m-4 0-3-3"/></>,
     episode: <><rect x="3" y="7" width="18" height="14" rx="2" /><path d="m3 7 17-4 1 4M8 6l2 3m4-5 2 3M3 12h18" /></>,
+    assets: <><rect x="4" y="4" width="16" height="16" rx="3" /><circle cx="9" cy="9" r="1.5" /><path d="m4 17 5-5 4 4 3-3 4 4" /></>,
+    storyboard: <><rect x="3" y="7" width="18" height="14" rx="2" /><path d="m3 7 17-4 1 4M8 6l2 3m4-5 2 3M3 12h18m6 3 5 2-5 2z" /></>,
     runner: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m7 9 3 3-3 3m6 0h4" /></>,
     menu: <path d="M4 6h16M4 12h16M4 18h16" />
   };
@@ -52,30 +56,32 @@ export function AppChrome({
   projectLabel?: string;
   episodes?: EpisodeLink[];
   activeEpisodeId?: string;
-  activeSection?: "projects" | "project" | "episode" | "new" | "runner";
+  activeSection?: NavigationSection;
   primaryAction?: ReactNode;
   utility?: ReactNode;
   children: ReactNode;
 }) {
-  const productionEpisodes = episodes.filter((episode) => episode.number >= 1);
+  const productionEpisodes = episodes.filter((episode) => episode.productionEligible ?? episode.number >= 1);
   const projectLibraryHref = projectId ? `/?projectId=${encodeURIComponent(projectId)}` : "/";
   const projectWorkbenchHref = projectId ? `/projects/${encodeURIComponent(projectId)}` : null;
   const newProjectHref = projectId ? `/projects/new?projectId=${encodeURIComponent(projectId)}` : "/projects/new";
   const runnerHref = projectId ? `/runner?projectId=${encodeURIComponent(projectId)}` : "/runner";
-  const episodeEntryId = activeEpisodeId ?? productionEpisodes[0]?.id;
+  const episodeEntryId = productionEpisodes.find(episode => episode.id === activeEpisodeId)?.id ?? productionEpisodes[0]?.id;
   const navigationItems: NavigationItem[] = [
     { section: "projects", href: projectLibraryHref, label: "所有项目" },
     ...(projectWorkbenchHref ? [{ section: "project" as const, href: projectWorkbenchHref, label: activeSection === "project" ? "全剧工作台" : projectLabel?.trim() || "全剧工作台" }] : []),
-    ...(projectId && episodeEntryId ? [{ section: "episode" as const, href: `/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeEntryId)}`, label: "分集制作" }] : [])
+    ...(projectId ? [{ section: "assets" as const, href: `/projects/${encodeURIComponent(projectId)}/asset-prompts`, label: "第二阶段 · 资产形象设计" }] : []),
+    ...(projectId && episodeEntryId ? [{ section: "storyboard" as const, href: `/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeEntryId)}/storyboard`, label: "第三阶段 · 分镜创作" }] : [])
   ];
   const mobileNavigationItems: NavigationItem[] = [
     ...navigationItems,
     { section: "new", href: newProjectHref, label: "新建项目" },
     { section: "runner", href: runnerHref, label: "CLI 与 API" }
   ];
+  const navigationSection = activeSection === "production" ? "storyboard" : activeSection;
   // 全剧工作台的正文已有 h1，顶部只保留页面标识，避免重复一级标题。
   const TitleTag = activeSection === "project" ? "p" : "h1";
-  const episodeTitle = activeSection === "episode" ? /^第\s*(\d+)\s*集\s*[·・]?\s*(.*)$/.exec(title) : null;
+  const episodeTitle = activeSection === "episode" || activeSection === "storyboard" ? /^第\s*(\d+)\s*集\s*[·・]?\s*(.*)$/.exec(title) : null;
 
   return (
     <div className={`appChrome ${activeSection === "episode" ? "episodeShell" : ""}`} data-section={activeSection}>
@@ -86,12 +92,12 @@ export function AppChrome({
           <div><strong>分镜工作台</strong><small>Director Studio</small></div>
         </Link>
 
-        <MotionSelection className="sidebarNav" label="主要导航" group="primary" activeKey={activeSection ?? "projects"}>
-          <NavigationLinks items={navigationItems} activeSection={activeSection} />
+        <MotionSelection className="sidebarNav" label="主要导航" group="primary" activeKey={navigationSection ?? "projects"}>
+          <NavigationLinks items={navigationItems} activeSection={navigationSection} />
         </MotionSelection>
 
         {activeSection !== "projects" && projectId && productionEpisodes.length ? (
-          <EpisodeSidebar projectId={projectId} episodes={productionEpisodes} activeEpisodeId={activeEpisodeId} />
+          <EpisodeSidebar projectId={projectId} episodes={productionEpisodes} activeEpisodeId={activeEpisodeId} target={activeSection === "episode" ? "episode" : "storyboard"} />
         ) : null}
 
         <div className="sidebarFooter">
@@ -104,8 +110,8 @@ export function AppChrome({
           <details className="mobileNav">
             <summary aria-label="切换导航"><NavigationIcon name="menu" /></summary>
             <nav aria-label="主要导航">
-              <NavigationLinks items={mobileNavigationItems} activeSection={activeSection} />
-              {projectId && productionEpisodes.length ? <details className="mobileEpisodeList"><summary>切换分集 · {productionEpisodes.length} 集</summary><div>{productionEpisodes.map(episode => <Link key={episode.id} href={`/projects/${projectId}/episodes/${episode.id}`} aria-current={episode.id === activeEpisodeId ? "page" : undefined}>{String(episode.number).padStart(2,"0")} · {episode.title}</Link>)}</div></details> : null}
+              <NavigationLinks items={mobileNavigationItems} activeSection={navigationSection} />
+              {projectId && productionEpisodes.length ? <details className="mobileEpisodeList"><summary>切换分集 · {productionEpisodes.length} 集</summary><div>{productionEpisodes.map(episode => <Link key={episode.id} href={`/projects/${projectId}/episodes/${episode.id}${activeSection === "episode" && episode.number !== 0 ? "" : "/storyboard"}`} aria-current={episode.id === activeEpisodeId ? "page" : undefined}>{episodePresentation(episode.number, episode.title).fullTitle}</Link>)}</div></details> : null}
               <div className="mobileAccountMenu"><AccountMenu /></div>
             </nav>
           </details>

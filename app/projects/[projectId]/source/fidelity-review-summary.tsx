@@ -13,11 +13,15 @@ export function FidelityReviewSummary({ receipt }: { receipt: FidelityReceipt })
   return <section aria-label="P1 检查与修改结果">
     <h3>检查进度与正文保全</h3>
     <p>{review?.status === "COMPLETE"
-      ? `AI 全文结构检查已完成，保留 ${review.runIds?.length ?? 0} 条调用记录。`
+      ? review.method === "PROGRAM"
+        ? "程序结构验证已完成，未调用 AI；这不代表 AI 语义检查或成片验收。"
+        : review.method === "AI" || review.runIds?.length
+          ? `AI 全文结构检查已完成，保留 ${review.runIds?.length ?? 0} 条调用记录。`
+          : "结构检查已完成；此旧记录未标明执行方式，不能作为 AI 检查完成证明。"
       : review?.status === "PENDING"
-        ? `等待完成 AI 全文结构检查，已检查 ${review.completedRanges?.length ?? 0} 个范围。请在全剧工作台查看运行状态。`
+        ? `结构检查待完成，已检查 ${review.completedRanges?.length ?? 0} 个范围。请在全剧工作台查看实际处理方式与运行状态。`
         : receipt.mode === "direct"
-          ? "外部稿已由程序接收；未安排重复的全文 AI 清洗。"
+          ? "已清洗稿已由程序接收；未安排重复的全文 AI 清洗。"
           : "此记录仅有程序校验，没有本版 AI 全文检查完成证明。"}</p>
     <p>原文 {source.length.toLocaleString("zh-CN")} 字符；程序只调整结构归属，正文改写 0 处。原稿与规范化视图可在下方分别查看。</p>
     <details><summary>查看结构归属调整（{receipt.decisions.length}）</summary>

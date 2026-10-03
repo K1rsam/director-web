@@ -1,0 +1,45 @@
+{
+  "schemaVersion": "SOURCE_INDEX_EXAMPLE_V1",
+  "sourceId": "fiction-example",
+  "sourceVersion": "fiction-example-source-v1",
+  "offsetUnit": "UTF16",
+  "text": "第一集：回信\n1-1 客厅 夜 内\n△甲握着尚未拆封的信封。\n甲（低声）：他说：“别拆：等我回来。”\n甲：我等了这么久，\n还要再等吗？\n",
+  "units": [
+    {
+      "id": "u1",
+      "start": 0,
+      "end": 7,
+      "text": "第一集：回信\n"
+    },
+    {
+      "id": "u2",
+      "start": 7,
+      "end": 18,
+      "text": "1-1 客厅 夜 内\n"
+    },
+    {
+      "id": "u3",
+      "start": 18,
+      "end": 31,
+      "text": "△甲握着尚未拆封的信封。\n"
+    },
+    {
+      "id": "u4",
+      "start": 31,
+      "end": 51,
+      "text": "甲（低声）：他说：“别拆：等我回来。”\n"
+    },
+    {
+      "id": "u5",
+      "start": 51,
+      "end": 61,
+      "text": "甲：我等了这么久，\n"
+    },
+    {
+      "id": "u6",
+      "start": 61,
+      "end": 68,
+      "text": "还要再等吗？\n"
+    }
+  ]
+}

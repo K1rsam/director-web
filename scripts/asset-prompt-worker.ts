@@ -25,6 +25,7 @@ export async function runAssetPromptWorker(projectId:string,id:string,token?:str
    if((await deps.inputs(projectId)).sourceVersion!==state.sourceVersion)throw new Error('原文已更新，请重新整理当前版本。');
    if((await deps.load(projectId)).busy)throw new Error('第一阶段仍在整理，请完成后继续。');
    const facts=await (deps.facts??ensureAssetVisualFacts)(projectId,undefined,{
+    ...(state.scope?{scope:state.scope}:{}),
     shouldContinue:async()=>{const current=await deps.db.sceneSnapshot.findUnique({where:{id}});return Boolean(current&&JSON.parse(current.content).id===execution&&JSON.parse(current.content).status==='RUNNING'&&(await deps.inputs(projectId)).sourceVersion===state.sourceVersion&&!(await deps.load(projectId)).busy);},
     onProgress:async(done,total)=>{state.done=done;state.total=total;await save();}
    });
@@ -32,8 +33,11 @@ export async function runAssetPromptWorker(projectId:string,id:string,token?:str
    return;
   }
   let w=await deps.load(projectId);
-  const queue=w.assets.filter(a=>['CH','GROUP','BEAST'].includes(a.type)&&a.eligible&&(!w.records[a.key]?.body||w.records[a.key]?.status!=='READY'||promptNeedsReview(a,w.records,w.assets))).map(a=>a.key);
+  const queue=w.assets.filter(a=>(state.scope?state.scope.assetKeys?.includes(a.key)??a.episodes.some(n=>state.scope!.episodeNumbers.includes(n)):['CH','GROUP','BEAST'].includes(a.type))&&a.eligible&&(!w.records[a.key]?.body||w.records[a.key]?.status!=='READY'||promptNeedsReview(a,w.records,w.assets))).map(a=>a.key);
   state.total=queue.length;if(!await save())return;
+  if(state.scope&&queue.length){
+   await (deps.facts??ensureAssetVisualFacts)(projectId,undefined,{scope:state.scope,shouldContinue:async()=>{const current=await deps.db.sceneSnapshot.findUnique({where:{id}});return Boolean(current&&JSON.parse(current.content).id===execution&&JSON.parse(current.content).status==='RUNNING'&&(await deps.inputs(projectId)).sourceVersion===state.sourceVersion&&!(await deps.load(projectId)).busy);}});
+  }
   while(queue.length&&state.status==='RUNNING'){
    const current=await deps.db.sceneSnapshot.findUnique({where:{id}});if(!current||JSON.parse(current.content).id!==execution||JSON.parse(current.content).status!=='RUNNING'){state.status='STOPPED';break;}
    if((await deps.inputs(projectId)).sourceVersion!==state.sourceVersion){state.status='STOPPED';state.error='原文已更新，后续任务停止。';break;}
@@ -44,7 +48,7 @@ export async function runAssetPromptWorker(projectId:string,id:string,token?:str
    if(!asset||!asset.eligible){state.failed++;state.error='资产已移除或不再需要独立形象，已跳过。';await save();continue;}
    if(previous?.body&&previous.status==='READY'&&!promptNeedsReview(asset,w.records,w.assets)){state.done++;await save();continue;}
    if(previous?.origin==='MANUAL'&&previous.body){state.failed++;state.error='人工提示词的来源已更新或状态待处理，已保留，请确认后继续。';await save();continue;}
-   try{const result=await deps.generate(projectId,key,previous?.revision??0);if(result.status==='READY')state.done++;else{state.failed++;state.error=result.error;}}catch(error){state.failed++;state.error=(error as Error).message;}
+   try{const result=await deps.generate(projectId,key,previous?.revision??0,undefined,state.scope);if(result.status==='READY')state.done++;else{state.failed++;state.error=result.error;}}catch(error){state.failed++;state.error=(error as Error).message;}
    if(!await save())return;
   }
   if(state.status==='RUNNING')state.status=state.failed?'FAILED':'COMPLETE';

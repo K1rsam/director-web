@@ -12,9 +12,6 @@ export function ProjectCreateForm({ styles }: { styles: ProjectStyleOption[] }) 
   const [preview,setPreview] = useState<{effectiveMode?:"fidelity"|"direct";sourceVersion:string;originalHash:string;episodes:{number:number;title:string;length:number}[];contextLength:number;productionEpisodeCount?:number;candidateEpisodeCount?:number;sceneCount?:number;issueCount?:number;issues:{code:string;message:string;start?:number;end?:number;count?:number;sectionKeys?:string[]}[];warnings:string[];guarantee:string;preview:string;previewTruncated:boolean}|null>(null);
   const [previewBusy,setPreviewBusy]=useState(false);const [previewError,setPreviewError]=useState("");
   const [cleaningMode,setCleaningMode]=useState("fidelity");
-  const [externalMaterial, setExternalMaterial] = useState("");
-  const [materialBusy, setMaterialBusy] = useState(false);
-  const [materialMessage, setMaterialMessage] = useState("");
   const submitting = useRef(false);
   useEffect(() => { submitting.current = pending; }, [pending]);
   const [mode, setMode] = useState<ProjectSubmissionMode>("upload");
@@ -46,24 +43,19 @@ export function ProjectCreateForm({ styles }: { styles: ProjectStyleOption[] }) 
   }
 
   return (
-    <form action={formAction} className="createProjectForm" onChange={event => {setPreview(null); const target = event.target; if ((target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) && ["script", "scriptText", "originalScript"].includes(target.name)) {setExternalMaterial("");setMaterialMessage("");}}} onSubmit={async (event) => {
+    <form action={formAction} className="createProjectForm" onChange={() => setPreview(null)} onSubmit={async (event) => {
       if (!preview) { event.preventDefault();if(previewBusy)return;setPreviewBusy(true);setPreviewError("");try{const response=await fetch("/api/fidelity/preview",{method:"POST",body:new FormData(event.currentTarget)});const result=await response.json();if(!response.ok)throw new Error(result.error);setPreview(result);}catch(error){setPreviewError(error instanceof Error?error.message:"预览失败");}finally{setPreviewBusy(false);}return; }
       if (pending || submitting.current) event.preventDefault();
       else submitting.current = true;
     }}>
       <input name="mode" type="hidden" value={mode} />
       <input type="hidden" name="previewSourceVersion" value={preview?.sourceVersion??""}/><input type="hidden" name="previewOriginalHash" value={preview?.originalHash??""}/>
-      <section className="createFormSection"><h2>P1 · 接收与清洗</h2><p>{cleaningMode === "fidelity" ? "先保存原稿并做程序初检。创建后点击“整理资料”，P1 将调用 AI 检查全文结构；CLI 使用 GPT6-low。剧情、动作和台词保持原文，只整理集场与资料归属。" : "导入外部整理成果，由程序解析并校验，不再次调用 AI 清洗全文。配对原稿后可以检查是否改字、漏段或重复。"}</p>
-      <label>处理方式 <select name="cleaningMode" value={cleaningMode} onChange={event=>setCleaningMode(event.target.value)}><option value="fidelity">原稿：AI 检查结构，保留正文</option><option value="direct">已清洗：程序校验并直接导入</option></select></label>
-      <p>可粘贴外部 AI 的回复，或上传 TXT、MD、DOCX；也兼容 JSON 和 ZIP。旧 DOC 请先另存为 DOCX。</p>
+      <section className="createFormSection"><h2>P1 · 接收与清洗</h2><p>{cleaningMode === "fidelity" ? "保存原稿并先做程序结构验证；结构明确时直接继续，未解决的边界才按需 AI 辅助。剧情、动作和台词保持原文。创建后在工作台点击“整理资料”继续。" : "导入已清洗稿，由程序解析并校验，不重复全文 AI 清洗。配对原稿后可以检查是否改字、漏段或重复。"}</p>
+      <label>处理方式 <select name="cleaningMode" value={cleaningMode} onChange={event=>setCleaningMode(event.target.value)}><option value="fidelity">原稿：程序初检，按需 AI 辅助</option><option value="direct">已清洗：程序校验并直接导入</option></select></label>
+      <p>可粘贴完整剧本，或上传 TXT、MD、DOCX。旧 DOC 请先另存为 DOCX；旧结构包仍支持 JSON、ZIP 导入。</p>
       {cleaningMode === "direct" ? <label>配对原稿（建议提供）<input type="file" name="originalScript" accept=".txt,.md,.docx" /></label> : null}
-      {cleaningMode === "direct" ? <p>没有配对原稿时，仅以本次上传稿为基准，不能证明外部 AI 没有改写原文。</p> : null}
-      <details><summary>让其他 AI 整理：复制材料与接收回复</summary><p>先上传原稿，再生成带原文编号的材料交给其他 AI。AI 只返回归属标记；正文由本系统从原稿复制。收到回复后选择“已清洗”，粘贴回复并配对同一原稿。</p>
-      <button type="button" disabled={materialBusy} onClick={async event => { const form=event.currentTarget.form;if(!form)return;setMaterialBusy(true);setMaterialMessage("");try {const response=await fetch("/api/fidelity/material",{method:"POST",body:new FormData(form)});const result=await response.json();if(!response.ok)throw new Error(result.error);setExternalMaterial(result.text);}catch(error){setMaterialMessage(error instanceof Error?error.message:"生成失败");}finally{setMaterialBusy(false);} }}>{materialBusy ? "正在准备…" : "生成外部整理材料"}</button>
-      {externalMaterial ? <><textarea aria-label="发给外部 AI 的完整材料" readOnly value={externalMaterial} rows={8}/><button type="button" onClick={async()=>{try{await navigator.clipboard.writeText(externalMaterial);setMaterialMessage("已复制完整材料。");}catch{setMaterialMessage("请在上方文本框全选复制。");}}}>复制完整材料</button></> : null}
-      {materialMessage ? <p role="status">{materialMessage}</p> : null}
-      <p><a href="/api/fidelity/skill?format=md">查看外部整理说明</a> · <a href="/api/fidelity/skill">下载 Skill 与示例</a></p></details>
-      <details><summary>旧结构包的边界决定</summary><label><input type="checkbox" name="trustExternalDecisions" value="1" />采用旧 JSON 结构包中已经核对的集场和资料归属</label></details></section>
+      {cleaningMode === "direct" ? <p>没有配对原稿时，仅以本次上传稿为基准，不能证明整理前后的原文一致。</p> : null}
+      <details><summary>高级导入：旧结构包</summary><p>支持已有 JSON、ZIP 清洗包。只有核对过旧包中的边界决定时，才采用其中的集场和资料归属。</p><label><input type="checkbox" name="trustExternalDecisions" value="1" />采用旧 JSON 结构包中已经核对的集场和资料归属</label></details></section>
 
       <section className="createFormSection scriptSourceSection" aria-labelledby="script-source-title">
         <div className="formSectionHeader">
@@ -192,7 +184,7 @@ export function ProjectCreateForm({ styles }: { styles: ProjectStyleOption[] }) 
         <ImportIssueSummary issues={preview.issues}/>
         <details><summary>查看分集列表</summary><ul style={{maxHeight:240,overflow:"auto"}}>{preview.episodes.map((e,i)=><li key={i}>{e.title} · {e.length} 字符</li>)}</ul></details>
         <details><summary>查看清洗视图{preview.previewTruncated?"（预览前12000字符，完整内容已保留）":""}</summary><pre style={{whiteSpace:"pre-wrap",maxHeight:320,overflow:"auto"}}>{preview.preview}</pre></details>
-        <p>{(preview.effectiveMode ?? cleaningMode) === "fidelity" ? "本页为程序初检，尚未调用 AI。创建后点击“整理资料”，从 P1 的全文结构检查开始；检查记录和整理前后视图在“来源与清洗”中查看。" : "本页已完成程序解析与校验。后续从已接收成果继续，不重复全文 AI 清洗。"}</p>
+        <p>{(preview.effectiveMode ?? cleaningMode) === "fidelity" ? "本页为程序初检，尚未调用 AI。创建后点击“整理资料”，结构明确时由程序继续，仅未解决的边界按需 AI 辅助；检查记录和整理前后视图在“来源与清洗”中查看。" : "本页已完成程序解析与校验。后续从已接收成果继续，不重复全文 AI 清洗。"}</p>
       </section> : null}
       {!pending && state.error ? <div className="formError" role="alert">{state.error}</div> : null}
 

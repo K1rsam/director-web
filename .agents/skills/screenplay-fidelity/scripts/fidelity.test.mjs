@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {createSource,proposePlan,validatePlan,normalize} from './fidelity.mjs';
+import {CONTRACT_VERSION,createSource,proposePlan,validatePlan,normalize} from './fidelity.mjs';
 import {normalize as normalizeV2} from '../../../../lib/fidelity-v2.mjs';
 const copy=o=>JSON.parse(JSON.stringify(o));
 
@@ -67,7 +67,7 @@ test('冻结v2仍保留旧场标题漏识别语义，不能以v3宽松验真',()
 test('v3行首场N-M及同行集场正文不改行块，单行整场也可生产',()=>{
  const text='第1集 归来 场1-1 日 外 门口 人物：甲 △甲停步。甲：到了。\r\n场1-2 夜 内 大厅 人物：乙 乙：进来。\r\n第2集 后续 场2-1 日 外 街道 人物：甲 △甲离开。\n';
  const result=normalize(text),old=normalizeV2(text);
- assert.equal(result.contractVersion,'fidelity/4');assert.equal(result.episodes.length,2);
+ assert.equal(result.contractVersion,CONTRACT_VERSION);assert.equal(result.episodes.length,2);
  assert.deepEqual(result.episodes.map(e=>e.scenes.length),[2,1]);assert.equal(result.validation.issues.length,0);
  assert(result.segments.every(s=>s.kind==='body'&&s.productionEligible&&s.sceneId));
  assert.deepEqual(result.segments.map(s=>[s.id,s.start,s.end,s.text,s.textHash,s.speakerLabels]),old.segments.map(s=>[s.id,s.start,s.end,s.text,s.textHash,s.speakerLabels]));

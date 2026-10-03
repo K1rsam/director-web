@@ -58,6 +58,10 @@ async function main() {
       const shared=(await supply.buildLightEpisodePackets(project.id,doc,guarded,[8],input))[0];
       assert.deepEqual(shared,(await supply.buildLightEpisodePackets(project.id,doc,db,[8]))[0]);
       assert.equal(shared.boundaryContext?.previousSource.episode,7);
+      assert.equal(shared.episodeBoundary.schema, 'EPISODE_BOUNDARY_SEED_V1');
+      assert.equal(shared.episodeBoundary.sourceVersion, input.sourceVersion);
+      assert.equal(shared.episodeBoundary.fromEpisode, 7);
+      assert.equal(shared.episodeBoundary.toEpisode, 8);
       await assert.rejects(supply.buildLightEpisodePackets(project.id,{...doc,sourceVersion:'stale'},guarded,[8],input));
       await assert.rejects(supply.buildLightEpisodePackets('other-project',doc,guarded,[8],input));
     });
@@ -108,6 +112,18 @@ async function main() {
     await check('源文与存储记录未变，未产生模型调用', async () => {
       assert.deepEqual(await db.episode.findMany({ where: { projectId: project.id }, orderBy: { number: 'asc' } }), before.episodes);
       assert.equal(await db.sceneSnapshot.count(), before.snapshots); assert.equal(await db.pipelineRun.count(), before.runs);
+    });
+    await check('未定位派生源同时保留材料候选与依赖，但不进入本集出场', async () => {
+      const changed = structuredClone(doc), base = changed.f2!.assets[0];
+      const material = { ...structuredClone(base), key: 'unlocated-material', name: '未定位灰衣源', usageEpisodes: [], sceneRefs: [], variants: [], preparation: { mode: 'REFERENCE' as const } };
+      changed.f2!.assets.push(material);
+      base.variants[0].preparation = { mode: 'DERIVE', fromKey: material.key };
+      const packet = (await supply.buildLightEpisodePackets(project.id, changed, db, [8], input))[0];
+      assert(packet.materialCandidates.some(item => item.key === material.key && item.use === 'CANDIDATE_ONLY'));
+      assert(packet.materialDependencies.some(item => item.key === material.key && item.use === 'MATERIAL_SOURCE_ONLY'));
+      assert(!packet.assets.some(item => item.key === material.key));
+      assert(!packet.scenes.some(item => item.assetKeys.includes(material.key)));
+      assert.equal(supply.resolveLightAsset(packet, material.key)?.preparation?.mode, 'REFERENCE');
     });
     let latest = doc;
     async function readDraft(change: (draft: typeof doc) => void, expected: 'READY' | 'PARTIAL', reason?: RegExp) {
@@ -178,8 +194,8 @@ async function main() {
       const longIndex = structuredClone(input.sourceIndex), previous = longIndex.episodes.find(episode => episode.number === 7)!;
       previous.content = '原文长行'.repeat(700); const longScenes = structuredClone(scenes); longScenes[0].sourceRange = { start: 0, end: previous.content.length };
       const clipped = supply.buildLightBoundaryContext(buildSourceIndex(longIndex.episodes), catalog, longScenes, [8]);
-      assert.ok(clipped?.previousSource.clipped && clipped.gaps.length, '超长一行不得悄悄变成无前场');
-      assert.ok(clipped.previousSource.text.length <= 2400);
+      assert.ok(clipped && !clipped.previousSource.clipped && clipped.previousSource.budgetExceeded, '完整超长节点只超软预算，不冒充已截取');
+      assert.equal(clipped.previousSource.text, previous.content, '超长一行必须原样保留，不得截断节点');
     });
     await check('本集末尾原文漏出场次时可读但必须PARTIAL', async () => {
       await readDraft(() => {}, 'READY');
@@ -201,6 +217,9 @@ async function main() {
         assert.equal(result.packet.sourceText, episodes[1].content);
         assert.equal(result.readiness, 'PARTIAL');
         assert.match(result.reasons.join(';'), /前一集末场尚未定位|原文定位待重建/);
+        assert.equal(result.packet.boundaryContext?.previousSource.sceneKey, null, '旧读取保留尚未重建的定位缺口');
+        assert.equal(result.packet.episodeBoundary.previousSource?.sceneKey, '7-1', '新seed独立携带原文结构场号');
+        assert(result.packet.episodeBoundary.previousSource?.text.includes('血透出来'));
       } finally { await db.scriptScene.update({ where: { id: row.id }, data: { sourceText: row.sourceText } }); }
     });
     await check('其它集错误定位不得使所选集不可读取', async () => {
