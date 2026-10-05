@@ -98,6 +98,9 @@ const FOUNDATION_LEGACY_F2_POLICY: &str = "foundation-light-catalogue-migration/
 const FOUNDATION_Q1_REJECTION: &str = "子形象重复或再次声明基础形象";
 const FOUNDATION_Q1_SCOPE_REJECTION: &str = "形象范围声明不合法";
 const FOUNDATION_Q1_POLICY: &str = "foundation-q1-validator-repair/v1";
+const FOUNDATION_PREPARATION_POLICY: &str = "foundation-f2-preparation-conflict-repair/v1";
+const FOUNDATION_PREPARATION_REJECTION_PATTERN: &str =
+    "形象「%」的派生来源发生变化（% → %），请明确调整来源关系";
 const EXECUTION_ROOT_MARKER: &str = ".director-text-root";
 // Preserve the CLI's existing authentication, but do not inherit host workflows or tools.
 // A custom provider must use the explicit text API settings, not arbitrary user config layers.
@@ -256,6 +259,130 @@ mod tests {
         request.rule_snapshot["primary"]["content"] = json!(new_content);
         request.rule_snapshot["primary"]["sha256"] = json!(crate::pipeline::digest(new_content));
         (directory, executor, request, job, old, raw)
+    }
+
+    fn preparation_replay_fixture() -> (tempfile::TempDir, SavedTextExecutor, TextRequest, String, Value, Value) {
+        let (directory, executor, request, job, _, _) = legacy_f2_fixture();
+        let snapshot=executor.request_snapshot(&request).unwrap();
+        let raw=json!({"format":"ASSET_CATALOG_DESKTOP_V2","sourceSha256":request.input["sourceSha256"],"coverage":request.input["scope"],"assets":[],"issues":[]});
+        let error="形象「甲｜Q版」的派生来源发生变化（无 → CH_fixture:base），请明确调整来源关系";
+        executor.store.conn().unwrap().execute("UPDATE jobs SET snapshot=?1 WHERE id=?2",params![snapshot.to_string(),job]).unwrap();
+        executor.store.update_job(&job,"rejected",&json!({"result":raw,"error":error,"receipt":{"validation":"rejected","contract":"desktop-runner/v1"}})).unwrap();
+        executor.store.checkpoint(executor.workflow_id.as_deref().unwrap(),&step_key(&request),&request.stage,&crate::pipeline::digest(&snapshot.to_string()),"rejected",Some(&job),Some(&raw),Some(error)).unwrap();
+        (directory,executor,request,job,snapshot,raw)
+    }
+
+    #[tokio::test]
+    async fn preparation_conflict_reuses_exact_reply_atomically_without_cli_and_is_idempotent() {
+        let (_directory,executor,request,job,snapshot,raw)=preparation_replay_fixture();
+        let before=executor.store.jobs().unwrap().len();
+        let original=executor.store.conn().unwrap().query_row("SELECT snapshot,result FROM jobs WHERE id=?1",[&job],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).unwrap();
+        assert_eq!(executor.execute(request.clone()).await.unwrap(),raw);
+        assert_eq!(executor.store.job(&job).unwrap()["status"],"rejected","only domain acceptance may commit the replay");
+        executor.accept(&request,&raw).await.unwrap();
+        assert_eq!(executor.store.job(&job).unwrap()["status"],"completed");
+        assert_eq!(executor.store.job(&job).unwrap()["receipt"]["migrationPolicy"],FOUNDATION_PREPARATION_POLICY);
+        assert_eq!(executor.execute(request.clone()).await.unwrap(),raw);
+        executor.accept(&request,&raw).await.unwrap();
+        assert_eq!(executor.store.jobs().unwrap().len(),before,"the non-executable fixture can never be invoked or create another request");
+        let after=executor.store.conn().unwrap().query_row("SELECT snapshot,result FROM jobs WHERE id=?1",[&job],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).unwrap();
+        assert_eq!(original,after,"raw model response and frozen request stay byte-for-byte");
+        assert_eq!(executor.store.job(&job).unwrap()["snapshot"],snapshot);
+    }
+
+    #[tokio::test]
+    async fn preparation_replay_drift_stops_before_cli_or_another_job() {
+        for mutation in ["input","schema","rule","model","reasoning","cli","hash","node-result","node-error","receipt","provider","state","parent"] {
+            let (directory,mut executor,mut request,job,_snapshot,_raw)=preparation_replay_fixture();
+            let before=executor.store.jobs().unwrap().len();
+            let connection=executor.store.conn().unwrap();
+            let run=executor.workflow_id.as_deref().unwrap();
+            match mutation {
+                "input"=>request.input["registry"]=json!([{"key":"different-identity"}]),
+                "schema"=>request.schema["title"]=json!("different-schema"),
+                "rule"=>request.rule_snapshot["primary"]["content"]=json!("different-rule"),
+                "model"=>request.model="different-model".into(),
+                "reasoning"=>request.reasoning="different-reasoning".into(),
+                "cli"=>{let path=directory.path().join(if cfg!(windows){"other.exe"}else{"other"});std::fs::copy(s(&executor.settings,"codexPath"),&path).unwrap();executor.settings["codexPath"]=json!(path);},
+                "hash"=>{connection.execute("UPDATE workflow_steps SET request_hash='different' WHERE workflow_id=?1",[run]).unwrap();},
+                "node-result"=>{connection.execute("UPDATE workflow_steps SET result='{}' WHERE workflow_id=?1",[run]).unwrap();},
+                "node-error"=>{connection.execute("UPDATE workflow_steps SET error='different-error' WHERE workflow_id=?1",[run]).unwrap();},
+                "receipt"=>{executor.store.update_job(&job,"rejected",&json!({"error":"形象「甲｜Q版」的派生来源发生变化（无 → CH_fixture:base），请明确调整来源关系","receipt":{"validation":"rejected","contract":"different"}})).unwrap();},
+                "provider"=>{connection.execute("UPDATE jobs SET provider='different' WHERE id=?1",[&job]).unwrap();},
+                "state"=>{connection.execute("UPDATE workflow_steps SET state='failed' WHERE workflow_id=?1",[run]).unwrap();},
+                "parent"=>{connection.execute("UPDATE jobs SET entity_id='storyboard.run' WHERE id=?1",[run]).unwrap();},
+                _=>unreachable!(),
+            }
+            drop(connection);
+            let error=executor.execute(request).await.unwrap_err();
+            assert!(error.contains("恢复未发起新的F2生成"),"{mutation}: {error}");
+            assert_eq!(executor.store.jobs().unwrap().len(),before,"{mutation} must stop before creating a CLI job");
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_preparation_replay_preserves_raw_and_never_becomes_an_accepted_cache() {
+        let (_directory,executor,request,job,_snapshot,raw)=preparation_replay_fixture();
+        let original=executor.store.conn().unwrap().query_row("SELECT snapshot,result FROM jobs WHERE id=?1",[&job],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).unwrap();
+        assert_eq!(executor.execute(request.clone()).await.unwrap(),raw);
+        executor.reject(&request,&raw,"实际图结构或原文证据仍不合法").await.unwrap();
+        assert_eq!(executor.store.job(&job).unwrap()["status"],"rejected");
+        assert!(executor.execute(request).await.unwrap_err().contains("恢复未发起新的F2生成"));
+        let after=executor.store.conn().unwrap().query_row("SELECT snapshot,result FROM jobs WHERE id=?1",[&job],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).unwrap();
+        assert_eq!(original,after);
+    }
+
+    #[tokio::test]
+    #[ignore="explicit saved source-conflict fixture; isolated Store and non-executable CLI, zero generation"]
+    async fn saved_actual_preparation_conflict_replays_f2_and_reaches_q1_without_generation() {
+        let path=std::env::var_os("DIRECTOR_PREPARATION_REPLAY_FIXTURE").expect("explicit saved fixture required");
+        let fixture:Value=serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let input=&fixture["parentSnapshot"]["input"];
+        let source:crate::pipeline::LockedSource=serde_json::from_value(input["source"].clone()).unwrap();
+        let context=json!({"foundation":input["foundation"],"assets":input["assets"],"selection":input["selection"],"foundationModelInputProfile":input["foundationModelInputProfile"],"settings":{"confirmedDirection":input["foundation"]["productionDirection"]}});
+        let (directory,base,_unused,_job,_snapshot,_raw)=legacy_f2_fixture();
+        let store=Store::open(directory.path().join("actual-isolated-replay")).unwrap();
+        store.create("已收到F2回放验收","source-conflict-replay").unwrap();
+        store.ensure_workflow_storage().unwrap();
+        let run=store.add_job("workflow","foundation.run","local","local",&fixture["parentSnapshot"],"failed").unwrap();
+        let executor=SavedTextExecutor{store:store.clone(),settings:base.settings,workflow_id:Some(run.clone())};
+        let mut frozen:Value=serde_json::from_str(fixture["job"]["snapshot"].as_str().unwrap()).unwrap();
+        frozen["executorIdentity"]["executable"]=json!(crate::text_cli::resolve_executable(&executor.settings).unwrap().to_string_lossy());
+        let request:TextRequest=serde_json::from_value(frozen.clone()).unwrap();
+        assert_eq!(executor.request_snapshot(&request).unwrap(),frozen,"only offline executable identity is substituted");
+        let raw:Value=serde_json::from_str(fixture["job"]["result"].as_str().unwrap()).unwrap();
+        let error=fixture["job"]["error"].as_str().unwrap();
+        let job=store.add_job("text","foundation:F2:actual-replay","codex","local",&frozen,"rejected").unwrap();
+        store.update_job(&job,"rejected",&json!({"result":raw,"error":error,"receipt":{"validation":"rejected","contract":"desktop-runner/v1"}})).unwrap();
+        store.checkpoint(&run,&step_key(&request),&request.stage,&crate::pipeline::digest(&frozen.to_string()),"rejected",Some(&job),Some(&raw),Some(error)).unwrap();
+        let original_bytes=store.conn().unwrap().query_row("SELECT snapshot,result FROM jobs WHERE id=?1",[&job],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).unwrap();
+        struct F2Only<'a>{inner:&'a SavedTextExecutor,q1:Mutex<Vec<Value>>}
+        #[async_trait::async_trait]
+        impl TextExecutor for F2Only<'_>{
+            async fn execute(&self,r:TextRequest)->Result<Value>{
+                if r.stage=="foundation:Q1" {self.q1.lock().unwrap().push(r.input);return Err("OFFLINE_STOP_AT_Q1".into());}
+                self.inner.ensure_saved_replay_available(&r)?;
+                self.inner.execute(r).await
+            }
+            async fn accept(&self,r:&TextRequest,v:&Value)->Result<()>{self.inner.accept(r,v).await}
+            async fn reject(&self,r:&TextRequest,v:&Value,e:&str)->Result<()>{self.inner.reject(r,v,e).await}
+        }
+        let capture=F2Only{inner:&executor,q1:Mutex::new(vec![])};
+        let before=store.jobs().unwrap().len();
+        for _ in 0..2 {
+            let result=crate::pipeline::foundation_delivery::run_foundation_delivery(&source,&context,&capture,s(&input["settings"],"textModel"),s(&input["settings"],"reasoning")).await;
+            assert_eq!(result.unwrap_err(),"OFFLINE_STOP_AT_Q1","the actual F2 must pass before any Q1 request");
+        }
+        let q1=capture.q1.lock().unwrap();
+        assert_eq!(q1.len(),2);assert_eq!(q1[0],q1[1]);
+        assert!(q1[0]["evidence"]["pendingIssues"].as_array().unwrap().iter().any(|issue|issue["details"]["kind"]=="PREPARATION_CONFLICT"));
+        assert_eq!(store.jobs().unwrap().len(),before);
+        let saved=store.job(&job).unwrap();
+        assert_eq!(saved["status"],"completed");assert_eq!(saved["snapshot"],frozen);
+        let preserved_bytes=store.conn().unwrap().query_row("SELECT snapshot,result FROM jobs WHERE id=?1",[&job],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).unwrap();
+        assert_eq!(preserved_bytes,original_bytes,"compare the stored raw response, not the UI task projection");
+        let report=json!({"ok":true,"productionDatabaseWrites":false,"modelRequests":0,"newF2Requests":0,"imageVideoRequests":0,"actualF2Accepted":true,"oldRawPreserved":true,"oldSnapshotPreserved":true,"q1ReceivedPreparationConflict":true,"cacheNewRequests":0});
+        if let Some(output)=std::env::var_os("DIRECTOR_PREPARATION_REPLAY_REPORT"){std::fs::write(output,serde_json::to_vec_pretty(&report).unwrap()).unwrap();}
     }
 
     #[tokio::test]
@@ -2272,6 +2399,10 @@ impl TextExecutor for SavedTextExecutor {
                 .event(&replay.job, "q1_validation_replay", &replay.audit)?;
             return Ok(replay.value);
         }
+        if let Some(replay) = self.exact_f2_preparation_replay(&request, &snapshot, &hash)? {
+            self.store.event(&replay.job, "preparation_validation_replay", &replay.audit)?;
+            return Ok(replay.value);
+        }
         self.check_legacy_f2_resume_boundary(&request, &snapshot)?;
         let cached:Option<(String,String)>=self.store.conn()?.query_row("SELECT id,result FROM jobs WHERE kind='text' AND state='completed' AND json_extract(receipt,'$.validation')='accepted' AND json_extract(receipt,'$.migrationPolicy') IS NULL AND snapshot=?1 AND (json_extract(receipt,'$.acceptedRequestHash') IS NULL OR json_extract(receipt,'$.acceptedRequestHash')=?2) ORDER BY created_at DESC,rowid DESC LIMIT 1",params![snapshot.to_string(),hash],|r|Ok((r.get(0)?,r.get(1)?))).ok();
         if let Some((job, raw)) = cached {
@@ -2400,7 +2531,11 @@ impl TextExecutor for SavedTextExecutor {
             return Ok(());
         }
         if let Some(replay) = self.exact_q1_replay(request, &snapshot, &hash)? {
-            self.commit_q1_replay(&replay, &hash, value, None)?;
+            self.commit_validation_replay(&replay, &hash, value, None)?;
+            return Ok(());
+        }
+        if let Some(replay) = self.exact_f2_preparation_replay(request, &snapshot, &hash)? {
+            self.commit_validation_replay(&replay, &hash, value, None)?;
             return Ok(());
         }
         self.check_legacy_f2_resume_boundary(request, &snapshot)?;
@@ -2458,7 +2593,11 @@ impl TextExecutor for SavedTextExecutor {
             return Ok(());
         }
         if let Some(replay) = self.exact_q1_replay(request, &snapshot, &hash)? {
-            self.commit_q1_replay(&replay, &hash, value, Some(reason))?;
+            self.commit_validation_replay(&replay, &hash, value, Some(reason))?;
+            return Ok(());
+        }
+        if let Some(replay) = self.exact_f2_preparation_replay(request, &snapshot, &hash)? {
+            self.commit_validation_replay(&replay, &hash, value, Some(reason))?;
             return Ok(());
         }
         self.check_legacy_f2_resume_boundary(request, &snapshot)?;
@@ -2504,6 +2643,9 @@ impl SavedTextExecutor {
         if self.exact_q1_replay(request, &current, &hash)?.is_some() {
             return Ok(());
         }
+        if self.exact_f2_preparation_replay(request, &current, &hash)?.is_some() {
+            return Ok(());
+        }
         self.check_legacy_f2_resume_boundary(request, &current)?;
         Err(format!(
             "{} 节点没有实际可用的已验收缓存或严格回放记录；原结果保留，本次禁止新生成",
@@ -2524,8 +2666,8 @@ impl SavedTextExecutor {
             return Ok(None);
         };
         let raw:Option<String> = self.store.conn()?.query_row(
-            "SELECT w.result FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.node_key=?2 AND w.stage=?5 AND w.request_hash=?3 AND w.state='accepted' AND j.kind='text' AND j.provider='codex' AND j.state='completed' AND json_extract(j.receipt,'$.migrationPolicy')=?4 AND json_extract(j.receipt,'$.validation')='accepted' AND json_extract(j.receipt,'$.acceptedRequestHash')=?3",
-            params![run,step_key(request),hash,policy,request.stage],
+            "SELECT w.result FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.node_key=?2 AND w.stage=?5 AND w.request_hash=?3 AND w.state='accepted' AND j.kind='text' AND j.provider='codex' AND j.state='completed' AND json_extract(j.receipt,'$.migrationPolicy') IN (?4,?6) AND json_extract(j.receipt,'$.validation')='accepted' AND json_extract(j.receipt,'$.acceptedRequestHash')=?3",
+            params![run,step_key(request),hash,policy,request.stage,if request.stage=="foundation:F2" { FOUNDATION_PREPARATION_POLICY } else { policy }],
             |row|row.get(0),
         ).optional().map_err(|e|e.to_string())?;
         raw.map(|value| serde_json::from_str(&value).map_err(|e| e.to_string()))
@@ -2552,8 +2694,8 @@ impl SavedTextExecutor {
             return Ok(());
         };
         let prior:Option<(String,String,String)> = self.store.conn()?.query_row(
-            "SELECT j.id,j.snapshot,CASE WHEN json_extract(j.receipt,'$.migrationPolicy')=?4 THEN '已有回放验收或拒绝记录，但当前请求未命中已验收checkpoint' WHEN j.provider!='codex' THEN '原任务渠道不是Codex CLI' WHEN w.state!='rejected' OR j.state!='rejected' THEN '原任务或流程节点状态已变化' WHEN COALESCE(json_extract(j.receipt,'$.validation'),'')!='rejected' OR COALESCE(json_extract(j.receipt,'$.contract'),'')!='desktop-runner/v1' THEN '原任务校验回执不匹配' WHEN COALESCE(j.result,'')!=COALESCE(w.result,'') THEN '原始返回与节点返回绑定不一致' WHEN w.error=j.error AND w.error IN (?3,?6) THEN '旧任务的原始返回或checkpoint请求哈希不满足回放条件' ELSE '旧任务和流程节点的错误记录不一致' END FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.node_key=?2 AND w.stage=?5 AND j.kind='text' AND (w.error IN (?3,?6) OR j.error IN (?3,?6) OR json_extract(j.receipt,'$.migrationPolicy')=?4)",
-            params![run,step_key(request),rejection,policy,request.stage,if request.stage=="foundation:F2"{FOUNDATION_LEGACY_F2_SCOPE_REJECTION}else{FOUNDATION_Q1_SCOPE_REJECTION}],
+            "SELECT j.id,j.snapshot,CASE WHEN json_extract(j.receipt,'$.migrationPolicy') IN (?4,?8) THEN '已有回放验收或拒绝记录，但当前请求未命中已验收checkpoint' WHEN j.provider!='codex' THEN '原任务渠道不是Codex CLI' WHEN w.state!='rejected' OR j.state!='rejected' THEN '原任务或流程节点状态已变化' WHEN COALESCE(json_extract(j.receipt,'$.validation'),'')!='rejected' OR COALESCE(json_extract(j.receipt,'$.contract'),'')!='desktop-runner/v1' THEN '原任务校验回执不匹配' WHEN COALESCE(j.result,'')!=COALESCE(w.result,'') THEN '原始返回与节点返回绑定不一致' WHEN w.error=j.error AND (w.error IN (?3,?6) OR w.error LIKE ?7) THEN '旧任务的原始返回或checkpoint请求哈希不满足回放条件' ELSE '旧任务和流程节点的错误记录不一致' END FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.node_key=?2 AND w.stage=?5 AND j.kind='text' AND (w.error IN (?3,?6) OR j.error IN (?3,?6) OR json_extract(j.receipt,'$.migrationPolicy')=?4 OR (?5='foundation:F2' AND (w.error LIKE ?7 OR j.error LIKE ?7 OR json_extract(j.receipt,'$.migrationPolicy')=?8)))",
+            params![run,step_key(request),rejection,policy,request.stage,if request.stage=="foundation:F2"{FOUNDATION_LEGACY_F2_SCOPE_REJECTION}else{FOUNDATION_Q1_SCOPE_REJECTION},FOUNDATION_PREPARATION_REJECTION_PATTERN,FOUNDATION_PREPARATION_POLICY],
             |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
         ).optional().map_err(|e|e.to_string())?;
         let Some((job, old, state_reason)) = prior else {
@@ -2634,14 +2776,14 @@ impl SavedTextExecutor {
         Ok(Some(FrozenTextReplay { job, value, audit }))
     }
 
-    fn commit_q1_replay(
+    fn commit_validation_replay(
         &self,
         replay: &FrozenTextReplay,
         hash: &str,
         value: &Value,
         reason: Option<&str>,
     ) -> Result<()> {
-        let mut receipt = json!({"validation":if reason.is_some(){"rejected"}else{"accepted"},"contract":"desktop-runner/v1","revalidatedFrom":"rejected","migrationPolicy":FOUNDATION_Q1_POLICY,"previousValidationError":replay.audit["previousError"],"migrationAudit":replay.audit});
+        let mut receipt = json!({"validation":if reason.is_some(){"rejected"}else{"accepted"},"contract":"desktop-runner/v1","revalidatedFrom":"rejected","migrationPolicy":replay.audit["policy"],"previousValidationError":replay.audit["previousError"],"migrationAudit":replay.audit});
         if reason.is_none() {
             receipt["acceptedRequestHash"] = json!(hash);
         }
@@ -2650,9 +2792,33 @@ impl SavedTextExecutor {
             &json!({"error":reason,"receipt":receipt}),
             value,
         )? {
-            return Err("原Q1任务状态或节点绑定已变化；原始返回保留，回放未提交".into());
+            return Err("原文字任务状态或节点绑定已变化；原始返回保留，回放未提交".into());
         }
         Ok(())
+    }
+
+    /// Reuse only the same F2 response rejected by the preparation-source guard.
+    /// No input/rule/schema migration is allowed, and domain validation still runs.
+    fn exact_f2_preparation_replay(
+        &self, request: &TextRequest, current: &Value, hash: &str,
+    ) -> Result<Option<FrozenTextReplay>> {
+        if request.stage != "foundation:F2"
+            || request.skill != "foundation-asset-catalog"
+            || s(&self.settings, "textProvider") != "codex"
+        { return Ok(None); }
+        let Some(run) = self.workflow_id.as_deref() else { return Ok(None); };
+        let found:Option<(String,String,String,String,String)> = self.store.conn()?.query_row(
+            "SELECT j.id,j.result,j.snapshot,j.error,w.request_hash FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id JOIN jobs parent ON parent.id=w.workflow_id WHERE w.workflow_id=?1 AND w.node_key=?2 AND w.stage='foundation:F2' AND w.state='rejected' AND w.error LIKE ?3 AND parent.kind='workflow' AND parent.entity_id='foundation.run' AND j.kind='text' AND j.provider='codex' AND j.state='rejected' AND j.error=w.error AND j.result IS NOT NULL AND j.result=w.result AND json_extract(j.receipt,'$.validation')='rejected' AND json_extract(j.receipt,'$.contract')='desktop-runner/v1'",
+            params![run,step_key(request),FOUNDATION_PREPARATION_REJECTION_PATTERN],
+            |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+        ).optional().map_err(|e|e.to_string())?;
+        let Some((job, raw, old_raw, previous_error, old_hash)) = found else { return Ok(None); };
+        let old:Value=serde_json::from_str(&old_raw).map_err(|e|format!("原F2请求不是有效JSON: {e}"))?;
+        if old != *current || crate::pipeline::digest(&old.to_string()) != old_hash
+            || crate::pipeline::digest(&current.to_string()) != hash { return Ok(None); }
+        let value:Value=serde_json::from_str(&raw).map_err(|e|format!("原F2返回不是有效JSON: {e}"))?;
+        let audit=json!({"policy":FOUNDATION_PREPARATION_POLICY,"stage":request.stage,"workflowId":run,"nodeKey":step_key(request),"originalJobId":job,"previousError":previous_error,"oldRequestHash":old_hash,"newRequestHash":hash,"originalSnapshotJson":old_raw,"originalResultJson":raw,"originalResultSha256":crate::pipeline::digest(&raw),"generationRequestsSent":0,"acceptedAutomatically":false});
+        Ok(Some(FrozenTextReplay {job,value,audit}))
     }
 
     fn legacy_f2_replay(

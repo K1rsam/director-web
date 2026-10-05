@@ -2070,6 +2070,84 @@ fn check_issues(
     }
     Ok(())
 }
+
+// F2 proposes production methods; it does not silently replace a registered
+// material dependency. Keep its valid scope/evidence delta and give Q1 both
+// alternatives through the existing issue channel instead of rejecting a batch.
+fn retain_f2_preparation(
+    asset: &mut FoundationAsset,
+    prior: &FoundationProposal,
+    source: &LockedSource,
+    batch: &Batch,
+) -> Result<Vec<FoundationIssue>, String> {
+    let Some(old) = prior.assets.iter().find(|a| a.id == asset.id) else {
+        return Ok(vec![]);
+    };
+    let old_base = base_id(old)?;
+    let current_rows = batch.row_ids();
+    let mut issues = vec![];
+    for variant in &mut asset.variants {
+        let Some(previous) = old.variants.iter().find(|v| v.id == variant.id) else {
+            continue;
+        };
+        let old_preparation = previous.metadata.get("preparation");
+        let proposed_preparation = variant.metadata.get("preparation").cloned();
+        let old_mode = old_preparation.and_then(|p| p.get("mode"));
+        let proposed_mode = proposed_preparation.as_ref().and_then(|p| p.get("mode"));
+        if previous.source_variant_id == variant.source_variant_id && old_mode == proposed_mode {
+            continue;
+        }
+        let previous_basis = json!({"preparation":old_preparation,"sourceVariantId":previous.source_variant_id});
+        let proposed_basis = json!({"preparation":proposed_preparation,"sourceVariantId":variant.source_variant_id});
+        let source_refs: Vec<String> = variant.source_refs.iter()
+            .filter(|id| current_rows.contains(id.as_str())).cloned().collect();
+        let current_scenes: Vec<_> = variant.scope.scenes.iter().filter(|place| source.rows.iter().any(|row|
+            source_refs.contains(&row.id) && row.episode_id.as_ref() == Some(&place.episode_id)
+                && row.scene_id.as_ref() == Some(&place.scene_id))).collect();
+        issues.push(FoundationIssue {
+            coordinate: format!("preparation:{}", &digest(&json!([batch.key(), asset.id, variant.id, previous_basis, proposed_basis]).to_string())[..20]),
+            problem: format!("形象「{}｜{}」的制作来源建议与既有登记不同；已保留原登记，Q1可明确修订，或在resolvedIssues中确认沿用原登记。", asset.name, variant.name),
+            source_refs,
+            blocking: false,
+            asset_id: Some(asset.id.clone()),
+            variant_id: Some(variant.id.clone()),
+            episode_ids: batch.scope.clone(),
+            details: Some(json!({"owner":"Q1","kind":"PREPARATION_CONFLICT","method":METHOD_VERSION,
+                "previous":previous_basis,"proposed":proposed_basis,"sourceRefsPurpose":"SOURCE_SCOPE",
+                "currentSceneRefs":current_scenes,"previousSceneRefs":previous.scope.scenes,
+                "proposedSceneRefs":variant.scope.scenes})),
+        });
+        variant.source_variant_id = previous.source_variant_id.clone();
+        if let Some(preparation) = old_preparation {
+            variant.metadata.insert("preparation".into(), preparation.clone());
+        } else {
+            variant.metadata.remove("preparation");
+        }
+        if variant.id == old_base {
+            if let Some(preparation) = old.metadata.get("preparation") {
+                asset.metadata.insert("preparation".into(), preparation.clone());
+            } else {
+                asset.metadata.remove("preparation");
+            }
+        }
+    }
+    Ok(issues)
+}
+
+fn retains_registered_preparation(issue: &FoundationIssue, foundation: &FoundationProposal) -> bool {
+    let Some(details) = issue.details.as_ref() else { return false; };
+    if issue.blocking || details["owner"] != "Q1" || details["kind"] != "PREPARATION_CONFLICT"
+        || details["method"] != METHOD_VERSION {
+        return false;
+    }
+    let Some(variant) = foundation.assets.iter()
+        .find(|a| Some(&a.id) == issue.asset_id.as_ref())
+        .and_then(|a| a.variants.iter().find(|v| Some(&v.id) == issue.variant_id.as_ref())) else {
+        return false;
+    };
+    details["previous"] == json!({"preparation":variant.metadata.get("preparation"),"sourceVariantId":variant.source_variant_id})
+}
+
 fn apply_catalogue(
     value: &Value,
     source: &LockedSource,
@@ -2120,6 +2198,10 @@ fn apply_catalogue(
         }
         candidate.assets.push(asset);
     }
+    // Validate the complete proposed graph BEFORE restoring old dependencies.
+    // Unknown parents, self-links, cycles and invalid identities/scenes remain
+    // hard errors even when some of the offending proposals target old keys.
+    validate_foundation(source, &staged)?;
     candidate.issues = wire.issues;
     candidate.issues.extend(supplemental_issues(
         &wire.human_choices,
@@ -2128,6 +2210,9 @@ fn apply_catalogue(
         batch,
         &allowed,
     )?);
+    for asset in &mut candidate.assets {
+        candidate.issues.extend(retain_f2_preparation(asset, prior, source, batch)?);
+    }
     let mut next = prior.clone();
     // Reuse canonical identity/parent merge checks. Metadata is orthogonal to identity.
     merge_foundation(&mut next, candidate.clone(), confirmed, resolved)?;
@@ -2488,7 +2573,7 @@ fn apply_optimization(
             .and_then(Value::as_str)
             == Some("PROGRAM")
             || issue.episode_ids.iter().any(|id| !batch.scope.contains(id))
-            || wire.changes.assets.is_empty()
+            || wire.changes.assets.is_empty() && !retains_registered_preparation(issue, &next)
         {
             return Err("Q1不能仅回执关闭程序事项或未实改的事项".into());
         }
@@ -3163,6 +3248,190 @@ mod tests {
         let next =
             apply_catalogue(&wire, &s, &batch, &input, &prior, None, &HashSet::new()).unwrap();
         (s, next)
+    }
+
+    fn preparation_conflict_fixture() -> (LockedSource, FoundationProposal, Batch) {
+        let s = source(2);
+        let selected = s.episodes.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+        let all = Batch { scope: selected.clone(), pieces: whole_rows(&s, &selected), fragment: None };
+        let prior = empty_foundation(&s);
+        let pairs = s.scenes.iter().map(|scene| json!([scene.episode_id, scene.id])).collect::<Vec<_>>();
+        let asset = json!({"name":"小王｜默认","type":"CH","episodes":selected,"sceneRefs":pairs,
+            "preparation":{"mode":"REFERENCE","note":"已登记人物基线"},"variants":[
+                {"name":"小王｜Q版","episodes":selected,"sceneRefs":pairs,"preparation":{"mode":"REFERENCE","note":"已登记独立制作"}},
+                {"name":"小王｜白衣","episodes":selected,"sceneRefs":pairs,"preparation":{"mode":"DERIVE","note":"已登记基线派生"}}
+            ]});
+        let mut raw = empty_catalogue(&s, &all);
+        raw["assets"] = json!([asset, asset]); // Equal display names are distinct identities.
+        let input = input_for("F2", &s, &all, &prior, &json!({}), 0, 1, false, &[]);
+        let p = apply_catalogue(&raw, &s, &all, &input, &prior, None, &HashSet::new()).unwrap();
+        let first = vec![s.episodes[0].id.clone()];
+        let batch = Batch { scope: first.clone(), pieces: whole_rows(&s, &first), fragment: None };
+        (s, p, batch)
+    }
+
+    fn preparation_conflict_catalogue(s: &LockedSource, p: &FoundationProposal, batch: &Batch, prep: Value) -> Value {
+        let asset = &p.assets[0];
+        let pairs = s.scenes.iter().filter(|scene| batch.scope.contains(&scene.episode_id))
+            .map(|scene| json!([scene.episode_id, scene.id])).collect::<Vec<_>>();
+        let mut wire = empty_catalogue(s, batch);
+        wire["assets"] = json!([{"key":asset.id,"name":"小王｜默认","type":"CH","episodes":batch.scope,
+            "sceneRefs":pairs,"preparation":asset.metadata["preparation"],"variants":[{
+                "key":asset.variants[1].id,"name":asset.variants[1].name,"episodes":batch.scope,
+                "sceneRefs":pairs,"preparation":prep
+            }]}]);
+        wire
+    }
+
+    #[test]
+    fn f2_preparation_conflict_retains_reference_and_every_external_use_for_both_profiles() {
+        let (s, p, batch) = preparation_conflict_fixture();
+        for context in [json!({}), json!({"foundationModelInputProfile":super::super::foundation_wire::PROFILE})] {
+            let input = input_for("F2", &s, &batch, &p, &context, 0, 1, false, &[]);
+            let wire = preparation_conflict_catalogue(&s, &p, &batch, json!({"mode":"DERIVE","fromKey":p.assets[0].variants[0].id,"note":"本批建议基线派生"}));
+            let next = apply_catalogue(&wire, &s, &batch, &input, &p, None, &HashSet::new()).unwrap();
+            let old = &p.assets[0].variants[1];
+            let new = &next.assets[0].variants[1];
+            assert_eq!(new.source_variant_id, None);
+            assert_eq!(new.metadata["preparation"], old.metadata["preparation"]);
+            assert_eq!(new.scope.scenes, old.scope.scenes);
+            assert_eq!(new.source_refs, old.source_refs);
+            assert_eq!(new.metadata["usageEpisodes"], old.metadata["usageEpisodes"]);
+            assert_eq!(serde_json::to_value(&next.assets[1]).unwrap(), serde_json::to_value(&p.assets[1]).unwrap());
+            let issue = next.issues.iter().find(|i| i.details.as_ref().is_some_and(|d| d["kind"] == "PREPARATION_CONFLICT")).unwrap();
+            assert!(!issue.blocking);
+            assert!(issue.coordinate.starts_with("preparation:"));
+            assert_eq!(issue.episode_ids, batch.scope);
+            assert!(issue.source_refs.iter().all(|id| batch.row_ids().contains(id.as_str())));
+            let details = issue.details.as_ref().unwrap();
+            assert_eq!(details["previous"]["preparation"], old.metadata["preparation"]);
+            assert_eq!(details["previous"]["sourceVariantId"], Value::Null);
+            assert_eq!(details["proposed"]["sourceVariantId"], p.assets[0].variants[0].id);
+            assert_eq!(details["proposed"]["preparation"]["mode"], "DERIVE");
+            assert_eq!(details["previousSceneRefs"], serde_json::to_value(&old.scope.scenes).unwrap());
+            assert_eq!(details["currentSceneRefs"].as_array().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn f2_preparation_conflict_q1_can_keep_or_explicitly_change_the_registered_basis() {
+        let (s, p, batch) = preparation_conflict_fixture();
+        let f2 = input_for("F2", &s, &batch, &p, &json!({}), 0, 1, false, &[]);
+        let raw = preparation_conflict_catalogue(&s, &p, &batch, json!({"mode":"DERIVE","fromKey":p.assets[0].variants[0].id}));
+        let staged = apply_catalogue(&raw, &s, &batch, &f2, &p, None, &HashSet::new()).unwrap();
+        let issue = staged.issues.iter().find(|i| i.coordinate.starts_with("preparation:")).unwrap();
+        let q1 = input_for("Q1", &s, &batch, &staged, &json!({}), 0, 1, true, &[]);
+        let mut keep = empty_edit(&s, &batch);
+        keep["resolvedIssues"] = json!([issue.coordinate]);
+        let (retained, _) = apply_optimization(&keep, &s, &batch, &q1, &staged, None).unwrap();
+        assert_eq!(retained.assets[0].variants[1].source_variant_id, None);
+        assert_eq!(retained.assets[0].variants[1].metadata["preparation"], p.assets[0].variants[1].metadata["preparation"]);
+        assert!(retained.issues.iter().all(|i| i.coordinate != issue.coordinate));
+        let mut explicit_keep = keep.clone();
+        explicit_keep["changes"] = json!({"assets":[{"key":p.assets[0].id,"variants":[{"key":p.assets[0].variants[1].id,"preparation":p.assets[0].variants[1].metadata["preparation"]}]}]});
+        assert!(apply_optimization(&explicit_keep, &s, &batch, &q1, &staged, None).unwrap().0.issues.iter().all(|i| i.coordinate != issue.coordinate));
+        let mut change = keep;
+        change["changes"] = json!({"assets":[{"key":p.assets[0].id,"variants":[{"key":p.assets[0].variants[1].id,"preparation":{"mode":"DERIVE","fromKey":p.assets[0].variants[0].id,"note":"Q1明确采纳制作建议"}}]}]});
+        let (changed, _) = apply_optimization(&change, &s, &batch, &q1, &staged, None).unwrap();
+        assert_eq!(changed.assets[0].variants[1].source_variant_id, Some(p.assets[0].variants[0].id.clone()));
+        assert!(changed.issues.iter().all(|i| i.coordinate != issue.coordinate));
+        assert_eq!(changed.assets[0].variants[1].scope.scenes, p.assets[0].variants[1].scope.scenes);
+    }
+
+    #[test]
+    fn f2_preparation_conflict_swap_parent_and_mode_only_changes_are_q1_suggestions() {
+        let (s, p, batch) = preparation_conflict_fixture();
+        let input = input_for("F2", &s, &batch, &p, &json!({}), 0, 1, false, &[]);
+        let mut raw = preparation_conflict_catalogue(&s, &p, &batch, json!({"mode":"DERIVE","fromKey":p.assets[0].variants[1].id}));
+        raw["assets"][0]["variants"][0]["key"] = json!(p.assets[0].variants[2].id);
+        raw["assets"][0]["variants"][0]["name"] = json!(p.assets[0].variants[2].name);
+        let next = apply_catalogue(&raw, &s, &batch, &input, &p, None, &HashSet::new()).unwrap();
+        assert_eq!(next.assets[0].variants[2].source_variant_id, p.assets[0].variants[2].source_variant_id);
+        assert_eq!(next.assets[0].variants[2].metadata["preparation"], p.assets[0].variants[2].metadata["preparation"]);
+        let issue = next.issues.iter().find(|i| i.coordinate.starts_with("preparation:")).unwrap();
+        assert_eq!(issue.details.as_ref().unwrap()["proposed"]["sourceVariantId"], p.assets[0].variants[1].id);
+        let mut mode_only = preparation_conflict_catalogue(&s, &p, &batch, json!({"mode":"AUDIO"}));
+        let next = apply_catalogue(&mode_only, &s, &batch, &input, &p, None, &HashSet::new()).unwrap();
+        assert_eq!(next.assets[0].variants[1].metadata["preparation"], p.assets[0].variants[1].metadata["preparation"]);
+        mode_only["assets"][0]["preparation"] = json!({"mode":"AUDIO"});
+        let next = apply_catalogue(&mode_only, &s, &batch, &input, &p, None, &HashSet::new()).unwrap();
+        assert_eq!(next.assets[0].metadata["preparation"], p.assets[0].metadata["preparation"]);
+        assert_eq!(next.assets[0].variants[0].metadata["preparation"], p.assets[0].variants[0].metadata["preparation"]);
+    }
+
+    #[test]
+    fn f2_preparation_conflict_does_not_hide_invalid_graph_identity_or_required_fields() {
+        let (s, p, batch) = preparation_conflict_fixture();
+        let input = input_for("F2", &s, &batch, &p, &json!({}), 0, 1, false, &[]);
+        let run = |raw: &Value| apply_catalogue(raw, &s, &batch, &input, &p, None, &HashSet::new());
+        let valid = preparation_conflict_catalogue(&s, &p, &batch, json!({"mode":"DERIVE","fromKey":p.assets[0].variants[0].id}));
+        let mut unknown = valid.clone();
+        unknown["assets"][0]["variants"][0]["preparation"]["fromKey"] = json!("missing-parent");
+        assert!(run(&unknown).is_err());
+        let mut self_link = valid.clone();
+        self_link["assets"][0]["variants"][0]["preparation"]["fromKey"] = json!(p.assets[0].variants[1].id);
+        assert!(run(&self_link).unwrap_err().contains("自身"));
+        let mut cycle = valid.clone();
+        cycle["assets"][0]["variants"][0]["preparation"]["fromKey"] = json!(p.assets[0].variants[2].id);
+        let mut second = cycle["assets"][0]["variants"][0].clone();
+        second["key"] = json!(p.assets[0].variants[2].id);
+        second["name"] = json!(p.assets[0].variants[2].name);
+        second["preparation"]["fromKey"] = json!(p.assets[0].variants[1].id);
+        cycle["assets"][0]["variants"].as_array_mut().unwrap().push(second);
+        assert!(run(&cycle).unwrap_err().contains("循环"));
+        let mut wrong_identity = valid.clone();
+        wrong_identity["assets"][0]["name"] = json!("另一人｜默认");
+        assert!(run(&wrong_identity).unwrap_err().contains("身份"));
+        let mut wrong_type = valid.clone();
+        wrong_type["assets"][0]["type"] = json!("PROP");
+        assert!(run(&wrong_type).unwrap_err().contains("身份"));
+        let mut missing = valid.clone();
+        missing["assets"][0]["variants"][0].as_object_mut().unwrap().remove("sceneRefs");
+        assert!(run(&missing).unwrap_err().contains("必要目录字段"));
+        let mut bad_scene = valid;
+        bad_scene["assets"][0]["variants"][0]["sceneRefs"] = json!([[batch.scope[0], "unknown-scene"]]);
+        assert!(run(&bad_scene).is_err());
+    }
+
+    #[test]
+    fn f2_preparation_conflict_new_legal_variant_and_equivalent_parent_are_not_conflicts() {
+        let (s, p, batch) = preparation_conflict_fixture();
+        let input = input_for("F2", &s, &batch, &p, &json!({}), 0, 1, false, &[]);
+        let mut new_child = preparation_conflict_catalogue(&s, &p, &batch, json!({"mode":"DERIVE","fromKey":p.assets[0].variants[0].id}));
+        new_child["assets"][0]["variants"][0].as_object_mut().unwrap().remove("key");
+        new_child["assets"][0]["variants"][0]["name"] = json!("新伤态");
+        let next = apply_catalogue(&new_child, &s, &batch, &input, &p, None, &HashSet::new()).unwrap();
+        let child = next.assets[0].variants.iter().find(|v| v.name == "新伤态").unwrap();
+        assert_eq!(child.source_variant_id, Some(p.assets[0].variants[0].id.clone()));
+        assert!(next.issues.iter().all(|i| !i.coordinate.starts_with("preparation:")));
+        let mut equivalent = preparation_conflict_catalogue(&s, &p, &batch, json!({"mode":"DERIVE","fromKey":p.assets[0].id,"note":"同一父的另一种有效键"}));
+        equivalent["assets"][0]["variants"][0]["key"] = json!(p.assets[0].variants[2].id);
+        equivalent["assets"][0]["variants"][0]["name"] = json!(p.assets[0].variants[2].name);
+        let next = apply_catalogue(&equivalent, &s, &batch, &input, &p, None, &HashSet::new()).unwrap();
+        assert!(next.issues.iter().all(|i| !i.coordinate.starts_with("preparation:")));
+    }
+
+    #[test]
+    fn f2_preparation_conflict_resolution_exception_does_not_close_real_or_program_issues() {
+        let (s, p, batch) = preparation_conflict_fixture();
+        let f2 = input_for("F2", &s, &batch, &p, &json!({}), 0, 1, false, &[]);
+        let raw = preparation_conflict_catalogue(&s, &p, &batch, json!({"mode":"DERIVE","fromKey":p.assets[0].variants[0].id}));
+        let staged = apply_catalogue(&raw, &s, &batch, &f2, &p, None, &HashSet::new()).unwrap();
+        let issue_at = staged.issues.iter().position(|i| i.coordinate.starts_with("preparation:")).unwrap();
+        let mut keep = empty_edit(&s, &batch);
+        keep["resolvedIssues"] = json!([staged.issues[issue_at].coordinate]);
+        for kind in ["blocking", "program", "ordinary", "basis-differs", "outside-scope"] {
+            let mut p = staged.clone();
+            match kind {
+                "blocking" => p.issues[issue_at].blocking = true,
+                "program" => p.issues[issue_at].details.as_mut().unwrap()["owner"] = json!("PROGRAM"),
+                "ordinary" => p.issues[issue_at].details.as_mut().unwrap()["kind"] = json!("SOURCE_CONFLICT"),
+                "basis-differs" => p.issues[issue_at].details.as_mut().unwrap()["previous"]["sourceVariantId"] = json!(p.assets[0].variants[0].id),
+                _ => p.issues[issue_at].episode_ids.push(s.episodes[1].id.clone()),
+            }
+            let input = input_for("Q1", &s, &batch, &p, &json!({}), 0, 1, true, &[]);
+            assert!(apply_optimization(&keep, &s, &batch, &input, &p, None).is_err(), "{kind}");
+        }
     }
     #[test]
     fn inline_uses_strong_baseline_and_editor_keeps_external_appearance_scope() {
