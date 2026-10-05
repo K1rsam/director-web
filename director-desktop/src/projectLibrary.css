@@ -1,0 +1,26 @@
+.project-library-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 0 20px;flex-wrap:wrap}
+.project-library-tabs{display:inline-flex;flex-wrap:nowrap}
+.project-library-tabs button{display:flex;align-items:center;gap:9px;padding:8px 14px}
+.project-library-tabs button span{font-size:.6875rem;min-width:18px;padding:1px 5px;border-radius:5px;background:rgba(205,196,230,.35)}
+.project-library .project-card{padding:0;overflow:hidden;display:flex;flex-direction:column}
+.project-library .project-card-open,.project-library .project-card-summary{display:block;width:100%;padding:22px 22px 18px;flex:1;text-align:left}
+.project-card-open{background:transparent;border:0;border-radius:17px 17px 0 0;transition:background .18s}
+.project-card-open:hover:not(:disabled){background:rgba(255,255,255,.22)}
+.project-card-open p,.project-card-summary p{margin-bottom:12px}
+.project-open-hint{display:flex;align-items:center;gap:8px;color:#7f699d;font-size:.75rem}
+.project-library .project-card-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 16px;border-top:1px solid var(--line);background:rgba(247,246,255,.24)}
+.project-card-actions .button{min-height:30px;font-size:.75rem;padding:5px 9px}
+.project-actions{display:flex;align-items:center;gap:6px}
+.project-delete{color:#997263}
+.project-archived-date{display:block;color:var(--muted);font-size:.625rem;padding:0 17px 11px;background:rgba(247,246,255,.24)}
+.project-library .is-archived .project-icon{background:rgba(222,217,235,.45);color:#9b8fa9}
+.project-library-error{margin-top:20px}
+.project-lifecycle-dialog p{font-size:.875rem;line-height:1.8;margin-bottom:16px}
+.modal:has(.project-lifecycle-dialog){width:min(580px,calc(100% - 40px))}
+.project-confirm-title{display:flex;align-items:center;gap:12px;margin-bottom:18px;overflow-wrap:anywhere}
+.project-confirm-title .project-icon{width:42px;height:42px;margin:0;flex-shrink:0;border-radius:12px}
+.project-confirm-title strong{font-size:1rem;font-weight:600}
+.project-retained-path{padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.3);margin-bottom:16px}
+.project-retained-path span{display:block;font-size:.6875rem;color:var(--muted);margin-bottom:7px}
+.project-retained-path code{font-size:.75rem;line-height:1.7;overflow-wrap:anywhere;white-space:pre-wrap}
+@media(max-width:620px){.project-library-bar{gap:10px;margin-bottom:15px}.project-library .project-card-open,.project-library .project-card-summary{padding:18px}.project-library .project-grid{gap:14px}.modal:has(.project-lifecycle-dialog){width:calc(100% - 22px)}}

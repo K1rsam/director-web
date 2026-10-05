@@ -1,0 +1,5 @@
+.inline-project-create{display:flex;align-items:center;gap:10px;padding:12px 15px;margin:0 0 18px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.32)}
+.inline-project-create>label{display:flex;align-items:center;gap:12px;margin:0;flex:1;min-width:0;white-space:nowrap;color:#746783;font-size:.75rem}
+.inline-project-create>label>input{margin:0;flex:1;min-width:0;max-width:470px;height:40px}
+.inline-project-create>.button{flex-shrink:0;min-height:40px}
+@media(max-width:680px){.inline-project-create{padding:11px 12px;gap:8px}.inline-project-create>label{align-items:flex-start;flex-direction:column;gap:5px}.inline-project-create>label>input{max-width:none}.inline-project-create>.button{align-self:flex-end;font-size:.75rem;padding:9px}}

@@ -1,0 +1,908 @@
+//! Read-only CLI discovery, account/catalog inspection and browser login.
+//! No function here starts a thread or a model turn.
+use crate::store::{s, Result};
+use serde_json::{json, Value};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
+    time::{Duration, Instant},
+};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+
+const STATUS_TIMEOUT: Duration = Duration::from_secs(15);
+const CACHE_AGE: Duration = Duration::from_secs(45);
+static CACHE: OnceLock<Mutex<Option<(PathBuf, Instant, Value)>>> = OnceLock::new();
+static LOGIN: OnceLock<Mutex<Option<Arc<LoginSession>>>> = OnceLock::new();
+static LOGIN_START: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+static CONTROL_RUNTIME: OnceLock<Result<tokio::runtime::Runtime>> = OnceLock::new();
+
+/// Settings RPCs and login callbacks share a persistent runtime. A temporary
+/// block_on runtime would cancel the pending login as soon as dispatch returns.
+pub fn control_runtime() -> Result<&'static tokio::runtime::Runtime> {
+    CONTROL_RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+fn is_executable(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        path.extension()
+            .is_some_and(|v| v.eq_ignore_ascii_case("exe"))
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .is_ok_and(|v| v.permissions().mode() & 0o111 != 0)
+    }
+}
+
+fn package_native_paths(base: &Path) -> Vec<PathBuf> {
+    #[cfg(windows)]
+    let mut platforms = [
+        ("win32-x64", "x86_64-pc-windows-msvc", "codex.exe"),
+        ("win32-arm64", "aarch64-pc-windows-msvc", "codex.exe"),
+    ];
+    #[cfg(target_os = "macos")]
+    let mut platforms = [
+        ("darwin-arm64", "aarch64-apple-darwin", "codex"),
+        ("darwin-x64", "x86_64-apple-darwin", "codex"),
+    ];
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut platforms = [
+        ("linux-x64", "x86_64-unknown-linux-musl", "codex"),
+        ("linux-arm64", "aarch64-unknown-linux-musl", "codex"),
+    ];
+    if cfg!(target_arch = "aarch64") && !cfg!(target_os = "macos")
+        || cfg!(target_arch = "x86_64") && cfg!(target_os = "macos")
+    {
+        platforms.reverse();
+    }
+    let mut paths = vec![];
+    for (platform, triple, name) in platforms {
+        for suffix in ["bin", "codex"] {
+            paths.push(base.join(format!("node_modules/@openai/codex/node_modules/@openai/codex-{platform}/vendor/{triple}/{suffix}/{name}")));
+            paths.push(base.join(format!(
+                "node_modules/@openai/codex/vendor/{triple}/{suffix}/{name}"
+            )));
+        }
+    }
+    paths
+}
+
+fn preferred_executable(path: &Path) -> Option<PathBuf> {
+    let canonical = std::fs::canonicalize(path).ok();
+    // npm's Unix executable is usually a symlink to bin/codex.js. Use the
+    // platform binary inside that package so GUI startup does not need Node PATH.
+    if let Some(target) = canonical
+        .as_ref()
+        .filter(|p| p.file_name().is_some_and(|name| name == "codex.js"))
+    {
+        if let Some(base) = target.ancestors().nth(5) {
+            if let Some(native) = package_native_paths(base)
+                .into_iter()
+                .find(|p| is_executable(p))
+            {
+                return Some(native);
+            }
+        }
+    }
+    if is_executable(path) {
+        return Some(path.to_owned());
+    }
+    if path.is_file()
+        && path.file_name().is_some_and(|name| {
+            ["codex.cmd", "codex.bat", "codex.ps1"]
+                .iter()
+                .any(|expected| name.eq_ignore_ascii_case(expected))
+        })
+    {
+        if let Some(base) = path.parent() {
+            return package_native_paths(base)
+                .into_iter()
+                .find(|p| is_executable(p));
+        }
+    }
+    None
+}
+
+/// A configured path is authoritative. Wrapper paths are mapped to their native
+/// package binary instead of invoking a shell/Node wrapper from a GUI process.
+pub fn resolve_executable(settings: &Value) -> Result<PathBuf> {
+    let configured = s(settings, "codexPath").trim().trim_matches('"');
+    let environment = std::env::var("CODEX_CLI_PATH").unwrap_or_default();
+    let configured = if configured.is_empty() {
+        environment.trim().trim_matches('"')
+    } else {
+        configured
+    };
+    if !configured.is_empty() {
+        let path = PathBuf::from(configured);
+        if let Some(native) = preferred_executable(&path) {
+            return Ok(native);
+        }
+        return Err("指定的 Codex CLI 不可用，请选择原生可执行文件或检查安装位置".into());
+    }
+    #[cfg(windows)]
+    let name = "codex.exe";
+    #[cfg(not(windows))]
+    let name = "codex";
+    if let Some(paths) = std::env::var_os("PATH") {
+        let directories: Vec<_> = std::env::split_paths(&paths).collect();
+        // Prefer an actual binary on Windows; npm command wrappers are not executables.
+        for dir in &directories {
+            let path = dir.join(name);
+            if let Some(native) = preferred_executable(&path) {
+                return Ok(native);
+            }
+        }
+        for dir in &directories {
+            if let Some(path) = package_native_paths(dir)
+                .into_iter()
+                .find(|p| is_executable(p))
+            {
+                return Ok(path);
+            }
+        }
+    }
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from);
+    #[cfg(windows)]
+    {
+        let local = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .or_else(|| home.as_ref().map(|h| h.join("AppData/Local")));
+        if let Some(local) = local {
+            let root = local.join("OpenAI/Codex/bin");
+            let mut directories: Vec<_> = std::fs::read_dir(root)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|entry| entry.path().is_dir())
+                .collect();
+            directories.sort_by_key(|entry| {
+                std::cmp::Reverse(entry.metadata().and_then(|m| m.modified()).ok())
+            });
+            if let Some(path) = directories
+                .into_iter()
+                .map(|e| e.path().join(name))
+                .find(|p| is_executable(p))
+            {
+                return Ok(path);
+            }
+        }
+        let roaming = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .or_else(|| home.as_ref().map(|h| h.join("AppData/Roaming")));
+        if let Some(roaming) = roaming {
+            if let Some(path) = package_native_paths(&roaming.join("npm"))
+                .into_iter()
+                .find(|p| is_executable(p))
+            {
+                return Ok(path);
+            }
+        }
+    }
+    let mut directories = vec![];
+    if let Some(home) = home {
+        directories.extend([
+            home.join(".local/bin"),
+            home.join(".cargo/bin"),
+            home.join(".npm-global/bin"),
+        ]);
+        for package_base in [home.join(".npm-global/lib"), home.join(".local/lib")] {
+            if let Some(path) = package_native_paths(&package_base)
+                .into_iter()
+                .find(|p| is_executable(p))
+            {
+                return Ok(path);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        for base in ["/opt/homebrew/lib", "/usr/local/lib"] {
+            if let Some(path) = package_native_paths(Path::new(base))
+                .into_iter()
+                .find(|p| is_executable(p))
+            {
+                return Ok(path);
+            }
+        }
+        directories.extend([
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/usr/bin"),
+        ]);
+    }
+    directories
+        .into_iter()
+        .find_map(|p| preferred_executable(&p.join(name)))
+        .ok_or_else(|| {
+            "未找到 Codex CLI，请在渠道与设置中选择本机 CLI；Windows 使用 codex.exe".into()
+        })
+}
+
+fn command(path: &Path) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(path);
+    command.current_dir(std::env::temp_dir()).kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    command
+}
+
+async fn inspect_command(path: &Path, arguments: &[&str]) -> Result<String> {
+    let mut cmd = command(path);
+    cmd.args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let (child, _registration) = crate::text_executor::spawn_cli_child(&mut cmd)?;
+    let output = tokio::time::timeout(Duration::from_secs(3), child.wait_with_output())
+        .await
+        .map_err(|_| "Codex CLI 本机检查超时".to_string())?
+        .map_err(|e| format!("Codex CLI 本机检查失败: {e}"))?;
+    if !output.status.success() {
+        return Err("Codex CLI 本机检查失败，请检查所选可执行文件".into());
+    }
+    Ok(format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ))
+}
+
+struct RpcClient {
+    child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    lines: Lines<BufReader<tokio::process::ChildStdout>>,
+    _registration: crate::text_executor::ChildRegistration,
+    login_notification: Option<Value>,
+}
+impl RpcClient {
+    async fn open(path: &Path) -> Result<Self> {
+        let mut cmd = command(path);
+        // Inspection must refer to the same official provider used by exec with
+        // --ignore-user-config, rather than a host's custom provider/profile.
+        cmd.args([
+            "app-server",
+            "--stdio",
+            "-c",
+            "model_provider=\"openai\"",
+            "-c",
+            "chatgpt_base_url=\"https://chatgpt.com/backend-api\"",
+            "-c",
+            "features.plugins=false",
+            "-c",
+            "features.apps=false",
+            "-c",
+            "features.hooks=false",
+            "-c",
+            "features.memories=false",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+        let (mut child, registration) = crate::text_executor::spawn_cli_child(&mut cmd)?;
+        let stdin = child.stdin.take().ok_or("无法打开 CLI 状态输入")?;
+        let stdout = child.stdout.take().ok_or("无法读取 CLI 状态")?;
+        let mut rpc = Self {
+            child,
+            stdin,
+            lines: BufReader::new(stdout).lines(),
+            _registration: registration,
+            login_notification: None,
+        };
+        rpc.send(&json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"director-workbench","title":"Director Workbench","version":"0.1.0"},"capabilities":{"experimentalApi":false}}})).await?;
+        rpc.response(1).await?;
+        rpc.send(&json!({"method":"initialized"})).await?;
+        Ok(rpc)
+    }
+    async fn send(&mut self, value: &Value) -> Result<()> {
+        self.stdin
+            .write_all(format!("{value}\n").as_bytes())
+            .await
+            .map_err(|_| "无法发送 CLI 状态请求".to_string())
+    }
+    async fn next(&mut self) -> Result<Value> {
+        loop {
+            let line = self
+                .lines
+                .next_line()
+                .await
+                .map_err(|_| "无法读取 CLI 状态".to_string())?
+                .ok_or("Codex CLI 状态进程已退出")?;
+            if line.len() > 1024 * 1024 {
+                return Err("Codex CLI 返回的状态超过安全读取上限".into());
+            }
+            if let Ok(value) = serde_json::from_str(&line) {
+                return Ok(value);
+            }
+        }
+    }
+    async fn response(&mut self, expected: u64) -> Result<Value> {
+        loop {
+            let value = self.next().await?;
+            if value["id"].as_u64() == Some(expected) {
+                if !value["error"].is_null() {
+                    return Err("Codex CLI 暂时无法读取此项，请刷新或检查登录".into());
+                }
+                return Ok(value["result"].clone());
+            }
+            if value["method"] == "account/login/completed" {
+                self.login_notification = Some(value["params"].clone());
+            }
+        }
+    }
+    async fn call(&mut self, id: u64, method: &str, params: Value) -> Result<Value> {
+        self.send(&json!({"id":id,"method":method,"params":params}))
+            .await?;
+        self.response(id).await
+    }
+    async fn close(&mut self) {
+        let _ = self.child.kill().await;
+        let _ = self.child.wait().await;
+    }
+}
+
+fn normalize_models(payload: &Value) -> Vec<Value> {
+    payload["data"].as_array().into_iter().flatten().filter(|model| model["hidden"].as_bool() != Some(true)).filter_map(|model| {
+        let id = model["model"].as_str().or_else(|| model["id"].as_str())?;
+        let efforts: Vec<_> = model["supportedReasoningEfforts"].as_array().into_iter().flatten().filter_map(|value| value.as_str().or_else(|| value["reasoningEffort"].as_str())).collect();
+        Some(json!({"id":id,"displayName":model["displayName"].as_str().unwrap_or(id),"supportedReasoningEfforts":efforts,"defaultReasoningEffort":model["defaultReasoningEffort"],"isDefault":model["isDefault"].as_bool().unwrap_or(false)}))
+    }).collect()
+}
+fn window(value: &Value) -> Value {
+    if !value.is_object() {
+        return Value::Null;
+    }
+    let used = value["usedPercent"].as_f64();
+    json!({"usedPercent":used,"remainingPercent":used.map(|used| (100.0-used).clamp(0.0,100.0)),"windowDurationMins":value["windowDurationMins"],"resetsAt":value["resetsAt"]})
+}
+fn normalize_limits(payload: &Value) -> Vec<Value> {
+    let values: Vec<_> = if let Some(map) = payload["rateLimitsByLimitId"].as_object() {
+        map.values().collect()
+    } else if payload["rateLimits"].is_object() {
+        vec![&payload["rateLimits"]]
+    } else {
+        vec![]
+    };
+    values.into_iter().map(|v| json!({"id":v["limitId"].as_str().unwrap_or("codex"),"name":v["limitName"],"planType":v["planType"],"primary":window(&v["primary"]),"secondary":window(&v["secondary"]),"credits":if v["credits"].is_object(){json!({"balance":v["credits"]["balance"],"hasCredits":v["credits"]["hasCredits"].as_bool().unwrap_or(false),"unlimited":v["credits"]["unlimited"].as_bool().unwrap_or(false)})}else{Value::Null}})).collect()
+}
+
+async fn read_status(path: &Path) -> Result<Value> {
+    let (version, help) = tokio::try_join!(
+        inspect_command(path, &["--version"]),
+        inspect_command(path, &["exec", "--help"])
+    )?;
+    let version = version
+        .lines()
+        .find(|line| line.starts_with("codex-cli "))
+        .ok_or("所选程序不是 Codex CLI")?
+        .trim()
+        .to_string();
+    let compatible = [
+        "--json",
+        "--output-schema",
+        "--output-last-message",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--ephemeral",
+    ]
+    .iter()
+    .all(|flag| help.contains(flag));
+    let mut rpc = RpcClient::open(path).await?;
+    let account = rpc
+        .call(2, "account/read", json!({"refreshToken":false}))
+        .await?;
+    let account = account["account"].clone();
+    let logged_in = account.is_object();
+    let mut warnings = vec![];
+    if !compatible {
+        warnings.push("当前 CLI 缺少文本隔离或结构化输出参数，请升级 CLI".to_string());
+    }
+    let mut models = vec![];
+    let mut cursor = Value::Null;
+    for page in 0..10 {
+        match rpc
+            .call(
+                10 + page,
+                "model/list",
+                json!({"limit":100,"cursor":cursor,"includeHidden":false}),
+            )
+            .await
+        {
+            Ok(payload) => {
+                models.extend(normalize_models(&payload));
+                cursor = payload["nextCursor"].clone();
+                if cursor.is_null() {
+                    break;
+                }
+            }
+            Err(_) => {
+                warnings.push("模型目录暂时无法读取，请刷新；不会自动替换模型".into());
+                break;
+            }
+        }
+    }
+    let limits = if logged_in {
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            rpc.call(30, "account/rateLimits/read", Value::Null),
+        )
+        .await
+        {
+            Ok(Ok(payload)) => normalize_limits(&payload),
+            _ => {
+                warnings.push("额度暂时无法读取，不表示剩余额度为零".into());
+                vec![]
+            }
+        }
+    } else {
+        vec![]
+    };
+    rpc.close().await;
+    let account_summary = if logged_in {
+        json!({"type":account["type"],"email":account["email"],"planType":account["planType"]})
+    } else {
+        Value::Null
+    };
+    Ok(
+        json!({"available":true,"ready":logged_in && compatible && !models.is_empty(),"executable":path.to_string_lossy(),"version":version,"loggedIn":logged_in,"account":account_summary,"models":models,"limits":limits,"checkedAt":crate::store::now(),"warnings":warnings,"error":if logged_in{Value::Null}else{json!("Codex CLI 尚未登录，请在此完成浏览器登录")},"generationRequestsSent":0,"catalogIsEntitlementCheck":false,"globalConcurrency":4,"episodeConcurrency":2,"login":login_snapshot()}),
+    )
+}
+
+/// Forced inspection is used by Settings; execution preflight reuses a short,
+/// path-bound cache and never takes the workflow submission lock.
+pub async fn status(settings: &Value, force: bool) -> Value {
+    let path = match resolve_executable(settings) {
+        Ok(path) => path,
+        Err(error) => {
+            return json!({"available":false,"ready":false,"loggedIn":false,"executable":Value::Null,"version":Value::Null,"account":Value::Null,"models":[],"limits":[],"checkedAt":crate::store::now(),"warnings":[],"error":error,"login":login_snapshot(),"generationRequestsSent":0})
+        }
+    };
+    if !force {
+        if let Ok(cache) = CACHE.get_or_init(|| Mutex::new(None)).lock() {
+            if let Some((identity, checked, value)) = cache.as_ref() {
+                if identity == &path && checked.elapsed() < CACHE_AGE {
+                    let mut value = value.clone();
+                    value["login"] = login_snapshot();
+                    return value;
+                }
+            }
+        }
+    }
+    let result = tokio::time::timeout(STATUS_TIMEOUT, read_status(&path)).await;
+    let value = match result {
+        Ok(Ok(value)) => value,
+        failure => {
+            json!({"available":true,"ready":false,"loggedIn":false,"executable":path.to_string_lossy(),"version":Value::Null,"account":Value::Null,"models":[],"limits":[],"checkedAt":crate::store::now(),"warnings":[],"error":match failure{Ok(Err(error))=>error,_=>"Codex CLI 状态检查超时，请稍后刷新；未发送生成请求".into()},"login":login_snapshot(),"generationRequestsSent":0})
+        }
+    };
+    if let Ok(mut cache) = CACHE.get_or_init(|| Mutex::new(None)).lock() {
+        *cache = Some((path, Instant::now(), value.clone()));
+    }
+    value
+}
+
+pub fn validate_selection(status: &Value, model: &str, reasoning: &str) -> Result<()> {
+    if status["ready"].as_bool() != Some(true) {
+        return Err(status["error"]
+            .as_str()
+            .unwrap_or("Codex CLI 尚未准备好，请在渠道与设置中检查登录及版本")
+            .into());
+    }
+    let selected = status["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|m| m["id"] == model)
+        .ok_or("所选文本模型不在 CLI 模型目录中，请刷新并选择模型")?;
+    if !selected["supportedReasoningEfforts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|effort| effort == reasoning)
+    {
+        return Err("所选文本模型不支持此推理强度，请调整后再生成".into());
+    }
+    Ok(())
+}
+pub async fn ensure_ready(settings: &Value, model: &str, reasoning: &str) -> Result<()> {
+    if s(settings, "textProvider") == "api" {
+        return Ok(());
+    }
+    validate_selection(&status(settings, false).await, model, reasoning)
+}
+
+/// Resolve only an explicitly empty "CLI default" selection. Existing named
+/// models and efforts are validated, never replaced by a silent fallback.
+/// The caller persists this returned settings object in its workflow snapshot.
+pub async fn resolve_settings(settings: &Value) -> Result<Value> {
+    if s(settings, "textProvider") == "api" {
+        return Ok(settings.clone());
+    }
+    let inspected = status(settings, false).await;
+    let mut resolved = settings.clone();
+    if s(settings, "textModel").trim().is_empty() {
+        let default = inspected["models"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|model| model["isDefault"].as_bool() == Some(true))
+            .ok_or("CLI 尚未返回默认模型，请刷新并选择一个文本模型")?;
+        resolved["textModel"] = default["id"].clone();
+        if s(settings, "reasoning").trim().is_empty() {
+            resolved["reasoning"] = default["defaultReasoningEffort"].clone();
+        }
+    }
+    validate_selection(
+        &inspected,
+        s(&resolved, "textModel"),
+        s(&resolved, "reasoning"),
+    )?;
+    resolved["textCliVersion"] = inspected["version"].clone();
+    resolved["textCliExecutable"] = inspected["executable"].clone();
+    resolved["codexPath"] = inspected["executable"].clone();
+    Ok(resolved)
+}
+
+struct LoginSession {
+    state: Mutex<Value>,
+    cancel: AtomicBool,
+}
+fn login_snapshot() -> Value {
+    LOGIN
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|session| {
+            session
+                .as_ref()
+                .and_then(|v| v.state.lock().ok().map(|v| v.clone()))
+        })
+        .unwrap_or_else(|| json!({"state":"idle"}))
+}
+pub fn login_status() -> Value {
+    json!({"login":login_snapshot()})
+}
+fn clear_cache() {
+    if let Ok(mut cache) = CACHE.get_or_init(|| Mutex::new(None)).lock() {
+        *cache = None;
+    }
+}
+pub fn cancel_login() -> Value {
+    if let Ok(session) = LOGIN.get_or_init(|| Mutex::new(None)).lock() {
+        if let Some(session) = session.as_ref() {
+            session.cancel.store(true, Ordering::SeqCst);
+            if let Ok(mut state) = session.state.lock() {
+                if state["state"] == "pending" {
+                    *state = json!({"state":"cancelled"});
+                }
+            }
+        }
+    }
+    login_status()
+}
+/// Only the pending login owned by this workbench is cancelled. The desktop's
+/// text executor registry separately kills/drains its own app-server children.
+pub fn shutdown() {
+    cancel_login();
+}
+
+fn validated_auth_url(url: &str) -> Result<reqwest::Url> {
+    let url = reqwest::Url::parse(url).map_err(|_| "登录地址无效")?;
+    if url.scheme() != "https" || url.host_str() != Some("auth.openai.com") {
+        return Err("登录地址不是官方授权地址".into());
+    }
+    Ok(url)
+}
+async fn open_auth_url(url: &str) -> Result<()> {
+    let url = validated_auth_url(url)?;
+    #[cfg(windows)]
+    let mut command = {
+        let mut c = tokio::process::Command::new("rundll32.exe");
+        c.args(["url.dll,FileProtocolHandler", url.as_str()]);
+        c.creation_flags(0x08000000);
+        c
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut c = tokio::process::Command::new("/usr/bin/open");
+        c.arg(url.as_str());
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut c = tokio::process::Command::new("xdg-open");
+        c.arg(url.as_str());
+        c
+    };
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let status = tokio::time::timeout(Duration::from_secs(5), command.status())
+        .await
+        .map_err(|_| "打开浏览器超时，请使用登录链接")?
+        .map_err(|_| "无法打开系统浏览器，请使用登录链接")?;
+    if !status.success() {
+        return Err("无法打开系统浏览器，请使用登录链接".into());
+    }
+    Ok(())
+}
+pub async fn open_login_url() -> Result<Value> {
+    let state = login_snapshot();
+    if state["state"] != "pending" {
+        return Err("当前没有等待中的登录，请重新点击登录".into());
+    }
+    open_auth_url(state["authUrl"].as_str().ok_or("登录链接尚未取得")?).await?;
+    Ok(json!({"login":state}))
+}
+pub async fn start_login(settings: &Value) -> Result<Value> {
+    let response = begin_login(settings).await?;
+    if let Some(url) = response["login"]["authUrl"].as_str() {
+        if let Err(error) = open_auth_url(url).await {
+            if let Ok(sessions) = LOGIN.get_or_init(|| Mutex::new(None)).lock() {
+                if let Some(session) = sessions.as_ref() {
+                    if let Ok(mut state) = session.state.lock() {
+                        state["error"] = json!(error);
+                    }
+                }
+            }
+        }
+    }
+    Ok(login_status())
+}
+async fn begin_login(settings: &Value) -> Result<Value> {
+    let _start_gate = LOGIN_START
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let prior = login_snapshot();
+    if prior["state"] == "pending" {
+        return Ok(json!({"login":prior}));
+    }
+    let path = resolve_executable(settings)?;
+    let mut rpc = tokio::time::timeout(STATUS_TIMEOUT, RpcClient::open(&path))
+        .await
+        .map_err(|_| "启动 CLI 登录超时")??;
+    let result = tokio::time::timeout(
+        STATUS_TIMEOUT,
+        rpc.call(2, "account/login/start", json!({"type":"chatgpt"})),
+    )
+    .await
+    .map_err(|_| "取得 CLI 登录链接超时")??;
+    let login_id = result["loginId"]
+        .as_str()
+        .ok_or("CLI 未返回登录标识")?
+        .to_string();
+    let url = result["authUrl"]
+        .as_str()
+        .ok_or("CLI 未返回官方登录链接")?
+        .to_string();
+    validated_auth_url(&url)?;
+    let session = Arc::new(LoginSession {
+        state: Mutex::new(json!({"state":"pending","loginId":login_id,"authUrl":url})),
+        cancel: AtomicBool::new(false),
+    });
+    *LOGIN
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .map_err(|e| e.to_string())? = Some(session.clone());
+    clear_cache();
+    control_runtime()?.spawn(async move {
+        let deadline = Instant::now() + Duration::from_secs(600);
+        loop {
+            if session.cancel.load(Ordering::SeqCst) {
+                let _=rpc.send(&json!({"id":3,"method":"account/login/cancel","params":{"loginId":login_id}})).await;
+                break;
+            }
+            if Instant::now() > deadline {
+                if let Ok(mut state) = session.state.lock() {
+                    *state = json!({"state":"failed","error":"登录等待超时，请重新登录"});
+                }
+                break;
+            }
+            let message = if let Some(params) = rpc.login_notification.take() {
+                Ok(json!({"method":"account/login/completed","params":params}))
+            } else {
+                match tokio::time::timeout(Duration::from_millis(250), rpc.next()).await {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                }
+            };
+            match message {
+                Ok(value)
+                    if value["method"] == "account/login/completed"
+                        && value["params"]["loginId"] == login_id =>
+                {
+                    if let Ok(mut state) = session.state.lock() {
+                        if session.cancel.load(Ordering::SeqCst) || state["state"]!="pending" { break; }
+                        *state = if value["params"]["success"].as_bool() == Some(true) {
+                            json!({"state":"completed"})
+                        } else {
+                            json!({"state":"failed","error":"官方登录未完成，请重新登录"})
+                        };
+                    }
+                    clear_cache();
+                    break;
+                }
+                Err(_) => {
+                    if let Ok(mut state) = session.state.lock() {
+                        if state["state"] == "pending" {
+                            *state =
+                                json!({"state":"failed","error":"CLI 登录连接已结束，请重新登录"});
+                        }
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+        rpc.close().await;
+    });
+    Ok(login_status())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn model_capabilities_preserve_each_models_efforts_and_hide_internal_entries() {
+        let models = normalize_models(
+            &json!({"data":[{"model":"one","displayName":"One","supportedReasoningEfforts":[{"reasoningEffort":"medium"},{"reasoningEffort":"max"}],"defaultReasoningEffort":"medium","isDefault":true},{"model":"two","supportedReasoningEfforts":[{"reasoningEffort":"low"}],"hidden":false},{"model":"private","hidden":true}]}),
+        );
+        assert_eq!(models.len(), 2);
+        assert_eq!(
+            models[0]["supportedReasoningEfforts"],
+            json!(["medium", "max"])
+        );
+        let status = json!({"ready":true,"models":models});
+        assert!(validate_selection(&status, "one", "max").is_ok());
+        assert!(validate_selection(&status, "two", "max").is_err());
+        assert!(validate_selection(&status, "missing", "medium").is_err());
+        assert!(
+            validate_selection(&json!({"ready":false,"error":"尚未登录"}), "one", "medium")
+                .unwrap_err()
+                .contains("尚未登录")
+        );
+    }
+    #[test]
+    fn quota_summary_contains_display_fields_but_no_account_identity_or_unknown_secrets() {
+        let limits = normalize_limits(
+            &json!({"accountId":"private-id","accessToken":"secret","rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":27,"windowDurationMins":10080,"resetsAt":123},"secondary":null,"credits":{"balance":"20","hasCredits":true,"unlimited":false,"token":"secret"}}}}),
+        );
+        assert_eq!(limits[0]["primary"]["remainingPercent"], 73.0);
+        assert!(!serde_json::to_string(&limits).unwrap().contains("secret"));
+        assert!(!serde_json::to_string(&limits)
+            .unwrap()
+            .contains("private-id"));
+        assert!(normalize_limits(&json!({})).is_empty());
+    }
+    #[test]
+    fn invalid_explicit_path_does_not_silently_fallback_to_a_different_cli() {
+        let status =
+            resolve_executable(&json!({"codexPath":"Z:/definitely-not-installed/codex.exe"}));
+        assert!(status.is_err());
+    }
+    #[tokio::test]
+    async fn untrusted_login_url_is_rejected_before_starting_browser() {
+        assert!(open_auth_url("https://evil.example/auth").await.is_err());
+        assert!(open_auth_url("file:///C:/private").await.is_err());
+    }
+    #[test]
+    fn owned_login_continues_after_dispatch_returns_and_cancel_is_final() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("login-fixture.rs");
+        let executable = directory.path().join(if cfg!(windows) {
+            "login-fixture.exe"
+        } else {
+            "login-fixture"
+        });
+        std::fs::write(&source,r#"
+use std::io::{BufRead,Write};
+fn main(){
+ for line in std::io::stdin().lock().lines(){let line=line.unwrap();
+  if line.contains("\"initialize\""){println!("{{\"id\":1,\"result\":{{}}}}");}
+  if line.contains("account/login/start"){
+   println!("{{\"id\":2,\"result\":{{\"loginId\":\"offline-login\",\"authUrl\":\"https://auth.openai.com/oauth/authorize?offline=true\"}}}}");
+   std::thread::spawn(||{std::thread::sleep(std::time::Duration::from_millis(200));println!("{{\"method\":\"account/login/completed\",\"params\":{{\"loginId\":\"offline-login\",\"success\":true}}}}");std::io::stdout().flush().unwrap();});
+  }
+  std::io::stdout().flush().unwrap();
+ }
+}
+"#).unwrap();
+        let compiler = std::env::var_os("RUSTC")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::var_os("CARGO_HOME")
+                    .map(PathBuf::from)
+                    .or_else(|| {
+                        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                            .map(|p| PathBuf::from(p).join(".cargo"))
+                    })
+                    .map(|p| {
+                        p.join("bin")
+                            .join(if cfg!(windows) { "rustc.exe" } else { "rustc" })
+                    })
+                    .unwrap_or_else(|| PathBuf::from("rustc"))
+            });
+        let mut compile = std::process::Command::new(compiler);
+        compile
+            .args(["--edition=2021", "--crate-name", "login_fixture"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            compile.creation_flags(0x08000000);
+        }
+        let output = compile.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let settings = json!({"codexPath":executable});
+        // The real login core is exercised, with only browser opening kept out of
+        // this offline fixture. No credentials or external servers are involved.
+        let pending = control_runtime()
+            .unwrap()
+            .block_on(begin_login(&settings))
+            .unwrap();
+        assert_eq!(pending["login"]["state"], "pending");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while login_status()["login"]["state"] == "pending" && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            login_status()["login"]["state"],
+            "completed",
+            "callback must survive after block_on returns"
+        );
+        assert!(crate::text_executor::await_local_shutdown(2));
+        let pending = control_runtime()
+            .unwrap()
+            .block_on(begin_login(&settings))
+            .unwrap();
+        assert_eq!(pending["login"]["state"], "pending");
+        assert_eq!(cancel_login()["login"]["state"], "cancelled");
+        assert!(crate::text_executor::await_local_shutdown(2));
+        assert_eq!(
+            login_status()["login"]["state"],
+            "cancelled",
+            "late callback cannot override a cancelled login"
+        );
+    }
+    #[tokio::test]
+    #[ignore = "reads native local CLI version/login/catalog/limits; sends no model generation"]
+    async fn local_status_is_read_only_and_bounded() {
+        let status = status(&json!({}), true).await;
+        assert_eq!(status["available"], true);
+        assert_eq!(status["ready"], true, "{}", status["error"]);
+        assert_eq!(status["generationRequestsSent"], 0);
+        assert!(status["models"].as_array().is_some_and(|m| !m.is_empty()));
+        println!(
+            "{}",
+            json!({"available":status["available"],"ready":status["ready"],"version":status["version"],"modelCount":status["models"].as_array().map(Vec::len),"limitCount":status["limits"].as_array().map(Vec::len),"generationRequestsSent":0})
+        );
+    }
+}

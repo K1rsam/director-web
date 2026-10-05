@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "分镜制作工作台",
+  "version": "0.1.0",
+  "identifier": "local.edy.director-workbench",
+  "build": {"beforeDevCommand":"npm run dev","devUrl":"http://localhost:1420","beforeBuildCommand":"npm run build","frontendDist":"../dist"},
+  "app": {
+    "windows": [{"title":"分镜制作工作台","width":1440,"height":940,"minWidth":1080,"minHeight":720}],
+    "security": {"csp":"default-src 'self'; img-src 'self' asset: http://asset.localhost data:; media-src 'self' asset: http://asset.localhost blob:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420; font-src 'self' data:","assetProtocol":{"enable":true,"scope":["$APPDATA/local.edy.director-workbench/**","$APPLOCALDATA/local.edy.director-workbench/**"]}}
+  },
+  "bundle": {"active":true,"targets":["nsis","dmg"],"category":"Productivity","shortDescription":"本地四阶段分镜视频制作工作台","icon":["icons/32x32.png","icons/128x128.png","icons/128x128@2x.png","icons/icon.icns","icons/icon.ico"]}
+}

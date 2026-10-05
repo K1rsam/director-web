@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="workbench" x1="120" y1="96" x2="900" y2="940" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8d73ce"/><stop offset="1" stop-color="#544174"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="220" fill="url(#workbench)"/>
+  <path d="M192 410H832V726C832 766 800 798 760 798H264C224 798 192 766 192 726Z" fill="#faf7ff"/>
+  <path d="M180 280C178 260 192 242 212 240L771 182C791 180 809 194 811 214L824 342L193 408Z" fill="#e5ddf5"/>
+  <path d="M263 235L329 228L403 386L337 393ZM447 216L513 209L587 367L521 374ZM631 197L697 190L771 348L705 355Z" fill="#6b528f"/>
+  <path d="M446 499C446 479 465 468 482 478L649 575C665 585 665 607 649 617L482 714C465 724 446 713 446 693Z" fill="#756099"/>
+  <circle cx="272" cy="498" r="15" fill="#b6a2d7"/>
+  <circle cx="272" cy="563" r="15" fill="#b6a2d7"/>
+  <circle cx="272" cy="628" r="15" fill="#b6a2d7"/>
+  <circle cx="272" cy="693" r="15" fill="#b6a2d7"/>
+</svg>

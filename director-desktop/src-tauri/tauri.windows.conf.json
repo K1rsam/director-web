@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "resources": {
+      "../tools/dreamina/1.4.19/dreamina.exe": "tools/dreamina/1.4.19/dreamina.exe",
+      "../tools/dreamina/1.4.19/download-receipt.json": "tools/dreamina/1.4.19/download-receipt.json",
+      "../tools/ffprobe/ffprobe.exe": "tools/ffprobe/ffprobe.exe",
+      "../tools/ffprobe/LICENSE": "tools/ffprobe/LICENSE",
+      "../tools/ffprobe/README.txt": "tools/ffprobe/README.txt",
+      "../tools/ffprobe/download-receipt.json": "tools/ffprobe/download-receipt.json"
+    }
+  }
+}

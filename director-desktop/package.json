@@ -1,0 +1,32 @@
+{
+  "name": "director-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --pretty false",
+    "test:frontend": "node --experimental-strip-types --test src/contracts.test.ts src/generationState.test.ts src/assetManagement.test.ts src/unitAssetEditing.test.ts",
+    "preview": "vite preview --host 127.0.0.1 --port 1420",
+    "tauri": "tauri",
+    "desktop:dev": "tauri dev --features desktop",
+    "desktop:update": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/update-client.ps1",
+    "desktop:build": "tauri build --features desktop,custom-protocol",
+    "check": "npm run typecheck && npm run build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.12.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.1",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "typescript": "~5.9.3",
+    "vite": "8.3.2"
+  }
+}

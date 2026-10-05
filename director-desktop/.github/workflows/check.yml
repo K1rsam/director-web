@@ -1,0 +1,49 @@
+name: Desktop checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Read repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install locked frontend dependencies
+        run: npm ci
+      - name: Frontend contract tests
+        run: npm run test:frontend
+      - name: Build frontend
+        run: npm run build
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Check desktop and core targets
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop --all-targets
+      - name: Test desktop core without channel credentials
+        # Tests use local fixtures and mock channels. This does not start the GUI,
+        # authenticate a provider, submit cloud jobs, or build release installers.
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features desktop -- --test-threads=1
