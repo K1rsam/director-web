@@ -1,0 +1,154 @@
+{
+  "exportVersion": "2026.10.06-integrated-v1",
+  "sourceRoot": "/Users/yue/Documents/ChatGPT/6-Astra/director-web-3008/runtime/storyboard-v4/core",
+  "sourceBranch": "handoff/3008-v2026.10.03.2",
+  "sourceHead": "2511c56a52794cf5c5ee88434afafb96c787ad4c",
+  "sourceBasis": "local-working-tree-including-uncommitted-files",
+  "files": [
+    {
+      "sourceRelativePath": "skills/acting-blocking-methods/SKILL.md",
+      "packagedPath": "references/原版/skills/acting-blocking-methods/SKILL.md",
+      "bytes": 14054,
+      "sha256": "71453a6d95d9bfe0248144f249dc46d8672c6c261e3a83aee8cf6bd72172a9bf"
+    },
+    {
+      "sourceRelativePath": "skills/camera-emotion-methods/SKILL.md",
+      "packagedPath": "references/原版/skills/camera-emotion-methods/SKILL.md",
+      "bytes": 18615,
+      "sha256": "6c3630ff4d0ab654feda6072fca994d549640ed4fc68edf6351739ab4911b079"
+    },
+    {
+      "sourceRelativePath": "skills/director-refinement/SKILL.md",
+      "packagedPath": "references/原版/skills/director-refinement/SKILL.md",
+      "bytes": 6869,
+      "sha256": "579e82ae4256cbc9e9af3bfdfd0a3ec3590b91f1af818b7a77611264ffd2c937"
+    },
+    {
+      "sourceRelativePath": "skills/episode-emotion-planner/SKILL.md",
+      "packagedPath": "references/原版/skills/episode-emotion-planner/SKILL.md",
+      "bytes": 14131,
+      "sha256": "7d6da5154fbefe89490186f0c7905f7959ea6abe121b0c05ed73f21dc56deaa7"
+    },
+    {
+      "sourceRelativePath": "skills/episode-finishing-editor/SKILL.md",
+      "packagedPath": "references/原版/skills/episode-finishing-editor/SKILL.md",
+      "bytes": 28735,
+      "sha256": "2083577fff437605cc0ff4f7d262786914f52f8427d636110b1e0a162855b465"
+    },
+    {
+      "sourceRelativePath": "skills/fantasy-expression-methods/SKILL.md",
+      "packagedPath": "references/原版/skills/fantasy-expression-methods/SKILL.md",
+      "bytes": 26333,
+      "sha256": "8c3d0c1eb38574de2c175c038935049d1f20efaf2aa4a054434936d56b709c3d"
+    },
+    {
+      "sourceRelativePath": "skills/lighting-space-methods/SKILL.md",
+      "packagedPath": "references/原版/skills/lighting-space-methods/SKILL.md",
+      "bytes": 5035,
+      "sha256": "b97201cbbe4895bc0f5c3a6a3dfe4a16dfaebf9f84935a17b951d9f4ba01f614"
+    },
+    {
+      "sourceRelativePath": "skills/sound-rhythm-methods/SKILL.md",
+      "packagedPath": "references/原版/skills/sound-rhythm-methods/SKILL.md",
+      "bytes": 9567,
+      "sha256": "1000ea079ff9d4c42921fd5b0f058eb4b3a33ce01a3b5910f0c19f1b7bef1512"
+    },
+    {
+      "sourceRelativePath": "skills/source-context-preparer/SKILL.md",
+      "packagedPath": "references/原版/skills/source-context-preparer/SKILL.md",
+      "bytes": 3596,
+      "sha256": "f563acc7ef27d08e60fd596778e511d7132d4e62144d4cb75f6fee63a4a9d291"
+    },
+    {
+      "sourceRelativePath": "skills/unit-performance-director/SKILL.md",
+      "packagedPath": "references/原版/skills/unit-performance-director/SKILL.md",
+      "bytes": 21902,
+      "sha256": "8a627052a0cc80d409514a4da51b7edefbd5efa350ac8210f0e45f87dcbff578"
+    },
+    {
+      "sourceRelativePath": "references/cards/camera-path-repair.md",
+      "packagedPath": "references/原版/references/cards/camera-path-repair.md",
+      "bytes": 1982,
+      "sha256": "2c6c6c91706f04c2f311ee91df31315992cee58c7b808c4e6f1b1bd986db51de"
+    },
+    {
+      "sourceRelativePath": "references/cards/comic-contrast.md",
+      "packagedPath": "references/原版/references/cards/comic-contrast.md",
+      "bytes": 1689,
+      "sha256": "462f6d3dc3cd0a055d31cf13941fb67327b762f91847927a4fff275076e90eed"
+    },
+    {
+      "sourceRelativePath": "references/cards/danger-rescue.md",
+      "packagedPath": "references/原版/references/cards/danger-rescue.md",
+      "bytes": 1432,
+      "sha256": "84a5ea29fdb89a11cfc8bfd0787db72bda6a43c5ca25cbcc29ee5027ab606893"
+    },
+    {
+      "sourceRelativePath": "references/cards/editing-integrity.md",
+      "packagedPath": "references/原版/references/cards/editing-integrity.md",
+      "bytes": 1966,
+      "sha256": "63a322cbde08040b5999ce38f113304389ca044e1e2214bf8e8bbe2b87ddf0b0"
+    },
+    {
+      "sourceRelativePath": "references/cards/expressive-emphasis.md",
+      "packagedPath": "references/原版/references/cards/expressive-emphasis.md",
+      "bytes": 2922,
+      "sha256": "859627f68e7067f79d57afc787fcc08f4904dbff2c7c3394e30e5e21ba0644a2"
+    },
+    {
+      "sourceRelativePath": "references/cards/joy-acceptance.md",
+      "packagedPath": "references/原版/references/cards/joy-acceptance.md",
+      "bytes": 1383,
+      "sha256": "412e4fa0c83c61ea70ac60a131e58672eca6c406ab5a58a0de5fb44d47f8e216"
+    },
+    {
+      "sourceRelativePath": "references/cards/long-voice.md",
+      "packagedPath": "references/原版/references/cards/long-voice.md",
+      "bytes": 2299,
+      "sha256": "c917620f81197a0146fbca98750e4c679b08d4ca50f6847812faf1ff0bb7ac7b"
+    },
+    {
+      "sourceRelativePath": "references/cards/quiet-nonhuman.md",
+      "packagedPath": "references/原版/references/cards/quiet-nonhuman.md",
+      "bytes": 986,
+      "sha256": "e8d11f9819962328f4d5bfc39bfd383eb0a7cd8200a1820cbb0d453f7ac91cb3"
+    },
+    {
+      "sourceRelativePath": "references/cards/scale-silence.md",
+      "packagedPath": "references/原版/references/cards/scale-silence.md",
+      "bytes": 961,
+      "sha256": "20b47ff4dfe9b647ddb80e4492daf2d6be0619321c6d9f41fc371cf0ebd5c258"
+    },
+    {
+      "sourceRelativePath": "references/cards/spatial-contact.md",
+      "packagedPath": "references/原版/references/cards/spatial-contact.md",
+      "bytes": 1823,
+      "sha256": "2d2b7bd1a922cfc61f1de84aca4ad6087e9bdac3f85ca1e378d4a9f13e6c4c1d"
+    },
+    {
+      "sourceRelativePath": "references/cards/status-conflict.md",
+      "packagedPath": "references/原版/references/cards/status-conflict.md",
+      "bytes": 1284,
+      "sha256": "90281f3f9e6d764a7711ecd89b4c2ddb7d833aeb8bd94926e4150bdbb67d8f3f"
+    },
+    {
+      "sourceRelativePath": "references/common-contract.md",
+      "packagedPath": "references/原版/references/common-contract.md",
+      "bytes": 16752,
+      "sha256": "f1a576d1bc232787a396a2be94748ca2c20a0a954b72929fce77ddec7c0dedb9"
+    }
+  ],
+  "integrated": {
+    "path": "SKILL.md",
+    "bytes": 21402,
+    "sha256": "e23102b0709f4b6b4fab5af8812a8899982e7c0d56825a6941cce8dda1e74c21"
+  },
+  "verification": {
+    "originalCopies": "byte-identical",
+    "originalFileCount": 22,
+    "skillCount": 10,
+    "referenceCount": 12,
+    "runtimeInstalled": false,
+    "liveStoryboardTest": false
+  }
+}
