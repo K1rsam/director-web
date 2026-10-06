@@ -412,8 +412,12 @@ impl CompiledWire {
                             self.scalar(child, Some(Kind::Scene), restore)?
                         }
                         "rowId" => self.scalar(child, Some(Kind::Row), restore)?,
-                        "coordinate" if child.as_str().is_some_and(|id|self.forward.contains_key(id)||self.reverse.contains_key(id)) => {
-                            self.scalar(child,None,restore)?;
+                        "coordinate"
+                            if child.as_str().is_some_and(|id| {
+                                self.forward.contains_key(id) || self.reverse.contains_key(id)
+                            }) =>
+                        {
+                            self.scalar(child, None, restore)?;
                         }
                         "assetId" | "assetKey" | "baseKey" | "asset_id" => {
                             self.scalar(child, Some(Kind::Asset), restore)?
@@ -446,14 +450,18 @@ impl CompiledWire {
                         "sourceRefs" | "anchorRowIds" | "evidenceRefs" => {
                             self.list(child, Some(Kind::Row), restore)?
                         }
-                        "assetKeys" | "removeAssetKeys" | "removeKeys" => {
-                            self.list(child, Some(Kind::Asset), restore)?
-                        }
+                        "assetKeys"
+                        | "subjectAssetKeys"
+                        | "previousSubjectAssetKeys"
+                        | "removeAssetKeys"
+                        | "removeKeys" => self.list(child, Some(Kind::Asset), restore)?,
                         "variantKeys" => self.list(child, Some(Kind::Variant), restore)?,
                         "resolvedIssues" if child.is_array() => {
                             for item in child.as_array_mut().unwrap() {
-                                if item.as_str().is_some_and(|id|self.forward.contains_key(id)||self.reverse.contains_key(id)) {
-                                    self.scalar(item,None,restore)?;
+                                if item.as_str().is_some_and(|id| {
+                                    self.forward.contains_key(id) || self.reverse.contains_key(id)
+                                }) {
+                                    self.scalar(item, None, restore)?;
                                 }
                             }
                         }
@@ -571,7 +579,11 @@ pub(crate) fn compile(stage: &str, input: &Value, schema: &Value) -> Result<Comp
         "真正事项证据、方向与拆场rowId只选schema枚举的rN，与输入第1列短行身份逐个对应；不猜编号或计算偏移。",
     );
     let prefix="仅按输入提供的短身份引用：eN集、sN场、rN原文行、aN资产、vN形象；sourceSha256照输入原值。名字/原文/quote/说明是逐字资料，不是身份。必要拆场沿已提供场身份加__L起始行号，仍须给真实完整原文anchor。";
-    compiled["transportInstructions"]=json!(if guide.starts_with(prefix) {guide} else {format!("{prefix}{guide}")});
+    compiled["transportInstructions"] = json!(if guide.starts_with(prefix) {
+        guide
+    } else {
+        format!("{prefix}{guide}")
+    });
     wire.input = compiled;
     if let Some(rows) = wire
         .schema
@@ -694,18 +706,73 @@ mod tests {
         assert_eq!(response["changes"]["assets"][0]["note"], "r1说e1");
     }
     #[test]
+    fn applied_decision_subject_assets_roundtrip_with_exact_order_and_duplicates() {
+        let initial = simple();
+        let mut input = initial.input.clone();
+        initial.restore(&mut input).unwrap();
+        input["appliedDecisions"] = json!([{
+            "id":"AUTHOR:confirmed",
+            "subjectAssetKeys":["asset:long:2","asset:long:1","asset:long:1"],
+            "previousSubjectAssetKeys":["asset:long:1"],
+            "answer":"a1/r1是逐字解释，不是引用槽"
+        }]);
+        let wire = compile("Q1", &input, &json!({})).unwrap();
+        assert_eq!(
+            wire.input["appliedDecisions"][0]["subjectAssetKeys"],
+            json!([
+                wire.input["registry"][1]["key"],
+                wire.input["registry"][0]["key"],
+                wire.input["registry"][0]["key"]
+            ])
+        );
+        assert_eq!(
+            wire.input["appliedDecisions"][0]["previousSubjectAssetKeys"],
+            json!([wire.input["registry"][0]["key"]])
+        );
+        assert_eq!(
+            wire.input["appliedDecisions"][0]["answer"],
+            input["appliedDecisions"][0]["answer"]
+        );
+        let mut restored = wire.input.clone();
+        wire.restore(&mut restored).unwrap();
+        assert_eq!(restored, input);
+        // Transport preserves declaration order and duplicates. The domain
+        // validator, rather than this alias layer, owns subject normalization.
+        wire.restore(&mut restored).unwrap();
+        assert_eq!(restored, input);
+    }
+    #[test]
+    fn applied_decision_unknown_subject_aliases_fail_atomically() {
+        let wire = simple();
+        for field in ["subjectAssetKeys", "previousSubjectAssetKeys"] {
+            for invalid in ["a999", "e1", "v1"] {
+                let mut response = json!({"appliedDecisions":[{"subjectAssetKeys":[],"previousSubjectAssetKeys":[],"answer":"原解释不改"}]});
+                response["appliedDecisions"][0][field] =
+                    json!([wire.input["registry"][0]["key"], invalid]);
+                let mut copy = response.clone();
+                assert!(wire.restore(&mut copy).is_err(), "{field}: {invalid}");
+                assert_eq!(
+                    copy, response,
+                    "rejected aliases must not partially restore prior valid subjects"
+                );
+            }
+        }
+    }
+    #[test]
     fn exact_source_coordinates_and_closure_coordinates_do_not_leak_task_aliases() {
-        let wire=simple();
-        let alias=wire.input["source"]["rows"][0][0].clone();
-        let mut output=json!({"issues":[{"coordinate":alias,"problem":"r1是原样说明","sourceRefs":[alias]}],"resolvedIssues":[alias,"asset-review-custom"],"humanChoices":[{"decisionKey":"r1_custom_choice","question":"r1是原样问题"}]});
+        let wire = simple();
+        let alias = wire.input["source"]["rows"][0][0].clone();
+        let mut output = json!({"issues":[{"coordinate":alias,"problem":"r1是原样说明","sourceRefs":[alias]}],"resolvedIssues":[alias,"asset-review-custom"],"humanChoices":[{"decisionKey":"r1_custom_choice","question":"r1是原样问题"}]});
         wire.restore(&mut output).unwrap();
-        assert_eq!(output["issues"][0]["coordinate"],"row:0123456789ab:0:8");
-        assert_eq!(output["resolvedIssues"][0],"row:0123456789ab:0:8");
-        assert_eq!(output["resolvedIssues"][1],"asset-review-custom");
-        assert_eq!(output["humanChoices"][0]["decisionKey"],"r1_custom_choice");
-        assert_eq!(output["issues"][0]["problem"],"r1是原样说明");
-        assert_eq!(output["humanChoices"][0]["question"],"r1是原样问题");
-        let canonical=output.clone();wire.restore(&mut output).unwrap();assert_eq!(output,canonical);
+        assert_eq!(output["issues"][0]["coordinate"], "row:0123456789ab:0:8");
+        assert_eq!(output["resolvedIssues"][0], "row:0123456789ab:0:8");
+        assert_eq!(output["resolvedIssues"][1], "asset-review-custom");
+        assert_eq!(output["humanChoices"][0]["decisionKey"], "r1_custom_choice");
+        assert_eq!(output["issues"][0]["problem"], "r1是原样说明");
+        assert_eq!(output["humanChoices"][0]["question"], "r1是原样问题");
+        let canonical = output.clone();
+        wire.restore(&mut output).unwrap();
+        assert_eq!(output, canonical);
     }
     #[test]
     fn unknown_short_references_and_type_confusion_fail_atomically() {

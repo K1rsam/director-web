@@ -1,7 +1,7 @@
 //! Official OAuth device flow. Authentication stays in the CLI's native store.
 //! Only safe account projections leave this module; device codes never enter SQLite or logs.
 use crate::{
-    providers::{self, ProviderConfig},
+    providers::{self, ProviderConfig, ProviderError, ProviderResult},
     store::{id, now, s, Result},
 };
 use serde_json::{json, Value};
@@ -122,22 +122,57 @@ impl DreaminaSessions {
             }
         }
     }
-    pub fn fresh_identity(&self, config: &ProviderConfig) -> Result<String> {
+    pub fn fresh_identity(&self, config: &ProviderConfig) -> ProviderResult<String> {
+        self.fresh_identity_with(config, providers::dreamina_account)
+    }
+    fn fresh_identity_with(
+        &self,
+        config: &ProviderConfig,
+        account: impl FnOnce(&ProviderConfig) -> ProviderResult<Value>,
+    ) -> ProviderResult<String> {
         if self
             .entries
             .lock()
-            .map_err(|e| e.to_string())?
+            .map_err(|_| ProviderError::new("LOCAL_ACCOUNT_STATE", "即梦本地账户状态无法读取。"))?
             .get(&config_key(config))
             .is_some_and(|e| e.flow.is_some())
         {
-            return Err("即梦正在等待用户授权，请完成官方授权后继续。".into());
+            let mut error = ProviderError::auth();
+            error.message = "即梦正在等待用户授权，请完成官方授权后继续。".into();
+            return Err(error);
         }
-        let account = self.refresh(config)?;
+        // UI refresh returns a safe status projection. Execution must retain the
+        // provider's error flags instead of turning every failed check into logout.
+        let account = match account(config) {
+            Ok(value) => self.save(config, value).map_err(|_| {
+                ProviderError::new("LOCAL_ACCOUNT_STATE", "即梦本地账户状态无法保存。")
+            })?,
+            Err(error) => {
+                let mut value = unknown();
+                value["status"] = json!(if error.auth_required {
+                    "logged_out"
+                } else {
+                    "error"
+                });
+                value["message"] = json!(error.message);
+                value["errorCode"] = json!(error.code);
+                value["checkedAt"] = json!(now());
+                self.save(config, value).map_err(|_| {
+                    ProviderError::new("LOCAL_ACCOUNT_STATE", "即梦本地账户状态无法保存。")
+                })?;
+                return Err(error);
+            }
+        };
         if account["ready"] != true
             || account["identityVerified"] != true
             || s(&account, "accountKey").is_empty()
         {
-            return Err(s(&account, "message").to_owned());
+            let mut error = ProviderError::new(
+                "ACCOUNT_IDENTITY_UNVERIFIED",
+                s(&account, "message").to_owned(),
+            );
+            error.auth_required = true;
+            return Err(error);
         }
         Ok(s(&account, "accountKey").to_owned())
     }
@@ -283,6 +318,42 @@ impl DreaminaSessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fresh_identity_keeps_transient_provider_errors_typed_without_claiming_logout() {
+        let sessions = DreaminaSessions::default();
+        let config: ProviderConfig =
+            serde_json::from_value(json!({"kind":"dreamina","cliPath":"C:/offline/never-run.exe"}))
+                .unwrap();
+        let expected = ProviderError::new("CLI_QUERY_FAILED", "safe diagnostic");
+        let error = sessions
+            .fresh_identity_with(&config, |_| Err(expected.clone()))
+            .unwrap_err();
+        assert_eq!(error.code, expected.code);
+        assert_eq!(error.message, expected.message);
+        assert!(!error.auth_required);
+        assert!(!error.submission_unknown);
+        let view = sessions.snapshot(&config).unwrap();
+        assert_eq!(view["status"], "error");
+        assert_eq!(view["errorCode"], "CLI_QUERY_FAILED");
+        assert_eq!(view["ready"], false);
+    }
+    #[test]
+    fn fresh_identity_keeps_real_authentication_failures_and_requires_verified_identity() {
+        let sessions = DreaminaSessions::default();
+        let config: ProviderConfig =
+            serde_json::from_value(json!({"kind":"dreamina","cliPath":"C:/offline/never-run.exe"}))
+                .unwrap();
+        let error = sessions
+            .fresh_identity_with(&config, |_| Err(ProviderError::auth()))
+            .unwrap_err();
+        assert!(error.auth_required);
+        assert_eq!(sessions.snapshot(&config).unwrap()["status"], "logged_out");
+        let error=sessions.fresh_identity_with(&config, |_|Ok(json!({"ready":true,"identityVerified":false,"accountKey":"untrusted","message":"identity missing"}))).unwrap_err();
+        assert!(error.auth_required);
+        assert_eq!(error.code, "ACCOUNT_IDENTITY_UNVERIFIED");
+        let identity=sessions.fresh_identity_with(&config, |_|Ok(json!({"ready":true,"identityVerified":true,"accountKey":"verified-offline-account"}))).unwrap();
+        assert_eq!(identity, "verified-offline-account");
+    }
     #[test]
     fn authorization_links_require_official_https_and_never_expose_internal_codes() {
         assert!(

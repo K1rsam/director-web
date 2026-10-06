@@ -1,4 +1,5 @@
 import type { AssetRef, Job, Media, Model, PreparedPackage, Unit, Workspace } from './types';
+import { generationBlocksNewJob } from './generationState.ts';
 
 function object(value: unknown): Record<string, unknown> | undefined { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined; }
 function strings(value: unknown): string[] | undefined { return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined; }
@@ -30,6 +31,24 @@ function compiledPrompt(unit: Unit, pkg: PreparedPackage): string {
   for (const reference of pkg.references || []) { const kind = reference.kind === 'video' ? 'video' : reference.kind === 'audio' ? 'audio' : 'image'; counts[kind]++; const marker = '@' + ({ image: '图片', video: '视频', audio: '音频' }[kind]) + counts[kind]; prompt = prompt.split('{{asset:' + (reference.assetId || '') + ':' + (reference.variantId || '') + '}}').join(marker); }
   return prompt;
 }
+function packagePromptMatches(unit: Unit, pkg: PreparedPackage): boolean {
+  if (pkg.sourcePrompt !== undefined || pkg.sourcePromptProvenance !== undefined) {
+    const proof = object(pkg.sourcePromptProvenance);
+    // Rust proves the immutable unit version compiled to this frozen request.
+    // Compare both texts and every identity; a partial proof never falls back.
+    return !!proof && proof.version === 'unit-source-prompt/v1' && proof.origin === 'unit-version-and-reference-compilation'
+      && typeof pkg.jobId === 'string' && !!pkg.jobId && proof.jobId === pkg.jobId
+      && proof.unitId === unit.id && Number.isInteger(unit.version) && Number(unit.version) > 0 && proof.unitVersion === unit.version && proof.unitVersion === pkg.unitVersion
+      && Number.isInteger(unit.sourceVersion) && Number(unit.sourceVersion) > 0 && proof.sourceVersion === unit.sourceVersion
+      && proof.compiledPromptVerified === true && proof.compiledPrompt === pkg.prompt
+      && typeof proof.sourcePromptSha256 === 'string' && /^[a-f0-9]{64}$/i.test(proof.sourcePromptSha256)
+      && typeof pkg.sourcePrompt === 'string' && !!pkg.sourcePrompt.trim() && pkg.sourcePrompt === unit.prompt;
+  }
+  // The legacy compiler only knows identity placeholders. It cannot reproduce
+  // creative name templates, INLINE text or semantic ancestor bindings.
+  if (unit.storyboardCreativeProfile === 'original-production-contract/v1' || pkg.inlineReferences?.length || pkg.references?.some(reference => reference.semanticBindings?.length)) return false;
+  return pkg.prompt === compiledPrompt(unit, pkg);
+}
 export function packageDifferences(unit: Unit, provider: string, model: string, parameters?: VideoParameters): string[] {
   const pkg = unit.preparedPackage; if (!pkg) return [];
   const issues: string[] = [];
@@ -38,7 +57,7 @@ export function packageDifferences(unit: Unit, provider: string, model: string, 
   if (!pkg.ratio || parameters && pkg.ratio !== parameters.ratio) issues.push('当前画面比例与冻结素材包不同或未记录，请重新准备。');
   if (!pkg.resolution || parameters && pkg.resolution !== parameters.resolution) issues.push('当前视频尺寸与冻结素材包不同或未记录，请重新准备。');
   if (!Number.isFinite(pkg.duration) || Number(pkg.duration) <= 0 || pkg.duration !== (unit.duration ?? unit.durationSeconds)) issues.push('当前单元时长与冻结素材包不同或未记录，请重新准备。');
-  if (!pkg.prompt?.trim() || pkg.prompt !== compiledPrompt(unit, pkg)) issues.push('当前提示词与冻结提交文本不一致，请重新准备。');
+  if (!pkg.prompt?.trim() || !packagePromptMatches(unit, pkg)) issues.push('当前提示词与冻结提交文本不一致，或缺少核心编译来源证明，请重新准备。');
   return issues;
 }
 export function packageReady(unit: Unit, provider: string, model: string, parameters?: VideoParameters): boolean {
@@ -73,6 +92,18 @@ export function assetImageSelection(workspace: Workspace, asset: Workspace['asse
 export function moveItem<T>(items: T[], from: number, to: number): T[] { if (from < 0 || to < 0 || from >= items.length || to >= items.length) return items; const copy = [...items], [item] = copy.splice(from, 1); copy.splice(to, 0, item); return copy; }
 export function workflowResult(workspace: Workspace, stages: string | string[]): Record<string, unknown> | undefined { const prefixes = Array.isArray(stages) ? stages : [stages]; return object(workspace.jobs.find(job => job.kind === 'workflow' && prefixes.some(stage => String(job.entityId || '').startsWith(stage)))?.result); }
 
+export function imageDesignJob(job: Job): boolean {
+  const entity = String(job.entityId || ''), stage = String(object(job.snapshot)?.stage || '');
+  return job.kind === 'workflow' && (/^images\.(design|produce)(:|$)/.test(entity) || ['images.design', 'images.produce'].includes(stage))
+    || job.kind === 'text' && /^(assetDesign|assetVisualFacts):/.test(entity);
+}
+export function imageDesignBusy(jobs: readonly Job[]): boolean {
+  return jobs.some(job => imageDesignJob(job) && (job.submissionUnknown === true || /^(queued|preparing|ready|running|submitted|pending|processing|uploading|submitting|executing|downloading|submission_unknown)$/i.test(job.status)));
+}
+export function imageBatchBlocked(jobs: readonly Job[], assetIds: readonly string[]): boolean {
+  return assetIds.length > 0 && assetIds.every(id => jobs.some(job => (job.assetId || job.entityId) === id && generationBlocksNewJob(job)));
+}
+
 export function imageBatchEstimate(workspace: Workspace, ids: string[], provider: string, model: Model | string | undefined) {
   const reliable = provider === 'bh' && model && typeof model === 'object' && model.kind === 'image' && model.adapted === true && ['per_image', 'per_call'].includes(String(model.billing)) && typeof model.price === 'number' && Number.isFinite(model.price) && model.price >= 0 && typeof model.currency === 'string' && !!model.currency.trim();
   const amount = reliable && typeof model === 'object' ? model.price as number : undefined, currency = reliable && typeof model === 'object' ? String(model.currency) : undefined;
@@ -94,9 +125,63 @@ export function videoAdoptionProblems(workspace: Workspace, unit: Unit, media: M
 }
 
 export type GenerationParameters = { model: string; ratio: string; resolution: string };
+export type CatalogDiscoveryState = { key: string; projectId: string; provider: string; status: 'checking' | 'ready' | 'error'; error?: string };
+function catalogProviders(workspace: Workspace) { return Array.isArray(workspace.providers) ? workspace.providers : Object.entries(workspace.providers).map(([id, item]) => ({ ...item, id })); }
+export function missingCatalogs(workspace: Workspace) {
+  const required = new Map<string, ('image' | 'video')[]>();
+  for (const kind of ['image', 'video'] as const) { const provider = String(workspace.settings[kind + 'Provider'] || 'dreamina'); if (['dreamina', 'bh', 'chrome'].includes(provider)) required.set(provider, [...(required.get(provider) || []), kind]); }
+  return [...required].flatMap(([provider, kinds]) => {
+    const channel = catalogProviders(workspace).find(item => (item.id || item.provider) === provider);
+    if (kinds.every(kind => channel?.models?.some(model => typeof model === 'object' && model.kind === kind && typeof model.id === 'string' && !!model.id))) return [];
+    // Public configuration and stable account identity only: polling timestamps
+    // and secrets must not turn a failed inspection into an automatic retry loop.
+    const settings = workspace.settings;
+    const configuration = { path: provider === 'dreamina' ? settings.dreaminaPath : settings[provider + 'Endpoint'], account: settings[provider + 'AccountId'], timeout: settings.providerTimeoutSeconds, adaptedModels: provider === 'bh' ? settings.adaptedModels : undefined, accountReady: provider === 'dreamina' ? workspace.dreaminaAccount?.status === 'authenticated' && workspace.dreaminaAccount.ready === true : undefined, accountKey: provider === 'dreamina' ? workspace.dreaminaAccount?.accountKey || null : undefined };
+    return [{ provider, kinds, key: JSON.stringify([workspace.project.id, provider, kinds, configuration]) }];
+  });
+}
+/** A capability inspection has no generation/login route. Failed identities run once. */
+export function createCatalogDiscovery(options: {
+  enabled: () => boolean; current: () => Workspace | null; busy: () => boolean; revision: () => number;
+  refresh: (projectId: string, provider: string) => Promise<unknown>; read: (projectId: string) => Promise<Workspace>;
+  apply: (workspace: Workspace) => void; report: (state: CatalogDiscoveryState) => void;
+}) {
+  const attempts = new Map<string, 'fetched' | 'done'>(); let inFlight = false;
+  async function inspect(): Promise<void> {
+    const workspace = options.current();
+    if (!options.enabled() || !workspace || options.busy() || inFlight) return;
+    const candidate = missingCatalogs(workspace).find(item => attempts.get(item.key) !== 'done'); if (!candidate) return;
+    const projectId = workspace.project.id, same = () => options.enabled() && options.current()?.project.id === projectId && missingCatalogs(options.current()!).some(item => item.key === candidate.key);
+    const report = (status: CatalogDiscoveryState['status'], error?: string) => { if (options.enabled()) options.report({ key: candidate.key, projectId, provider: candidate.provider, status, ...(error ? { error } : {}) }); };
+    inFlight = true; report('checking');
+    try {
+      if (!attempts.has(candidate.key)) { attempts.set(candidate.key, 'done'); await options.refresh(projectId, candidate.provider); attempts.set(candidate.key, 'fetched'); }
+      if (same() && !options.busy()) {
+        const revision = options.revision(), next = await options.read(projectId);
+        if (same() && !options.busy() && revision === options.revision()) {
+          if (next.project.id !== projectId) throw new Error('渠道目录读取结果与当前项目不一致。');
+          attempts.set(candidate.key, 'done'); options.apply(next);
+          if (missingCatalogs(next).some(item => item.provider === candidate.provider)) report('error', '检查完成，但渠道尚未提供所需的图片或视频模型目录。'); else report('ready');
+        }
+      }
+    } catch (reason) { attempts.set(candidate.key, 'done'); report('error', reason instanceof Error ? reason.message : String(reason)); }
+    finally { inFlight = false; }
+    await inspect();
+  }
+  return inspect;
+}
+export function initializeImageParameters(workspace: Workspace, provider: string, current: GenerationParameters): GenerationParameters {
+  const sameProvider = String(workspace.settings.imageProvider || 'dreamina') === provider;
+  let model = current.model || (sameProvider ? workspace.settings.imageModel || '' : '');
+  if (!model && provider === 'dreamina') { const candidate = generationChoices(workspace, provider, 'image', { ...current, model: '5.0' }).selected; if (candidate?.adapted === true && candidate.available !== false) model = '5.0'; }
+  const choices = generationChoices(workspace, provider, 'image', { ...current, model });
+  if (!choices.selected || choices.selected.adapted !== true || choices.selected.available === false) return { ...current, model };
+  const savedResolution = sameProvider ? String(workspace.settings.imageResolution || '') : '';
+  return { model, ratio: current.ratio || String(workspace.settings.ratio || '') || (choices.ratios.includes('16:9') ? '16:9' : ''), resolution: current.resolution || savedResolution || (choices.resolutions.includes('2k') ? '2k' : '') };
+}
 const COMMON_RATIOS = ['16:9', '9:16', '1:1', '4:3', '3:4', '3:2', '2:3', '21:9'];
 export function generationChoices(workspace: Workspace, provider: string, kind: 'image' | 'video', parameters: GenerationParameters) {
-  const providers = Array.isArray(workspace.providers) ? workspace.providers : Object.entries(workspace.providers).map(([id, item]) => ({ ...item, id }));
+  const providers = catalogProviders(workspace);
   const channel = providers.find(item => (item.id || item.provider) === provider);
   const models = (channel?.models || []).filter((item): item is Model => typeof item === 'object' && item.kind === kind && typeof item.id === 'string' && !!item.id);
   const selected = models.find(item => item.id === parameters.model);
@@ -123,4 +208,18 @@ export function storyboardRange(workspace: Workspace, selection = 'all') {
   const episodeIds = episodes.filter(episode => selection === 'all' || episode.id === selection).map(episode => episode.id);
   const problems = !workspace.source ? ['先在第一阶段导入并确认原文。'] : !episodes.length ? ['原文尚无已确认的制作集，请先在第一阶段确认集场范围。'] : !episodeIds.length ? ['所选制作集不属于当前原文，请重新选择。'] : [];
   return { episodes, episodeIds, problems, valid: problems.length === 0 };
+}
+
+export function unitsForScope(units: readonly Unit[], episode = 'all'): Unit[] {
+  return units.filter(unit => unit.retired !== true && (episode === 'all' || (unit.episodeId || String(unit.episodeNumber || '')) === episode));
+}
+/** null is an explicit intent to select the current scope, including newly published units. */
+export function selectedUnitsForScope(units: readonly Unit[], episode: string, selection: readonly string[] | null): Unit[] {
+  const ids = selection === null ? null : new Set(selection);
+  return unitsForScope(units, episode).filter(unit => ids === null || ids.has(unit.id));
+}
+export function toggleUnitSelection(units: readonly Unit[], selection: readonly string[] | null, id: string): string[] {
+  const active = unitsForScope(units), ids = selectedUnitsForScope(active, 'all', selection).map(unit => unit.id);
+  if (!active.some(unit => unit.id === id)) return ids;
+  return ids.includes(id) ? ids.filter(item => item !== id) : [...ids, id];
 }

@@ -237,6 +237,309 @@ fn await_workflow(store: &Store) -> Value {
 }
 
 #[test]
+fn public_oneclick_defaults_to_automatic_for_more_than_three_assets_and_reuses_existing_jobs() {
+    let fixture = Fixture::new(Duration::ZERO, 1);
+    fixture
+        .store
+        .save_settings(
+            &json!({"trialApproved":false,"visualStyle":"3D国漫","requireImageTrialReview":false}),
+        )
+        .unwrap();
+    for id in ["p1", "p2", "p3", "p4"] {
+        fixture.asset(id, &[]);
+    }
+    fixture.asset("child", &["p1", "p2"]);
+    fixture.engine.dispatch(json!({"action":"images.produce","projectId":fixture.project_id,"provider":"offline","model":"offline-image","assetIds":["child","p3","p4"]})).unwrap();
+    let workflow = await_workflow(&fixture.store);
+    assert_eq!(workflow["result"]["imageProductionPolicy"], "automatic");
+    assert_eq!(workflow["snapshot"]["imageProductionPolicy"], "automatic");
+    assert_eq!(
+        workflow["snapshot"]["request"]["imageProductionPolicy"],
+        "automatic"
+    );
+    assert!(workflow["result"]["imagePlan"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|p| p["imageProductionPolicy"] == "automatic"));
+    let jobs = fixture.store.jobs().unwrap();
+    let images: Vec<_> = jobs.iter().filter(|j| s(j, "kind") == "image").collect();
+    assert_eq!(
+        images.len(),
+        5,
+        "whole valid dependency closure, without a three-image cutoff"
+    );
+    assert!(images
+        .iter()
+        .all(|j| j["snapshot"]["imageProductionPolicy"] == "automatic"
+            && s(&j["snapshot"], "prompt").starts_with("3D国漫")));
+    assert_eq!(
+        images.iter().find(|j| s(j, "entityId") == "child").unwrap()["status"],
+        "waiting_dependency"
+    );
+    assert_eq!(fixture.store.settings().unwrap()["trialApproved"], false);
+    assert_eq!(fixture.fake.calls(), 0);
+    let workspace=fixture.engine.dispatch(json!({"action":"images.run","projectId":fixture.project_id,"provider":"offline","model":"offline-image","assetIds":["p1","p2","p3","p4","child"]})).unwrap();
+    assert_eq!(workspace["imageQueueReport"]["queuedCount"], 0);
+    assert_eq!(workspace["imageQueueReport"]["reusedCount"], 5);
+    assert_eq!(workspace["imageQueueReport"]["blockedCount"], 0);
+    assert_eq!(
+        fixture
+            .store
+            .jobs()
+            .unwrap()
+            .iter()
+            .filter(|j| s(j, "kind") == "image")
+            .count(),
+        5
+    );
+    assert_eq!(
+        fixture.fake.calls(),
+        0,
+        "read/queue acceptance does not create a channel request"
+    );
+}
+
+#[test]
+fn automatic_queue_keeps_unknown_submission_and_explicit_trial_review_blocks_large_batch() {
+    let fixture = Fixture::new(Duration::ZERO, 1);
+    fixture
+        .store
+        .save_settings(&json!({"trialApproved":false}))
+        .unwrap();
+    fixture.asset("uncertain", &[]);
+    let mut uncertain = fixture.store.get("assets", "uncertain").unwrap();
+    uncertain["expectedVersion"] = uncertain["version"].clone();
+    uncertain["prompt"] = json!("");
+    uncertain["promptOrigin"] = json!("AI");
+    fixture.store.save_asset(uncertain).unwrap();
+    let job = fixture
+        .store
+        .add_job(
+            "image",
+            "uncertain",
+            "offline",
+            "offline-account",
+            &json!({"kind":"image","assetId":"uncertain"}),
+            "submission_unknown",
+        )
+        .unwrap();
+    let view=fixture.engine.dispatch(json!({"action":"images.run","projectId":fixture.project_id,"provider":"offline","model":"offline-image","assetIds":["uncertain"]})).unwrap();
+    assert_eq!(view["imageQueueReport"]["queuedCount"], 0);
+    assert_eq!(view["imageQueueReport"]["reusedCount"], 1);
+    assert_eq!(view["imageQueueReport"]["blockedCount"], 1);
+    assert_eq!(
+        fixture.store.job(&job).unwrap()["status"],
+        "submission_unknown"
+    );
+    assert_eq!(fixture.fake.calls(), 0);
+    fixture.engine.dispatch(json!({"action":"images.produce","projectId":fixture.project_id,"provider":"offline","model":"offline-image","assetIds":["uncertain"]})).unwrap();
+    let workflow = await_workflow(&fixture.store);
+    assert_eq!(workflow["result"]["imageQueueReport"]["reusedCount"], 1);
+    assert_eq!(workflow["result"]["imageQueueReport"]["queuedCount"], 0);
+    assert_eq!(
+        fixture.store.job(&job).unwrap()["status"],
+        "submission_unknown"
+    );
+    assert_eq!(fixture.fake.calls(), 0);
+    for id in ["a", "b", "c", "d"] {
+        fixture.asset(id, &[]);
+    }
+    fixture
+        .store
+        .save_settings(&json!({"requireImageTrialReview":true}))
+        .unwrap();
+    let error=fixture.engine.dispatch(json!({"action":"images.run","projectId":fixture.project_id,"provider":"offline","model":"offline-image","trial":true,"assetIds":["a","b","c","d"]})).unwrap_err();
+    assert!(error.contains("最多选择3"));
+    assert_eq!(
+        fixture
+            .store
+            .jobs()
+            .unwrap()
+            .iter()
+            .filter(|j| s(j, "kind") == "image")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn oneclick_inline_dependency_reuses_real_parent_material_and_freezes_every_semantic_version() {
+    let fixture = Fixture::new(Duration::ZERO, 1);
+    fixture
+        .store
+        .save_settings(&json!({"trialApproved":false}))
+        .unwrap();
+    fixture.asset("parent", &[]);
+    let source = fixture.source();
+    let row = source["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| s(r, "kind") == "body")
+        .unwrap();
+    let inline=fixture.store.save_asset(json!({"id":"inline","baseAssetId":"parent","variantId":"coverage","name":"覆盖态","kind":"CH","prompt":"","sourceAssetId":"parent","sourceRefs":[row["id"]],"preparation":{"mode":"INLINE"}})).unwrap();
+    fixture.asset("child", &["inline"]);
+    fixture.engine.dispatch(json!({"action":"images.produce","projectId":fixture.project_id,"provider":"offline","model":"offline-image","assetIds":["child"]})).unwrap();
+    await_workflow(&fixture.store);
+    let start = Instant::now();
+    loop {
+        fixture.engine.tick().unwrap();
+        let count = fixture
+            .store
+            .jobs()
+            .unwrap()
+            .iter()
+            .filter(|j| s(j, "kind") == "image" && s(j, "status") == "downloaded")
+            .count();
+        if count == 2 {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
+            "INLINE must not wait for its own nonexistent image job"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    let jobs = fixture.store.jobs().unwrap();
+    let images: Vec<_> = jobs.iter().filter(|j| s(j, "kind") == "image").collect();
+    assert_eq!(images.len(), 2);
+    assert!(!images.iter().any(|j| s(j, "entityId") == "inline"));
+    let child = images.iter().find(|j| s(j, "entityId") == "child").unwrap();
+    let reference = &child["snapshot"]["references"][0];
+    assert_eq!(reference["assetId"], "parent");
+    assert_eq!(
+        reference["mediaId"].as_str(),
+        fixture.store.adopted("parent", "base").unwrap().as_deref()
+    );
+    assert_eq!(
+        reference["semanticBindings"][0],
+        json!({"assetId":"inline","variantId":"coverage","assetVersion":inline["version"]})
+    );
+    assert_eq!(reference["semanticBindings"][1]["assetId"], "parent");
+    binding::validate_generation_snapshot(&fixture.store, &child["snapshot"]).unwrap();
+    let mut changed = fixture.store.get("assets", "inline").unwrap();
+    changed["expectedVersion"] = changed["version"].clone();
+    changed["description"] = json!("语义覆盖态已更新");
+    fixture.store.save_asset(changed).unwrap();
+    assert!(
+        binding::validate_generation_snapshot(&fixture.store, &child["snapshot"]).is_err(),
+        "frozen INLINE semantic versions cannot silently drift"
+    );
+    assert!(fixture
+        .store
+        .adopted("inline", "coverage")
+        .unwrap()
+        .is_none());
+    assert_eq!(fixture.fake.submits.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn queued_child_waits_for_the_specific_new_parent_task_instead_of_an_old_current_image() {
+    let fixture = Fixture::new(Duration::from_millis(20), 1);
+    fixture
+        .store
+        .save_settings(&json!({"trialApproved":false}))
+        .unwrap();
+    fixture.asset("parent", &[]);
+    fixture.asset("child", &["parent"]);
+    let old_file = fixture.temporary.path().join("previous-parent.png");
+    image::RgbImage::from_pixel(4, 3, image::Rgb([201, 18, 7]))
+        .save(&old_file)
+        .unwrap();
+    let old = fixture
+        .store
+        .import_media(&old_file, "image", Some("parent"), Some("base"))
+        .unwrap();
+    fixture
+        .store
+        .adopt("parent", "base", s(&old, "id"))
+        .unwrap();
+    fixture.engine.dispatch(json!({"action":"images.run","projectId":fixture.project_id,"provider":"offline","model":"offline-image","assetIds":["parent","child"]})).unwrap();
+    let jobs = fixture.store.jobs().unwrap();
+    let parent = jobs
+        .iter()
+        .find(|j| s(j, "kind") == "image" && s(j, "entityId") == "parent")
+        .unwrap();
+    let child = jobs
+        .iter()
+        .find(|j| s(j, "kind") == "image" && s(j, "entityId") == "child")
+        .unwrap();
+    assert_eq!(child["snapshot"]["dependencyJobIds"], json!([parent["id"]]));
+    assert_eq!(child["status"], "waiting_dependency");
+    fixture.engine.tick().unwrap();
+    assert!(fixture.engine.await_worker_shutdown(2));
+    let child = fixture.store.job(s(child, "id")).unwrap();
+    assert_eq!(
+        child["status"], "waiting_dependency",
+        "the old current parent is insufficient while the new parent task is processing"
+    );
+    assert!(child["snapshot"]["references"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(fixture.fake.submits.load(Ordering::SeqCst), 1);
+    let started = Instant::now();
+    loop {
+        fixture.engine.tick().unwrap();
+        if fixture.store.job(s(&child, "id")).unwrap()["status"] == "downloaded" {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(8));
+        thread::sleep(Duration::from_millis(10));
+    }
+    let child = fixture.store.job(s(&child, "id")).unwrap();
+    assert_ne!(child["snapshot"]["references"][0]["mediaId"], old["id"]);
+    assert_eq!(
+        child["snapshot"]["references"][0]["mediaId"].as_str(),
+        fixture.store.adopted("parent", "base").unwrap().as_deref()
+    );
+    assert_eq!(fixture.fake.submits.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn oneclick_retains_a_manually_imported_inline_material_without_designing_its_parent() {
+    let fixture = Fixture::new(Duration::ZERO, 1);
+    fixture
+        .store
+        .save_settings(&json!({"trialApproved":false}))
+        .unwrap();
+    fixture.asset("unused-parent", &[]);
+    let mut parent = fixture.store.get("assets", "unused-parent").unwrap();
+    parent["expectedVersion"] = parent["version"].clone();
+    parent["prompt"] = json!("");
+    fixture.store.save_asset(parent).unwrap();
+    fixture.store.save_asset(json!({"id":"inline","baseAssetId":"unused-parent","variantId":"cover","sourceAssetId":"unused-parent","name":"手动覆盖图","kind":"CH","preparation":{"mode":"INLINE"}})).unwrap();
+    let file = fixture.temporary.path().join("manual-inline.png");
+    image::RgbImage::from_pixel(4, 3, image::Rgb([7, 90, 120]))
+        .save(&file)
+        .unwrap();
+    let media = fixture
+        .store
+        .import_image_as_current(&file, "inline", Some("cover"))
+        .unwrap();
+    fixture.asset("child", &["inline"]);
+    fixture.engine.dispatch(json!({"action":"images.produce","projectId":fixture.project_id,"provider":"offline","model":"offline-image","assetIds":["child"]})).unwrap();
+    let workflow = await_workflow(&fixture.store);
+    assert_eq!(workflow["result"]["imageQueueReport"]["queuedCount"], 1);
+    let jobs = fixture.store.jobs().unwrap();
+    let images: Vec<_> = jobs.iter().filter(|j| s(j, "kind") == "image").collect();
+    assert_eq!(images.len(), 1);
+    assert_eq!(images[0]["entityId"], "child");
+    assert_eq!(images[0]["status"], "queued");
+    let reference = &images[0]["snapshot"]["references"][0];
+    assert_eq!(reference["assetId"], "inline");
+    assert_eq!(reference["mediaId"], media["id"]);
+    assert_eq!(reference["semanticBindings"].as_array().unwrap().len(), 1);
+    binding::validate_generation_snapshot(&fixture.store, &images[0]["snapshot"]).unwrap();
+    assert_eq!(
+        fixture.store.get("assets", "unused-parent").unwrap()["prompt"],
+        ""
+    );
+    assert_eq!(fixture.fake.calls(), 0);
+}
+
+#[test]
 fn public_images_produce_expands_dependencies_and_uses_completed_parent_images() {
     let fixture = Fixture::new(Duration::ZERO, 1);
     for id in ["parent-one", "parent-two", "unselected-independent"] {

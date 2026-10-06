@@ -21,34 +21,840 @@ fn project() -> (tempfile::TempDir, Store) {
 fn input(store: &Store) -> Value {
     json!({"source":store.source().unwrap(),"foundation":store.foundation().unwrap(),"assets":store.values("assets").unwrap(),"existingUnits":store.values("units").unwrap(),"selection":{"episodeIds":store.source().unwrap()["episodes"].as_array().unwrap().iter().map(|e|e["id"].clone()).collect::<Vec<_>>()},"capabilities":{"version":"test"}})
 }
+
+fn complete_episode(store: &Store, episode: usize) -> Value {
+    let source = store.source().unwrap();
+    let eid = &source["episodes"][episode]["id"];
+    let units:Vec<_>=source["rows"].as_array().unwrap().iter().filter(|r|r["kind"]=="body"&&r["episodeId"]==*eid).enumerate().map(|(index,row)|{
+        let quote=&row["dialogue"];
+        let parts:Vec<_>=quote["spokenSegments"].as_array().unwrap().iter().enumerate().map(|(i,segment)|{
+            let full:Vec<_>=source["text"].as_str().unwrap().encode_utf16().collect();
+            let text=String::from_utf16(&full[segment["range"]["start"].as_u64().unwrap() as usize..segment["range"]["end"].as_u64().unwrap() as usize]).unwrap();
+            json!({"lineId":quote["id"],"quoteStart":segment["range"]["start"],"quoteEnd":segment["range"]["end"],"text":text,"speaker":quote["speaker"],"channel":quote["channel"],"presentation":"画内","delivery":"自然说出","voiceStart":i as f64*0.5,"voiceEnd":i as f64*0.5+0.4})
+        }).collect();
+        json!({"id":format!("ready-{episode}-{index}"),"episodeId":eid,"sceneId":row["sceneId"],"title":"完整单集","unitDirection":"源中动作与回应独立完整。","scene":"门口","participants":["小王"],"props":[],"lighting":"侧光","initialState":"小王站在门口。","exitState":"小王保持原站位。","sourceRefs":[row["id"]],"assetRefs":[],"duration":4,"prompt":"源原话与六栏镜表完整独立","shots":[{"id":format!("shot-{episode}-{index}"),"duration":4,"camera":"近景读回应","picture":"小王完成原动作并说出原话。","lighting":"侧光","sound":"环境与原声","transition":"自然切出","sourceRefs":[row["id"]],"contextRefs":[],"dialogueParts":parts}]})
+    }).collect();
+    json!({"schemaVersion":"complete-episode-delivery/v1","status":"running","scope":"episodes","sourceSha256":source["sha256"],"episodeId":eid,"updatedEpisodeIds":[eid],"replacedUnitIds":[],"units":units,"plans":[{"episodeId":eid,"plan":{"events":[]}}],"fantasyRealization":[],"revisionNotes":[],"unresolved":[],"blocked":[],"finishProvenance":[{"version":"accepted-finish-domain/v1","executionBatchId":"offline-finish","canonicalDomainRequestSha256":pipeline::digest("accepted-offline-domain"),"draftSha256":pipeline::digest("accepted-offline-draft")}],"ruleSnapshots":[]})
+}
+
+#[test]
+fn per_episode_publication_is_visible_running_atomic_and_idempotent_after_reopen() {
+    let (dir, store) = project();
+    store.ensure_workflow_storage().unwrap();
+    let old_second = store.save_unit(unit(&store, "old-second", 1)).unwrap();
+    let mut frozen = input(&store);
+    frozen["capabilities"] = json!({"minDuration":4,"maxDuration":30,"imageLimit":10});
+    let guard = guard_from_input(&frozen);
+    let run = store
+        .add_job(
+            "workflow",
+            "storyboard.run",
+            "local",
+            "local",
+            &json!({"runnerVersion":"desktop-runner/v1","guard":guard,"input":frozen}),
+            "running",
+        )
+        .unwrap();
+    let snapshot = store.job(&run).unwrap()["snapshot"].clone();
+    let first = complete_episode(&store, 0);
+    store
+        .publish_storyboard_episode(&guard, &first, &frozen, &run)
+        .unwrap();
+    let state = store.job(&run).unwrap();
+    assert_eq!(state["status"], "running");
+    assert_eq!(state["result"]["units"], first["units"]);
+    assert_eq!(
+        state["snapshot"], snapshot,
+        "source/input/old guard stay frozen"
+    );
+    assert_eq!(store.get("units", "old-second").unwrap(), old_second);
+    assert_eq!(store.get("units", "ready-0-0").unwrap()["version"], 1);
+    let next = state["prepared"]["publicationGuard"].clone();
+    let reopened = Store::open(dir.path().to_owned()).unwrap();
+    reopened
+        .publish_storyboard_episode(&next, &first, &frozen, &run)
+        .unwrap();
+    let events: i64 = reopened
+        .conn()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM events WHERE job_id=?1 AND type='episode_published'",
+            [&run],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(events, 1);
+    assert_eq!(
+        reopened.unit_versions("ready-0-0").unwrap()["versions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let second = complete_episode(&reopened, 1);
+    let mut publication_input = frozen.clone();
+    publication_input["previousBoundary"] =
+        first["units"].as_array().unwrap().last().unwrap().clone();
+    reopened
+        .publish_storyboard_episode(&next, &second, &publication_input, &run)
+        .unwrap();
+    assert_eq!(reopened.job(&run).unwrap()["status"], "running");
+    assert_eq!(
+        reopened.job(&run).unwrap()["result"]["units"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let dependency: String = reopened
+        .conn()
+        .unwrap()
+        .query_row(
+            "SELECT dependency_id FROM unit_dependencies WHERE unit_id='ready-1-0'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(dependency, "ready-0-0");
+    reopened
+        .update_job(&run, "failed", &json!({"error":"third episode failed"}))
+        .unwrap();
+    assert_eq!(
+        reopened.job(&run).unwrap()["result"]["units"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "later failure does not erase completed episodes"
+    );
+    assert_eq!(
+        reopened.get("units", "ready-0-0").unwrap()["retired"],
+        false
+    );
+    let final_guard = reopened.job(&run).unwrap()["prepared"]["publicationGuard"].clone();
+    let final_output = reopened.job(&run).unwrap()["result"].clone();
+    reopened
+        .publish_storyboard(&final_guard, &final_output, &frozen, Some(&run))
+        .unwrap();
+    assert_eq!(reopened.get("units", "ready-0-0").unwrap()["version"], 1);
+}
+
+#[test]
+fn incomplete_or_changed_source_cannot_publish_an_episode_or_advance_its_guard() {
+    let (_dir, store) = project();
+    store.ensure_workflow_storage().unwrap();
+    let mut frozen = input(&store);
+    frozen["capabilities"] = json!({"minDuration":4,"maxDuration":30,"imageLimit":10});
+    let guard = guard_from_input(&frozen);
+    let run = store
+        .add_job(
+            "workflow",
+            "storyboard.run",
+            "local",
+            "local",
+            &json!({"guard":guard,"input":frozen}),
+            "running",
+        )
+        .unwrap();
+    let before = store.job(&run).unwrap();
+    let good = complete_episode(&store, 0);
+    for kind in ["quote", "coverage", "provenance", "source"] {
+        let mut bad = good.clone();
+        match kind {
+            "quote" => {
+                bad["units"][0]["shots"][0]["dialogueParts"][0]["text"] = json!("丢失原词。")
+            }
+            "coverage" => bad["units"][0]["sourceRefs"] = json!([]),
+            "provenance" => bad["finishProvenance"] = json!([]),
+            _ => bad["sourceSha256"] = json!("wrong"),
+        }
+        assert!(store
+            .publish_storyboard_episode(&guard, &bad, &frozen, &run)
+            .is_err());
+        assert_eq!(store.job(&run).unwrap(), before);
+        assert!(store.values("units").unwrap().is_empty());
+    }
+    store
+        .publish_storyboard_episode(&guard, &good, &frozen, &run)
+        .unwrap();
+    let next = store.job(&run).unwrap()["prepared"]["publicationGuard"].clone();
+    let mut edited = store.get("units", "ready-0-0").unwrap();
+    edited["prompt"] = json!("user edited current accepted unit");
+    store.save_unit(edited).unwrap();
+    assert!(
+        store
+            .publish_storyboard_episode(&next, &good, &frozen, &run)
+            .is_err(),
+        "own publication cannot hide subsequent user edits"
+    );
+}
+
+#[test]
+fn workflow_progress_counts_a_migrated_cached_request_once_without_removing_history() {
+    let (_dir, store) = project();
+    store.ensure_workflow_storage().unwrap();
+    let run = store
+        .add_job(
+            "workflow",
+            "storyboard.run",
+            "local",
+            "local",
+            &json!({"runnerVersion":"desktop-runner/v1"}),
+            "running",
+        )
+        .unwrap();
+    for (key, hash, state) in [
+        ("legacy-create", "same", "rejected"),
+        ("create:batch-1", "same", "accepted"),
+        ("create:batch-2", "different", "accepted"),
+    ] {
+        store
+            .checkpoint(
+                &run,
+                key,
+                "storyboardCreate",
+                hash,
+                state,
+                None,
+                Some(&json!({})),
+                None,
+            )
+            .unwrap();
+    }
+    // Equal timestamps still have a deterministic rowid tie-breaker.
+    store
+        .conn()
+        .unwrap()
+        .execute(
+            "UPDATE workflow_steps SET updated_at='2026-01-01T00:00:00Z' WHERE workflow_id=?1",
+            [&run],
+        )
+        .unwrap();
+    let progress = store.workflow_progress().unwrap();
+    assert_eq!(progress[0]["completedSteps"], 2);
+    assert_eq!(progress[0]["totalSteps"], 2);
+    assert_eq!(progress[0]["nodes"][0]["id"], "create:batch-1");
+    assert_eq!(progress[0]["nodes"][1]["id"], "create:batch-2");
+    let retained: i64 = store
+        .conn()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM workflow_steps WHERE workflow_id=?1",
+            [&run],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, 3);
+}
+
+#[test]
+fn workflow_progress_reads_only_attached_active_cli_safe_heartbeat_fields() {
+    let (_dir, store) = project();
+    store.ensure_workflow_storage().unwrap();
+    let run = store
+        .add_job(
+            "workflow",
+            "storyboard.run",
+            "local",
+            "local",
+            &json!({"runnerVersion":"desktop-runner/v1"}),
+            "running",
+        )
+        .unwrap();
+    let text = store
+        .add_job(
+            "text",
+            "step",
+            "codex",
+            "local",
+            &json!({"input":{"episodeId":"ep1"}}),
+            "submitting",
+        )
+        .unwrap();
+    let other = store
+        .add_job("text", "other", "codex", "local", &json!({}), "submitting")
+        .unwrap();
+    store
+        .checkpoint(
+            &run,
+            "plan:ep1",
+            "storyboardPlan",
+            "hash",
+            "running",
+            Some(&text),
+            None,
+            None,
+        )
+        .unwrap();
+    store.event(&text,"codex_heartbeat",&json!({"phase":"executing","elapsedSeconds":120,"outputQuietSeconds":119,"processAlive":true,"needsDiagnosis":false,"pid":42,"privatePrompt":"must not leak","path":"private"})).unwrap();
+    store.event(&text,"codex_heartbeat",&json!({"phase":"executing","elapsedSeconds":150,"outputQuietSeconds":149,"processAlive":true,"needsDiagnosis":true,"pid":42,"privatePrompt":"must not leak","path":"private"})).unwrap();
+    store
+        .event(
+            &other,
+            "codex_heartbeat",
+            &json!({"phase":"writing_stdin","elapsedSeconds":999}),
+        )
+        .unwrap();
+    let progress = store.workflow_progress().unwrap();
+    let execution = &progress[0]["nodes"][0]["execution"];
+    assert_eq!(execution["elapsedSeconds"], 150);
+    assert_eq!(execution["outputQuietSeconds"], 149);
+    assert_eq!(execution["needsDiagnosis"], 1);
+    assert_eq!(execution["phase"], "executing");
+    assert!(execution.get("observedAt").is_some());
+    assert!(execution.get("pid").is_none());
+    assert!(execution.get("privatePrompt").is_none());
+    assert!(execution.get("path").is_none());
+    store
+        .checkpoint(
+            &run,
+            "plan:ep1",
+            "storyboardPlan",
+            "hash",
+            "accepted",
+            Some(&text),
+            Some(&json!({})),
+            None,
+        )
+        .unwrap();
+    assert!(store.workflow_progress().unwrap()[0]["nodes"][0]["execution"].is_null());
+}
+
+fn resolution_snapshot(request: &pipeline::TextRequest) -> Value {
+    let mut snapshot = serde_json::to_value(request).unwrap();
+    snapshot["executorIdentity"] = json!({"provider":"offline"});
+    snapshot["executorPolicy"] = json!("offline-isolation/v1");
+    snapshot
+}
+
+fn resolution_step(
+    store: &Store,
+    run: &str,
+    key: &str,
+    request: &pipeline::TextRequest,
+    accepted: bool,
+    raw: &Value,
+    domain: &Value,
+) -> (String, String) {
+    let snapshot = resolution_snapshot(request);
+    let hash = pipeline::digest(&snapshot.to_string());
+    let state = if accepted { "completed" } else { "rejected" };
+    let error = (!accepted).then_some(crate::text_executor::AUTHOR_ASSET_SCOPE_REJECTION);
+    let job = store
+        .add_job(
+            "text",
+            "resolution-fixture",
+            "offline",
+            "local",
+            &snapshot,
+            state,
+        )
+        .unwrap();
+    store.update_job(&job,state,&json!({"result":raw,"error":error,"receipt":{"validation":if accepted{"accepted"}else{"rejected"},"contract":"desktop-runner/v1","acceptedRequestHash":if accepted{json!(hash)}else{Value::Null}}})).unwrap();
+    // Rejected real receipts omit acceptedRequestHash rather than storing null.
+    if !accepted {
+        store
+            .conn()
+            .unwrap()
+            .execute(
+                "UPDATE jobs SET receipt=?1 WHERE id=?2",
+                rusqlite::params![
+                    json!({"validation":"rejected","contract":"desktop-runner/v1"}).to_string(),
+                    job
+                ],
+            )
+            .unwrap();
+    }
+    store
+        .event(
+            &job,
+            "text_received_raw",
+            &json!({"requestHash":hash,"value":raw}),
+        )
+        .unwrap();
+    store
+        .checkpoint(
+            run,
+            key,
+            &request.stage,
+            &hash,
+            if accepted { "accepted" } else { "rejected" },
+            Some(&job),
+            Some(domain),
+            error,
+        )
+        .unwrap();
+    (job, hash)
+}
+
+struct ScopeResolutionFixture {
+    dir: tempfile::TempDir,
+    store: Store,
+    run: String,
+    author: pipeline::TextRequest,
+    author_job: String,
+    author_node: String,
+    author_hash: String,
+    resolver: pipeline::TextRequest,
+    resolver_job: String,
+    resolver_node: String,
+    resolver_hash: String,
+    result: Value,
+}
+
+fn scope_resolution_fixture(two_attempts: bool) -> ScopeResolutionFixture {
+    let (dir, store) = project();
+    store.ensure_workflow_storage().unwrap();
+    let source = store.source().unwrap();
+    let run = store
+        .add_job(
+            "workflow",
+            "storyboard.run",
+            "local",
+            "local",
+            &json!({"runnerVersion":"desktop-runner/v1","input":{"source":source}}),
+            "running",
+        )
+        .unwrap();
+    let episode = source["episodes"][0]["id"].clone();
+    let rows: Vec<_> = source["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["kind"] == "body" && r["episodeId"] == episode)
+        .cloned()
+        .collect();
+    let author = pipeline::TextRequest {
+        stage: "storyboardCreate".into(),
+        skill: "unit-performance-director".into(),
+        model: "offline".into(),
+        reasoning: "medium".into(),
+        input: json!({"episodeId":episode,"sourceRows":rows,"contextRows":[],"capabilities":{"maxDuration":30},"executionBatch":{"version":"source-production-batch/v1","id":"B1"},"storyboardCreativeProfile":"original-production-contract/v1"}),
+        schema: json!({"type":"object"}),
+        rule_snapshot: json!({"primary":{"id":"unit-performance-director","version":"original"}}),
+    };
+    let author_node = "author:batch:B1".to_string();
+    let draft = json!({"schemaVersion":"storyboard-draft/v2","units":complete_episode(&store,0)["units"],"fantasyRealization":[],"revisionNotes":[],"unresolved":[]});
+    let mut raw = draft.clone();
+    raw["privatePrompt"] = json!("DO_NOT_EXPOSE_AUTHOR_RAW");
+    let (author_job, author_hash) =
+        resolution_step(&store, &run, &author_node, &author, false, &raw, &raw);
+    let author_domain = pipeline::digest(&serde_json::to_string(&author).unwrap());
+    let raw_sha = pipeline::digest(&raw.to_string());
+    let base_hash = pipeline::digest("original-unadopted-base");
+    let mut resolver = pipeline::TextRequest {
+        stage: "storyboardFinish".into(),
+        skill: "episode-finishing-editor".into(),
+        model: "offline".into(),
+        reasoning: "medium".into(),
+        input: json!({"episodeId":episode,"sourceRows":rows,"contextRows":[],"capabilities":{"maxDuration":30},"finishMode":"delta","baseDraftHash":base_hash,"executionBatch":{"version":"author-domain-repair/v1","id":"repair:1"},"authorRepair":{"version":"rejected-author-scope-repair/v1","maximumAttempts":2,"attempt":1,"sourceSha256":source["sha256"],"originDomainRequestSha256":author_domain,"originalAuthorRawSha256":raw_sha,"originExecutionBatch":author.input["executionBatch"],"baseDraftHash":base_hash},"storyboardCreativeProfile":"original-production-contract/v1"}),
+        schema: json!({"type":"object"}),
+        rule_snapshot: json!({"primary":{"id":"episode-finishing-editor","version":"original"}}),
+    };
+    let mut lineage = Vec::new();
+    if two_attempts {
+        let domain = pipeline::digest(&serde_json::to_string(&resolver).unwrap());
+        let first_raw = json!({"schemaVersion":"storyboard-delta/v2","baseDraftHash":base_hash,"retainedUnitIds":[],"replacements":[],"revisionNotes":[],"unresolved":[]});
+        resolution_step(
+            &store,
+            &run,
+            "repair:attempt1",
+            &resolver,
+            false,
+            &first_raw,
+            &first_raw,
+        );
+        let next_base = pipeline::digest("hard-validated-still-out-of-scope-draft");
+        lineage.push(json!({"attempt":1,"canonicalDomainRequestSha256":domain,"baseDraftHash":base_hash,"draftSha256":next_base,"result":"rejected-scope"}));
+        resolver.input["baseDraftHash"] = json!(next_base);
+        resolver.input["authorRepair"]["baseDraftHash"] = json!(next_base);
+        resolver.input["authorRepair"]["attempt"] = json!(2);
+        resolver.input["executionBatch"]["id"] = json!("repair:2");
+    }
+    let resolver_domain = pipeline::digest(&serde_json::to_string(&resolver).unwrap());
+    let draft_hash=pipeline::digest(&json!({"schemaVersion":draft["schemaVersion"],"units":draft["units"],"fantasyRealization":draft["fantasyRealization"]}).to_string());
+    lineage.push(json!({"attempt":if two_attempts{2}else{1},"canonicalDomainRequestSha256":resolver_domain,"baseDraftHash":resolver.input["baseDraftHash"],"draftSha256":draft_hash}));
+    let mut materialized = draft;
+    materialized["authorRepairProvenance"] = json!({"version":"accepted-author-scope-repair/v1","sourceSha256":source["sha256"],"originDomainRequestSha256":author_domain,"originalAuthorRawSha256":raw_sha,"originalAuthorAccepted":false,"nodes":lineage});
+    let wire_raw = json!({"schemaVersion":"storyboard-delta/v2","baseDraftHash":resolver.input["baseDraftHash"],"retainedUnitIds":[],"replacements":[],"privatePrompt":"DO_NOT_EXPOSE_FINISH_RAW","revisionNotes":[],"unresolved":[]});
+    let mut result = wire_raw.clone();
+    result["materializedDraft"] = materialized;
+    let resolver_node = if two_attempts {
+        "repair:attempt2"
+    } else {
+        "repair:attempt1"
+    }
+    .to_string();
+    let (resolver_job, resolver_hash) = resolution_step(
+        &store,
+        &run,
+        &resolver_node,
+        &resolver,
+        true,
+        &wire_raw,
+        &result,
+    );
+    ScopeResolutionFixture {
+        dir,
+        store,
+        run,
+        author,
+        author_job,
+        author_node,
+        author_hash,
+        resolver,
+        resolver_job,
+        resolver_node,
+        resolver_hash,
+        result,
+    }
+}
+
+fn resolution_records(store: &Store, run: &str) -> Value {
+    let c = store.conn().unwrap();
+    let mut query=c.prepare("SELECT w.node_key,w.request_hash,w.state,w.error,w.result,j.id,j.snapshot,j.state,j.error,j.result,j.receipt FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 ORDER BY w.rowid").unwrap();
+    let rows = query
+        .query_map([run], |r| {
+            Ok(json!((0..11)
+                .map(|i| r.get::<_, Option<String>>(i))
+                .collect::<std::result::Result<Vec<_>, _>>()?))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect::<Vec<_>>();
+    json!(rows)
+}
+
+#[test]
+fn workflow_progress_resolves_scope_author_by_domain_hash_and_keeps_all_original_rows() {
+    let f = scope_resolution_fixture(false);
+    let before = resolution_records(&f.store, &f.run);
+    let progress = f.store.workflow_progress().unwrap();
+    let nodes = progress[0]["nodes"].as_array().unwrap();
+    let original = nodes.iter().find(|n| n["id"] == f.author_node).unwrap();
+    let domain = pipeline::digest(&serde_json::to_string(&f.author).unwrap());
+    assert_ne!(domain, f.author_hash);
+    assert_eq!(original["requestHash"], f.author_hash);
+    assert_eq!(original["status"], "rejected");
+    assert_eq!(
+        original["error"],
+        crate::text_executor::AUTHOR_ASSET_SCOPE_REJECTION
+    );
+    assert_eq!(
+        original["resolution"],
+        json!({"version":"workflow-step-resolution/v1","kind":"author-scope-repair","workflowId":f.run,"originNodeId":f.author_node,"originRequestHash":f.author_hash,"resolverNodeId":f.resolver_node,"resolverRequestHash":f.resolver_hash,"verified":true})
+    );
+    assert!(nodes.iter().find(|n| n["id"] == f.resolver_node).unwrap()["resolution"].is_null());
+    assert_eq!(resolution_records(&f.store, &f.run), before);
+    let rendered = serde_json::to_string(&progress).unwrap();
+    assert!(!rendered.contains("DO_NOT_EXPOSE"));
+    assert!(!rendered.contains("materializedDraft"));
+    assert!(!rendered.contains("executorIdentity"));
+    let reopened = Store::open(f.dir.path().to_owned()).unwrap();
+    assert_eq!(reopened.workflow_progress().unwrap(), progress);
+}
+
+#[test]
+fn workflow_progress_resolves_rejected_first_scope_editor_only_with_the_second_verified_lineage() {
+    let f = scope_resolution_fixture(true);
+    let before = resolution_records(&f.store, &f.run);
+    let progress = f.store.workflow_progress().unwrap();
+    let nodes = progress[0]["nodes"].as_array().unwrap();
+    for id in [f.author_node.as_str(), "repair:attempt1"] {
+        let old = nodes.iter().find(|n| n["id"] == id).unwrap();
+        assert_eq!(old["status"], "rejected");
+        assert_eq!(old["resolution"]["kind"], "author-scope-repair");
+        assert_eq!(old["resolution"]["resolverNodeId"], f.resolver_node);
+    }
+    assert_eq!(
+        nodes.iter().find(|n| n["id"] == "repair:attempt1").unwrap()["input"]
+            ["executionBatchVersion"],
+        "author-domain-repair/v1"
+    );
+    assert_eq!(resolution_records(&f.store, &f.run), before);
+    let mut bad = f.result.clone();
+    bad["materializedDraft"]["authorRepairProvenance"]["nodes"][0]["draftSha256"] =
+        json!(pipeline::digest("unrelated-base"));
+    f.store
+        .conn()
+        .unwrap()
+        .execute(
+            "UPDATE workflow_steps SET result=?1 WHERE workflow_id=?2 AND node_key=?3",
+            rusqlite::params![bad.to_string(), f.run, f.resolver_node],
+        )
+        .unwrap();
+    let progress = f.store.workflow_progress().unwrap();
+    assert!(progress[0]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == "repair:attempt1")
+        .unwrap()["resolution"]
+        .is_null());
+}
+
+#[test]
+fn workflow_progress_scope_resolution_rejects_unbound_snapshot_source_raw_receipt_and_cross_workflow(
+) {
+    for pollution in [
+        "domainUsesSnapshotHash",
+        "source",
+        "raw",
+        "episode",
+        "draft",
+        "nodeHash",
+        "receipt",
+        "receiveEvent",
+        "crossWorkflow",
+        "unaccepted",
+    ] {
+        let f = scope_resolution_fixture(false);
+        let c = f.store.conn().unwrap();
+        match pollution {
+            "domainUsesSnapshotHash" | "source" | "raw" | "episode" | "draft" => {
+                let mut bad = f.result.clone();
+                match pollution {
+                    "domainUsesSnapshotHash" => {
+                        bad["materializedDraft"]["authorRepairProvenance"]
+                            ["originDomainRequestSha256"] = json!(f.author_hash)
+                    }
+                    "source" => {
+                        bad["materializedDraft"]["authorRepairProvenance"]["sourceSha256"] =
+                            json!(pipeline::digest("other-source"))
+                    }
+                    "raw" => {
+                        bad["materializedDraft"]["authorRepairProvenance"]
+                            ["originalAuthorRawSha256"] = json!(pipeline::digest("other-raw"))
+                    }
+                    "episode" => {
+                        bad["materializedDraft"]["units"][0]["episodeId"] = json!("other-episode")
+                    }
+                    _ => {
+                        bad["materializedDraft"]["units"][0]["exitState"] =
+                            json!("changed without lineage")
+                    }
+                }
+                c.execute(
+                    "UPDATE workflow_steps SET result=?1 WHERE workflow_id=?2 AND node_key=?3",
+                    rusqlite::params![bad.to_string(), f.run, f.resolver_node],
+                )
+                .unwrap();
+            }
+            "nodeHash" => {
+                c.execute("UPDATE workflow_steps SET request_hash=?1 WHERE workflow_id=?2 AND node_key=?3",rusqlite::params![pipeline::digest("not-this-snapshot"),f.run,f.resolver_node]).unwrap();
+            }
+            "receipt" => {
+                c.execute(
+                    "UPDATE jobs SET receipt=?1 WHERE id=?2",
+                    rusqlite::params![
+                        json!({"validation":"accepted","contract":"other"}).to_string(),
+                        f.resolver_job
+                    ],
+                )
+                .unwrap();
+            }
+            "receiveEvent" => {
+                f.store
+                    .event(
+                        &f.author_job,
+                        "text_received_raw",
+                        &json!({"requestHash":f.author_hash,"value":{"other":true}}),
+                    )
+                    .unwrap();
+            }
+            "crossWorkflow" => {
+                let other=f.store.add_job("workflow","storyboard.run","local","local",&json!({"runnerVersion":"desktop-runner/v1","input":{"source":f.store.source().unwrap()}}),"running").unwrap();
+                c.execute(
+                    "UPDATE workflow_steps SET workflow_id=?1 WHERE workflow_id=?2 AND node_key=?3",
+                    rusqlite::params![other, f.run, f.resolver_node],
+                )
+                .unwrap();
+            }
+            _ => {
+                c.execute(
+                    "UPDATE jobs SET state='received' WHERE id=?1",
+                    [&f.resolver_job],
+                )
+                .unwrap();
+            }
+        }
+        let before = resolution_records(&f.store, &f.run);
+        let progress = f.store.workflow_progress().unwrap();
+        let run = progress.iter().find(|p| p["workflowId"] == f.run).unwrap();
+        let old = run["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == f.author_node)
+            .unwrap();
+        assert!(old["resolution"].is_null(), "{pollution}");
+        assert_eq!(old["status"], "rejected");
+        assert_eq!(resolution_records(&f.store, &f.run), before);
+    }
+}
+
+#[test]
+fn workflow_progress_scope_resolution_is_fail_closed_when_two_accepted_resolvers_claim_the_same_author(
+) {
+    let f = scope_resolution_fixture(false);
+    let mut request = f.resolver.clone();
+    request.input["executionBatch"]["id"] = json!("other-explicit-repair");
+    let mut result = f.result.clone();
+    result["materializedDraft"]["authorRepairProvenance"]["nodes"][0]
+        ["canonicalDomainRequestSha256"] =
+        json!(pipeline::digest(&serde_json::to_string(&request).unwrap()));
+    let mut raw = result.clone();
+    raw.as_object_mut().unwrap().remove("materializedDraft");
+    resolution_step(
+        &f.store,
+        &f.run,
+        "other-resolver",
+        &request,
+        true,
+        &raw,
+        &result,
+    );
+    let progress = f.store.workflow_progress().unwrap();
+    let old = progress[0]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == f.author_node)
+        .unwrap();
+    assert!(old["resolution"].is_null());
+    assert_eq!(old["status"], "rejected");
+}
+
+#[test]
+fn workflow_progress_continuity_supersession_requires_the_real_event_and_exact_previous_tail_pair()
+{
+    for mode in [
+        "valid",
+        "missingEvent",
+        "wrongEvent",
+        "wrongTail",
+        "wrongNodeSuffix",
+    ] {
+        let (_dir, store) = project();
+        store.ensure_workflow_storage().unwrap();
+        let source = store.source().unwrap();
+        let episode = &source["episodes"][1]["id"];
+        let run = store
+            .add_job(
+                "workflow",
+                "storyboard.run",
+                "local",
+                "local",
+                &json!({"runnerVersion":"desktop-runner/v1","input":{"source":source}}),
+                "running",
+            )
+            .unwrap();
+        let rows: Vec<_> = source["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["kind"] == "body" && r["episodeId"] == *episode)
+            .cloned()
+            .collect();
+        let prior = json!({"id":"tail","episodeId":source["episodes"][0]["id"],"exitState":"old actual tail"});
+        let current = json!({"id":"tail","episodeId":source["episodes"][0]["id"],"exitState":"new actual tail"});
+        let old = pipeline::TextRequest {
+            stage: "storyboardPlan".into(),
+            skill: "episode-emotion-planner".into(),
+            model: "offline".into(),
+            reasoning: "medium".into(),
+            input: json!({"episode":{"id":episode},"sourceRows":rows,"previousBoundary":prior}),
+            schema: json!({"type":"object"}),
+            rule_snapshot: json!({"primary":{"id":"episode-emotion-planner","version":"original"}}),
+        };
+        let mut new = old.clone();
+        let revision = json!({"version":"accepted-tail-change/v1","reason":"VIDEO_CARRIER_REPAIR","sourceSha256":source["sha256"],"previousEpisodeId":source["episodes"][0]["id"],"priorTailSha256":pipeline::digest(&prior.to_string()),"currentTailSha256":pipeline::digest(&current.to_string()),"parentRevisionSha256":null});
+        new.input["continuityRevision"] = revision.clone();
+        new.input["previousBoundary"] = if mode == "wrongTail" {
+            json!({"id":"unrelated"})
+        } else {
+            current
+        };
+        let old_key = "storyboardPlan:episode:";
+        let suffix = if mode == "wrongNodeSuffix" {
+            pipeline::digest("other-revision")
+        } else {
+            pipeline::digest(&revision.to_string())
+        };
+        let new_key = format!("{old_key}:continuity:{suffix}");
+        let raw = json!({"schemaVersion":"storyboard-plan/v2"});
+        let (_, old_hash) = resolution_step(&store, &run, old_key, &old, true, &raw, &raw);
+        let (_, new_hash) = resolution_step(&store, &run, &new_key, &new, true, &raw, &raw);
+        if mode != "missingEvent" {
+            let mut event = revision.clone();
+            event["episodeId"] = episode.clone();
+            event["action"] = json!("recompute_affected_chain");
+            event["previouslyAcceptedPlan"] = json!(true);
+            if mode == "wrongEvent" {
+                event["currentTailSha256"] = json!(pipeline::digest("not-current-tail"));
+            }
+            store
+                .event(&run, "storyboard_continuity_updated", &event)
+                .unwrap();
+        }
+        let before = resolution_records(&store, &run);
+        let progress = store.workflow_progress().unwrap();
+        let projected = progress[0]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == old_key)
+            .unwrap();
+        if mode == "valid" {
+            assert_eq!(
+                projected["resolution"],
+                json!({"version":"workflow-step-resolution/v1","kind":"continuity-superseded","workflowId":run,"originNodeId":old_key,"originRequestHash":old_hash,"resolverNodeId":new_key,"resolverRequestHash":new_hash,"verified":true})
+            );
+        } else {
+            assert!(projected["resolution"].is_null(), "{mode}");
+        }
+        assert_eq!(projected["status"], "accepted");
+        assert_eq!(resolution_records(&store, &run), before);
+    }
+}
 fn unit(store: &Store, id: &str, episode: usize) -> Value {
     json!({"id":id,"episodeId":store.source().unwrap()["episodes"][episode]["id"],"title":id,"prompt":"原话与完整演出","duration":4,"assetRefs":[],"exitState":"站在门口"})
 }
 
 #[test]
 fn partial_episode_drafts_do_not_retire_or_replace_the_existing_complete_episode() {
-    let (_dir,store)=project();
-    let old=store.save_unit(unit(&store,"old-complete",0)).unwrap();
-    let frozen=input(&store);let guard=guard_from_input(&frozen);
-    let draft=unit(&store,"new-first-batch",0);
-    let output=json!({"scope":"episodes","status":"partially_blocked","updatedEpisodeIds":[],"units":[draft],"blocked":[{"reason":"后批失败"}]});
-    store.publish_storyboard(&guard,&output,&frozen,None).unwrap();
-    assert_eq!(store.values("units").unwrap(),vec![old]);
+    let (_dir, store) = project();
+    let old = store.save_unit(unit(&store, "old-complete", 0)).unwrap();
+    let frozen = input(&store);
+    let guard = guard_from_input(&frozen);
+    let draft = unit(&store, "new-first-batch", 0);
+    let output = json!({"scope":"episodes","status":"partially_blocked","updatedEpisodeIds":[],"units":[draft],"blocked":[{"reason":"后批失败"}]});
+    store
+        .publish_storyboard(&guard, &output, &frozen, None)
+        .unwrap();
+    assert_eq!(store.values("units").unwrap(), vec![old]);
 }
 
 #[test]
 fn completed_episode_can_publish_while_the_failed_episode_keeps_old_units() {
-    let (_dir,store)=project();
-    store.save_unit(unit(&store,"old-first",0)).unwrap();
-    let failed=store.save_unit(unit(&store,"old-second",1)).unwrap();
-    let frozen=input(&store);let guard=guard_from_input(&frozen);
-    let ready=unit(&store,"new-first",0);let incomplete=unit(&store,"new-second-part",1);
-    let output=json!({"scope":"episodes","status":"partially_blocked","updatedEpisodeIds":[ready["episodeId"]],"units":[ready,incomplete]});
-    store.publish_storyboard(&guard,&output,&frozen,None).unwrap();
-    assert_eq!(store.get("units","old-second").unwrap(),failed);
-    assert!(store.get("units","new-second-part").is_err());
-    assert_eq!(store.get("units","old-first").unwrap()["retired"],true);
-    assert_eq!(store.get("units","new-first").unwrap()["title"],"new-first");
+    let (_dir, store) = project();
+    store.save_unit(unit(&store, "old-first", 0)).unwrap();
+    let failed = store.save_unit(unit(&store, "old-second", 1)).unwrap();
+    let frozen = input(&store);
+    let guard = guard_from_input(&frozen);
+    let ready = unit(&store, "new-first", 0);
+    let incomplete = unit(&store, "new-second-part", 1);
+    let output = json!({"scope":"episodes","status":"partially_blocked","updatedEpisodeIds":[ready["episodeId"]],"units":[ready,incomplete]});
+    store
+        .publish_storyboard(&guard, &output, &frozen, None)
+        .unwrap();
+    assert_eq!(store.get("units", "old-second").unwrap(), failed);
+    assert!(store.get("units", "new-second-part").is_err());
+    assert_eq!(store.get("units", "old-first").unwrap()["retired"], true);
+    assert_eq!(
+        store.get("units", "new-first").unwrap()["title"],
+        "new-first"
+    );
 }
 
 #[test]

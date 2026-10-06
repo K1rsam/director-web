@@ -45,10 +45,11 @@ export function MediaPreview({ media, className = '', onInspect, compact = false
   return onInspect ? <button type="button" className="image-open" onClick={() => onInspect(media)} aria-label="查看原图">{image}</button> : image;
 }
 const STATUS: Record<string, string> = {
+  recovery_paused: '恢复已暂停',
   closed_by_user: '已人工关闭', draft: '草稿', ready: '准备就绪', adopted: '已采用', needs_image: '待补参考图', needs_media: '待补素材', prepared: '素材已冻结', stale: '来源已更新', blocked: '需要处理', completed: '已完成', succeeded: '生成完成', downloaded: '已下载', queued: '排队中', running: '正在生成', submitting: '正在提交', submitted: '已提交', uploading: '正在上传', pending: '等待结果', failed: '未完成', cancelled: '已取消', unknown: '提交结果未知', submission_unknown: '提交结果未知', auth_required: '需要登录', paused: '已暂停', waiting_dependencies: '等待前置结果', needs_review: '待审看', result_expired: '结果已过期', not_configured: '尚未配置', available: '可用', unavailable: '不可用', configured: '已配置', executing: '执行中', downloading: '下载中', download_failed: '下载待恢复', planned: '规划完成', preparing: '正在准备', completed_with_issues: '部分完成', processing: '处理中', waiting: '等待执行', success: '已完成', expired: '结果已过期', submission_rejected: '渠道拒绝提交', failed_before_submit: '未提交成功', waiting_dependency: '等待来源图片', query_failed: '查询待恢复', awaitingtrial: '等待试稿确认',
 };
 export function statusLabel(status?: string) { return status ? STATUS[status.toLowerCase()] || status : '尚未开始'; }
-export function Badge({ status, children }: { status?: string; children?: ReactNode }) { const key = status?.toLowerCase() || 'draft'; return <span className={`badge ${/fail|unknown|block|expired|auth/.test(key) ? 'attention' : /ready|adopt|complete|success|downloaded|available/.test(key) ? 'success' : /run|submit|upload|process/.test(key) ? 'active' : ''}`}>{children || statusLabel(status)}</span>; }
+export function Badge({ status, children }: { status?: string; children?: ReactNode }) { const key = status?.toLowerCase() || 'draft'; return <span className={`badge ${/fail|unknown|block|expired|auth|recovery_paused/.test(key) ? 'attention' : /ready|adopt|complete|success|downloaded|available/.test(key) ? 'success' : /run|submit|upload|process/.test(key) ? 'active' : ''}`}>{children || statusLabel(status)}</span>; }
 export function messageOf(value: unknown): string {
   if (!value) return '';
   if (typeof value === 'string') return value;

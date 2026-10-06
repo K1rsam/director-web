@@ -93,6 +93,66 @@ impl Fixture {
 }
 
 #[test]
+fn project_summary_counts_only_active_units_and_preserves_retired_history() {
+    let f = Fixture::new();
+    let conn = f.store.conn().unwrap();
+    for index in 0..29 {
+        let id = format!("unit-{index}");
+        let mut unit = json!({"id":id,"episodeId":"episode-1","version":1});
+        if index >= 19 {
+            unit["retired"] = json!(true);
+        } else if index % 3 == 0 {
+            unit["retired"] = json!(false);
+        } else if index % 3 == 1 {
+            unit["retired"] = Value::Null;
+        }
+        conn.execute(
+            "INSERT INTO units(id,episode_id,version,data) VALUES(?1,'episode-1',1,?2)",
+            rusqlite::params![id, unit.to_string()],
+        )
+        .unwrap();
+    }
+    let active_count = || {
+        let list = f.engine.dispatch(json!({"action":"projects.list"})).unwrap();
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|project| project["id"] == f.pid)
+            .unwrap()["counts"]["units"]
+            .as_u64()
+            .unwrap()
+    };
+    assert_eq!(active_count(), 19);
+    let workspace = f
+        .engine
+        .dispatch(json!({"action":"workspace.get","projectId":f.pid}))
+        .unwrap();
+    assert_eq!(workspace["units"].as_array().unwrap().len(), 19);
+    assert_eq!(f.store.values("units").unwrap().len(), 19);
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM units", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        29,
+        "the library count must not delete retired records"
+    );
+    assert_eq!(f.store.get("units", "unit-19").unwrap()["retired"], true);
+
+    conn.execute(
+        "UPDATE units SET data=json_set(data,'$.retired',json('true')) WHERE id='unit-0'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(active_count(), 18);
+    conn.execute(
+        "UPDATE units SET data=json_set(data,'$.retired',json('false')) WHERE id='unit-19'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(active_count(), 19);
+    assert_eq!(f.channels.submissions.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn legacy_registry_defaults_to_active_and_archive_is_required_before_deletion() {
     let f = Fixture::new();
     let mut registry = f.engine.registry().unwrap();

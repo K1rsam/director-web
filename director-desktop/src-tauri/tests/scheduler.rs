@@ -158,6 +158,22 @@ impl Channels for Fake {
             .entry(remote.into())
             .or_default() += 1;
         thread::sleep(self.query_delay);
+        if remote == "remote:forever-processing" {
+            return Ok(QueryResult {
+                task_id: remote.into(),
+                status: "processing".into(),
+                result_urls: vec![],
+                error: None,
+                actual_cost: None,
+                raw: json!({"offline":true}),
+            });
+        }
+        if remote == "remote:not-found" {
+            return Err(ProviderError::new(
+                "CLI_QUERY_FAILED",
+                "offline fixture: task not found",
+            ));
+        }
         if remote == "remote:episode-query-fails" {
             return Err(ProviderError::new(
                 "MOCK_QUERY_OUTAGE",
@@ -288,6 +304,193 @@ impl Fixture {
             .add_job("video", &uid, provider, &account, &snapshot, "queued")
             .unwrap()
     }
+    fn queue_image(&self, request_id: &str) -> String {
+        let asset_id = format!("image-{request_id}");
+        self.store.save_asset(json!({"id":asset_id,"variantId":"base","name":asset_id,"kind":"CH","prompt":"离线调度人物设定图"})).unwrap();
+        let asset = self.store.active_asset(&asset_id).unwrap();
+        let snapshot = json!({"requestId":request_id,"kind":"image","assetId":asset_id,"variantId":"base","assetVersion":asset["version"],"model":"mock-image","prompt":"离线调度人物设定图","ratio":"16:9","resolution":"2K","references":[],"options":{},"autoSubmit":true});
+        binding::validate_generation_snapshot(&self.store, &snapshot).unwrap();
+        let (_, account) = self.engine.config(&self.store, "mock").unwrap();
+        self.store
+            .add_job("image", &asset_id, "mock", &account, &snapshot, "queued")
+            .unwrap()
+    }
+    fn known_image(&self, request_id: &str, remote: &str, state: &str) -> String {
+        let key = self.queue_image(request_id);
+        self.store
+            .update_job(
+                &key,
+                state,
+                &json!({"providerTaskId":remote,"receipt":{"taskId":remote,"original":true}}),
+            )
+            .unwrap();
+        self.fake
+            .stats
+            .lock()
+            .unwrap()
+            .remote_kinds
+            .insert(remote.into(), "image".into());
+        key
+    }
+    fn one_tick(&self) {
+        self.engine.tick().unwrap();
+        assert!(
+            self.engine.await_channel_shutdown(5),
+            "owned channel worker must finish within the offline fixture budget"
+        );
+    }
+}
+
+#[test]
+fn fifty_four_older_image_generations_cannot_starve_newer_original_id_download() {
+    let f = Fixture::new(1, Duration::from_millis(3));
+    for n in 0..54 {
+        f.queue_image(&format!("older-{n}"));
+    }
+    let known = f.known_image("already-submitted", "remote:already-submitted", "submitted");
+    f.store.conn().unwrap().execute("UPDATE jobs SET updated_at=CASE WHEN id=?1 THEN '2026-01-02T00:00:00+00:00' ELSE '2026-01-01T00:00:00+00:00' END",[&known]).unwrap();
+    let original = f.store.job(&known).unwrap();
+    f.one_tick();
+    let downloaded = f.store.job(&known).unwrap();
+    assert_eq!(
+        downloaded["status"], "downloaded",
+        "first due slot must recover the saved ID before the older generation backlog"
+    );
+    assert_eq!(downloaded["providerTaskId"], original["providerTaskId"]);
+    assert_eq!(downloaded["snapshot"], original["snapshot"]);
+    assert_eq!(downloaded["receipt"], original["receipt"]);
+    assert_eq!(downloaded["resultMediaIds"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        f.fake.submission_count(),
+        0,
+        "recovery adds no generation submission"
+    );
+    assert_eq!(f.fake.query_count("remote:already-submitted"), 1);
+    assert_eq!(
+        f.store
+            .jobs()
+            .unwrap()
+            .iter()
+            .filter(|j| s(j, "status") == "queued")
+            .count(),
+        54
+    );
+    f.one_tick();
+    assert_eq!(
+        f.fake.submission_count(),
+        1,
+        "the next slot still advances a new generation"
+    );
+    f.fake.assert_serial();
+}
+
+#[test]
+fn perpetually_processing_original_id_and_generation_backlog_both_get_bounded_slots() {
+    let f = Fixture::new(1, Duration::from_millis(3));
+    for n in 0..12 {
+        f.queue_image(&format!("generation-{n}"));
+    }
+    let known = f.known_image("pending", "remote:forever-processing", "submitted");
+    for round in 0..3 {
+        // Explicit fixture clock control: mark this known task due, without
+        // touching failed-task backoff or any production database.
+        f.store.conn().unwrap().execute("UPDATE jobs SET next_attempt_at=0,updated_at='2026-01-01T00:00:00+00:00' WHERE id=?1",[&known]).unwrap();
+        f.one_tick();
+        assert_eq!(f.fake.query_count("remote:forever-processing"), round + 1);
+        assert_eq!(
+            f.fake.submission_count(),
+            round,
+            "a due original ID gets the recovery turn"
+        );
+        f.store
+            .conn()
+            .unwrap()
+            .execute("UPDATE jobs SET next_attempt_at=0 WHERE id=?1", [&known])
+            .unwrap();
+        f.one_tick();
+        assert_eq!(
+            f.fake.submission_count(),
+            round + 1,
+            "even an always-due processing task must yield the generation turn"
+        );
+        assert_eq!(f.fake.query_count("remote:forever-processing"), round + 1);
+    }
+    assert_eq!(f.store.job(&known).unwrap()["status"], "processing");
+    let stats = f.fake.stats.lock().unwrap();
+    assert!(stats.submits.values().all(|n| *n == 1));
+    drop(stats);
+    f.fake.assert_serial();
+}
+
+#[test]
+fn future_due_query_backoff_and_unknown_submission_are_preserved_by_fair_selection() {
+    let f = Fixture::new(1, Duration::from_millis(3));
+    let fresh = f.queue_image("fresh");
+    let future = f.known_image("future", "remote:future", "query_failed");
+    f.store.update_job(&future,"query_failed",&json!({"nextAttemptAt":chrono::Utc::now().timestamp()+3600,"queryAttempts":2,"error":"fixture cooldown"})).unwrap();
+    let future_before = f.store.job(&future).unwrap();
+    let unknown = f.queue_image("unknown");
+    f.store
+        .update_job(
+            &unknown,
+            "submission_unknown",
+            &json!({"error":"original acceptance unknown"}),
+        )
+        .unwrap();
+    let unknown_before = f.store.job(&unknown).unwrap();
+    let notfound = f.known_image("not-found", "remote:not-found", "submitted");
+    let original = f.store.job(&notfound).unwrap();
+    f.one_tick();
+    let failed = f.store.job(&notfound).unwrap();
+    assert_eq!(
+        failed["status"], "query_failed",
+        "a missing-task/ordinary CLI error is retryable, never inferred expired"
+    );
+    assert_eq!(failed["queryAttempts"], 1);
+    assert!(failed["nextAttemptAt"].as_i64().unwrap() > chrono::Utc::now().timestamp());
+    for field in ["providerTaskId", "snapshot", "receipt"] {
+        assert_eq!(failed[field], original[field]);
+    }
+    f.one_tick();
+    assert_eq!(f.store.job(&fresh).unwrap()["status"], "submitted");
+    assert_eq!(
+        f.store.job(&future).unwrap(),
+        future_before,
+        "an alternate turn cannot bypass due/backoff"
+    );
+    assert_eq!(
+        f.store.job(&unknown).unwrap(),
+        unknown_before,
+        "unknown submits never enter either automatic class"
+    );
+    assert_eq!(f.fake.query_count("remote:future"), 0);
+    assert_eq!(f.fake.query_count("remote:not-found"), 1);
+    assert_eq!(f.fake.submission_count(), 1);
+    assert!(!f
+        .fake
+        .stats
+        .lock()
+        .unwrap()
+        .prepares
+        .contains_key("unknown"));
+    f.fake.assert_serial();
+}
+
+#[test]
+fn a_saved_id_in_legacy_queued_state_is_query_only_and_never_submitted_again() {
+    let f = Fixture::new(1, Duration::from_millis(3));
+    let key = f.known_image("legacy-local-state", "remote:legacy-local-state", "queued");
+    let original = f.store.job(&key).unwrap();
+    f.one_tick();
+    let recovered = f.store.job(&key).unwrap();
+    assert_eq!(recovered["status"], "downloaded");
+    for field in ["providerTaskId", "snapshot", "receipt"] {
+        assert_eq!(recovered[field], original[field]);
+    }
+    assert_eq!(f.fake.submission_count(), 0);
+    assert_eq!(f.fake.stats.lock().unwrap().prepares.len(), 0);
+    assert_eq!(f.fake.query_count("remote:legacy-local-state"), 1);
+    f.fake.assert_serial();
 }
 
 // Ordinary successful polling is made immediately due to keep the test short. Failed polling keeps

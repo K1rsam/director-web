@@ -414,6 +414,192 @@ fn video_query_failure_and_stale_download_url_recover_independently() {
     independent_query_and_download_recovery("video");
 }
 
+fn assert_recovery_paused(fixture: &Fixture, operation: &str) {
+    let job = fixture.job();
+    assert_eq!(job["status"], "recovery_paused");
+    assert_eq!(job["nextAttemptAt"], 0);
+    assert!(s(&job, "error").contains("连续失败5次"));
+    assert!(
+        fixture
+            .store
+            .pending_jobs()
+            .unwrap()
+            .iter()
+            .all(|j| j["id"] != fixture.key),
+        "a paused task must not be automatically scheduled even with nextAttemptAt=0"
+    );
+    let raw: String = fixture.store.conn().unwrap().query_row(
+        "SELECT data FROM events WHERE job_id=?1 AND type='retry_budget_exhausted' ORDER BY rowid DESC LIMIT 1",
+        [&fixture.key], |row| row.get(0),
+    ).unwrap();
+    let event: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(event["operation"], operation);
+    assert_eq!(event["attempts"], 5);
+    fixture.assert_original();
+}
+
+fn query_budget_pauses_and_manual_recovery_queries_original_id(kind: &str) {
+    let mut fixture = Fixture::new(kind, "submitted");
+    let mut responses = (0..5)
+        .map(|_| {
+            Err(ProviderError::new(
+                "QUERY_TIMEOUT",
+                "original task query timed out",
+            ))
+        })
+        .collect::<Vec<_>>();
+    // First manual recovery performs query only; downloading remains a separate action.
+    responses.push(Ok(response(kind, "processing", &[])));
+    responses.push(Ok(response(
+        kind,
+        "succeeded",
+        &["https://offline.test/query-budget-result?fresh"],
+    )));
+    let channel = RecoveryChannel::new(responses);
+    for attempt in 1..=5 {
+        let started = chrono::Utc::now().timestamp();
+        fixture.resume(&channel, true);
+        let job = fixture.job();
+        assert_eq!(job["queryAttempts"], attempt);
+        assert_eq!(job["downloadAttempts"], 0);
+        assert_eq!(channel.query_ids.lock().unwrap().len(), attempt as usize);
+        assert!(channel.download_urls.lock().unwrap().is_empty());
+        if attempt < 5 {
+            assert_eq!(job["status"], "query_failed");
+            let delay = 5_i64 * (1_i64 << (attempt - 1));
+            assert!(job["nextAttemptAt"].as_i64().unwrap() >= started + delay);
+            assert!(fixture
+                .store
+                .pending_jobs()
+                .unwrap()
+                .iter()
+                .any(|j| j["id"] == fixture.key));
+        } else {
+            assert_recovery_paused(&fixture, "query");
+        }
+        fixture.assert_original();
+    }
+    fixture.restart();
+    assert_recovery_paused(&fixture, "query");
+    // Even an erroneous generation routing cannot prepare or submit a paused task.
+    tasks::run_generation(&fixture.store, &fixture.key, &config(), ACCOUNT, &channel).unwrap();
+    assert_eq!(channel.query_ids.lock().unwrap().len(), 5);
+    fixture.resume(&channel, false);
+    assert_eq!(fixture.job()["status"], "processing");
+    assert_eq!(fixture.job()["queryAttempts"], 0);
+    assert_eq!(fixture.job()["downloadAttempts"], 0);
+    assert!(channel.download_urls.lock().unwrap().is_empty());
+    fixture.assert_original();
+    fixture.resume(&channel, true);
+    assert_eq!(fixture.job()["status"], "downloaded");
+    assert_eq!(channel.query_ids.lock().unwrap().len(), 7);
+    assert_eq!(channel.download_urls.lock().unwrap().len(), 1);
+    fixture.assert_media(1, kind);
+    fixture.assert_original();
+    channel.assert_no_generation();
+}
+
+#[test]
+fn image_fifth_query_failure_pauses_automatic_recovery_but_manual_resume_keeps_original_id() {
+    query_budget_pauses_and_manual_recovery_queries_original_id("image");
+}
+
+#[test]
+fn video_fifth_query_failure_pauses_automatic_recovery_but_manual_resume_keeps_original_id() {
+    query_budget_pauses_and_manual_recovery_queries_original_id("video");
+}
+
+fn download_budget_is_independent_and_manual_recovery_refreshes_original_result(kind: &str) {
+    let mut fixture = Fixture::new(kind, "submitted");
+    let urls = (1..=5)
+        .map(|n| format!("https://offline.test/download-budget-result?expired-{n}"))
+        .collect::<Vec<_>>();
+    let mut responses = (0..4)
+        .map(|_| {
+            Err(ProviderError::new(
+                "QUERY_TIMEOUT",
+                "query budget has not yet been exhausted",
+            ))
+        })
+        .collect::<Vec<_>>();
+    responses.extend(
+        urls.iter()
+            .map(|url| Ok(response(kind, "succeeded", &[url]))),
+    );
+    let fresh = "https://offline.test/download-budget-result?fresh";
+    responses.push(Ok(response(kind, "succeeded", &[fresh])));
+    let channel = RecoveryChannel::new(responses);
+    for attempt in 1..=4 {
+        fixture.resume(&channel, true);
+        assert_eq!(fixture.job()["status"], "query_failed");
+        assert_eq!(fixture.job()["queryAttempts"], attempt);
+        assert_eq!(fixture.job()["downloadAttempts"], 0);
+    }
+    // Four query failures must not consume any of the independent download budget.
+    for (index, url) in urls.iter().enumerate() {
+        channel
+            .fail_download_once
+            .lock()
+            .unwrap()
+            .insert(url.clone());
+        let started = chrono::Utc::now().timestamp();
+        fixture.resume(&channel, true);
+        let attempt = index + 1;
+        let job = fixture.job();
+        assert_eq!(
+            job["queryAttempts"], 0,
+            "a successful original-ID query resets only its own budget"
+        );
+        assert_eq!(job["downloadAttempts"], attempt);
+        assert_eq!(channel.download_urls.lock().unwrap().len(), attempt);
+        fixture.assert_media(0, kind);
+        if attempt < 5 {
+            assert_eq!(
+                job["status"], "download_failed",
+                "prior query errors must not prematurely pause downloading"
+            );
+            let delay = 10_i64 * (1_i64 << (attempt - 1));
+            assert!(job["nextAttemptAt"].as_i64().unwrap() >= started + delay);
+            assert!(fixture
+                .store
+                .pending_jobs()
+                .unwrap()
+                .iter()
+                .any(|j| j["id"] == fixture.key));
+        } else {
+            assert_recovery_paused(&fixture, "download");
+        }
+        fixture.assert_original();
+    }
+    fixture.restart();
+    assert_recovery_paused(&fixture, "download");
+    let before = fixture.job()["result"].clone();
+    tasks::run_generation(&fixture.store, &fixture.key, &config(), ACCOUNT, &channel).unwrap();
+    assert_eq!(fixture.job()["result"], before);
+    assert_eq!(channel.query_ids.lock().unwrap().len(), 9);
+    // Explicit recovery queries the same task for a new URL before retrying download.
+    fixture.resume(&channel, true);
+    assert_eq!(fixture.job()["status"], "downloaded");
+    assert_eq!(fixture.job()["queryAttempts"], 0);
+    assert_eq!(fixture.job()["downloadAttempts"], 0);
+    assert_eq!(channel.query_ids.lock().unwrap().len(), 10);
+    assert_eq!(channel.download_urls.lock().unwrap().last().unwrap(), fresh);
+    assert_eq!(channel.download_urls.lock().unwrap().len(), 6);
+    fixture.assert_media(1, kind);
+    fixture.assert_original();
+    channel.assert_no_generation();
+}
+
+#[test]
+fn image_fifth_download_failure_pauses_with_independent_budget_and_query_only_regeneration_guard() {
+    download_budget_is_independent_and_manual_recovery_refreshes_original_result("image");
+}
+
+#[test]
+fn video_fifth_download_failure_pauses_with_independent_budget_and_query_only_regeneration_guard() {
+    download_budget_is_independent_and_manual_recovery_refreshes_original_result("video");
+}
+
 fn multiple_results_survive_partial_download_and_restart(kind: &str) {
     let mut fixture = Fixture::new(kind, "submitted");
     let urls = [

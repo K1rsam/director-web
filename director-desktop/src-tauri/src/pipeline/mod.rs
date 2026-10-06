@@ -1,20 +1,32 @@
 //! Source-bound production pipeline. Models author decisions; Rust copies and validates evidence.
-mod assets;
 pub mod asset_visual_facts;
+mod assets;
 pub mod foundation_delivery;
 pub(crate) mod foundation_wire;
 mod scene_edits;
 mod source;
 mod storyboard;
+pub(crate) mod storyboard_dependencies;
+mod storyboard_transport;
 
-pub use assets::{resolve_asset_dependency, run_asset_design};
+pub use assets::{
+    automatic_design_required, image_production_policy, resolve_asset_dependency, run_asset_design,
+};
 use async_trait::async_trait;
+pub use scene_edits::execute_foundation_scene_edits;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 pub use source::*;
-pub use scene_edits::execute_foundation_scene_edits;
 use std::collections::{HashMap, HashSet};
-pub use storyboard::{render_legacy_unit, run_storyboard, validate_storyboard};
+pub(crate) use storyboard::validate_episode_delivery;
+pub use storyboard::{
+    compile_reference_template, render_legacy_unit, run_storyboard, validate_storyboard,
+};
+pub(crate) use storyboard_transport::{
+    compile_legacy_finish_grouping_transport, compile_storyboard_transport,
+    storyboard_transport_rule, CompiledStoryboardTransport, STORYBOARD_LOSSLESS_INPUT_RULE,
+    STORYBOARD_TRANSPORT_LIMIT,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +52,14 @@ pub trait TextExecutor: Send + Sync {
         _value: &Value,
         _reason: &str,
     ) -> Result<(), String> {
+        Ok(())
+    }
+    /// Program-only checkpoint after a whole episode has passed the original
+    /// source/dialogue/identity contracts. This is never a model request.
+    async fn publish_episode(&self, _output: &Value, _input: &Value) -> Result<(), String> {
+        Ok(())
+    }
+    async fn continuity_changed(&self, _evidence: &Value) -> Result<(), String> {
         Ok(())
     }
 }
@@ -75,7 +95,10 @@ pub fn rule_snapshots() -> Vec<RuleSnapshot> {
             "asset-art-director",
             include_str!("../../../rules/asset-art-director/SKILL.md"),
         ),
-        ("asset-visual-facts-extractor", include_str!("../../../rules/asset-visual-facts-extractor/SKILL.md")),
+        (
+            "asset-visual-facts-extractor",
+            include_str!("../../../rules/asset-visual-facts-extractor/SKILL.md"),
+        ),
         (
             "asset-image-production",
             include_str!("../../../rules/asset-image-production/SKILL.md"),
@@ -116,19 +139,58 @@ pub fn rule_snapshots() -> Vec<RuleSnapshot> {
             "fantasy-expression",
             include_str!("../../../rules/methods/fantasy-expression.md"),
         ),
-        ("storyboard-common", include_str!("../../../rules/methods/storyboard-common.md")),
-        ("storyboard-source-context", include_str!("../../../rules/methods/storyboard-source-context.md")),
-        ("storyboard-card-camera-path-repair", include_str!("../../../rules/methods/cards/camera-path-repair.md")),
-        ("storyboard-card-comic-contrast", include_str!("../../../rules/methods/cards/comic-contrast.md")),
-        ("storyboard-card-danger-rescue", include_str!("../../../rules/methods/cards/danger-rescue.md")),
-        ("storyboard-card-editing-integrity", include_str!("../../../rules/methods/cards/editing-integrity.md")),
-        ("storyboard-card-expressive-emphasis", include_str!("../../../rules/methods/cards/expressive-emphasis.md")),
-        ("storyboard-card-joy-acceptance", include_str!("../../../rules/methods/cards/joy-acceptance.md")),
-        ("storyboard-card-long-voice", include_str!("../../../rules/methods/cards/long-voice.md")),
-        ("storyboard-card-quiet-nonhuman", include_str!("../../../rules/methods/cards/quiet-nonhuman.md")),
-        ("storyboard-card-scale-silence", include_str!("../../../rules/methods/cards/scale-silence.md")),
-        ("storyboard-card-spatial-contact", include_str!("../../../rules/methods/cards/spatial-contact.md")),
-        ("storyboard-card-status-conflict", include_str!("../../../rules/methods/cards/status-conflict.md")),
+        (
+            "storyboard-common",
+            include_str!("../../../rules/methods/storyboard-common.md"),
+        ),
+        (
+            "storyboard-source-context",
+            include_str!("../../../rules/methods/storyboard-source-context.md"),
+        ),
+        (
+            "storyboard-card-camera-path-repair",
+            include_str!("../../../rules/methods/cards/camera-path-repair.md"),
+        ),
+        (
+            "storyboard-card-comic-contrast",
+            include_str!("../../../rules/methods/cards/comic-contrast.md"),
+        ),
+        (
+            "storyboard-card-danger-rescue",
+            include_str!("../../../rules/methods/cards/danger-rescue.md"),
+        ),
+        (
+            "storyboard-card-editing-integrity",
+            include_str!("../../../rules/methods/cards/editing-integrity.md"),
+        ),
+        (
+            "storyboard-card-expressive-emphasis",
+            include_str!("../../../rules/methods/cards/expressive-emphasis.md"),
+        ),
+        (
+            "storyboard-card-joy-acceptance",
+            include_str!("../../../rules/methods/cards/joy-acceptance.md"),
+        ),
+        (
+            "storyboard-card-long-voice",
+            include_str!("../../../rules/methods/cards/long-voice.md"),
+        ),
+        (
+            "storyboard-card-quiet-nonhuman",
+            include_str!("../../../rules/methods/cards/quiet-nonhuman.md"),
+        ),
+        (
+            "storyboard-card-scale-silence",
+            include_str!("../../../rules/methods/cards/scale-silence.md"),
+        ),
+        (
+            "storyboard-card-spatial-contact",
+            include_str!("../../../rules/methods/cards/spatial-contact.md"),
+        ),
+        (
+            "storyboard-card-status-conflict",
+            include_str!("../../../rules/methods/cards/status-conflict.md"),
+        ),
     ]
     .into_iter()
     .map(|(id, content)| RuleSnapshot {
@@ -425,8 +487,13 @@ pub fn validate_foundation(
         if asset.variants.is_empty() {
             return Err("资产缺少基础形象版本，不能进入图片生产目录".into());
         }
-        let catalog_scope=asset.metadata.get("sourceRefsPurpose")==Some(&json!("SOURCE_SCOPE"))
-            && asset.metadata.get("sourceScope").and_then(|v|v.get("sourceSha256")).and_then(Value::as_str)==Some(source.sha256.as_str());
+        let catalog_scope = asset.metadata.get("sourceRefsPurpose") == Some(&json!("SOURCE_SCOPE"))
+            && asset
+                .metadata
+                .get("sourceScope")
+                .and_then(|v| v.get("sourceSha256"))
+                .and_then(Value::as_str)
+                == Some(source.sha256.as_str());
         check_refs(&asset.source_refs, &known, catalog_scope)
             .map_err(|reason| format!("资产「{}」的原文引用无效：{reason}", asset.name))?;
         for variant in &asset.variants {
@@ -436,9 +503,15 @@ pub fn validate_foundation(
                 return Err("形象身份为空或重复".into());
             }
             variants.insert((asset.id.as_str(), variant.id.as_str()), variant);
-            let unlocated=variant.scope.kind=="UNRESOLVED"&&variant.scope.scenes.is_empty()
-                && variant.metadata.get("sourceRefsPurpose")==Some(&json!("SOURCE_SCOPE"))
-                && variant.metadata.get("sourceScope").and_then(|v|v.get("sourceSha256")).and_then(Value::as_str)==Some(source.sha256.as_str());
+            let unlocated = variant.scope.kind == "UNRESOLVED"
+                && variant.scope.scenes.is_empty()
+                && variant.metadata.get("sourceRefsPurpose") == Some(&json!("SOURCE_SCOPE"))
+                && variant
+                    .metadata
+                    .get("sourceScope")
+                    .and_then(|v| v.get("sourceSha256"))
+                    .and_then(Value::as_str)
+                    == Some(source.sha256.as_str());
             check_refs(&variant.source_refs, &known, unlocated).map_err(|reason| {
                 format!(
                     "资产「{}」形象「{}」的原文引用无效：{reason}",
@@ -1173,6 +1246,7 @@ pub fn flatten_foundation_assets(proposal: &FoundationProposal) -> Vec<Value> {
     proposal.assets.iter().flat_map(|asset|asset.variants.iter().map(move |variant|{
         let scope=effective_scope(variant);
         let mut row=json!({"id":variant.asset_row_id.clone().unwrap_or_else(||format!("{}:{}",asset.id,variant.id)),"identityId":asset.id,"baseAssetId":asset.id,"variantId":variant.id,"name":format!("{}｜{}",asset.name,variant.name),"kind":asset.kind,"description":variant.description,"sourceRefs":variant.source_refs,"scope":scope,"applicability":{"episodes":scope.scenes.iter().map(|a|a.episode_id.clone()).collect::<std::collections::BTreeSet<_>>(),"scenes":scope.scenes.iter().map(|a|a.scene_id.clone()).collect::<std::collections::BTreeSet<_>>()},"sourceVariantId":variant.source_variant_id});
+        if !asset.aliases.is_empty() {row["aliases"]=json!(asset.aliases);}
         for metadata in [&asset.metadata,&variant.metadata] {
             for key in ["role","relationNote","preparation","note","prompt","catalogName","usageEpisodes","sourceRefsPurpose","sourceScope"] {
                 if let Some(value)=metadata.get(key) { row[key]=value.clone(); }
@@ -1183,10 +1257,20 @@ pub fn flatten_foundation_assets(proposal: &FoundationProposal) -> Vec<Value> {
 }
 
 fn production_metadata(row: &Value) -> serde_json::Map<String, Value> {
-    ["role", "relationNote", "preparation", "note", "prompt", "catalogName", "usageEpisodes", "sourceRefsPurpose", "sourceScope"]
-        .into_iter()
-        .filter_map(|key| row.get(key).map(|value| (key.to_owned(), value.clone())))
-        .collect()
+    [
+        "role",
+        "relationNote",
+        "preparation",
+        "note",
+        "prompt",
+        "catalogName",
+        "usageEpisodes",
+        "sourceRefsPurpose",
+        "sourceScope",
+    ]
+    .into_iter()
+    .filter_map(|key| row.get(key).map(|value| (key.to_owned(), value.clone())))
+    .collect()
 }
 
 #[cfg(test)]
@@ -1202,14 +1286,21 @@ mod tests {
             assert_eq!(request.stage, "assetDesign", "有效事实交接不应追加模型岗位");
             self.requests.lock().unwrap().push(request.input.clone());
             let asset = &request.input["asset"];
-            Ok(json!({"schemaVersion":"asset-design/v1","assetId":asset["id"],"variantId":asset["variantId"],"prompt":"依据既有视觉记录的基础设计","freeDesignScope":"未限定背景","sourceRefs":asset["sourceRefs"],"referenceVariantIds":[]}))
+            Ok(
+                json!({"schemaVersion":"asset-design/v1","assetId":asset["id"],"variantId":asset["variantId"],"prompt":"依据既有视觉记录的基础设计","freeDesignScope":"未限定背景","sourceRefs":asset["sourceRefs"],"referenceVariantIds":[]}),
+            )
         }
     }
 
     #[tokio::test]
-    async fn program_scope_metadata_survives_asset_handoff_without_locating_candidates_or_creating_facts() {
+    async fn program_scope_metadata_survives_asset_handoff_without_locating_candidates_or_creating_facts(
+    ) {
         let source = prepare_source("第一集\n场景：门口\n△小王黑发白衣出现。\n").unwrap();
-        let row = source.rows.iter().find(|row| row.text.contains("黑发")).unwrap();
+        let row = source
+            .rows
+            .iter()
+            .find(|row| row.text.contains("黑发"))
+            .unwrap();
         let place = Applicability {
             episode_id: source.episodes[0].id.clone(),
             scene_id: row.scene_id.clone().unwrap(),
@@ -1219,51 +1310,102 @@ mod tests {
             "sourceRefsPurpose":"SOURCE_SCOPE","sourceScope":source_scope,"usageEpisodes":[place.episode_id]
         })).unwrap();
         let base = FoundationVariant {
-            id: "base".into(), name: "基础".into(), description: String::new(),
-            source_variant_id: None, source_refs: vec![row.id.clone()],
+            id: "base".into(),
+            name: "基础".into(),
+            description: String::new(),
+            source_variant_id: None,
+            source_refs: vec![row.id.clone()],
             applicability: vec![place.clone()],
-            scope: FoundationScope { kind: "SCENES".into(), scenes: vec![place], reason: None },
-            asset_row_id: Some("base-row".into()), metadata: metadata.clone(),
+            scope: FoundationScope {
+                kind: "SCENES".into(),
+                scenes: vec![place],
+                reason: None,
+            },
+            asset_row_id: Some("base-row".into()),
+            metadata: metadata.clone(),
         };
         let mut candidate = FoundationVariant {
-            id: "candidate".into(), name: "待定位形象".into(), description: String::new(),
-            source_variant_id: Some("base".into()), source_refs: vec![], applicability: vec![],
-            scope: FoundationScope::default(), asset_row_id: Some("candidate-row".into()),
+            id: "candidate".into(),
+            name: "待定位形象".into(),
+            description: String::new(),
+            source_variant_id: Some("base".into()),
+            source_refs: vec![],
+            applicability: vec![],
+            scope: FoundationScope::default(),
+            asset_row_id: Some("candidate-row".into()),
             metadata: metadata.clone(),
         };
         candidate.metadata.insert("usageEpisodes".into(), json!([]));
         let mut foundation = empty_foundation(&source);
         foundation.assets.push(FoundationAsset {
-            id: "person".into(), name: "小王".into(), kind: "CH".into(), aliases: vec![],
-            description: String::new(), source_refs: vec![row.id.clone()],
-            variants: vec![base, candidate], metadata,
+            id: "person".into(),
+            name: "小王".into(),
+            kind: "CH".into(),
+            aliases: vec!["王少".into(), "原登记旧称".into()],
+            description: String::new(),
+            source_refs: vec![row.id.clone()],
+            variants: vec![base, candidate],
+            metadata,
         });
         foundation.facts.push(FoundationFact {
-            id: "hair".into(), asset_id: "person".into(), variant_id: Some("base".into()),
-            attribute: "hair.color".into(), value: "黑发".into(), scope: "STABLE".into(),
-            claim: "SOURCE".into(), source_refs: vec![row.id.clone()], quotes: vec![row.text.clone()],
+            id: "hair".into(),
+            asset_id: "person".into(),
+            variant_id: Some("base".into()),
+            attribute: "hair.color".into(),
+            value: "黑发".into(),
+            scope: "STABLE".into(),
+            claim: "SOURCE".into(),
+            source_refs: vec![row.id.clone()],
+            quotes: vec![row.text.clone()],
         });
         validate_foundation(&source, &foundation).unwrap();
         let assets = flatten_foundation_assets(&foundation);
         for asset in &assets {
+            assert_eq!(
+                asset["aliases"],
+                json!(["王少", "原登记旧称"]),
+                "every formal variant carries the exact registered identity aliases"
+            );
             assert_eq!(asset["sourceRefsPurpose"], "SOURCE_SCOPE");
             assert_eq!(asset["sourceScope"], source_scope);
             let imported_metadata = production_metadata(asset);
             assert_eq!(imported_metadata["sourceRefsPurpose"], "SOURCE_SCOPE");
             assert_eq!(imported_metadata["sourceScope"], source_scope);
         }
-        let restored = existing_foundation(&source, &json!({"foundation":foundation,"assets":assets})).unwrap();
-        assert_eq!(serde_json::to_value(&restored.facts).unwrap(), serde_json::to_value(&foundation.facts).unwrap());
+        let restored =
+            existing_foundation(&source, &json!({"foundation":foundation,"assets":assets}))
+                .unwrap();
+        assert_eq!(
+            serde_json::to_value(&restored.facts).unwrap(),
+            serde_json::to_value(&foundation.facts).unwrap()
+        );
         let pending = &restored.assets[0].variants[1];
         assert_eq!(pending.scope.kind, "UNRESOLVED");
-        assert!(pending.scope.scenes.is_empty() && pending.applicability.is_empty() && pending.source_refs.is_empty());
-        assert_eq!(assets[1]["applicability"], json!({"episodes":[],"scenes":[]}));
+        assert!(
+            pending.scope.scenes.is_empty()
+                && pending.applicability.is_empty()
+                && pending.source_refs.is_empty()
+        );
+        assert_eq!(
+            assets[1]["applicability"],
+            json!({"episodes":[],"scenes":[]})
+        );
         assert_eq!(assets[1]["usageEpisodes"], json!([]));
-        let executor = ScopeHandoffDesigner { requests: std::sync::Mutex::new(Vec::new()) };
+        let executor = ScopeHandoffDesigner {
+            requests: std::sync::Mutex::new(Vec::new()),
+        };
         let input = json!({"source":source,"assets":assets,"selection":{"assetIds":["base-row"]},"foundation":restored});
-        let designed = assets::run_asset_design(&input, &executor, "gpt-6.1-sol", "medium").await.unwrap();
-        assert!(designed["blocked"].as_array().unwrap().is_empty(), "{designed}");
-        assert_eq!(designed["facts"], serde_json::to_value(&foundation.facts).unwrap());
+        let designed = assets::run_asset_design(&input, &executor, "gpt-6.1-sol", "medium")
+            .await
+            .unwrap();
+        assert!(
+            designed["blocked"].as_array().unwrap().is_empty(),
+            "{designed}"
+        );
+        assert_eq!(
+            designed["facts"],
+            serde_json::to_value(&foundation.facts).unwrap()
+        );
         let calls = executor.requests.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["asset"]["sourceRefsPurpose"], "SOURCE_SCOPE");
@@ -1277,10 +1419,19 @@ mod tests {
     #[test]
     fn original_production_rules_and_selected_cards_have_versioned_bound_hashes() {
         let rules = rule_snapshots();
-        let identities: HashSet<_> = rules.iter().map(|r|r.id.as_str()).collect();
+        let identities: HashSet<_> = rules.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(identities.len(), rules.len());
-        for id in ["foundation-asset-catalog","foundation-finishing-editor","asset-visual-facts-extractor","storyboard-common","storyboard-source-context"] {
-            assert!(identities.contains(id),"missing original production contract {id}");
+        for id in [
+            "foundation-asset-catalog",
+            "foundation-finishing-editor",
+            "asset-visual-facts-extractor",
+            "storyboard-common",
+            "storyboard-source-context",
+        ] {
+            assert!(
+                identities.contains(id),
+                "missing original production contract {id}"
+            );
         }
         assert!(rules.iter().all(|r| r.sha256 == digest(&r.content)));
         for rule in &rules {
@@ -1291,10 +1442,19 @@ mod tests {
                 "foundation-asset-catalog",
                 "foundation-finishing-editor",
             ]
-            .contains(&rule.id.as_str()) || ["acting-blocking","camera-emotion","lighting-space","sound-rhythm","fantasy-expression"].contains(&rule.id.as_str())
+            .contains(&rule.id.as_str())
+                || [
+                    "acting-blocking",
+                    "camera-emotion",
+                    "lighting-space",
+                    "sound-rhythm",
+                    "fantasy-expression",
+                ]
+                .contains(&rule.id.as_str())
             {
                 "2.0.0"
-            } else if rule.id=="asset-art-director" { "1.3.0"
+            } else if rule.id == "asset-art-director" {
+                "1.3.0"
             } else if [
                 "screenplay-fidelity",
                 "story-foundation",

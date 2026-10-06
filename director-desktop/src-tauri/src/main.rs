@@ -290,6 +290,7 @@ fn main() {
     let setup_verification = verification.clone();
     let page_verification = verification.clone();
     let closing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let force_exit = Arc::new(std::sync::atomic::AtomicBool::new(false));
     tauri::Builder::default()
         .manage(verification)
         .setup(move |app| {
@@ -341,6 +342,9 @@ fn main() {
         .expect("无法启动制作工作台")
         .run(move |app, event| {
             if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                if force_exit.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
                 let engine = app.state::<Arc<Engine>>().inner().clone();
                 // Keep the process alive until workers finish saving receipts and errors.
                 // Child exit alone is insufficient: SQLite writes follow process output collection.
@@ -357,15 +361,28 @@ fn main() {
                     return;
                 }
                 engine.stop.store(true, std::sync::atomic::Ordering::SeqCst);
-                director_core::providers::shutdown();
-                director_core::text_executor::shutdown();
-                director_core::text_cli::shutdown();
-                director_core::media_probe::shutdown();
                 for window in app.webview_windows().values() {
                     let _ = window.hide();
                 }
                 let handle = app.clone();
+                let deadline_handle = handle.clone();
+                let force_exit = force_exit.clone();
+                // Independent of potentially blocked OS/helper/file I/O below.
+                // Normal completion exits first and terminates this watchdog.
                 std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(60));
+                    force_exit.store(true, std::sync::atomic::Ordering::SeqCst);
+                    deadline_handle.exit(code.unwrap_or(0));
+                });
+                std::thread::spawn(move || {
+                    // This includes the native shutdown helpers and final receipt
+                    // writes. An OS/file-I/O fault must not leave a hidden desktop
+                    // process waiting forever; durable submit intent is recovered
+                    // as unknown, and durable cloud IDs are queried after restart.
+                    director_core::providers::shutdown();
+                    director_core::text_executor::shutdown();
+                    director_core::text_cli::shutdown();
+                    director_core::media_probe::shutdown();
                     loop {
                         let providers_done = director_core::providers::await_local_shutdown(1);
                         let text_done = director_core::text_executor::await_local_shutdown(1);

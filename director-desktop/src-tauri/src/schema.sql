@@ -20,6 +20,7 @@ CREATE INDEX IF NOT EXISTS job_resume_idx ON jobs(state,provider);
 CREATE INDEX IF NOT EXISTS job_entity_idx ON jobs(entity_id,created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS job_active_entity_idx ON jobs(kind,entity_id) WHERE state IN ('queued','preparing','ready','submitting','submitted','processing','downloading','auth_required');
 CREATE UNIQUE INDEX IF NOT EXISTS job_active_entity_v2_idx ON jobs(kind,entity_id) WHERE state IN ('queued','preparing','ready','waiting_dependency','submitting','submission_unknown','submitted','processing','succeeded','downloading','auth_required','query_failed','download_failed');
+CREATE UNIQUE INDEX IF NOT EXISTS job_active_entity_v3_idx ON jobs(kind,entity_id) WHERE state IN ('queued','preparing','ready','waiting_dependency','submitting','submission_unknown','submitted','processing','succeeded','downloading','auth_required','query_failed','download_failed','recovery_paused');
 CREATE TABLE IF NOT EXISTS uploads(id TEXT PRIMARY KEY,job_id TEXT NOT NULL REFERENCES jobs(id),receipt TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS job_media(job_id TEXT NOT NULL REFERENCES jobs(id),media_id TEXT NOT NULL REFERENCES media(id),PRIMARY KEY(job_id,media_id));
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);

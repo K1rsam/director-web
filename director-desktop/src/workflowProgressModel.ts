@@ -1,0 +1,131 @@
+import { matchesStage, record, records, stageJobs, words } from './stageProduction.ts';
+import type { Job, Workspace } from './types.ts';
+
+type Node = Record<string, unknown>;
+type Stage = 'foundation' | 'storyboard';
+const accepted = (node: Node) => words(node.status) === 'accepted';
+const activeStates = /^(queued|preparing|ready|running|submitted|pending|processing|uploading|submitting|executing|downloading)$/i;
+
+function progressEntries(workspace: Workspace): Node[] {
+  const value: unknown = workspace.workflowProgress;
+  return Array.isArray(value) ? records(value) : words(record(value).stage) ? [record(value)] : Object.values(record(value)).map(record);
+}
+function runId(value: Node): string { return words(value.workflowId) || words(value.runId); }
+function created(job: Job): number { const stamp = Date.parse(job.createdAt || ''); return Number.isFinite(stamp) ? stamp : 0; }
+
+/** Consume only Rust's bound resolution proof; titles and eventual completion aren't evidence. */
+export function workflowNodeResolution(node: Node, nodes: Node[], workflowId: string): 'author-scope-repair' | 'continuity-superseded' | null {
+  const proof = record(node.resolution), kind = words(proof.kind), originId = words(node.id), originHash = words(node.requestHash);
+  if (!workflowId || proof.version !== 'workflow-step-resolution/v1' || proof.verified !== true || proof.workflowId !== workflowId
+    || !['author-scope-repair', 'continuity-superseded'].includes(kind) || !originId || proof.originNodeId !== originId
+    || !/^[a-f0-9]{64}$/i.test(originHash) || proof.originRequestHash !== originHash || proof.resolverNodeId === originId) return null;
+  if (kind === 'author-scope-repair' && words(node.status) !== 'rejected') return null;
+  const origins = nodes.filter(item => words(item.id) === originId), resolvers = nodes.filter(item => words(item.id) === words(proof.resolverNodeId));
+  if (origins.length !== 1 || origins[0].requestHash !== originHash || resolvers.length !== 1) return null;
+  const resolver = resolvers[0], resolverHash = words(resolver.requestHash);
+  if (!/^[a-f0-9]{64}$/i.test(resolverHash) || proof.resolverRequestHash !== resolverHash || !accepted(resolver)) return null;
+  if (kind === 'author-scope-repair' && (words(resolver.stage) !== 'storyboardFinish' || words(record(resolver.input).executionBatchVersion) !== 'author-domain-repair/v1'
+    || words(node.stage) !== 'storyboardCreate' && !(words(node.stage) === 'storyboardFinish' && words(record(node.input).executionBatchVersion) === 'author-domain-repair/v1'))) return null;
+  // Only Planner supersession currently has a complete core proof. Carrying a
+  // tail revision on an Author/Finisher does not prove that its failure expired.
+  if (kind === 'continuity-superseded' && (words(node.stage) !== 'storyboardPlan' || words(resolver.stage) !== 'storyboardPlan')) return null;
+  return kind as 'author-scope-repair' | 'continuity-superseded';
+}
+
+export function selectWorkflowProgress(workspace: Workspace, stage: Stage) {
+  const entries = progressEntries(workspace).filter(item => matchesStage(item.stage, stage));
+  const jobs = [...stageJobs(workspace, stage)].sort((left, right) => created(right) - created(left));
+  const job = jobs[0];
+  // A new run can precede its first checkpoint. Never show an older run's
+  // accepted nodes or heartbeat underneath the new run's status.
+  const progress = job ? entries.find(item => runId(item) === job.id) : entries[0];
+  const projectedJob = job || workspace.jobs.find(item => item.id === runId(progress || {}));
+  const nodes = records(progress?.nodes), id = runId(progress || {}) || projectedJob?.id || '';
+  const currentNodes = nodes.filter(node => !workflowNodeResolution(node, nodes, id));
+  return { progress, job: projectedJob, id, state: words(progress?.status) || projectedJob?.status || 'queued', nodes, currentNodes, completed: currentNodes.filter(accepted).length };
+}
+
+function episodeOf(node: Node, workspace: Workspace) {
+  const input = record(node.input), request = record(node.request), requested = record(request.input);
+  const explicit = words(input.episodeId) || words(record(input.episode).id) || words(requested.episodeId);
+  const episodes = workspace.source?.episodes || [];
+  if (explicit) return episodes.find(episode => episode.id === explicit);
+  const stage = words(node.stage) || words(request.stage), key = words(node.id);
+  return episodes.find(episode => episode.id && (key === `${stage}:${episode.id}` || key.startsWith(`${stage}:${episode.id}:`)));
+}
+export function storyboardNodeTitle(node: Node, workspace: Workspace): string {
+  const phase = words(node.stage), titles: Record<string, string> = { storyboardPlan: '情绪与事件规划', storyboardCreate: '单元主创', storyboardFinish: '关联范围整编' };
+  const title = titles[phase] || words(node.title) || words(node.label);
+  const episode = episodeOf(node, workspace), episodeTitle = episode?.title || (episode?.number ? `第${episode.number}集` : '');
+  const key = words(node.id), marker = key.lastIndexOf(':batch:');
+  const packageId = marker >= 0 ? key.slice(marker + ':batch:'.length) : '';
+  // Show a real package label when present; hashed editor keys are not a
+  // promised batch count and must not become an invented B01/B02 sequence.
+  const batch = phase === 'storyboardCreate' ? packageId.match(/(?:^|[-_:])([A-Za-z]\d{2,})$/)?.[1] : '';
+  return [title, episodeTitle, batch ? `批次 ${batch}` : ''].filter(Boolean).join(' · ');
+}
+export function storyboardCompletion(nodes: Node[]): string | null {
+  const phases = [['storyboardPlan', '情绪规划'], ['storyboardCreate', '单元主创'], ['storyboardFinish', '关联范围整编']];
+  const result = phases.flatMap(([phase, title]) => {
+    const scoped = nodes.filter(node => words(node.stage) === phase);
+    return scoped.length ? [`${scoped.filter(accepted).length} 批${title}`] : [];
+  });
+  return result.length ? result.join(' · ') : null;
+}
+export function secondsLabel(value: number): string {
+  const total = Math.max(0, Math.floor(value));
+  return total < 60 ? `${total} 秒` : `${Math.floor(total / 60)} 分 ${total % 60} 秒`;
+}
+export function executionSummary(node: Node, now = Date.now(), readFailed = false): string {
+  if (words(node.status) !== 'running') return '';
+  const execution = record(node.execution), elapsed = Number(execution.elapsedSeconds), quiet = Number(execution.outputQuietSeconds);
+  if (!Object.keys(execution).length || !Number.isFinite(elapsed) || elapsed < 0) return readFailed ? '当前执行状态待刷新' : '正在读取本批执行状态';
+  const stamp = Date.parse(words(execution.observedAt)), age = Number.isFinite(stamp) ? Math.max(0, (now - stamp) / 1000) : Infinity;
+  const alive = execution.processAlive === true || execution.processAlive === 1;
+  const phase = words(execution.phase), fresh = !readFailed && age <= 90;
+  if (!fresh) return '执行状态暂未更新 · 最后记录用时 ' + secondsLabel(elapsed);
+  const label = phase === 'writing_stdin' ? '正在发送制作资料' : phase === 'output_received' || !alive ? '已收到结果，正在核对' : '等待 CLI 返回';
+  const liveAge = alive ? age : 0;
+  const diagnosis = alive && phase === 'executing' && (execution.needsDiagnosis === true || execution.needsDiagnosis === 1 || Number.isFinite(quiet) && quiet + liveAge >= 120);
+  return label + ' · 已用时 ' + secondsLabel(elapsed + liveAge) + (diagnosis ? ' · 较长时间未收到新输出，执行监控持续跟踪' : '');
+}
+
+export function hasActiveWorkspaceTasks(workspace: Workspace): boolean {
+  return workspace.jobs.some(job => activeStates.test(job.status) && !job.submissionUnknown)
+    || progressEntries(workspace).some(progress => ['queued', 'running'].includes(words(progress.status)));
+}
+
+type PollOptions = {
+  current: () => Workspace | null;
+  busy: () => boolean;
+  hidden: () => boolean;
+  revision: () => number;
+  alive: () => boolean;
+  read: (projectId: string) => Promise<Workspace>;
+  apply: (workspace: Workspace, checkedAt: string) => void;
+  fail: (error: unknown, projectId: string, failedAt: string) => void;
+  now?: () => number;
+  readTimeoutMs?: number;
+};
+/** Only reads persisted workspaces. This function has no mutation/generation route. */
+export function createWorkspacePoller(options: PollOptions) {
+  let inFlight = false;
+  return async (force = false): Promise<void> => {
+    const workspace = options.current();
+    if (!options.alive() || !workspace || inFlight || options.busy() || !force && options.hidden() && !hasActiveWorkspaceTasks(workspace)) return;
+    const projectId = workspace.project.id, revision = options.revision();
+    const current = () => options.alive() && options.current()?.project.id === projectId && options.revision() === revision && !options.busy();
+    const fail = (error: unknown) => { if (current()) options.fail(error, projectId, new Date((options.now || Date.now)()).toISOString()); };
+    inFlight = true;
+    // An unreturned IPC read must become visible, but must not create a pile
+    // of additional reads. Keep owning this one request until it settles.
+    const watchdog = setTimeout(() => fail(new Error('本地进度读取超过期限，正在等待本次读取结束；以下为上次保存状态。')), options.readTimeoutMs ?? 15000);
+    try {
+      const next = await options.read(projectId);
+      if (next.project.id !== projectId) throw new Error('读取结果与当前项目不一致，保留上次状态。');
+      if (current()) options.apply(next, new Date((options.now || Date.now)()).toISOString());
+    } catch (error) {
+      fail(error);
+    } finally { clearTimeout(watchdog); inFlight = false; }
+  };
+}

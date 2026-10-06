@@ -1,7 +1,7 @@
 import type { Job } from './types.ts';
 
 // These states retain ownership of a generation request, even while local work is paused.
-const BLOCKING = new Set(['queued', 'preparing', 'ready', 'submitting', 'submitted', 'processing', 'downloading', 'auth_required', 'submission_unknown', 'query_failed', 'download_failed', 'waiting_dependency', 'succeeded']);
+const BLOCKING = new Set(['queued', 'preparing', 'ready', 'submitting', 'submitted', 'processing', 'downloading', 'auth_required', 'submission_unknown', 'query_failed', 'download_failed', 'recovery_paused', 'waiting_dependency', 'succeeded']);
 export function generationBlocksNewJob(job: Job): boolean {
   return job.kind === 'image' && (BLOCKING.has(job.status.toLowerCase()) || job.submissionUnknown === true);
 }
@@ -12,6 +12,7 @@ export function assetGenerationJob(jobs: Job[], assetId: string): Job | undefine
 export function generationProgress(job: Job): string {
   if (job.submissionUnknown || job.status === 'submission_unknown') return '上次提交未取得云端回执，暂时不能再生成。到任务记录核对：找到任务 ID 后绑定原任务；确认未受理后可关闭这条记录，再明确发起新试稿。';
   const messages: Record<string, string> = {
+    recovery_paused: '自动恢复已多次失败并暂停；检查连接后，到任务记录恢复原任务，不能重新提交生成。',
     queued: '图片任务已排队，等待当前渠道。', preparing: '正在检查模型与素材，尚未进入生成提交。', ready: '参数准备完成，等待生成提交。', submitting: '正在向渠道提交，等待保存任务回执。', submitted: '云端已受理，正在查询原任务。', processing: '云端正在生成图片。', downloading: '正在下载原图到项目目录。', auth_required: '需要恢复原渠道账户，登录后继续原任务。', query_failed: '原任务查询失败，请到任务记录恢复查询。', download_failed: '图片下载失败，请到任务记录恢复下载。', waiting_dependency: '等待来源图片，完成后自动继续。', succeeded: '云端图片已完成，正在获取并保存原图。', downloaded: '原图已保存，可查看当前图片与历史。', closed_by_user: '已按你的核对声明关闭旧记录，可以明确发起新的试稿。',
   };
   return messages[job.status] || '此图片任务已结束，可在任务记录核对详情。';

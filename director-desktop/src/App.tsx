@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { choose, desktop, isWorkspace, mediaUrl, preview, request } from './api';
-import { normalizeWorkspace as normalize } from './contracts';
+import { createCatalogDiscovery, missingCatalogs, normalizeWorkspace as normalize } from './contracts';
+import type { CatalogDiscoveryState } from './contracts';
 import { AssetPanel } from './AssetPanel';
 import { FoundationPanel, SettingsPanel, TasksPanel } from './Panels';
 import { UnitPanel } from './UnitPanel';
 import { TextExecutionSummary } from './TextExecutionSettings';
 import { ProjectLibrary } from './ProjectLibrary';
 import { InlineProjectCreate } from './InlineProjectCreate';
+import { createWorkspacePoller } from './workflowProgressModel';
 import type { ProjectFilter, ProjectLifecycleAction } from './ProjectLibrary';
-import { Button, Empty, Icon, jobActive, MediaPreview, messageOf, Modal } from './components';
+import { Button, Empty, Icon, jobActive, MediaPreview, messageOf, Modal, providerName } from './components';
 import type { IconName } from './components';
 import type { Media, Mutation, Page, ProjectSummary, Workspace } from './types';
 
@@ -18,14 +20,27 @@ const stages: { id: Page; number: string; title: string; subtitle: string; icon:
   { id: 'storyboard', number: '03', title: '分镜提示词', subtitle: '情绪规划 · 主创 · 整编', icon: 'story' },
   { id: 'videos', number: '04', title: '单元视频', subtitle: '配图绑定 · 生成 · 验收', icon: 'video' },
 ];
+function freshWorkspace(value: Workspace, checkedAt = new Date().toISOString()): Workspace {
+  return { ...normalize(value), readState: { checkedAt } };
+}
 
 export default function App() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]), [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [page, setPage] = useState<Page>('projects'), [busy, setBusy] = useState(''), [loading, setLoading] = useState(true), [notice, setNotice] = useState(''), [error, setError] = useState('');
   const [projectFilter, setProjectFilter] = useState<ProjectFilter>('active');
   const [inspected, setInspected] = useState<Media | null>(null), [mobileNav, setMobileNav] = useState(false);
+  const [catalogStates, setCatalogStates] = useState<CatalogDiscoveryState[]>([]);
   const workspaceRef = useRef(workspace), busyRef = useRef(''), requestSequence = useRef(0), projectListSequence = useRef(0);
+  const mounted = useRef(true), discoverCatalogs = useRef<ReturnType<typeof createCatalogDiscovery> | null>(null);
   workspaceRef.current = workspace;
+  if (!discoverCatalogs.current) discoverCatalogs.current = createCatalogDiscovery({
+    enabled: () => desktop && mounted.current, current: () => workspaceRef.current, busy: () => !!busyRef.current, revision: () => requestSequence.current,
+    refresh: (projectId, provider) => request({ action: 'providers.refresh', projectId, provider }), read: projectId => request<Workspace>({ action: 'workspace.get', projectId }),
+    apply: next => { ++requestSequence.current; const fresh = freshWorkspace(next); workspaceRef.current = fresh; setWorkspace(fresh); },
+    report: state => setCatalogStates(current => [...current.filter(item => item.key !== state.key), state]),
+  });
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => { void discoverCatalogs.current?.(); }, [workspace, busy]);
   const writable = desktop && !busy;
 
   const listProjects = useCallback(async () => {
@@ -38,7 +53,7 @@ export default function App() {
     if (project.archivedAt || busyRef.current && !['projects.create', 'project.import'].includes(busyRef.current)) return;
     const sequence = ++requestSequence.current;
     setLoading(true); setError(''); setNotice('');
-    try { const next = await request<Workspace>({ action: 'workspace.get', projectId: project.id }); if (sequence === requestSequence.current) { setWorkspace(normalize(next)); setPage(target); setMobileNav(false); } } catch (reason) { if (sequence === requestSequence.current) setError(messageOf(reason)); } finally { if (sequence === requestSequence.current) setLoading(false); }
+    try { const next = await request<Workspace>({ action: 'workspace.get', projectId: project.id }); if (sequence === requestSequence.current) { setWorkspace(freshWorkspace(next)); setPage(target); setMobileNav(false); } } catch (reason) { if (sequence === requestSequence.current) setError(messageOf(reason)); } finally { if (sequence === requestSequence.current) setLoading(false); }
   }, []);
 
   const projectLifecycle = useCallback(async (action: ProjectLifecycleAction, project: ProjectSummary): Promise<boolean> => {
@@ -61,12 +76,13 @@ export default function App() {
   const mutate: Mutation = useCallback(async (action, values = {}, success = '已保存。') => {
     if (busyRef.current || !desktop) return null;
     const projectId = workspaceRef.current?.project.id;
+    ++requestSequence.current; // An earlier poll must not overwrite this action's newer result.
     busyRef.current = action; setBusy(action); setError(''); setNotice('');
     try {
       const result = await request<unknown>({ action, ...(projectId ? { projectId } : {}), ...values });
       let next: Workspace | null = null;
-      if (isWorkspace(result)) next = normalize(result);
-      else if (projectId) next = normalize(await request<Workspace>({ action: 'workspace.get', projectId }));
+      if (isWorkspace(result)) next = freshWorkspace(result);
+      else if (projectId) next = freshWorkspace(await request<Workspace>({ action: 'workspace.get', projectId }));
       if (next && (next.project.id === workspaceRef.current?.project.id || action === 'backup.restore')) setWorkspace(next);
       const imageQueue = next?.imageQueueReport;
       const videoQueue = next?.videoQueueReport;
@@ -77,18 +93,21 @@ export default function App() {
 
   useEffect(() => {
     if (!desktop || !workspace?.project.id) return;
-    let alive = true, polling = false;
-    const projectId = workspace.project.id;
-    const timer = window.setInterval(async () => {
-      if (polling || busyRef.current || document.hidden) return;
-      polling = true;
-      try {
-        // The Rust scheduler resumes existing task IDs. The view only reads persisted state.
-        const next = await request<Workspace>({ action: 'workspace.get', projectId });
-        if (alive && workspaceRef.current?.project.id === projectId && !busyRef.current) setWorkspace(normalize(next));
-      } catch { /* Keep the last saved workspace until a successful read or explicit refresh. */ } finally { polling = false; }
-    }, 8000);
-    return () => { alive = false; window.clearInterval(timer); };
+    let alive = true;
+    const poll = createWorkspacePoller({
+      current: () => workspaceRef.current, busy: () => !!busyRef.current,
+      hidden: () => document.hidden, revision: () => requestSequence.current, alive: () => alive,
+      // This view reads persisted tasks; it never queries or submits a generation channel.
+      read: projectId => request<Workspace>({ action: 'workspace.get', projectId }),
+      apply: (next, checkedAt) => setWorkspace(freshWorkspace(next, checkedAt)),
+      fail: (reason, projectId, failedAt) => setWorkspace(current => current?.project.id === projectId ? { ...current, readState: { ...current.readState, failedAt, error: messageOf(reason) } } : current),
+    });
+    // A hidden desktop is still producing work. Only idle projects may pause background reads.
+    const timer = window.setInterval(() => void poll(), 8000);
+    const visible = () => { if (!document.hidden) void poll(true); };
+    window.addEventListener('focus', visible);
+    document.addEventListener('visibilitychange', visible);
+    return () => { alive = false; window.clearInterval(timer); window.removeEventListener('focus', visible); document.removeEventListener('visibilitychange', visible); };
   }, [workspace?.project.id]);
 
   async function refresh() { if (busy || !workspace) return; await loadProject(workspace.project, page); setNotice('已读取最新保存状态。'); }
@@ -106,6 +125,7 @@ export default function App() {
   async function exportProject() { const paths = await choose('directory'); if (paths[0] && workspace) { const filename = `${workspace.project.title.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')}-${new Date().toISOString().replace(/[:.]/g, '-')}.director.zip`; await mutate('project.export', { path: `${paths[0].replace(/[\\/]$/, '')}/${filename}` }, `项目包已导出：${filename}`); } }
   const selectedStage = stages.find(stage => stage.id === page), activeJobs = workspace?.jobs.filter(jobActive).length || 0;
   const pageTitle = selectedStage?.title || ({ projects: '所有项目', jobs: '任务记录', settings: '渠道与执行设置' } as Partial<Record<Page, string>>)[page];
+  const missingCatalogKeys = new Set(workspace ? missingCatalogs(workspace).map(item => item.key) : []), catalogNotices = catalogStates.filter(item => missingCatalogKeys.has(item.key) && item.status !== 'ready');
   function navigate(target: Page) { setPage(target); setMobileNav(false); setError(''); setNotice(''); }
 
   return <div className="app-shell">
@@ -121,6 +141,8 @@ export default function App() {
       <header className="topbar"><div className="topbar-title"><Button icon="story" variant="ghost" className="mobile-nav-toggle" aria-label="打开导航" onClick={() => setMobileNav(!mobileNav)}/><div><span className="eyebrow">{selectedStage ? `阶段 ${selectedStage.number} / 04` : 'DIRECTOR WORKSPACE'}{workspace && page !== 'projects' ? ` · ${workspace.project.title}` : ''}</span><h1>{pageTitle}</h1></div></div><div className="topbar-actions">{busy && <span className="pending-text" role="status"><span className="spinner"/>正在处理</span>}{workspace && page !== 'projects' && <><Button icon="refresh" disabled={!!busy || loading} onClick={() => void refresh()}>刷新</Button><Button icon="download" disabled={!writable} onClick={() => void exportProject().catch(reason => setError(messageOf(reason)))}>导出项目</Button></>}{page === 'projects' && <Button icon="upload" disabled={!writable} onClick={() => void importProject()}>导入项目包</Button>}</div></header>
       {!desktop && <div className="mode-banner">{preview ? '这是只读界面预览，图像与剧本均为示例；没有连接项目数据，也不会生成或提交任务。' : '浏览器预览未连接本地核心。制作与文件管理请在桌面客户端操作。'}{!preview && <a href="?preview=1">查看界面示例 <Icon name="arrow" size={15}/></a>}</div>}
       {(error || notice) && <div className={`notification ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'}><span>{error || notice}</span><Button variant="ghost" icon="close" aria-label="关闭提示" onClick={() => { setError(''); setNotice(''); }}/></div>}
+      {desktop && page !== 'projects' && catalogNotices.map(item => <div key={item.key} className={`notification ${item.status === 'error' ? 'error' : ''}`} role="status"><span>{providerName(item.provider)}：{item.status === 'checking' ? '正在读取渠道能力与模型目录。' : `自动读取未完成：${item.error} 请到渠道与设置点击“检查连接与模型”重试。`}</span>{page !== 'settings' && <Button variant="ghost" icon="settings" onClick={() => navigate('settings')}>渠道与设置</Button>}</div>)}
+      {workspace?.readState?.error && page !== 'projects' && <div className="notification error" role="status"><span>最新制作状态读取失败，以下为上次保存状态。正在继续读取：{workspace.readState.error}</span></div>}
       <div className="page-content">
         {workspace && ['foundation', 'images', 'storyboard'].includes(page) && <TextExecutionSummary settings={workspace.settings} stage={page as 'foundation' | 'images' | 'storyboard'} onConfigure={() => navigate('settings')}/>}
         {loading && !workspace ? <Empty title="正在读取项目…"/> : page === 'projects' ? <><ProjectLibrary projects={projects} filter={projectFilter} writable={writable} busy={!!busy} onFilterChange={setProjectFilter} onOpen={project => void loadProject(project)} createForm={<InlineProjectCreate writable={writable} busy={!!busy} onCreate={createProject}/>} onLifecycle={projectLifecycle}/><div className="flow-guide">{stages.map(stage => <div key={stage.id}><span>{stage.number}</span><Icon name={stage.icon}/><strong>{stage.title}</strong><small>{stage.subtitle}</small></div>)}</div></> : workspace ? <>

@@ -307,6 +307,167 @@ impl Store {
     pub fn foundation(&self) -> Result<Value> {
         self.latest("foundations")
     }
+    pub fn foundation_choices(&self) -> Result<Value> {
+        let mut c = self.conn()?;
+        let tx = c.transaction().map_err(|e| e.to_string())?;
+        let mut view = foundation_choices_conn(&tx)?;
+        let raw: Option<String> = tx
+            .query_row(
+                "SELECT value FROM settings WHERE key='userReviewRequirements'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let requirements = raw.map(parse).transpose()?.unwrap_or(json!([]));
+        for contract in view["contracts"].as_array_mut().into_iter().flatten() {
+            contract["requiresUserReview"] = json!(
+                crate::pipeline::foundation_delivery::choice_requires_user_review(
+                    contract,
+                    &requirements
+                )
+            );
+        }
+        Ok(view)
+    }
+    pub fn foundation_automatic_decisions(
+        &self,
+        user_review_requirements: &Value,
+    ) -> Result<Vec<Value>> {
+        crate::pipeline::foundation_delivery::automatic_decisions(
+            &self.foundation_choices()?,
+            user_review_requirements,
+        )
+    }
+    /// Ordinary AUTHOR interpretations are one frozen Q1 operation, not a series
+    /// of invented user approvals. CAS also preserves the user's explicit list.
+    pub fn reserve_foundation_auto_workflow(&self, snapshot: &Value) -> Result<String> {
+        let mut c = self.conn()?;
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        assert_no_local_production(&tx)?;
+        crate::workflow::verify_guard(&tx, &snapshot["guard"])?;
+        let view = foundation_choices_conn(&tx)?;
+        let raw: Option<String> = tx
+            .query_row(
+                "SELECT value FROM settings WHERE key='userReviewRequirements'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let requirements = raw.map(parse).transpose()?.unwrap_or(json!([]));
+        let current =
+            crate::pipeline::foundation_delivery::automatic_decisions(&view, &requirements)?;
+        if current.is_empty()
+            || json!(current) != snapshot["input"]["automaticDecisions"]
+            || snapshot["input"]["foundationPhase"] != "AUTO_INTERPRET"
+            || snapshot["input"]["foundationDecisionPolicy"]
+                != crate::pipeline::foundation_delivery::AUTO_INTERPRET_POLICY
+            || snapshot["input"]["userReviewRequirements"] != requirements
+            || snapshot["input"]["projectId"] != view["projectId"]
+            || snapshot["input"]["sourceVersion"] != view["sourceVersion"]
+        {
+            return Err("自动制作解释或用户预先确认要求已更新；未发起模型".into());
+        }
+        let key = id();
+        tx.execute("INSERT INTO jobs(id,kind,entity_id,provider,state,account_id,snapshot,created_at,updated_at) VALUES(?1,'workflow','foundation.run','local','queued','local',?2,?3,?3)",params![key,snapshot.to_string(),now()]).map_err(|e|e.to_string())?;
+        mark_changed(&tx)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(key)
+    }
+    /// AUTHOR confirmation is a short source/version/revision CAS. It grants no
+    /// source mutation and does not start a model per click.
+    pub fn confirm_foundation_choice(&self, request: &Value) -> Result<Value> {
+        let mut c = self.conn()?;
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        assert_no_local_production(&tx)?;
+        let view = foundation_choices_conn(&tx)?;
+        check_choice_view_versions(&view, request)?;
+        let record = view["contracts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|c| c["id"] == request["contractId"])
+            .ok_or("选择契约已更新，请刷新")?;
+        if record["status"] != "PENDING" || record["revision"] != request["revision"] {
+            return Err("选择已确认或契约版本已变化，请刷新".into());
+        }
+        let option = request.get("optionIndex");
+        let custom = request.get("customAnswer");
+        if option.is_some() == custom.is_some() {
+            return Err("请选择一个方案或填写一个自定义制作解释".into());
+        }
+        let answer = if let Some(option) = option {
+            let index = option
+                .as_u64()
+                .or_else(|| {
+                    option
+                        .as_str()
+                        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
+                        .and_then(|s| s.parse::<u64>().ok())
+                })
+                .ok_or("方案序号无效")?;
+            record["options"]
+                .as_array()
+                .and_then(|options| usize::try_from(index).ok().and_then(|i| options.get(i)))
+                .and_then(Value::as_str)
+                .ok_or("方案不属于当前契约")?
+                .to_owned()
+        } else {
+            custom
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or("自定义制作解释不能为空")?
+                .to_owned()
+        };
+        let mut confirmed = record.clone();
+        confirmed["status"] = json!("CONFIRMED");
+        confirmed["answer"] = json!(answer);
+        confirmed["decidedAt"] = json!(now());
+        let mut saved = read_foundation_choice_records(&tx)?;
+        saved.retain(|c| c["id"] != confirmed["id"]);
+        saved.push(confirmed.clone());
+        tx.execute("INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![crate::pipeline::foundation_delivery::AUTHOR_CHOICES_VERSION,json!(saved).to_string()]).map_err(|e|e.to_string())?;
+        tx.execute("INSERT INTO events(job_id,type,data,created_at) VALUES('', 'foundation_author_confirmed',?1,?2)",params![confirmed.to_string(),now()]).map_err(|e|e.to_string())?;
+        mark_changed(&tx)?;
+        let result = foundation_choices_conn(&tx)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(result)
+    }
+    /// Reserve exactly the confirmed decision set with the publication guard in
+    /// one transaction. A second apply/confirmation cannot race the queued Q1.
+    pub fn reserve_foundation_choice_workflow(&self, snapshot: &Value) -> Result<String> {
+        let mut c = self.conn()?;
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        assert_no_local_production(&tx)?;
+        crate::workflow::verify_guard(&tx, &snapshot["guard"])?;
+        let view = foundation_choices_conn(&tx)?;
+        let current: Vec<_> = view["contracts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|c| c["status"] == "CONFIRMED")
+            .cloned()
+            .collect();
+        if current.is_empty()
+            || json!(current) != snapshot["input"]["confirmedDecisions"]
+            || snapshot["input"]["foundationPhase"] != "APPLY_DECISION"
+        {
+            return Err("已确认选择已更新，请刷新后采用；未发起模型".into());
+        }
+        let key = id();
+        tx.execute("INSERT INTO jobs(id,kind,entity_id,provider,state,account_id,snapshot,created_at,updated_at) VALUES(?1,'workflow','foundation.run','local','queued','local',?2,?3,?3)",params![key,snapshot.to_string(),now()]).map_err(|e|e.to_string())?;
+        mark_changed(&tx)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(key)
+    }
     fn latest(&self, table: &str) -> Result<Value> {
         let raw: Option<String> = self
             .conn()?
@@ -320,18 +481,31 @@ impl Store {
         raw.map(parse).transpose().map(|v| v.unwrap_or(Value::Null))
     }
     pub fn save_source(&self, mut source: Value) -> Result<Value> {
-        self.save_source_inner(&mut source, None)
+        self.save_source_inner(&mut source, None, false)
     }
     /// Compare the displayed source version in the same short write transaction
     /// that publishes recognition/decisions. An unchanged result is a no-op.
     pub fn save_source_if_current(&self, mut source: Value, expected: i64) -> Result<Value> {
-        self.save_source_inner(&mut source, Some(expected))
+        self.save_source_inner(&mut source, Some(expected), false)
     }
-    fn save_source_inner(&self, source: &mut Value, expected: Option<i64>) -> Result<Value> {
+    pub fn save_reparsed_source_if_current(
+        &self,
+        mut source: Value,
+        expected: i64,
+    ) -> Result<Value> {
+        self.save_source_inner(&mut source, Some(expected), true)
+    }
+    fn save_source_inner(
+        &self,
+        source: &mut Value,
+        expected: Option<i64>,
+        preserve_metadata_only: bool,
+    ) -> Result<Value> {
         let mut c = self.conn()?;
         let tx = c
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
+        let mut previous_source = None;
         if let Some(expected) = expected {
             let current: Option<(i64, String)> = tx
                 .query_row(
@@ -351,6 +525,7 @@ impl Store {
             if latest == candidate {
                 return Ok(latest);
             }
+            previous_source = Some(latest);
         }
         let version: i64 = tx
             .query_row("SELECT COALESCE(MAX(version),0)+1 FROM sources", [], |r| {
@@ -370,6 +545,39 @@ impl Store {
         )
         .map_err(|e| e.to_string())?;
         tx.execute("UPDATE jobs SET state='stale',error='原文已更新',updated_at=?1,next_attempt_at=0 WHERE task_id IS NULL AND state IN ('ready','queued','preparing','waiting_dependency') AND kind IN ('video','image','text')",[now()]).map_err(|e|e.to_string())?;
+        if preserve_metadata_only {
+            if let Some(previous) = previous_source
+                .as_ref()
+                .filter(|previous| source_channel_metadata_only(previous, source))
+            {
+                let foundation: Option<(i64, i64, String)> = tx.query_row(
+                    "SELECT version,source_version,data FROM foundations ORDER BY version DESC LIMIT 1", [],
+                    |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional().map_err(|e|e.to_string())?;
+                if let Some((foundation_version, source_version, raw)) = foundation {
+                    let mut foundation = parse(raw)?;
+                    if source_version == previous["version"].as_i64().unwrap_or(-1)
+                        && s(&foundation, "sourceSha256") == s(source, "sha256")
+                    {
+                        foundation["version"] = json!(foundation_version + 1);
+                        foundation["sourceVersion"] = json!(version);
+                        foundation["sourceMetadataRebind"] = json!({"version":"source-channel-metadata-rebind/v1",
+                            "previousSourceVersion":source_version,"sourceVersion":version,"sourceSha256":source["sha256"],
+                            "fromParser":previous["parserVersion"],"toParser":source["parserVersion"],
+                            "rawTextAndCoordinatesUnchanged":true,"assetAndMediaVersionsUnchanged":true});
+                        tx.execute(
+                            "INSERT INTO foundations VALUES(?1,?2,?3,?4)",
+                            params![
+                                foundation_version + 1,
+                                version,
+                                foundation.to_string(),
+                                now()
+                            ],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+        }
         tx.commit().map_err(|e| e.to_string())?;
         self.dirty()?;
         Ok(source.clone())
@@ -1021,9 +1229,12 @@ impl Store {
             "rejected" => false,
             _ => return Err("回放提交缺少明确的校验状态".into()),
         };
+        let storyboard_repair =
+            s(audit, "policy") == crate::text_executor::STORYBOARD_FINISH_COVERAGE_POLICY;
         if s(receipt, "contract") != "desktop-runner/v1"
             || s(audit, "policy").is_empty()
-            || !matches!(s(audit, "stage"), "foundation:F2" | "foundation:Q1")
+            || !(matches!(s(audit, "stage"), "foundation:F2" | "foundation:Q1")
+                || storyboard_repair && s(audit, "stage") == "storyboardFinish")
             || receipt["migrationPolicy"] != audit["policy"]
             || receipt["migrationAudit"] != *audit
             || accepted && receipt["acceptedRequestHash"] != audit["newRequestHash"]
@@ -1042,13 +1253,51 @@ impl Store {
         {
             return Err("回放提交的冻结记录或审计不完整".into());
         }
+        // Only this named Finisher regression can cross the foundation-only
+        // transaction boundary. Its canonical input and original raw response
+        // cannot be changed or inferred from a new validator result.
+        let parent_entity = if storyboard_repair {
+            let snapshot: Value = serde_json::from_str(s(audit, "originalSnapshotJson"))
+                .map_err(|_| "整编回放的原执行快照无效")?;
+            let original: Value = serde_json::from_str(s(audit, "originalResultJson"))
+                .map_err(|_| "整编回放的原返回无效")?;
+            let old_receipt: Value = serde_json::from_str(s(audit, "originalReceiptJson"))
+                .map_err(|_| "整编回放的原回执无效")?;
+            let raw_event: Value = serde_json::from_str(s(audit, "originalRawEventDataJson"))
+                .map_err(|_| "整编回放的原始接收事件无效")?;
+            if s(audit, "stage") != "storyboardFinish"
+                || snapshot["stage"] != "storyboardFinish"
+                || snapshot["skill"] != "episode-finishing-editor"
+                || snapshot["input"]["storyboardCreativeProfile"]
+                    != "original-production-contract/v1"
+                || snapshot["executorIdentity"]["provider"] != "codex"
+                || s(audit, "previousError")
+                    != crate::text_executor::STORYBOARD_FINISH_COVERAGE_REJECTION
+                || s(audit, "oldRequestHash") != s(audit, "newRequestHash")
+                || crate::pipeline::digest(&snapshot.to_string()) != s(audit, "oldRequestHash")
+                || snapshot.to_string() != s(audit, "originalSnapshotJson")
+                || crate::pipeline::digest(s(audit, "originalResultJson"))
+                    != s(audit, "originalResultSha256")
+                || old_receipt != json!({"validation":"rejected","contract":"desktop-runner/v1"})
+                || audit["originalRawEventId"].as_i64().unwrap_or(0) <= 0
+                || raw_event["requestHash"] != audit["oldRequestHash"]
+                || raw_event["value"] != original
+                || audit["generationRequestsSent"] != 0
+                || audit["acceptedAutomatically"] != false
+            {
+                return Err("整编回放的政策、身份、原包哈希或接收证据不匹配".into());
+            }
+            "storyboard.run"
+        } else {
+            "foundation.run"
+        };
         let mut c = self.conn()?;
         let tx = c
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
         let eligible: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id JOIN jobs parent ON parent.id=w.workflow_id WHERE j.id=?1 AND w.workflow_id=?2 AND w.node_key=?3 AND w.stage=?8 AND w.state='rejected' AND w.request_hash=?4 AND w.error=?5 AND w.result=?6 AND parent.kind='workflow' AND parent.entity_id='foundation.run' AND j.kind='text' AND j.provider='codex' AND j.state='rejected' AND j.error=?5 AND j.result=?6 AND j.snapshot=?7 AND json_extract(j.receipt,'$.validation')='rejected' AND json_extract(j.receipt,'$.contract')='desktop-runner/v1')",
-            params![s(audit,"originalJobId"),s(audit,"workflowId"),s(audit,"nodeKey"),s(audit,"oldRequestHash"),s(audit,"previousError"),s(audit,"originalResultJson"),s(audit,"originalSnapshotJson"),s(audit,"stage")],
+            "SELECT EXISTS(SELECT 1 FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id JOIN jobs parent ON parent.id=w.workflow_id WHERE j.id=?1 AND w.workflow_id=?2 AND w.node_key=?3 AND w.stage=?8 AND w.state='rejected' AND w.request_hash=?4 AND w.error=?5 AND w.result=?6 AND parent.kind='workflow' AND parent.entity_id=?9 AND j.kind='text' AND j.provider='codex' AND j.state='rejected' AND j.error=?5 AND j.result=?6 AND j.snapshot=?7 AND json_extract(j.receipt,'$.validation')='rejected' AND json_extract(j.receipt,'$.contract')='desktop-runner/v1' AND (?10 IS NULL OR (j.receipt=?10 AND EXISTS(SELECT 1 FROM events e WHERE e.id=?11 AND e.job_id=j.id AND e.type='text_received_raw' AND e.data=?12))))",
+            params![s(audit,"originalJobId"),s(audit,"workflowId"),s(audit,"nodeKey"),s(audit,"oldRequestHash"),s(audit,"previousError"),s(audit,"originalResultJson"),s(audit,"originalSnapshotJson"),s(audit,"stage"),parent_entity,storyboard_repair.then(||s(audit,"originalReceiptJson")),audit["originalRawEventId"].as_i64(),storyboard_repair.then(||s(audit,"originalRawEventDataJson"))],
             |row| row.get(0),
         ).map_err(|e|e.to_string())?;
         if !eligible {
@@ -1069,12 +1318,25 @@ impl Store {
             return Err("流程节点状态已变化，回放事务未提交".into());
         }
         let event = match (s(audit, "stage"), accepted) {
+            ("storyboardFinish", true) => "storyboard_finish_validation_replay_accepted",
+            ("storyboardFinish", false) => "storyboard_finish_validation_replay_rejected",
             ("foundation:Q1", true) => "q1_validation_replay_accepted",
             ("foundation:Q1", false) => "q1_validation_replay_rejected",
             (_, true) => "catalogue_migration_accepted",
             (_, false) => "catalogue_migration_rejected",
         };
-        tx.execute("INSERT INTO events(job_id,type,data,created_at) VALUES(?1,?2,?3,?4)",params![job,event,json!({"requestHash":audit["newRequestHash"],"error":fields.get("error"),"validatedResult":validated_result,"originalEvidencePreserved":true}).to_string(),now()]).map_err(|e|e.to_string())?;
+        let mut event_data = json!({"requestHash":audit["newRequestHash"],"error":fields.get("error"),"validatedResult":validated_result,"originalEvidencePreserved":true});
+        if storyboard_repair {
+            event_data["policy"] = audit["policy"].clone();
+            event_data["workflowId"] = audit["workflowId"].clone();
+            event_data["nodeKey"] = audit["nodeKey"].clone();
+            event_data["generationRequestsSent"] = json!(0);
+        }
+        tx.execute(
+            "INSERT INTO events(job_id,type,data,created_at) VALUES(?1,?2,?3,?4)",
+            params![job, event, event_data.to_string(), now()],
+        )
+        .map_err(|e| e.to_string())?;
         mark_changed(&tx)?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(true)
@@ -1104,7 +1366,7 @@ impl Store {
         tx.commit().map_err(|e| e.to_string())?;
         Ok(())
     }
-    /// Query and download failures each keep their own bounded exponential retry delay.
+    /// Stop repeated recovery failures after five attempts; manual recovery never submits.
     pub fn retry_job(&self, key: &str, operation: &str, message: &str) -> Result<()> {
         let (column, state, base, cap) = match operation {
             "query" => ("query_attempts", "query_failed", 5_i64, 300_i64),
@@ -1122,6 +1384,19 @@ impl Store {
                 |r| r.get(0),
             )
             .map_err(|e| e.to_string())?;
+        if attempts >= 4 {
+            let message =
+                format!("{message} 自动恢复已连续失败5次；请检查连接后在任务记录恢复原任务。");
+            tx.execute(&format!("UPDATE jobs SET state='recovery_paused',error=?1,updated_at=?2,next_attempt_at=0,{column}={column}+1 WHERE id=?3"),params![message,now(),key]).map_err(|e|e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            self.event(
+                key,
+                "retry_budget_exhausted",
+                &json!({"operation":operation,"attempts":attempts+1,"error":message}),
+            )?;
+            self.dirty()?;
+            return Ok(());
+        }
         let delay = base
             .saturating_mul(
                 1_i64
@@ -1224,6 +1499,10 @@ impl Store {
         c.execute("UPDATE jobs SET state='queued',error='本地准备中断；可安全继续准备' WHERE state='preparing'",[]).map_err(|e|e.to_string())?;
         c.execute("UPDATE jobs SET state='interrupted',error='本地阶段流程已中断；已完成文本结果可复用，需明确继续' WHERE kind='workflow' AND state IN ('queued','running')",[]).map_err(|e|e.to_string())?;
         c.execute("UPDATE jobs SET state='submitted',error=NULL WHERE task_id IS NOT NULL AND state IN ('submitting','downloading')",[]).map_err(|e|e.to_string())?;
+        // A known cloud task interrupted by local CLI shutdown did not lose
+        // authentication. Recover query-only without touching submission or
+        // any real authentication failure / unknown submission.
+        c.execute("UPDATE jobs SET state='submitted',error=NULL,next_attempt_at=0,updated_at=?1 WHERE kind IN ('image','video') AND state='auth_required' AND task_id IS NOT NULL AND task_id<>'' AND error='客户端已停止本地 CLI 查询。'",[now()]).map_err(|e|e.to_string())?;
         Ok(())
     }
     pub fn absolute_media(&self, media: &Value) -> Result<PathBuf> {
@@ -1305,6 +1584,40 @@ impl Store {
     }
 }
 
+fn source_channel_metadata_only(previous: &Value, current: &Value) -> bool {
+    if s(previous, "parserVersion") != "source-parser/v2"
+        || s(current, "parserVersion") != "source-parser/v3"
+        || s(previous, "text") != s(current, "text")
+        || s(previous, "sha256") != s(current, "sha256")
+    {
+        return false;
+    }
+    for source in [previous, current] {
+        let Ok(source) = serde_json::from_value::<crate::pipeline::LockedSource>(source.clone())
+        else {
+            return false;
+        };
+        if crate::pipeline::validate_source(&source).is_err() {
+            return false;
+        }
+    }
+    let normalize = |source: &Value| {
+        let mut source = source.clone();
+        if let Some(map) = source.as_object_mut() {
+            map.remove("version");
+            map.remove("parserVersion");
+        }
+        for row in source["rows"].as_array_mut().into_iter().flatten() {
+            if let Some(dialogue) = row["dialogue"].as_object_mut() {
+                dialogue.remove("speaker");
+                dialogue.remove("channel");
+            }
+        }
+        source
+    };
+    normalize(previous) == normalize(current)
+}
+
 const JOB_COLUMNS:&str="j.id,j.kind,j.entity_id,j.provider,j.state,j.task_id,j.account_id,j.snapshot,j.prepared,j.receipt,j.result,j.error,j.created_at,j.updated_at,j.next_attempt_at,j.query_attempts,j.download_attempts,(SELECT json_group_array(media_id) FROM (SELECT media_id FROM job_media WHERE job_id=j.id ORDER BY rowid))";
 const JOB_SUMMARY_COLUMNS: &str = r#"j.id,j.kind,j.entity_id,j.provider,j.state,j.task_id,j.account_id,
 CASE WHEN j.kind='workflow' THEN json_object('runnerVersion',json_extract(j.snapshot,'$.runnerVersion'),'stage',json_extract(j.snapshot,'$.stage'),'selection',json_extract(j.snapshot,'$.selection'),'sourceVersion',json_extract(j.snapshot,'$.sourceVersion'),'planningProfile',json_extract(j.snapshot,'$.planningProfile'))
@@ -1313,7 +1626,7 @@ ELSE json_object('model',json_extract(j.snapshot,'$.model'),'unitVersion',json_e
 CASE WHEN j.prepared IS NULL THEN NULL ELSE json_object('estimatedCost',json_extract(j.prepared,'$.estimatedCost'),'capabilityVersion',json_extract(j.prepared,'$.capabilityVersion')) END,
 NULL,
 CASE WHEN j.result IS NULL THEN NULL WHEN j.kind='workflow' THEN json_object('schemaVersion',json_extract(j.result,'$.schemaVersion'),'status',json_extract(j.result,'$.status'),'blocked',json_extract(j.result,'$.blocked'),'imagePlan',(SELECT json_group_array(json_object('assetId',json_extract(item.value,'$.assetId'),'variantId',json_extract(item.value,'$.variantId'),'dependencies',json_extract(item.value,'$.dependencies'),'status',json_extract(item.value,'$.status'),'missingAdoption',json_extract(item.value,'$.missingAdoption'),'candidateCount',json_extract(item.value,'$.candidateCount'))) FROM json_each(j.result,'$.imagePlan') item))
-ELSE json_object('actualCost',json_extract(j.result,'$.actualCost'),'resultUrls',json_extract(j.result,'$.resultUrls')) END,
+ELSE json_object('status',json_extract(j.result,'$.status'),'actualCost',json_extract(j.result,'$.actualCost'),'resultUrls',json_extract(j.result,'$.resultUrls')) END,
 j.error,j.created_at,j.updated_at,j.next_attempt_at,j.query_attempts,j.download_attempts,
 (SELECT json_group_array(media_id) FROM (SELECT media_id FROM job_media WHERE job_id=j.id ORDER BY rowid))"#;
 fn read_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
@@ -1631,7 +1944,7 @@ pub(crate) fn save_asset_tx(tx: &rusqlite::Transaction<'_>, mut data: Value) -> 
         params![s(&data, "id"), v, data.to_string()],
     )
     .map_err(|e| e.to_string())?;
-    tx.execute("UPDATE jobs SET state='stale',error='资产版本已更新',updated_at=?2,next_attempt_at=0 WHERE task_id IS NULL AND state IN ('ready','queued','preparing','waiting_dependency') AND kind IN ('image','video') AND ((kind='image' AND entity_id=?1) OR EXISTS(SELECT 1 FROM json_each(jobs.snapshot,'$.references') AS r WHERE json_extract(r.value,'$.assetId')=?1 OR EXISTS(SELECT 1 FROM json_each(r.value,'$.semanticBindings') b WHERE json_extract(b.value,'$.assetId')=?1)))",params![s(&data,"id"),now()]).map_err(|e|e.to_string())?;
+    tx.execute("UPDATE jobs SET state='stale',error='资产版本已更新',updated_at=?2,next_attempt_at=0 WHERE task_id IS NULL AND state IN ('ready','queued','preparing','waiting_dependency') AND kind IN ('image','video') AND ((kind='image' AND entity_id=?1) OR EXISTS(SELECT 1 FROM json_each(jobs.snapshot,'$.references') AS r WHERE json_extract(r.value,'$.assetId')=?1 OR EXISTS(SELECT 1 FROM json_each(r.value,'$.semanticBindings') b WHERE json_extract(b.value,'$.assetId')=?1)) OR EXISTS(SELECT 1 FROM json_each(jobs.snapshot,'$.inlineReferences') r WHERE json_extract(r.value,'$.assetId')=?1))",params![s(&data,"id"),now()]).map_err(|e|e.to_string())?;
     mark_changed(tx)?;
     Ok(data)
 }
@@ -1722,6 +2035,72 @@ pub(crate) fn save_unit_tx(tx: &rusqlite::Transaction<'_>, mut data: Value) -> R
     mark_changed(tx)?;
     Ok(data)
 }
+fn read_foundation_choice_records(c: &Connection) -> Result<Vec<Value>> {
+    let raw: Option<String> = c
+        .query_row(
+            "SELECT value FROM metadata WHERE key=?1",
+            [crate::pipeline::foundation_delivery::AUTHOR_CHOICES_VERSION],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    raw.map(|raw| {
+        serde_json::from_str(&raw).map_err(|e| format!("已确认制作选择记录无效，未自动覆盖：{e}"))
+    })
+    .transpose()
+    .map(|v| v.unwrap_or_default())
+}
+fn foundation_choices_conn(c: &Connection) -> Result<Value> {
+    let project: String = c
+        .query_row("SELECT id FROM project LIMIT 1", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let source: Option<String> = c
+        .query_row(
+            "SELECT data FROM sources ORDER BY version DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let foundation: Option<String> = c
+        .query_row(
+            "SELECT data FROM foundations ORDER BY version DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let source = source.map(parse).transpose()?.unwrap_or(Value::Null);
+    let foundation = foundation.map(parse).transpose()?.unwrap_or(Value::Null);
+    if source.is_null() || foundation.is_null() {
+        return Ok(
+            json!({"projectId":project,"sourceVersion":source["version"].as_i64().unwrap_or(0),"sourceSha256":source["sha256"],"foundationVersion":foundation["version"].as_i64().unwrap_or(0),"contracts":[]}),
+        );
+    }
+    crate::pipeline::foundation_delivery::choice_contracts(
+        &project,
+        &source,
+        &foundation,
+        &read_foundation_choice_records(c)?,
+    )
+}
+fn assert_no_local_production(c: &Connection) -> Result<()> {
+    let active:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM jobs WHERE (kind='workflow' AND state IN ('queued','running')) OR (kind='text' AND state IN ('queued','running','submitting','received')))",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+    if active {
+        Err("本项目的文字制作流程正在执行，请完成或中断后确认制作选择".into())
+    } else {
+        Ok(())
+    }
+}
+fn check_choice_view_versions(view: &Value, request: &Value) -> Result<()> {
+    if request["projectId"] != view["projectId"]
+        || request["expectedSourceVersion"].as_i64() != view["sourceVersion"].as_i64()
+        || request["expectedFoundationVersion"].as_i64() != view["foundationVersion"].as_i64()
+    {
+        return Err("项目、原文或制作基础版本已变化，请刷新选择后再确认".into());
+    }
+    Ok(())
+}
 pub(crate) fn same_content(a: &Value, b: &Value) -> bool {
     let mut a = a.clone();
     let mut b = b.clone();
@@ -1787,7 +2166,7 @@ fn set_current_image(
     tx.execute("INSERT INTO adoptions VALUES(?1,?2,?3,?4) ON CONFLICT(asset_id,variant_id) DO UPDATE SET media_id=excluded.media_id,created_at=excluded.created_at",params![asset,variant,media,time]).map_err(|e|e.to_string())?;
     // First adoption satisfies unfrozen dependencies. Only prepared references to
     // the replaced asset/variant/media expire; submitted snapshots stay immutable.
-    tx.execute("UPDATE jobs SET state='stale',error='当前图片已替换',updated_at=?4,next_attempt_at=0 WHERE task_id IS NULL AND state IN ('ready','queued','preparing') AND kind IN ('image','video') AND EXISTS(SELECT 1 FROM json_each(jobs.snapshot,'$.references') AS r WHERE json_extract(r.value,'$.assetId')=?1 AND COALESCE(json_extract(r.value,'$.variantId'),?2)=?2 AND COALESCE(json_extract(r.value,'$.mediaId'),'')!=?3)",params![asset,variant,media,time]).map_err(|e|e.to_string())?;
+    tx.execute("UPDATE jobs SET state='stale',error='当前图片已替换',updated_at=?4,next_attempt_at=0 WHERE task_id IS NULL AND state IN ('ready','queued','preparing') AND kind IN ('image','video') AND (EXISTS(SELECT 1 FROM json_each(jobs.snapshot,'$.references') AS r WHERE json_extract(r.value,'$.assetId')=?1 AND COALESCE(json_extract(r.value,'$.variantId'),?2)=?2 AND COALESCE(json_extract(r.value,'$.mediaId'),'')!=?3) OR EXISTS(SELECT 1 FROM json_each(jobs.snapshot,'$.inlineReferences') r WHERE json_extract(r.value,'$.assetId')=?1 AND json_extract(r.value,'$.variantId')=?2))",params![asset,variant,media,time]).map_err(|e|e.to_string())?;
     Ok(true)
 }
 fn update_state(
@@ -1927,6 +2306,386 @@ mod tests {
             .save_settings(&json!({"ffprobePath":store.root.join("missing-test-ffprobe.exe")}))
             .unwrap();
         (tmp, store)
+    }
+    #[test]
+    fn explicit_channel_reparse_rebinds_foundation_without_reauthoring_or_changing_assets() {
+        let (_temp, store) = fixture();
+        let current =
+            crate::pipeline::prepare_source("第1集\n场景：门口\n小王os：我听见了😀。\n").unwrap();
+        let mut old = current.clone();
+        old.parser_version = "source-parser/v2".into();
+        let dialogue = old
+            .rows
+            .iter_mut()
+            .find_map(|row| row.dialogue.as_mut())
+            .unwrap();
+        dialogue.speaker = "小王os".into();
+        dialogue.channel = "现场".into();
+        crate::pipeline::validate_source(&old).unwrap();
+        let old = store.save_source(json!(old)).unwrap();
+        let asset = store
+            .save_asset(json!({"id":"hero","variantId":"base","name":"小王"}))
+            .unwrap();
+        let foundation = store.save_foundation(json!({"sourceSha256":current.sha256,"facts":[],"episodes":[],"overview":"原有制作基础"})).unwrap();
+        let revised = store
+            .save_reparsed_source_if_current(json!(current), 1)
+            .unwrap();
+        assert_eq!(revised["version"], 2);
+        assert_eq!(revised["text"], old["text"]);
+        assert_eq!(revised["sha256"], old["sha256"]);
+        let carried = store.foundation().unwrap();
+        assert_eq!(
+            carried["version"],
+            foundation["version"].as_i64().unwrap() + 1
+        );
+        assert_eq!(carried["sourceVersion"], 2);
+        assert_eq!(carried["overview"], foundation["overview"]);
+        assert_eq!(
+            carried["sourceMetadataRebind"]["rawTextAndCoordinatesUnchanged"],
+            true
+        );
+        assert_eq!(store.get("assets", "hero").unwrap(), asset);
+        assert!(store.jobs().unwrap().is_empty());
+        assert!(store.save_reparsed_source_if_current(revised, 1).is_err());
+    }
+    #[test]
+    fn channel_reparse_cannot_carry_foundation_over_changed_source_or_forged_metadata() {
+        let (_temp, store) = fixture();
+        let current = crate::pipeline::prepare_source("第1集\n场景：门口\n小王os：走。\n").unwrap();
+        let mut old = current.clone();
+        old.parser_version = "source-parser/v2".into();
+        let dialogue = old
+            .rows
+            .iter_mut()
+            .find_map(|row| row.dialogue.as_mut())
+            .unwrap();
+        dialogue.speaker = "小王os".into();
+        dialogue.channel = "现场".into();
+        let old = store.save_source(json!(old)).unwrap();
+        store
+            .save_foundation(json!({"sourceSha256":current.sha256,"overview":"原有基础"}))
+            .unwrap();
+        let mut forged = json!(current);
+        forged["rows"][2]["dialogue"]["speaker"] = json!("其他人物");
+        assert!(!source_channel_metadata_only(&old, &forged));
+        let changed =
+            crate::pipeline::prepare_source("第1集\n场景：门口\n小王os：快走。\n").unwrap();
+        store
+            .save_reparsed_source_if_current(json!(changed), 1)
+            .unwrap();
+        assert_eq!(store.foundation().unwrap()["sourceVersion"], 1);
+    }
+    fn author_store_fixture() -> (tempfile::TempDir, Store, Value) {
+        let (tmp, store) = fixture();
+        let source =
+            crate::pipeline::prepare_source("第1集\n场景：大厅\n小王：开始。\n△小王穿白衣进入。\n")
+                .unwrap();
+        store.save_source(json!(source)).unwrap();
+        let refs = source
+            .rows
+            .iter()
+            .take(2)
+            .map(|r| r.id.clone())
+            .collect::<Vec<_>>();
+        let choice = json!({"decisionKey":"identity-conflict","kind":"SOURCE_CONFLICT","question":"制作时采用哪种身份解释？","reason":"原文声明不同","options":["保留标注","单独解释"],"recommended":"单独解释","recommendationReason":"逐字保留原文","evidence":"两处原文","episodes":[source.episodes[0].id],"sourceRefs":refs,"changeTargets":{"assetKeys":[],"assetFields":[],"sceneFields":["speaker"]}});
+        store.save_foundation(json!({"schemaVersion":"foundation/v1","sourceSha256":source.sha256,"overview":"","direction":"","episodes":[],"assets":[],"facts":[],"issues":[{"coordinate":"choice:identity-conflict","problem":"身份解释","sourceRefs":refs,"blocking":true,"episodeIds":[source.episodes[0].id],"details":{"owner":"AUTHOR","kind":"HUMAN_CHOICE","choice":choice,"recommendedIsAdopted":false}}]})).unwrap();
+        let view = store.foundation_choices().unwrap();
+        let request = json!({"projectId":"p","contractId":view["contracts"][0]["id"],"revision":view["contracts"][0]["revision"],"expectedSourceVersion":view["sourceVersion"],"expectedFoundationVersion":view["foundationVersion"],"customAnswer":"逐字保留说者、台词和动作；后续制作单独解释"});
+        (tmp, store, request)
+    }
+    #[test]
+    fn author_confirmation_cas_preserves_source_and_rejects_stale_or_repeated_answer() {
+        let (_tmp, store, request) = author_store_fixture();
+        let source = store.source().unwrap();
+        let basis = store.foundation().unwrap();
+        let mut wrong = request.clone();
+        wrong["revision"] = json!("stale");
+        assert!(store.confirm_foundation_choice(&wrong).is_err());
+        wrong = request.clone();
+        wrong["expectedSourceVersion"] = json!(0);
+        assert!(store.confirm_foundation_choice(&wrong).is_err());
+        wrong = request.clone();
+        wrong["expectedFoundationVersion"] = json!(0);
+        assert!(store.confirm_foundation_choice(&wrong).is_err());
+        wrong = request.clone();
+        wrong["optionIndex"] = json!(0);
+        assert!(store.confirm_foundation_choice(&wrong).is_err());
+        wrong = request.clone();
+        wrong.as_object_mut().unwrap().remove("customAnswer");
+        wrong["optionIndex"] = json!(9);
+        assert!(store.confirm_foundation_choice(&wrong).is_err());
+        let confirmed = store.confirm_foundation_choice(&request).unwrap();
+        assert_eq!(confirmed["contracts"][0]["status"], "CONFIRMED");
+        assert_eq!(store.source().unwrap(), source);
+        assert_eq!(store.foundation().unwrap(), basis);
+        assert!(store.confirm_foundation_choice(&request).is_err());
+        assert!(
+            store.jobs().unwrap().is_empty(),
+            "confirming does not launch any model"
+        );
+    }
+    #[test]
+    fn author_confirmation_is_atomic_under_concurrent_submissions() {
+        let (_tmp, store, request) = author_store_fixture();
+        let barrier = Arc::new(Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let store = store.clone();
+                let request = request.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.confirm_foundation_choice(&request)
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+        assert_eq!(
+            store.foundation_choices().unwrap()["contracts"][0]["status"],
+            "CONFIRMED"
+        );
+    }
+    #[test]
+    fn author_apply_reservation_guards_confirmed_set_and_retains_f2_checkpoint() {
+        let (_tmp, store, request) = author_store_fixture();
+        store.ensure_workflow_storage().unwrap();
+        let old = store
+            .add_job(
+                "workflow",
+                "foundation.run",
+                "local",
+                "local",
+                &json!({"runnerVersion":"desktop-runner/v1","stage":"foundation.run"}),
+                "completed",
+            )
+            .unwrap();
+        let f2 = store
+            .add_job(
+                "text",
+                "foundation:F2",
+                "codex",
+                "local",
+                &json!({"stage":"foundation:F2","input":{"frozen":"original"}}),
+                "accepted",
+            )
+            .unwrap();
+        store
+            .checkpoint(
+                &old,
+                "F2-original",
+                "foundation:F2",
+                "old-hash",
+                "accepted",
+                Some(&f2),
+                Some(&json!({"kept":true})),
+                None,
+            )
+            .unwrap();
+        let original = store.job(&f2).unwrap();
+        let view = store.confirm_foundation_choice(&request).unwrap();
+        let snapshot = json!({"runnerVersion":"desktop-runner/v1","foundationMethod":crate::pipeline::foundation_delivery::METHOD_VERSION,"stage":"foundation.run","foundationPhase":"APPLY_DECISION","guard":{"sourceVersion":1,"foundationVersion":1,"assets":{},"units":{},"episodeIds":view["contracts"][0]["episodes"]},"input":{"foundationPhase":"APPLY_DECISION","confirmedDecisions":view["contracts"]}});
+        let mut invalid = snapshot.clone();
+        invalid["input"]["confirmedDecisions"][0]["answer"] = json!("篡改冻结答案");
+        assert!(store.reserve_foundation_choice_workflow(&invalid).is_err());
+        let run = store.reserve_foundation_choice_workflow(&snapshot).unwrap();
+        assert_eq!(store.job(&run).unwrap()["snapshot"], snapshot);
+        assert!(store.reserve_foundation_choice_workflow(&snapshot).is_err());
+        assert_eq!(store.job(&f2).unwrap(), original);
+        assert_eq!(
+            store.accepted_step(&old, "old-hash").unwrap(),
+            Some(json!({"kept":true}))
+        );
+    }
+    #[test]
+    fn author_confirmation_waits_for_active_local_text_pipeline() {
+        let (_tmp, store, request) = author_store_fixture();
+        store
+            .add_job(
+                "workflow",
+                "images.design",
+                "local",
+                "local",
+                &json!({}),
+                "running",
+            )
+            .unwrap();
+        assert!(store.confirm_foundation_choice(&request).is_err());
+        assert_eq!(
+            store.foundation_choices().unwrap()["contracts"][0]["status"],
+            "PENDING"
+        );
+    }
+    #[test]
+    fn auto_author_reservation_is_atomic_without_manual_confirmation() {
+        let (_tmp, store, _) = author_store_fixture();
+        store.ensure_workflow_storage().unwrap();
+        let source = store.source().unwrap();
+        let foundation = store.foundation().unwrap();
+        let decisions = store.foundation_automatic_decisions(&json!([])).unwrap();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0]["status"], "MODEL_PENDING");
+        let snapshot = json!({"runnerVersion":"desktop-runner/v1","foundationMethod":crate::pipeline::foundation_delivery::METHOD_VERSION,"stage":"foundation.run","guard":{"sourceVersion":1,"foundationVersion":1,"assets":{},"units":{},"episodeIds":decisions[0]["episodes"]},"input":{"projectId":"p","sourceVersion":1,"foundationPhase":"AUTO_INTERPRET","foundationDecisionPolicy":crate::pipeline::foundation_delivery::AUTO_INTERPRET_POLICY,"automaticDecisions":decisions,"userReviewRequirements":[]}});
+        let mut invalid = snapshot.clone();
+        invalid["input"]["automaticDecisions"][0]["sourceSha256"] = json!("stale");
+        assert!(store.reserve_foundation_auto_workflow(&invalid).is_err());
+        let id = store.reserve_foundation_auto_workflow(&snapshot).unwrap();
+        assert_eq!(store.job(&id).unwrap()["snapshot"], snapshot);
+        assert!(store.reserve_foundation_auto_workflow(&snapshot).is_err());
+        assert_eq!(store.source().unwrap(), source);
+        assert_eq!(store.foundation().unwrap(), foundation);
+    }
+    #[test]
+    fn auto_author_preserves_old_answer_as_reference_and_honors_user_requirement_cas() {
+        let (_tmp, store, request) = author_store_fixture();
+        store.confirm_foundation_choice(&request).unwrap();
+        let decisions = store.foundation_automatic_decisions(&json!([])).unwrap();
+        assert_eq!(decisions[0]["priorAnswer"], request["customAnswer"]);
+        assert!(decisions[0]["answer"].is_null());
+        let required = json!([{"decisionKey":"identity-conflict","needsUserConfirmation":true}]);
+        store
+            .save_settings(&json!({"userReviewRequirements":required}))
+            .unwrap();
+        assert!(store
+            .foundation_automatic_decisions(&required)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store.foundation_choices().unwrap()["contracts"][0]["requiresUserReview"],
+            true
+        );
+        let snapshot = json!({"runnerVersion":"desktop-runner/v1","stage":"foundation.run","guard":{"sourceVersion":1,"foundationVersion":1,"assets":{},"units":{},"episodeIds":decisions[0]["episodes"]},"input":{"projectId":"p","sourceVersion":1,"foundationPhase":"AUTO_INTERPRET","foundationDecisionPolicy":crate::pipeline::foundation_delivery::AUTO_INTERPRET_POLICY,"automaticDecisions":decisions,"userReviewRequirements":[]}});
+        assert!(store.reserve_foundation_auto_workflow(&snapshot).is_err());
+        assert!(store.jobs().unwrap().is_empty());
+    }
+    #[test]
+    fn recovery_cli_closing_known_media_tasks_is_query_only_and_exact() {
+        let (_tmp, store, _) = author_store_fixture();
+        let mut cases = vec![];
+        for (kind, state, task, error, recover) in [
+            (
+                "image",
+                "auth_required",
+                Some("image-original"),
+                "客户端已停止本地 CLI 查询。",
+                true,
+            ),
+            (
+                "video",
+                "auth_required",
+                Some("video-original"),
+                "客户端已停止本地 CLI 查询。",
+                true,
+            ),
+            (
+                "image",
+                "auth_required",
+                Some("real-auth"),
+                "登录已失效",
+                false,
+            ),
+            (
+                "image",
+                "auth_required",
+                None,
+                "客户端已停止本地 CLI 查询。",
+                false,
+            ),
+            (
+                "video",
+                "auth_required",
+                Some(""),
+                "客户端已停止本地 CLI 查询。",
+                false,
+            ),
+            (
+                "image",
+                "submission_unknown",
+                None,
+                "客户端已停止本地 CLI 查询。",
+                false,
+            ),
+            (
+                "video",
+                "paused",
+                Some("budget-paused"),
+                "客户端已停止本地 CLI 查询。",
+                false,
+            ),
+            (
+                "workflow",
+                "auth_required",
+                Some("other-kind"),
+                "客户端已停止本地 CLI 查询。",
+                false,
+            ),
+            (
+                "image",
+                "auth_required",
+                Some("similar-error"),
+                "客户端已停止本地 CLI 查询。 额外原因",
+                false,
+            ),
+        ] {
+            let key = store
+                .add_job(
+                    kind,
+                    &format!("fixture-{}", cases.len()),
+                    "dreamina",
+                    "fixture-account",
+                    &json!({"originalSubmission":"immutable","estimatedCost":{"amount":9}}),
+                    state,
+                )
+                .unwrap();
+            let mut fields = json!({"error":error,"nextAttemptAt":123456,"queryAttempts":3,"downloadAttempts":2,"prepared":{"uploadReceipts":[{"id":"old-upload"}]},"receipt":{"taskId":task,"actualCost":{"amount":8}},"result":{"completedOriginalResult":true}});
+            if let Some(task) = task.filter(|task| !task.is_empty()) {
+                fields["providerTaskId"] = json!(task);
+            }
+            store.update_job(&key, state, &fields).unwrap();
+            if task == Some("") {
+                store
+                    .conn()
+                    .unwrap()
+                    .execute("UPDATE jobs SET task_id='' WHERE id=?1", [&key])
+                    .unwrap();
+            }
+            let original = store.job(&key).unwrap();
+            cases.push((key, original, recover));
+        }
+        store.recover_interrupted().unwrap();
+        assert_eq!(store.jobs().unwrap().len(), cases.len());
+        for (key, original, recover) in &cases {
+            let updated = store.job(key).unwrap();
+            if *recover {
+                assert_eq!(updated["status"], "submitted");
+                assert_eq!(updated["nextAttemptAt"], 0);
+                assert!(updated["error"].is_null());
+            } else {
+                assert_eq!(updated, *original);
+            }
+            for field in [
+                "providerTaskId",
+                "accountId",
+                "snapshot",
+                "prepared",
+                "receipt",
+                "result",
+                "queryAttempts",
+                "downloadAttempts",
+            ] {
+                assert_eq!(
+                    updated[field], original[field],
+                    "recovery must preserve {field}"
+                );
+            }
+        }
+        let once = store.jobs().unwrap();
+        store.recover_interrupted().unwrap();
+        assert_eq!(
+            store.jobs().unwrap(),
+            once,
+            "idempotent startup cannot create a new generation or reset budgets"
+        );
     }
     fn image(store: &Store, label: &str, color: u8, asset: Option<&str>) -> Value {
         let file = store.root.join(format!("{label}.png"));
@@ -2072,6 +2831,7 @@ mod tests {
             "submission_unknown",
             "query_failed",
             "download_failed",
+            "recovery_paused",
             "waiting_dependency",
             "succeeded",
         ] {

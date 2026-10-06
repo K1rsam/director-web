@@ -1,8 +1,10 @@
 use super::*;
 use std::{
+    collections::HashMap,
     io::Read,
     process::{Command, Stdio},
-    time::{Duration, Instant},
+    sync::{Arc, Mutex, OnceLock},
+    time::{Duration, Instant, SystemTime},
 };
 
 fn cli_path(config: &ProviderConfig) -> ProviderResult<&Path> {
@@ -23,16 +25,342 @@ fn cli_path(config: &ProviderConfig) -> ProviderResult<&Path> {
     Ok(path)
 }
 
+#[derive(Debug)]
 struct CliOutput {
     success: bool,
+    exit_code: Option<i32>,
+    launch: String,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+}
+
+// The CLI uses Go's proxy environment. A desktop launched by Explorer/Sky can
+// have no proxy environment even though this user's static Windows proxy is on.
+// Read that configuration for this child only; never edit the process/system env.
+#[derive(Clone, Default)]
+struct ProxyEnvironment {
+    http: Option<String>,
+    https: Option<String>,
+    all: Option<String>,
+    bypass: Option<String>,
+}
+#[derive(Default)]
+struct WindowsProxySettings {
+    enabled: bool,
+    server: String,
+    bypass: String,
+    // PAC/WPAD are deliberately not resolved or used as a proxy address.
+    pac_present: bool,
+}
+#[derive(Default)]
+struct StaticProxies {
+    http: Option<String>,
+    https: Option<String>,
+}
+
+fn inherited_proxy_environment() -> ProxyEnvironment {
+    let read = |upper: &str, lower: &str| {
+        std::env::var_os(upper)
+            .or_else(|| std::env::var_os(lower))
+            .map(|v| v.to_string_lossy().into_owned())
+    };
+    ProxyEnvironment {
+        http: read("HTTP_PROXY", "http_proxy"),
+        https: read("HTTPS_PROXY", "https_proxy"),
+        all: read("ALL_PROXY", "all_proxy"),
+        bypass: read("NO_PROXY", "no_proxy"),
+    }
+}
+
+fn static_proxy_url(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 4096
+        || value.chars().any(|c| c.is_whitespace() || c.is_control())
+        || value.contains('@')
+    {
+        return None;
+    }
+    let value = if value.contains("://") {
+        value.to_owned()
+    } else {
+        format!("http://{value}")
+    };
+    let url = reqwest::Url::parse(&value).ok()?;
+    if !["http", "https"].contains(&url.scheme())
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.port() == Some(0)
+    {
+        return None;
+    }
+    Some(url.to_string())
+}
+
+fn parse_static_proxies(value: &str) -> Option<StaticProxies> {
+    if value.len() > 16 * 1024 || value.chars().any(char::is_control) {
+        return None;
+    }
+    let entries: Vec<_> = value
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if entries.is_empty() {
+        return None;
+    }
+    if entries.len() == 1 && !entries[0].contains('=') {
+        let url = static_proxy_url(entries[0])?;
+        return Some(StaticProxies {
+            http: Some(url.clone()),
+            https: Some(url),
+        });
+    }
+    let mut proxies = StaticProxies::default();
+    let mut seen = std::collections::HashSet::new();
+    for entry in entries {
+        let (protocol, address) = entry.split_once('=')?;
+        let protocol = protocol.trim().to_ascii_lowercase();
+        if !seen.insert(protocol.clone()) {
+            return None;
+        }
+        match protocol.as_str() {
+            "http" => proxies.http = Some(static_proxy_url(address)?),
+            "https" => proxies.https = Some(static_proxy_url(address)?),
+            // Do not turn a SOCKS/FTP entry into an HTTP proxy.
+            "socks" | "ftp" => {}
+            _ => return None,
+        }
+    }
+    Some(proxies)
+}
+
+fn converted_windows_bypass(value: &str) -> Option<String> {
+    if value.len() > 16 * 1024 || value.chars().any(char::is_control) {
+        return None;
+    }
+    let mut supported = Vec::new();
+    for value in value.split(';').map(str::trim).filter(|v| !v.is_empty()) {
+        // WinINET <local>, arbitrary wildcard patterns, URL/port patterns and
+        // CIDR semantics are not equivalent to Go/reqwest NO_PROXY. Skip them.
+        let suffix = value.strip_prefix("*.");
+        let candidate = suffix
+            .map(|domain| format!(".{domain}"))
+            .unwrap_or_else(|| value.to_owned());
+        let ip = candidate.parse::<std::net::IpAddr>().is_ok();
+        let host = candidate.trim_start_matches('.');
+        let domain = !host.is_empty()
+            && host.len() <= 253
+            && host.split('.').all(|label| {
+                !label.is_empty()
+                    && label.len() <= 63
+                    && !label.starts_with('-')
+                    && !label.ends_with('-')
+                    && label
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+            });
+        // A bare DNS hostname would also bypass its subdomains in Go, unlike
+        // WinINET's exact pattern. Only exact IPs and explicit *.suffix agree.
+        if !ip && !(suffix.is_some() && domain) {
+            continue;
+        }
+        let candidate = candidate.to_ascii_lowercase();
+        if !supported.contains(&candidate) {
+            supported.push(candidate);
+        }
+    }
+    (!supported.is_empty()).then(|| supported.join(","))
+}
+
+fn effective_proxy_environment(
+    inherited: ProxyEnvironment,
+    windows: Option<&WindowsProxySettings>,
+) -> ProxyEnvironment {
+    let mut result = inherited;
+    // An explicit ALL_PROXY (even an empty deliberate override) wins over the
+    // system configuration. Map it to missing scheme variables for the Go CLI.
+    if let Some(all) = &result.all {
+        if result.http.is_none() {
+            result.http = Some(all.clone());
+        }
+        if result.https.is_none() {
+            result.https = Some(all.clone());
+        }
+        return result;
+    }
+    if let Some(settings) =
+        windows.filter(|s| s.enabled && (!s.pac_present || !s.server.trim().is_empty()))
+    {
+        if let Some(proxies) = parse_static_proxies(&settings.server) {
+            let used = (result.http.is_none() && proxies.http.is_some())
+                || (result.https.is_none() && proxies.https.is_some());
+            if result.http.is_none() {
+                result.http = proxies.http;
+            }
+            if result.https.is_none() {
+                result.https = proxies.https;
+            }
+            if used && result.bypass.is_none() {
+                result.bypass = converted_windows_bypass(&settings.bypass);
+            }
+        }
+    }
+    result
+}
+
+#[cfg(windows)]
+fn windows_proxy_settings() -> Option<WindowsProxySettings> {
+    use std::ffi::c_void;
+    #[repr(C)]
+    struct IeProxyConfig {
+        auto_detect: i32,
+        auto_config: *mut u16,
+        proxy: *mut u16,
+        bypass: *mut u16,
+    }
+    #[link(name = "winhttp")]
+    extern "system" {
+        fn WinHttpGetIEProxyConfigForCurrentUser(config: *mut IeProxyConfig) -> i32;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GlobalFree(memory: *mut c_void) -> *mut c_void;
+    }
+    unsafe fn copy_wide(pointer: *const u16) -> Option<String> {
+        if pointer.is_null() {
+            return None;
+        }
+        for length in 0..32768 {
+            if *pointer.add(length) == 0 {
+                return String::from_utf16(std::slice::from_raw_parts(pointer, length)).ok();
+            }
+        }
+        None
+    }
+    let mut config = IeProxyConfig {
+        auto_detect: 0,
+        auto_config: std::ptr::null_mut(),
+        proxy: std::ptr::null_mut(),
+        bypass: std::ptr::null_mut(),
+    };
+    // The API reports lpszProxy only when "use a proxy server" is enabled for
+    // the active connection. Every API-owned string is freed even on failure.
+    let ok = unsafe { WinHttpGetIEProxyConfigForCurrentUser(&mut config) != 0 };
+    let proxy = unsafe { copy_wide(config.proxy) };
+    let bypass = unsafe { copy_wide(config.bypass) };
+    let pac_present = !config.auto_config.is_null();
+    unsafe {
+        for pointer in [config.auto_config, config.proxy, config.bypass] {
+            if !pointer.is_null() {
+                GlobalFree(pointer.cast());
+            }
+        }
+    }
+    ok.then(|| WindowsProxySettings {
+        enabled: proxy.as_ref().is_some_and(|p| !p.trim().is_empty()),
+        server: proxy.unwrap_or_default(),
+        bypass: bypass.unwrap_or_default(),
+        pac_present,
+    })
+}
+#[cfg(not(windows))]
+fn windows_proxy_settings() -> Option<WindowsProxySettings> {
+    None
+}
+
+fn child_proxy_environment() -> ProxyEnvironment {
+    effective_proxy_environment(
+        inherited_proxy_environment(),
+        windows_proxy_settings().as_ref(),
+    )
+}
+
+fn apply_child_proxy_environment(command: &mut Command, proxy: &ProxyEnvironment) {
+    for (key, value) in [
+        ("HTTP_PROXY", &proxy.http),
+        ("HTTPS_PROXY", &proxy.https),
+        ("ALL_PROXY", &proxy.all),
+        ("NO_PROXY", &proxy.bypass),
+    ] {
+        if let Some(value) = value {
+            command.env(key, value);
+        }
+    }
+}
+
+// Official image/video result GETs share the child CLI's deterministic scheme
+// precedence. This is local client configuration, not a global env mutation.
+pub(super) fn apply_result_proxies(
+    builder: reqwest::blocking::ClientBuilder,
+) -> ProviderResult<reqwest::blocking::ClientBuilder> {
+    result_proxies_from_environment(builder, &child_proxy_environment())
+}
+fn result_proxies_from_environment(
+    mut builder: reqwest::blocking::ClientBuilder,
+    environment: &ProxyEnvironment,
+) -> ProviderResult<reqwest::blocking::ClientBuilder> {
+    builder = builder.no_proxy();
+    let bypass = environment
+        .bypass
+        .as_deref()
+        .and_then(reqwest::NoProxy::from_string);
+    for (https, address) in [(false, &environment.http), (true, &environment.https)] {
+        if let Some(address) = address.as_deref().filter(|s| !s.is_empty()) {
+            let proxy = if https {
+                reqwest::Proxy::https(address)
+            } else {
+                reqwest::Proxy::http(address)
+            }
+            .map_err(|_| {
+                ProviderError::new(
+                    "PROXY_CONFIGURATION",
+                    "即梦结果下载的显式代理配置无效；原任务保持可恢复。",
+                )
+            })?
+            .no_proxy(bypass.clone());
+            builder = builder.proxy(proxy);
+        }
+    }
+    Ok(builder)
 }
 
 fn execute(
     config: &ProviderConfig,
     args: &[String],
     submitting: bool,
+) -> ProviderResult<CliOutput> {
+    execute_until(config, args, submitting, None)
+}
+
+fn capability_timeout() -> ProviderError {
+    ProviderError::new(
+        "CLI_CAPABILITY_TIMEOUT",
+        "即梦模型能力检查超时，请稍后重试；已有目录与生成任务保留。",
+    )
+}
+
+// Only version/help inspection supplies this deadline. Generation and original-task
+// queries continue to use their configured timeout through `execute` above.
+fn execute_until(
+    config: &ProviderConfig,
+    args: &[String],
+    submitting: bool,
+    deadline: Option<Instant>,
+) -> ProviderResult<CliOutput> {
+    execute_until_in_directory(config, args, submitting, deadline, None)
+}
+
+fn execute_until_in_directory(
+    config: &ProviderConfig,
+    args: &[String],
+    submitting: bool,
+    deadline: Option<Instant>,
+    directory: Option<&Path>,
 ) -> ProviderResult<CliOutput> {
     let _active = CliGuard::enter();
     if shutting_down() {
@@ -41,7 +369,15 @@ fn execute(
             "客户端正在关闭，未启动新的本地任务。",
         ));
     }
-    let mut command = Command::new(cli_path(config)?);
+    if deadline.is_some_and(|end| Instant::now() >= end) {
+        return Err(capability_timeout());
+    }
+    // A child-specific working directory must not change how the executable is
+    // resolved, or the parent process/account environment.
+    let mut command = cli_command_in_directory(config, directory)?;
+    let proxy_environment = child_proxy_environment();
+    apply_child_proxy_environment(&mut command, &proxy_environment);
+    let launch = safe_launch_fingerprint_in_directory(&proxy_environment, directory);
     command
         .args(args)
         .stdin(Stdio::null())
@@ -52,81 +388,549 @@ fn execute(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
-    let mut child = command
-        .spawn()
-        .map_err(|_| ProviderError::new("CLI_START", "无法启动官方 CLI；尚未提交生成。"))?;
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
-    let read = |stream: Box<dyn Read + Send>| {
-        std::thread::spawn(move || {
-            let mut out = Vec::new();
-            stream
-                .take(wire::MAX_JSON + 1)
-                .read_to_end(&mut out)
-                .map(|_| out)
-        })
+    let policy = CliProcessPolicy {
+        run: Duration::from_secs(config.timeout_seconds.clamp(1, 900)),
+        drain: Duration::from_secs(5),
+        cleanup: Duration::from_secs(5),
+        inspection_deadline: deadline,
     };
-    let output = read(Box::new(stdout));
-    let errors = read(Box::new(stderr));
-    let started = Instant::now();
-    let status = loop {
-        if shutting_down() {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = output.join();
-            let _ = errors.join();
-            return Err(if submitting {
-                ProviderError::uncertain("客户端关闭时提交尚未确认；重新打开后请核对原任务。")
-            } else {
-                ProviderError::new("CLIENT_CLOSING", "客户端已停止本地 CLI 查询。")
-            });
+    supervise_command(command, submitting, launch, policy, Arc::new(shutting_down))
+}
+
+#[derive(Clone, Copy)]
+struct CliProcessPolicy {
+    run: Duration,
+    drain: Duration,
+    cleanup: Duration,
+    inspection_deadline: Option<Instant>,
+}
+
+struct CliPipeOutput {
+    bytes: Vec<u8>,
+    exceeded: bool,
+}
+
+async fn drain_cli_pipe<R: tokio::io::AsyncRead + Unpin>(
+    mut stream: R,
+) -> std::io::Result<CliPipeOutput> {
+    use tokio::io::AsyncReadExt;
+    let mut chunk = [0; 8192];
+    let mut bytes = Vec::new();
+    let mut exceeded = false;
+    loop {
+        let count = stream.read(&mut chunk).await?;
+        if count == 0 {
+            return Ok(CliPipeOutput { bytes, exceeded });
         }
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {}
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(if submitting {
-                    ProviderError::uncertain("CLI 提交状态未确认，不能自动重发。")
-                } else {
-                    ProviderError::new("CLI_WAIT", "CLI 查询失败。")
-                });
-            }
-        }
-        if started.elapsed() > Duration::from_secs(config.timeout_seconds.clamp(1, 900)) {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = output.join();
-            let _ = errors.join();
-            return Err(if submitting {
-                ProviderError::uncertain("CLI 提交超时；请核对原任务，不能自动重发。")
-            } else {
-                ProviderError::new("CLI_TIMEOUT", "CLI 只读查询超时，可查询原任务重试。")
-            });
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    let bytes = output
-        .join()
-        .map_err(|_| ProviderError::new("CLI_OUTPUT", "CLI 输出读取失败。"))?
-        .map_err(|_| ProviderError::new("CLI_OUTPUT", "CLI 输出读取失败。"))?;
-    let error = errors.join().ok().and_then(Result::ok).unwrap_or_default();
-    if bytes.len() as u64 > wire::MAX_JSON || error.len() as u64 > wire::MAX_JSON {
-        return Err(if submitting {
-            ProviderError::uncertain("CLI 提交回执超出限制，需人工核对。")
-        } else {
-            ProviderError::new("CLI_OUTPUT_LIMIT", "CLI 输出超出大小限制。")
-        });
+        let keep = ((wire::MAX_JSON + 1) as usize - bytes.len()).min(count);
+        bytes.extend_from_slice(&chunk[..keep]);
+        exceeded |= bytes.len() as u64 > wire::MAX_JSON || keep < count;
+        // Keep consuming both pipes after the retention limit. Closing a pipe here
+        // can block/change the CLI before it has returned its submission identity.
+        tokio::task::yield_now().await;
     }
-    Ok(CliOutput {
-        success: status.success(),
-        stdout: bytes,
-        stderr: error,
+}
+
+fn cli_execution_error(submitting: bool, code: &str, message: &str) -> ProviderError {
+    if submitting {
+        ProviderError::uncertain(format!("{message} 请核对原任务，不能自动重发。"))
+    } else {
+        ProviderError::new(code, message)
+    }
+}
+
+// The adapter is synchronous. A scoped owner runs async process I/O on its own
+// runtime, including when called from an existing Tokio runtime. There are no
+// reader threads or detached tasks: cancellation drops both owned pipe futures.
+fn supervise_command(
+    command: Command,
+    submitting: bool,
+    launch: String,
+    policy: CliProcessPolicy,
+    stopped: Arc<dyn Fn() -> bool + Send + Sync>,
+) -> ProviderResult<CliOutput> {
+    let spawned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let child_started = spawned.clone();
+    std::thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|_| {
+                        ProviderError::new("CLI_RUNTIME", "无法建立本地 CLI 监督；尚未提交生成。")
+                    })?;
+                runtime.block_on(supervise_command_async(
+                    command,
+                    submitting,
+                    launch,
+                    policy,
+                    stopped,
+                    child_started,
+                ))
+            })
+            .join()
+            .map_err(|_| {
+                cli_execution_error(
+                    submitting && spawned.load(std::sync::atomic::Ordering::SeqCst),
+                    "CLI_RUNTIME",
+                    "本地 CLI 监督异常；执行记录保持原状。",
+                )
+            })?
     })
 }
 
+async fn supervise_command_async(
+    command: Command,
+    submitting: bool,
+    launch: String,
+    policy: CliProcessPolicy,
+    stopped: Arc<dyn Fn() -> bool + Send + Sync>,
+    spawned: Arc<std::sync::atomic::AtomicBool>,
+) -> ProviderResult<CliOutput> {
+    if stopped() {
+        return Err(ProviderError::new(
+            "CLIENT_CLOSING",
+            "客户端正在关闭，未启动新的本地任务。",
+        ));
+    }
+    let budget = policy
+        .inspection_deadline
+        .map(|end| {
+            end.saturating_duration_since(Instant::now())
+                .min(policy.run)
+        })
+        .unwrap_or(policy.run);
+    if budget.is_zero() {
+        return Err(capability_timeout());
+    }
+    let deadline = tokio::time::Instant::now() + budget;
+    let mut command = command;
+    // Tokio's Windows anonymous ChildStdout uses a blocking ReadFile worker.
+    // An inherited writer would keep that worker (and Runtime::drop) alive after
+    // cancelling a future. Use private OVERLAPPED server handles for both reads.
+    #[cfg(windows)]
+    let (stdout, stderr) = {
+        let (stdout, writer) = owned_cli_output_pipe().await.map_err(|_| {
+            ProviderError::new(
+                "CLI_PIPE_START",
+                "无法建立本地 CLI 输出管道；尚未提交生成。",
+            )
+        })?;
+        command.stdout(Stdio::from(writer));
+        let (stderr, writer) = owned_cli_output_pipe().await.map_err(|_| {
+            ProviderError::new(
+                "CLI_PIPE_START",
+                "无法建立本地 CLI 错误管道；尚未提交生成。",
+            )
+        })?;
+        command.stderr(Stdio::from(writer));
+        (stdout, stderr)
+    };
+    let mut command = tokio::process::Command::from(command);
+    command.kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|_| ProviderError::new("CLI_START", "无法启动官方 CLI；尚未提交生成。"))?;
+    spawned.store(true, std::sync::atomic::Ordering::SeqCst);
+    // Close the parent's copies of the child-side writers immediately. The
+    // command is single-use; retaining it would itself prevent pipe EOF.
+    drop(command);
+    let execution = async {
+        #[cfg(not(windows))]
+        let stdout = child.stdout.take().ok_or_else(|| cli_execution_error(submitting, "CLI_OUTPUT", "无法读取 CLI 输出。"))?;
+        #[cfg(not(windows))]
+        let stderr = child.stderr.take().ok_or_else(|| cli_execution_error(submitting, "CLI_OUTPUT", "无法读取 CLI 错误输出。"))?;
+        let output = drain_cli_pipe(stdout);
+        let errors = drain_cli_pipe(stderr);
+        tokio::pin!(output, errors);
+        let mut bytes = None;
+        let mut error = None;
+        let mut status = None;
+        let mut drain_deadline = deadline;
+        let mut control = tokio::time::interval(Duration::from_millis(20));
+        loop {
+            if status.is_some() && bytes.is_some() && error.is_some() {
+                break Ok((status.unwrap(), bytes.unwrap(), error.unwrap()));
+            }
+            tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(deadline) => {
+                    break Err(if !submitting && policy.inspection_deadline.is_some_and(|end| Instant::now() >= end) {
+                        capability_timeout()
+                    } else {
+                        cli_execution_error(submitting, "CLI_TIMEOUT", "CLI 请求超过运行期限；原任务保持可恢复。")
+                    });
+                }
+                _ = tokio::time::sleep_until(drain_deadline), if status.is_some() => {
+                    break Err(cli_execution_error(submitting, "CLI_OUTPUT_TIMEOUT", "CLI 已退出，但输出管道未在5秒排空期限内结束。"));
+                }
+                _ = control.tick() => {
+                    if stopped() {
+                        break Err(cli_execution_error(submitting, "CLIENT_CLOSING", "客户端已停止本地 CLI 执行。"));
+                    }
+                }
+                result = &mut output, if bytes.is_none() => {
+                    bytes = Some(result.map_err(|_| cli_execution_error(submitting, "CLI_OUTPUT", "CLI 输出读取失败。"))?);
+                }
+                result = &mut errors, if error.is_none() => {
+                    error = Some(result.map_err(|_| cli_execution_error(submitting, "CLI_OUTPUT", "CLI 错误输出读取失败。"))?);
+                }
+                result = child.wait(), if status.is_none() => {
+                    status = Some(result.map_err(|_| cli_execution_error(submitting, "CLI_WAIT", "CLI 进程状态未确认。"))?);
+                    drain_deadline = (tokio::time::Instant::now() + policy.drain).min(deadline);
+                }
+            }
+        }
+    }.await;
+    // Both pipe futures are dropped before stop/reap. A descendant retaining a
+    // standard handle cannot extend the request deadline or delay TempDir cleanup.
+    let (status, bytes, error) = match execution {
+        Ok(result) => result,
+        Err(mut error) => {
+            if !stop_cli_process(&mut child, policy.cleanup).await {
+                error
+                    .message
+                    .push_str(" 本地进程退出尚未确认；不会自动重发。");
+            }
+            return Err(error);
+        }
+    };
+    if bytes.exceeded || error.exceeded {
+        return Err(cli_execution_error(
+            submitting,
+            "CLI_OUTPUT_LIMIT",
+            "CLI 输出超出大小限制。",
+        ));
+    }
+    Ok(CliOutput {
+        success: status.success(),
+        exit_code: status.code(),
+        launch,
+        stdout: bytes.bytes,
+        stderr: error.bytes,
+    })
+}
+
+#[cfg(windows)]
+async fn owned_cli_output_pipe(
+) -> std::io::Result<(tokio::net::windows::named_pipe::NamedPipeServer, fs::File)> {
+    use tokio::net::windows::named_pipe::{PipeMode, ServerOptions};
+    let name = format!("\\\\.\\pipe\\director-dreamina-{}", uuid::Uuid::new_v4());
+    let server = ServerOptions::new()
+        .pipe_mode(PipeMode::Byte)
+        .access_inbound(true)
+        .access_outbound(false)
+        .first_pipe_instance(true)
+        .reject_remote_clients(true)
+        .create(&name)?;
+    let writer = fs::OpenOptions::new().write(true).open(&name)?;
+    server.connect().await?;
+    Ok((server, writer))
+}
+
+async fn stop_cli_process(child: &mut tokio::process::Child, limit: Duration) -> bool {
+    // Do not pass an already-exited PID to taskkill: it may have been reused.
+    if child.try_wait().ok().flatten().is_some() {
+        return true;
+    }
+    #[cfg(windows)]
+    if let Some(pid) = child.id() {
+        let mut command = tokio::process::Command::new("taskkill.exe");
+        command
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .creation_flags(0x08000000);
+        if let Ok(mut helper) = command.spawn() {
+            if tokio::time::timeout(limit, helper.wait()).await.is_err() {
+                let _ = helper.start_kill();
+                let _ = tokio::time::timeout(Duration::from_millis(500), helper.wait()).await;
+            }
+        }
+    }
+    let _ = child.start_kill();
+    matches!(tokio::time::timeout(limit, child.wait()).await, Ok(Ok(_)))
+}
+
+fn cli_command_in_directory(
+    config: &ProviderConfig,
+    directory: Option<&Path>,
+) -> ProviderResult<Command> {
+    let executable = if directory.is_some() {
+        fs::canonicalize(cli_path(config)?)
+            .map_err(|_| ProviderError::new("CLI_START", "无法定位官方 CLI；尚未提交生成。"))?
+    } else {
+        cli_path(config)?.to_path_buf()
+    };
+    let mut command = Command::new(executable);
+    if let Some(directory) = directory {
+        command.current_dir(directory);
+    }
+    Ok(command)
+}
+
+fn safe_launch_fingerprint_for(proxy: &ProxyEnvironment) -> String {
+    safe_launch_fingerprint_in_directory(proxy, None)
+}
+fn safe_launch_fingerprint_in_directory(
+    proxy: &ProxyEnvironment,
+    directory: Option<&Path>,
+) -> String {
+    // Fingerprint the effective child proxy values, not the parent's values.
+    // Only hashes escape; neither proxy URLs nor OAuth variables are logged.
+    let cwd = directory
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok())
+        .map(|p| p.to_string_lossy().into_owned());
+    let identities: Vec<_> = ["USERPROFILE", "HOME", "DREAMINA_HOME"]
+        .into_iter()
+        .map(|key| (key, std::env::var(key).ok()))
+        .collect();
+    launch_fingerprint_from(cwd, proxy, &identities)
+}
+fn launch_fingerprint_from(
+    cwd: Option<String>,
+    proxy: &ProxyEnvironment,
+    identities: &[(&str, Option<String>)],
+) -> String {
+    let mut context = vec![(
+        "cwd",
+        cwd.map(|p| if cfg!(windows) { p.to_lowercase() } else { p }),
+    )];
+    for (key, value) in [
+        ("HTTP_PROXY", &proxy.http),
+        ("HTTPS_PROXY", &proxy.https),
+        ("ALL_PROXY", &proxy.all),
+        ("NO_PROXY", &proxy.bypass),
+    ] {
+        context.push((key, value.clone()));
+    }
+    for (key, value) in identities {
+        context.push((*key, value.clone()));
+    }
+    hex_hash(&serde_json::to_vec(&context).unwrap_or_default())[..12].to_owned()
+}
+fn failure_redactions(
+    config: Option<&ProviderConfig>,
+    args: &[String],
+    directory: Option<&Path>,
+) -> Vec<String> {
+    let mut values = Vec::new();
+    if let Some(config) = config {
+        values.extend(config.endpoint.iter().cloned());
+        values.extend(
+            config
+                .cli_path
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned()),
+        );
+        if let Some(key) = &config.credential_env {
+            if let Ok(value) = std::env::var(key) {
+                values.push(value);
+            }
+        }
+    }
+    values.extend(directory.map(|p| p.to_string_lossy().into_owned()));
+    values.extend(
+        std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned()),
+    );
+    for key in [
+        "USERPROFILE",
+        "HOME",
+        "DREAMINA_HOME",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+    ] {
+        values.extend(std::env::var(key).ok());
+    }
+    let mut previous_sensitive = false;
+    for arg in args {
+        let (name, value) = arg.split_once('=').unwrap_or((arg, ""));
+        let sensitive = name == "--prompt"
+            || name.contains("token")
+            || name.contains("secret")
+            || name.contains("credential")
+            || name.contains("authorization")
+            || name.contains("device_code")
+            || name.contains("user_code");
+        if previous_sensitive {
+            values.push(arg.clone());
+        }
+        if sensitive && !value.is_empty() {
+            values.push(value.to_owned());
+        }
+        previous_sensitive = sensitive && value.is_empty();
+    }
+    values.retain(|value| !value.is_empty());
+    values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    values.dedup();
+    values
+}
+
+/// Redact the complete retained stderr BEFORE limiting display length. The
+/// supervisor already bounds retained bytes; a cut raw prefix could expose a
+/// fragment of a long credential or prompt. Ambiguous lines expose only class.
+fn safe_failure_stderr(stderr: &[u8], redactions: &[String]) -> Option<String> {
+    if stderr.is_empty() {
+        return None;
+    }
+    let Ok(raw) = std::str::from_utf8(stderr) else {
+        return Some("[stderr 内容未安全披露]".into());
+    };
+    let mut cleaned = raw.to_owned();
+    // Do not replace a private directory prefix before recognizing its whole
+    // path: replacing C:\\Users\\name alone could leave a project suffix visible.
+    let path_literal = |value: &str| {
+        value.starts_with('/') || value.starts_with('\\') || value.as_bytes().get(1) == Some(&b':')
+    };
+    for value in redactions.iter().filter(|value| !path_literal(value)) {
+        cleaned = cleaned.replace(value, "[redacted]");
+        if let Ok(escaped) = serde_json::to_string(value) {
+            cleaned = cleaned.replace(&escaped[1..escaped.len() - 1], "[redacted]");
+        }
+    }
+    // Handle JSON-escaped URLs without decoding arbitrary escapes into content.
+    cleaned = cleaned.replace(r"\/", "/");
+    for (pattern, replacement) in [
+        (r"\x1b\[[0-?]*[ -/]*[@-~]", ""),
+        (
+            r#"(?i)\b[a-z][a-z0-9+.-]{1,20}://[^\s<>"']+"#,
+            "[media-url]",
+        ),
+        (
+            r#"(?i)(?:\\\\\?\\)?[a-z]:[\\/][^\r\n"']*"#,
+            "[private-path]",
+        ),
+        (r#"\\\\[^\\\s]+\\[^\r\n"']*"#, "[private-path]"),
+        (r#"(?:^|[\s"'=:(])/[^\r\n"']*"#, " [private-path]"),
+        (r#"(?:\./|\.\\)[^\s"'<>]+"#, "[reference-file]"),
+        (
+            r#"(?i)\b[^\s"'<>:/\\=]+\.(?:png|jpe?g|webp|gif|bmp|mp4|mov|wav|mp3|sqlite|db|exe)\b"#,
+            "[reference-file]",
+        ),
+        (
+            r"\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b",
+            "[credential]",
+        ),
+        (
+            r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+            "[id]",
+        ),
+        (r"(?i)\b[0-9a-f]{32,}\b", "[id]"),
+        (r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b", "[network-address]"),
+        (
+            r"(?i)\b(?:[a-z0-9_-]+\.)+[a-z]{2,}(?::\d+)?\b",
+            "[network-address]",
+        ),
+    ] {
+        cleaned = regex::Regex::new(pattern)
+            .unwrap()
+            .replace_all(&cleaned, replacement)
+            .into_owned();
+    }
+    for value in redactions.iter().filter(|value| path_literal(value)) {
+        cleaned = cleaned.replace(value, "[private-path]");
+        if let Ok(escaped) = serde_json::to_string(value) {
+            cleaned = cleaned.replace(&escaped[1..escaped.len() - 1], "[private-path]");
+        }
+    }
+    // Concatenated/underscore debug keys are also sensitive (accessToken,
+    // PRIVATE_TOKEN). Do not rely on word boundaries to recognize such keys.
+    let sensitive = regex::Regex::new(r"(?i)(?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|authorization|credential|secret|password|passwd|api[_-]?key|access[_-]?key|cookie|signature|signed|x-amz-|x-tos-|device[_-]?code|user[_-]?code|\b(?:pwd|bearer|basic)\b)").unwrap();
+    let escaped = regex::Regex::new(r"(?i)%[0-9a-f]{2}|\\u[0-9a-f]{4}|\\x[0-9a-f]{2}").unwrap();
+    let quoted_flag = regex::Regex::new(r#"["'](--[a-zA-Z0-9_-]+)["']"#).unwrap();
+    let quoted = regex::Regex::new(r#""[^"\r\n]*"|'[^'\r\n]*'"#).unwrap();
+    let prompt_value = regex::Regex::new(r"(?i)(?:--prompt\s*=|\bprompt\s*[:=]).*").unwrap();
+    let opaque = regex::Regex::new(r"\b[A-Za-z0-9_+/=-]{24,}\b").unwrap();
+    let identifiers = regex::Regex::new(r"\b\d{8,}\b").unwrap();
+    let useful = regex::Regex::new(r"(?i)(?:\berror\b|\bfailed\b|\bfailure\b|\binvalid\b|\bunsupported\b|\brequired\b|\bcannot\b|\bunable\b|\bmust\b|\bnot found\b|\bnot exist\b|\bdenied\b|\btimeout\b|\bdeadline\b|错误|失败|无法|不支持|无效|不存在|超时|必须)").unwrap();
+    let sanitized: Vec<String> = cleaned
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            if sensitive.is_match(line)
+                || escaped.is_match(line)
+                || line.chars().any(|c| c.is_control() && c != '\t')
+                || line
+                    .chars()
+                    .any(|c| matches!(c,'\u{202a}'..='\u{202e}'|'\u{2066}'..='\u{2069}'))
+                || line.contains('{')
+                || line.contains('}')
+                || line.contains('?')
+                || line.contains('&')
+            {
+                return Some("[stderr 此行未安全披露]".into());
+            }
+            let line = prompt_value.replace_all(line, "prompt=[redacted]");
+            let line = quoted_flag.replace_all(&line, "$1");
+            let line = quoted.replace_all(&line, "[value]");
+            let line = opaque.replace_all(&line, "[value]");
+            let line = identifiers.replace_all(&line, "[id]");
+            if !useful.is_match(&line) {
+                Some("[stderr 此行未安全披露]".into())
+            } else {
+                Some(line.into_owned())
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        return None;
+    }
+    let mut summary = sanitized.join(" | ");
+    if redactions.iter().any(|value| summary.contains(value)) {
+        return Some("[stderr 内容未安全披露]".into());
+    }
+    // This is a display bound over fully sanitized Unicode, never raw stderr.
+    if summary.chars().count() > 1000 {
+        summary = summary.chars().take(1000).collect();
+        summary.push('…');
+    }
+    Some(summary)
+}
+
 fn output_error(output: &CliOutput, submitting: bool) -> ProviderError {
+    output_error_with_redactions(output, submitting, &failure_redactions(None, &[], None))
+}
+
+fn output_error_for_invocation(
+    output: &CliOutput,
+    submitting: bool,
+    config: &ProviderConfig,
+    args: &[String],
+    directory: Option<&Path>,
+) -> ProviderError {
+    output_error_with_redactions(
+        output,
+        submitting,
+        &failure_redactions(Some(config), args, directory),
+    )
+}
+
+fn output_error_with_redactions(
+    output: &CliOutput,
+    submitting: bool,
+    redactions: &[String],
+) -> ProviderError {
+    let mut error = classified_output_error(output, submitting);
+    if !output.success {
+        if let Some(summary) = safe_failure_stderr(&output.stderr, redactions) {
+            error.message.push_str(" stderr摘要：");
+            error.message.push_str(&summary);
+        }
+    }
+    error
+}
+
+fn classified_output_error(output: &CliOutput, submitting: bool) -> ProviderError {
     // Inspect both streams, but never copy raw OAuth/CLI content into public errors.
     let text = format!(
         "{}\n{}",
@@ -134,33 +938,152 @@ fn output_error(output: &CliOutput, submitting: bool) -> ProviderError {
         String::from_utf8_lossy(&output.stderr)
     )
     .to_ascii_lowercase();
+    let hint = [
+        ("DNS", "no such host"),
+        ("DNS", "name resolution"),
+        ("CONNECTION", "dial tcp"),
+        ("CONNECTION", "connection refused"),
+        ("CONNECTION", "connection reset"),
+        ("TLS", "tls"),
+        ("CERTIFICATE", "x509"),
+        ("CERTIFICATE", "certificate"),
+        ("PROXY", "proxyconnect"),
+        ("TIMEOUT", "timeout"),
+        ("TIMEOUT", "timed out"),
+        ("EOF", "unexpected eof"),
+        ("CLI_ARGUMENT", "unknown command"),
+        ("CLI_ARGUMENT", "unknown flag"),
+        ("OS_PERMISSION", "access is denied"),
+        ("OS_PERMISSION", "permission denied"),
+        ("RESPONSE_FORMAT", "invalid character"),
+        ("RESPONSE_FORMAT", "unmarshal"),
+        ("HTTP_401", "http 401"),
+        ("HTTP_401", "status code: 401"),
+        ("HTTP_403", "http 403"),
+        ("HTTP_429", "http 429"),
+    ]
+    .iter()
+    .find(|(_, marker)| text.contains(marker))
+    .map(|(hint, _)| *hint)
+    .unwrap_or("UNCLASSIFIED");
+    // Keep enough safe process evidence to diagnose the app's actual launch.
+    // Raw stderr/stdout can contain OAuth secrets and signed media URLs.
+    let diagnostic = format!(
+        " [CLI退出码={}；类别={}；stdout={}B；stderr={}B；launch={}]",
+        output
+            .exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "未知".into()),
+        hint,
+        output.stdout.len(),
+        output.stderr.len(),
+        output.launch
+    );
     if text.contains("aigccomplianceconfirmationrequired") {
         return ProviderError::new(
             "WEB_CONFIRMATION_REQUIRED",
-            "此模型要求先在即梦网页完成首次使用确认。",
+            format!("此模型要求先在即梦网页完成首次使用确认。{diagnostic}"),
         );
     }
-    if text.contains("login")
-        || text.contains("unauthorized")
-        || text.contains("authentication")
+    // SDK errors can mention login while reporting a transport failure. Such
+    // text is not evidence that the stored identity or credential has expired.
+    let timeout = [
+        "timeout",
+        "timed out",
+        "deadline exceeded",
+        "context deadline",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker));
+    let transport = timeout
+        || [
+            "connection reset",
+            "connection refused",
+            "no such host",
+            "name resolution",
+            "unexpected eof",
+            "tls handshake",
+            "x509",
+            "proxyconnect",
+            "network is unreachable",
+            "failed to connect",
+            "dial tcp",
+            "certificate verify failed",
+        ]
+        .iter()
+        .any(|marker| text.contains(marker));
+    if transport {
+        return if submitting {
+            ProviderError::uncertain(format!(
+                "CLI 提交遇到网络错误且回执未确认；请核对原任务，不能自动重发。{diagnostic}"
+            ))
+        } else {
+            ProviderError::new(
+                if timeout {
+                    "CLI_QUERY_TIMEOUT"
+                } else {
+                    "CLI_NETWORK"
+                },
+                format!(
+                    "即梦 CLI 只读请求遇到网络错误；保留原任务，可稍后查询原ID重试。{diagnostic}"
+                ),
+            )
+        };
+    }
+    if text.contains("unauthorized")
+        || text.contains("unauthenticated")
+        || text.contains("not authenticated")
         || text.contains("not logged")
         || text.contains("token expired")
+        || text.contains("expired token")
+        || text.contains("invalid token")
+        || text.contains("login required")
+        || text.contains("please login")
+        || text.contains("please log in")
+        || text.contains("please run dreamina login")
+        || text.contains("please use dreamina login")
+        || text.contains("need to login")
+        || text.contains("login denied")
+        || text.contains("authentication failed")
         || text.contains("http 401")
         || text.contains("status code: 401")
     {
-        return ProviderError::auth();
+        let mut error = ProviderError::auth();
+        error.message.push_str(&diagnostic);
+        return error;
     }
     if submitting {
-        ProviderError::uncertain("CLI 未返回可确认的提交结果；请核对渠道记录。")
+        ProviderError::uncertain(format!(
+            "CLI 未返回可确认的提交结果；请核对渠道记录。{diagnostic}"
+        ))
     } else {
-        ProviderError::new("CLI_QUERY_FAILED", "CLI 命令未成功，请核对安装版本与登录。")
+        ProviderError::new(
+            "CLI_QUERY_FAILED",
+            format!("即梦 CLI 只读命令未成功；保留原任务，可检查连接后重试。{diagnostic}"),
+        )
     }
 }
 
 fn run(config: &ProviderConfig, args: &[String], submitting: bool) -> ProviderResult<Vec<u8>> {
     let output = execute(config, args, submitting)?;
     if !output.success {
-        return Err(output_error(&output, submitting));
+        return Err(output_error_for_invocation(
+            &output, submitting, config, args, None,
+        ));
+    }
+    Ok(output.stdout)
+}
+
+fn run_in_directory(
+    config: &ProviderConfig,
+    args: &[String],
+    directory: Option<&Path>,
+) -> ProviderResult<Vec<u8>> {
+    let output = execute_until_in_directory(config, args, true, None, directory)?;
+    if !output.success {
+        return Err(output_error_for_invocation(
+            &output, true, config, args, directory,
+        ));
     }
     Ok(output.stdout)
 }
@@ -429,10 +1352,6 @@ pub(super) fn logout(config: &ProviderConfig) -> ProviderResult<()> {
     }
     Ok(())
 }
-fn help(config: &ProviderConfig, command: &str) -> ProviderResult<String> {
-    let bytes = run(config, &[command.into(), "-h".into()], false)?;
-    String::from_utf8(bytes).map_err(|_| ProviderError::new("CLI_HELP", "CLI 帮助编码无效。"))
-}
 fn has_token(text: &str, token: &str) -> bool {
     let expression = format!(
         r"(^|[^a-zA-Z0-9_.]){}([^a-zA-Z0-9_.]|$)",
@@ -556,12 +1475,172 @@ fn image_1080_dimensions(ratio: &str) -> ProviderResult<(u32, u32)> {
     Ok(dimensions)
 }
 
+const CAPABILITY_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const CAPABILITY_CACHE_MAX_KEYS: usize = 16;
+
+#[derive(Clone, Eq, PartialEq, Hash)]
+struct CapabilityCacheKey {
+    path: PathBuf,
+    sha256: String,
+    bytes: u64,
+    modified: Option<SystemTime>,
+}
+struct CachedCapabilities {
+    value: Capabilities,
+    checked: Instant,
+}
+type CapabilityCacheSlot = Arc<Mutex<Option<CachedCapabilities>>>;
+#[derive(Default)]
+struct CapabilityCache {
+    entries: Mutex<HashMap<CapabilityCacheKey, CapabilityCacheSlot>>,
+}
+static CAPABILITY_CACHE: OnceLock<CapabilityCache> = OnceLock::new();
+
+fn capability_error(mut error: ProviderError, step: &str) -> ProviderError {
+    // Project task errors currently persist this message. Keep the typed code
+    // and the fixed local probe name, without copying CLI output or paths.
+    error.message = format!("[{}; capabilityProbe={step}] {}", error.code, error.message);
+    error
+}
+
+fn capability_cache_key(
+    config: &ProviderConfig,
+    identity: &Value,
+) -> ProviderResult<CapabilityCacheKey> {
+    let path = fs::canonicalize(cli_path(config)?)
+        .map_err(|_| ProviderError::new("CLI_PATH", "无法核对官方 CLI 的实际文件路径。"))?;
+    let metadata = fs::metadata(&path)
+        .map_err(|_| ProviderError::new("CLI_READ", "无法核对官方 CLI 文件身份。"))?;
+    Ok(CapabilityCacheKey {
+        path,
+        sha256: identity["sha256"]
+            .as_str()
+            .ok_or_else(|| ProviderError::new("CLI_IDENTITY", "官方 CLI 文件身份无效。"))?
+            .to_owned(),
+        bytes: identity["bytes"]
+            .as_u64()
+            .ok_or_else(|| ProviderError::new("CLI_IDENTITY", "官方 CLI 文件身份无效。"))?,
+        modified: metadata.modified().ok(),
+    })
+}
+
+impl CapabilityCache {
+    fn get_or_inspect(
+        &self,
+        config: &ProviderConfig,
+        mut clock: impl FnMut() -> Instant,
+        inspect: impl FnOnce(&ProviderConfig) -> ProviderResult<Capabilities>,
+    ) -> ProviderResult<Capabilities> {
+        let identity =
+            cli_identity(config).map_err(|error| capability_error(error, "cli_identity"))?;
+        let key = capability_cache_key(config, &identity)
+            .map_err(|error| capability_error(error, "cli_identity"))?;
+        let slot = {
+            let mut entries = self.entries.lock().map_err(|_| {
+                capability_error(
+                    ProviderError::new("CLI_CAPABILITY_CACHE", "官方 CLI 能力缓存暂不可用。"),
+                    "cache",
+                )
+            })?;
+            if !entries.contains_key(&key) && entries.len() >= CAPABILITY_CACHE_MAX_KEYS {
+                // Eviction only causes a new bounded read; retained in-flight
+                // slots remain valid and no account/receipt is held here.
+                entries.clear();
+            }
+            entries.entry(key.clone()).or_default().clone()
+        };
+        // Single-flight for this exact executable. The process-wide map lock
+        // is released before the existing bounded read-only inspection.
+        let mut cached = slot.lock().map_err(|_| {
+            capability_error(
+                ProviderError::new("CLI_CAPABILITY_CACHE", "官方 CLI 能力缓存暂不可用。"),
+                "cache",
+            )
+        })?;
+        if let Some(entry) = cached.as_ref() {
+            if clock()
+                .checked_duration_since(entry.checked)
+                .is_some_and(|age| age < CAPABILITY_CACHE_TTL)
+            {
+                // checked_at deliberately remains the actual help-read time.
+                // Authentication is never cached by this helper.
+                return Ok(entry.value.clone());
+            }
+        }
+        *cached = None;
+        let value = inspect(config)?;
+        let after =
+            cli_identity(config).map_err(|error| capability_error(error, "cli_identity"))?;
+        if after != identity
+            || capability_cache_key(config, &after)
+                .map_err(|error| capability_error(error, "cli_identity"))?
+                != key
+        {
+            return Err(capability_error(
+                ProviderError::new(
+                    "CLI_CHANGED",
+                    "官方 CLI 在能力检查期间变化，请重新核实安装文件。",
+                ),
+                "cli_identity",
+            ));
+        }
+        *cached = Some(CachedCapabilities {
+            value: value.clone(),
+            checked: clock(),
+        });
+        Ok(value)
+    }
+}
+
 pub(super) fn capabilities(config: &ProviderConfig) -> ProviderResult<Capabilities> {
-    let version = run(config, &["version".into()], false)?;
-    let video_help = help(config, "multimodal2video")?;
-    let text_video_help = help(config, "text2video")?;
-    let image_help = help(config, "text2image")?;
-    let edit_help = help(config, "image2image")?;
+    CAPABILITY_CACHE
+        .get_or_init(CapabilityCache::default)
+        .get_or_inspect(config, Instant::now, |config| {
+            capabilities_with_runner(config, Instant::now, |config, args, deadline| {
+                let output = execute_until(config, args, false, Some(deadline))?;
+                if !output.success {
+                    return Err(output_error(&output, false));
+                }
+                Ok(output.stdout)
+            })
+        })
+}
+
+fn capabilities_with_runner(
+    config: &ProviderConfig,
+    mut clock: impl FnMut() -> Instant,
+    mut runner: impl FnMut(&ProviderConfig, &[String], Instant) -> ProviderResult<Vec<u8>>,
+) -> ProviderResult<Capabilities> {
+    let overall_deadline = clock() + Duration::from_secs(30);
+    let command_budget = Duration::from_secs(config.timeout_seconds.clamp(1, 15));
+    let mut inspect = |args: &[String]| -> ProviderResult<Vec<u8>> {
+        let step = args.first().map(String::as_str).unwrap_or("help");
+        let started = clock();
+        if started >= overall_deadline {
+            return Err(capability_error(capability_timeout(), step));
+        }
+        let deadline = (started + command_budget).min(overall_deadline);
+        let bytes =
+            runner(config, args, deadline).map_err(|error| capability_error(error, step))?;
+        if clock() >= deadline {
+            return Err(capability_error(capability_timeout(), step));
+        }
+        Ok(bytes)
+    };
+    let version = inspect(&["version".into()])?;
+    let mut inspect_help = |command: &str| -> ProviderResult<String> {
+        let bytes = inspect(&[command.into(), "-h".into()])?;
+        String::from_utf8(bytes).map_err(|_| {
+            capability_error(
+                ProviderError::new("CLI_HELP", "CLI 帮助编码无效。"),
+                command,
+            )
+        })
+    };
+    let video_help = inspect_help("multimodal2video")?;
+    let text_video_help = inspect_help("text2video")?;
+    let image_help = inspect_help("text2image")?;
+    let edit_help = inspect_help("image2image")?;
     capabilities_from_help(
         &version,
         &video_help,
@@ -569,6 +1648,7 @@ pub(super) fn capabilities(config: &ProviderConfig) -> ProviderResult<Capabiliti
         &image_help,
         &edit_help,
     )
+    .map_err(|error| capability_error(error, "help_contract"))
 }
 
 fn capabilities_from_help(
@@ -686,9 +1766,17 @@ pub(super) fn prepare(
     config: &ProviderConfig,
     request: &GenerationRequest,
 ) -> ProviderResult<PreparedRequest> {
-    let identity = cli_identity(config)?;
-    let caps = capabilities(config)?;
-    if cli_identity(config)? != identity {
+    prepare_with_capability_resolver(config, request, capabilities)
+}
+
+fn prepare_with_capability_resolver(
+    config: &ProviderConfig,
+    request: &GenerationRequest,
+    resolver: impl FnOnce(&ProviderConfig) -> ProviderResult<Capabilities>,
+) -> ProviderResult<PreparedRequest> {
+    let identity = cli_identity(config).map_err(|error| capability_error(error, "cli_identity"))?;
+    let caps = resolver(config)?;
+    if cli_identity(config).map_err(|error| capability_error(error, "cli_identity"))? != identity {
         return Err(ProviderError::new(
             "CLI_CHANGED",
             "官方 CLI 在预检期间变化，请重新准备关联单元。",
@@ -834,12 +1922,16 @@ fn prepare_with_capabilities(
     }
     let mut frozen = request.clone();
     frozen.references = refs;
+    let mut wire = json!({"args":args,"uploadMode":"cli_internal","uploadReceiptsExposed":false,"preflight":{"capabilityVersion":caps.version,"model":model}});
+    if has_refs {
+        wire["localMediaTransport"] = json!(LOCAL_MEDIA_TRANSPORT);
+    }
     Ok(PreparedRequest {
         provider: "dreamina".into(),
         request: frozen,
         capability_version: caps.version.clone(),
         upload_receipts: vec![],
-        wire: json!({"args":args,"uploadMode":"cli_internal","uploadReceiptsExposed":false,"preflight":{"capabilityVersion":caps.version,"model":model}}),
+        wire,
         estimated_cost: None,
         prepared_at: now(),
     })
@@ -1026,11 +2118,148 @@ fn normalized_for_kind(
         raw: body,
     })
 }
+const LOCAL_MEDIA_TRANSPORT: &str = "relative-files/v1";
+
+struct CliMediaInvocation {
+    args: Vec<String>,
+    media_directory: Option<tempfile::TempDir>,
+}
+impl CliMediaInvocation {
+    fn directory(&self) -> Option<&Path> {
+        self.media_directory.as_ref().map(tempfile::TempDir::path)
+    }
+}
+
+fn local_media_name(index: usize, path: &Path) -> ProviderResult<String> {
+    let extension = path.extension().and_then(|value| value.to_str());
+    if extension.is_some_and(|value| {
+        value.is_empty() || value.len() > 16 || !value.bytes().all(|b| b.is_ascii_alphanumeric())
+    }) {
+        return Err(ProviderError::new(
+            "MEDIA_PATH",
+            "素材扩展名无法安全保留为官方 CLI 的本地文件；尚未提交生成。",
+        ));
+    }
+    Ok(match extension {
+        Some(extension) => format!("./reference-{:03}.{extension}", index + 1),
+        None => format!("./reference-{:03}", index + 1),
+    })
+}
+
+fn materialize_cli_media(
+    request: &GenerationRequest,
+    mut args: Vec<String>,
+) -> ProviderResult<CliMediaInvocation> {
+    let references = sorted_references(request);
+    if references.is_empty() {
+        return Ok(CliMediaInvocation {
+            args,
+            media_directory: None,
+        });
+    }
+    // No global cwd change, URL conversion or shared fixed files. Each invocation
+    // owns byte-identical inputs until its CLI process and output readers finish.
+    // A temporary copy also makes source mutation after validation fail closed.
+    let directory = tempfile::Builder::new()
+        .prefix("director-dreamina-media-")
+        .tempdir()
+        .map_err(|_| {
+            ProviderError::new(
+                "MEDIA_TRANSPORT",
+                "无法创建本地素材运输目录；尚未提交生成。",
+            )
+        })?;
+    let mut relative = Vec::with_capacity(references.len());
+    for (index, reference) in references.iter().enumerate() {
+        let name = local_media_name(index, &reference.path)?;
+        let destination = directory.path().join(name.strip_prefix("./").unwrap());
+        fs::copy(&reference.path, &destination).map_err(|_| {
+            ProviderError::new("MEDIA_TRANSPORT", "本地素材物化失败；尚未提交生成。")
+        })?;
+        let mut source = fs::File::open(&destination).map_err(|_| {
+            ProviderError::new("MEDIA_TRANSPORT", "物化素材无法复核；尚未提交生成。")
+        })?;
+        let mut hash = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let size = source.read(&mut buffer).map_err(|_| {
+                ProviderError::new("MEDIA_TRANSPORT", "物化素材读取失败；尚未提交生成。")
+            })?;
+            if size == 0 {
+                break;
+            }
+            hash.update(&buffer[..size]);
+        }
+        if format!("{:x}", hash.finalize()) != reference.sha256 {
+            return Err(ProviderError::new(
+                "MEDIA_CHANGED",
+                "本地素材物化字节与冻结哈希不一致；尚未提交生成。",
+            ));
+        }
+        relative.push(name);
+    }
+    if request.kind == "image" {
+        let expected = format!(
+            "--images={}",
+            references
+                .iter()
+                .map(|reference| reference.path.to_str().unwrap())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let positions: Vec<_> = args
+            .iter()
+            .enumerate()
+            .filter_map(|(index, arg)| arg.starts_with("--images=").then_some(index))
+            .collect();
+        if positions.len() != 1 || args[positions[0]] != expected {
+            return Err(ProviderError::new(
+                "PREPARED_INVALID",
+                "图片素材参数与冻结引用不一致；尚未提交生成。",
+            ));
+        }
+        args[positions[0]] = format!("--images={}", relative.join(","));
+    } else {
+        let positions: Vec<_> = args
+            .iter()
+            .enumerate()
+            .filter_map(|(index, arg)| {
+                ["--image=", "--video=", "--audio="]
+                    .iter()
+                    .any(|prefix| arg.starts_with(prefix))
+                    .then_some(index)
+            })
+            .collect();
+        if positions.len() != references.len() {
+            return Err(ProviderError::new(
+                "PREPARED_INVALID",
+                "视频素材参数数量与冻结引用不一致；尚未提交生成。",
+            ));
+        }
+        for ((position, reference), name) in positions.into_iter().zip(&references).zip(relative) {
+            let expected = format!("--{}={}", reference.kind, reference.path.to_str().unwrap());
+            if args[position] != expected {
+                return Err(ProviderError::new(
+                    "PREPARED_INVALID",
+                    "视频素材顺序与冻结引用不一致；尚未提交生成。",
+                ));
+            }
+            args[position] = format!("--{}={name}", reference.kind);
+        }
+    }
+    Ok(CliMediaInvocation {
+        args,
+        media_directory: Some(directory),
+    })
+}
+
 pub(super) fn submit(
     config: &ProviderConfig,
     prepared: &PreparedRequest,
 ) -> ProviderResult<SubmitReceipt> {
-    submit_with_runner(config, prepared, |args| run(config, args, true))
+    submit_with_media_runner(config, prepared, |args, directory| {
+        run_in_directory(config, args, directory)
+    })
 }
 
 fn validated_submit_args(
@@ -1079,6 +2308,24 @@ fn validated_submit_args(
     };
     let mut current = prepare_with_capabilities(&prepared.request, &caps)?;
     current.wire["cliIdentity"] = identity.clone();
+    match prepared.wire.get("localMediaTransport") {
+        None => {
+            // Old immutable preparations remain verifiable. Existing cloud IDs
+            // never enter submit; explicit unsubmitted work uses safe local paths.
+            current
+                .wire
+                .as_object_mut()
+                .unwrap()
+                .remove("localMediaTransport");
+        }
+        Some(Value::String(profile)) if profile == LOCAL_MEDIA_TRANSPORT => {}
+        Some(_) => {
+            return Err(ProviderError::new(
+                "UNSUPPORTED_MEDIA_TRANSPORT",
+                "官方 CLI 本地素材运输规约未知；尚未提交生成。",
+            ));
+        }
+    }
     if current.wire != prepared.wire || !prepared.upload_receipts.is_empty() {
         return Err(ProviderError::new(
             "PREPARED_INVALID",
@@ -1099,13 +2346,23 @@ fn validated_submit_args(
         .collect::<ProviderResult<_>>()
 }
 
+#[cfg(test)]
 fn submit_with_runner(
     config: &ProviderConfig,
     prepared: &PreparedRequest,
     runner: impl FnOnce(&[String]) -> ProviderResult<Vec<u8>>,
 ) -> ProviderResult<SubmitReceipt> {
+    submit_with_media_runner(config, prepared, |args, _| runner(args))
+}
+
+fn submit_with_media_runner(
+    config: &ProviderConfig,
+    prepared: &PreparedRequest,
+    runner: impl FnOnce(&[String], Option<&Path>) -> ProviderResult<Vec<u8>>,
+) -> ProviderResult<SubmitReceipt> {
     let args = validated_submit_args(config, prepared)?;
-    let body = parse_output(&runner(&args)?, true)?;
+    let invocation = materialize_cli_media(&prepared.request, args)?;
+    let body = parse_output(&runner(&invocation.args, invocation.directory())?, true)?;
     let result =
         normalized_for_kind(body, None, Some(&prepared.request.kind)).map_err(|error| {
             if ["TASK_ID_INVALID", "TASK_ID_CONFLICT"].contains(&error.code.as_str()) {
@@ -1193,6 +2450,292 @@ fn query_with_runner(
 }
 
 #[cfg(test)]
+mod bounded_process_tests {
+    use super::*;
+
+    struct Fixture {
+        _directory: tempfile::TempDir,
+        executable: PathBuf,
+    }
+    fn fixture() -> &'static Fixture {
+        static FIXTURE: OnceLock<Fixture> = OnceLock::new();
+        FIXTURE.get_or_init(|| {
+            let directory = tempfile::tempdir().unwrap();
+            let source = directory.path().join("fixture.rs");
+            let executable = directory.path().join(if cfg!(windows) { "fixture.exe" } else { "fixture" });
+            fs::write(&source, r#"
+use std::{io::Write,process::{Command,Stdio},time::Duration};
+fn main() {
+    let args:Vec<String>=std::env::args().collect();
+    let mode=&args[1];
+    if mode=="hold" { std::thread::sleep(Duration::from_millis(1500)); return; }
+    let counter=std::path::Path::new(&args[2]);
+    std::fs::OpenOptions::new().create(true).append(true).open(counter).unwrap().write_all(b"1").unwrap();
+    std::fs::write(counter.with_extension("pid"),std::process::id().to_string()).unwrap();
+    if mode=="inherited" {
+        let mut c=Command::new(std::env::current_exe().unwrap());
+        c.arg("hold").stdin(Stdio::null()).stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        #[cfg(windows)] { use std::os::windows::process::CommandExt; c.creation_flags(0x08000000); }
+        c.spawn().unwrap();
+    }
+    if mode=="slow" { std::thread::sleep(Duration::from_secs(10)); }
+    if mode=="quiet" { std::thread::sleep(Duration::from_millis(180)); }
+    if mode=="flood" {
+        std::io::stderr().write_all(&vec![b'e';9*1024*1024]).unwrap();
+        std::io::stdout().write_all(&vec![b'o';9*1024*1024]).unwrap();
+    }
+    if mode=="media" {
+        assert_eq!(std::fs::read("reference-001.png").unwrap(),b"immutable fixture reference");
+        std::thread::sleep(Duration::from_millis(180));
+        assert_eq!(std::fs::read("reference-001.png").unwrap(),b"immutable fixture reference");
+    }
+    print!("{{\"submit_id\":\"offline-known\",\"gen_status\":\"processing\"}}");
+    std::io::stdout().flush().unwrap();
+}
+"#).unwrap();
+            let compiler = std::env::var_os("RUSTC").map(PathBuf::from).unwrap_or_else(|| {
+                std::env::var_os("CARGO_HOME").map(PathBuf::from)
+                    .or_else(|| std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(|p| PathBuf::from(p).join(".cargo")))
+                    .map(|p| p.join("bin").join(if cfg!(windows) { "rustc.exe" } else { "rustc" }))
+                    .unwrap_or_else(|| PathBuf::from("rustc"))
+            });
+            let mut compile = Command::new(compiler);
+            compile.args(["--edition=2021", "--crate-name", "dreamina_offline_fixture"]).arg(source).arg("-o").arg(&executable);
+            #[cfg(windows)] {
+                use std::os::windows::process::CommandExt;
+                compile.creation_flags(0x08000000);
+            }
+            let output = compile.output().unwrap();
+            assert!(output.status.success(), "fixture compile failed: {}", String::from_utf8_lossy(&output.stderr));
+            Fixture { _directory: directory, executable }
+        })
+    }
+    fn command(mode: &str, counter: &Path) -> Command {
+        let mut command = Command::new(&fixture().executable);
+        command
+            .arg(mode)
+            .arg(counter)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        command
+    }
+    fn policy() -> CliProcessPolicy {
+        CliProcessPolicy {
+            run: Duration::from_secs(4),
+            drain: Duration::from_millis(80),
+            cleanup: Duration::from_millis(500),
+            inspection_deadline: None,
+        }
+    }
+    fn run(
+        command: Command,
+        submitting: bool,
+        policy: CliProcessPolicy,
+    ) -> ProviderResult<CliOutput> {
+        supervise_command(
+            command,
+            submitting,
+            "offline-no-credential".into(),
+            policy,
+            Arc::new(|| false),
+        )
+    }
+    #[cfg(windows)]
+    fn fixture_process_exited(counter: &Path) -> bool {
+        use std::ffi::c_void;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+            fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
+            fn CloseHandle(handle: *mut c_void) -> i32;
+        }
+        let pid = fs::read_to_string(counter.with_extension("pid"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        unsafe {
+            let handle = OpenProcess(0x00100000, 0, pid);
+            if handle.is_null() {
+                return true;
+            }
+            let exited = WaitForSingleObject(handle, 0) == 0;
+            CloseHandle(handle);
+            exited
+        }
+    }
+    #[test]
+    fn quiet_cli_finishes_once_without_false_hang_or_reexecution() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("calls");
+        let output = run(command("quiet", &counter), true, policy()).unwrap();
+        assert!(output.success);
+        assert_eq!(fs::read(counter).unwrap(), b"1");
+        assert_eq!(
+            parse_output(&output.stdout, true).unwrap()["submit_id"],
+            "offline-known"
+        );
+    }
+    #[test]
+    fn inherited_pipe_has_a_bound_including_runtime_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("calls");
+        let _ = fixture();
+        let start = Instant::now();
+        let error = run(command("inherited", &counter), false, policy()).unwrap_err();
+        assert_eq!(error.code, "CLI_OUTPUT_TIMEOUT");
+        assert!(!error.submission_unknown);
+        assert!(!error.auth_required);
+        assert!(
+            start.elapsed() < Duration::from_millis(1000),
+            "entire synchronous call must return before 1.5s inherited writer EOF"
+        );
+        assert_eq!(fs::read(counter).unwrap(), b"1");
+    }
+    #[test]
+    fn output_retention_limit_still_drains_both_pipes_until_cli_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("calls");
+        let error = run(command("flood", &counter), false, policy()).unwrap_err();
+        assert_eq!(error.code, "CLI_OUTPUT_LIMIT");
+        assert!(!error.submission_unknown);
+        assert_eq!(fs::read(&counter).unwrap(), b"1");
+        #[cfg(windows)]
+        assert!(fixture_process_exited(&counter));
+    }
+    #[test]
+    fn timeout_kills_reaps_and_preserves_readonly_error_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("calls");
+        let _ = fixture();
+        let mut p = policy();
+        p.run = Duration::from_millis(100);
+        let start = Instant::now();
+        let error = run(command("slow", &counter), false, p).unwrap_err();
+        assert_eq!(error.code, "CLI_TIMEOUT");
+        assert!(!error.submission_unknown);
+        assert!(!error.auth_required);
+        assert_eq!(fs::read(&counter).unwrap(), b"1");
+        assert!(start.elapsed() < Duration::from_secs(2));
+        #[cfg(windows)]
+        assert!(fixture_process_exited(&counter));
+    }
+    #[test]
+    fn submitting_timeout_is_unknown_and_never_starts_second_exec() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("calls");
+        let mut p = policy();
+        p.run = Duration::from_millis(100);
+        let error = run(command("slow", &counter), true, p).unwrap_err();
+        assert!(error.submission_unknown);
+        assert!(!error.auth_required);
+        assert_eq!(fs::read(&counter).unwrap(), b"1");
+        #[cfg(windows)]
+        assert!(fixture_process_exited(&counter));
+    }
+    #[test]
+    fn close_during_execution_is_bounded_and_before_spawn_is_not_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("calls");
+        let _ = fixture();
+        let start = Instant::now();
+        let error = supervise_command(
+            command("slow", &counter),
+            false,
+            "offline".into(),
+            policy(),
+            Arc::new(move || start.elapsed() > Duration::from_millis(100)),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "CLIENT_CLOSING");
+        assert!(!error.auth_required);
+        assert!(!error.submission_unknown);
+        assert!(start.elapsed() < Duration::from_secs(2));
+        #[cfg(windows)]
+        assert!(fixture_process_exited(&counter));
+        let never = dir.path().join("never");
+        let error = supervise_command(
+            command("slow", &never),
+            true,
+            "offline".into(),
+            policy(),
+            Arc::new(|| true),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "CLIENT_CLOSING");
+        assert!(!error.submission_unknown);
+        assert!(!never.exists());
+    }
+    #[test]
+    fn missing_executable_is_proven_unsubmitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = Command::new(dir.path().join("absent-cli"));
+        c.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let error = run(c, true, policy()).unwrap_err();
+        assert_eq!(error.code, "CLI_START");
+        assert!(!error.submission_unknown);
+    }
+    #[test]
+    fn reference_directory_survives_complete_process_collection() {
+        // Bytes verify transport identity only; this fixture is not image-quality evidence.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.png");
+        fs::write(&path, b"immutable fixture reference").unwrap();
+        let request = GenerationRequest {
+            request_id: "offline".into(),
+            kind: "image".into(),
+            model: "dreamina-image-5.0".into(),
+            prompt: "offline".into(),
+            duration: None,
+            ratio: "16:9".into(),
+            resolution: "2k".into(),
+            references: vec![MediaReference {
+                media_id: "media".into(),
+                kind: "image".into(),
+                path: path.clone(),
+                sha256: hex_hash(&fs::read(&path).unwrap()),
+                order: 1,
+                usage: "identity".into(),
+                duration_seconds: None,
+            }],
+            options: json!({}),
+        };
+        let before = serde_json::to_value(&request).unwrap();
+        let invocation = materialize_cli_media(
+            &request,
+            vec![format!("--images={}", path.to_str().unwrap())],
+        )
+        .unwrap();
+        let materialized = invocation.directory().unwrap().to_path_buf();
+        let counter = dir.path().join("calls");
+        let mut c = command("media", &counter);
+        c.current_dir(&materialized);
+        let output = run(c, true, policy()).unwrap();
+        assert!(output.success);
+        assert!(materialized.join("reference-001.png").is_file());
+        assert_eq!(before, serde_json::to_value(&request).unwrap());
+        drop(invocation);
+        assert!(!materialized.exists());
+        assert_eq!(fs::read(counter).unwrap(), b"1");
+    }
+    #[tokio::test]
+    async fn synchronous_adapter_is_safe_inside_existing_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("calls");
+        let output = run(command("quiet", &counter), false, policy()).unwrap();
+        assert!(output.success);
+        assert_eq!(fs::read(counter).unwrap(), b"1");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     const VIDEO_HELP: &str =
@@ -1201,6 +2744,118 @@ mod tests {
         include_str!("../../../tools/dreamina/1.4.19/text2video-help.txt");
     const IMAGE_HELP: &str = "model_version: 3.0, 3.1, 4.0, 4.1, 4.5, 4.6, 4.7, 5.0, 5.0Pro\nratio: 21:9, 16:9, 3:2, 4:3, 1:1, 3:4, 2:3, 9:16\n- 3.0/3.1 -> resolution_type 1k or 2k; custom width/height requires resolution_type 2k\n- 4.0/4.1/4.5/4.6/4.7/5.0 -> resolution_type 2k or 4k\n- 5.0Pro -> resolution_type 1.5k, 2k, or 4k\n--width and --height are mutually exclusive with --ratio\n- 2k: each side 768-3072; total pixels <= 4194304";
     const EDIT_HELP: &str = "model_version: 4.0, 4.1, 4.5, 4.6, 4.7, 5.0, 5.0Pro\nratio: 21:9, 16:9, 3:2, 4:3, 1:1, 3:4, 2:3, 9:16\n- 4.0/4.1/4.5/4.6/4.7/5.0 -> resolution_type 2k or 4k\n- 5.0Pro -> resolution_type 1.5k, 2k, or 4k\n--width and --height are mutually exclusive with --ratio\n- 2k: each side 768-3072; total pixels <= 4194304";
+    fn offline_help(args: &[String]) -> Vec<u8> {
+        match args[0].as_str() {
+            "version" => b"{}".to_vec(),
+            "multimodal2video" => VIDEO_HELP.as_bytes().to_vec(),
+            "text2video" => TEXT_VIDEO_HELP.as_bytes().to_vec(),
+            "text2image" => IMAGE_HELP.as_bytes().to_vec(),
+            "image2image" => EDIT_HELP.as_bytes().to_vec(),
+            _ => panic!("unexpected capability probe"),
+        }
+    }
+    #[test]
+    fn capability_inspection_shares_a_total_deadline_and_does_not_change_generation_config() {
+        let config: ProviderConfig =
+            serde_json::from_value(json!({"kind":"dreamina","timeoutSeconds":120})).unwrap();
+        let base = Instant::now();
+        let time = std::cell::Cell::new(base);
+        let mut calls = Vec::new();
+        let result = capabilities_with_runner(
+            &config,
+            || time.get(),
+            |seen, args, deadline| {
+                assert_eq!(seen.timeout_seconds, 120);
+                assert_eq!(deadline - time.get(), Duration::from_secs(15));
+                assert!(deadline <= base + Duration::from_secs(30));
+                calls.push(args.to_vec());
+                time.set(time.get() + Duration::from_secs(3));
+                Ok(offline_help(args))
+            },
+        )
+        .unwrap();
+        assert_eq!(calls.len(), 5);
+        assert_eq!(calls[0], ["version"]);
+        assert!(calls[1..]
+            .iter()
+            .all(|args| args.len() == 2 && args[1] == "-h"));
+        assert_eq!(result.models.len(), 15);
+        assert_eq!(config.timeout_seconds, 120);
+        assert!(
+            config.cli_path.is_none(),
+            "injected inspection never starts a CLI"
+        );
+    }
+    #[test]
+    fn exhausted_capability_budget_stops_before_the_remaining_image_probes() {
+        let config: ProviderConfig =
+            serde_json::from_value(json!({"kind":"dreamina","timeoutSeconds":120})).unwrap();
+        let base = Instant::now();
+        let time = std::cell::Cell::new(base);
+        let mut calls = 0;
+        let error = capabilities_with_runner(
+            &config,
+            || time.get(),
+            |_, args, deadline| {
+                calls += 1;
+                if calls <= 2 {
+                    assert_eq!(deadline - time.get(), Duration::from_secs(15));
+                    time.set(time.get() + Duration::from_secs(14));
+                } else {
+                    assert_eq!(deadline - time.get(), Duration::from_secs(2));
+                    assert_eq!(deadline, base + Duration::from_secs(30));
+                    time.set(deadline);
+                }
+                Ok(offline_help(args))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(calls, 3);
+        assert_eq!(error.code, "CLI_CAPABILITY_TIMEOUT");
+        assert!(!error.submission_unknown);
+        assert!(!error.auth_required);
+    }
+    #[test]
+    fn capability_inspection_respects_a_shorter_user_timeout() {
+        let config: ProviderConfig =
+            serde_json::from_value(json!({"kind":"dreamina","timeoutSeconds":1})).unwrap();
+        let time = std::cell::Cell::new(Instant::now());
+        let mut calls = 0;
+        let error = capabilities_with_runner(
+            &config,
+            || time.get(),
+            |_, _, deadline| {
+                calls += 1;
+                assert_eq!(deadline - time.get(), Duration::from_secs(1));
+                time.set(deadline);
+                Ok(b"{}".to_vec())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert_eq!(error.code, "CLI_CAPABILITY_TIMEOUT");
+    }
+    #[test]
+    fn expired_capability_budget_does_not_start_a_command() {
+        let config: ProviderConfig =
+            serde_json::from_value(json!({"kind":"dreamina","timeoutSeconds":120})).unwrap();
+        let base = Instant::now();
+        let mut clock_calls = 0;
+        let error = capabilities_with_runner(
+            &config,
+            || {
+                clock_calls += 1;
+                if clock_calls == 1 {
+                    base
+                } else {
+                    base + Duration::from_secs(30)
+                }
+            },
+            |_, _, _| panic!("expired inspection must never start a command"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "CLI_CAPABILITY_TIMEOUT");
+    }
     fn image_caps() -> Capabilities {
         capabilities_from_help(b"{}", "", "", IMAGE_HELP, EDIT_HELP).unwrap()
     }
@@ -1216,6 +2871,351 @@ mod tests {
             references: vec![],
             options: json!({}),
         }
+    }
+
+    fn transport_reference(directory: &Path, name: &str, kind: &str, order: u32) -> MediaReference {
+        let path = directory.join(name);
+        let bytes = format!("offline frozen bytes for {name}").into_bytes();
+        fs::write(&path, &bytes).unwrap();
+        MediaReference {
+            media_id: format!("media:{kind}:{order}"),
+            kind: kind.into(),
+            path,
+            sha256: hex_hash(&bytes),
+            order,
+            usage: "reference".into(),
+            duration_seconds: (kind != "image").then_some(3.),
+        }
+    }
+    fn transport_prepared(
+        config: &ProviderConfig,
+        references: Vec<MediaReference>,
+        video: bool,
+    ) -> PreparedRequest {
+        let mut request = image_request(
+            if video { "seedance2.0" } else { "5.0" },
+            "16:9",
+            if video { "720p" } else { "2k" },
+        );
+        if video {
+            request.kind = "video".into();
+            request.duration = Some(5);
+        }
+        request.references = references;
+        let caps =
+            capabilities_from_help(b"{}", VIDEO_HELP, TEXT_VIDEO_HELP, IMAGE_HELP, EDIT_HELP)
+                .unwrap();
+        let mut prepared = prepare_with_capabilities(&request, &caps).unwrap();
+        prepared.wire["cliIdentity"] = cli_identity(config).unwrap();
+        prepared
+    }
+
+    #[test]
+    fn local_media_transport_image_uses_ordered_relative_bytes_and_keeps_canonical_snapshot() {
+        let (_cli, config, _) = fake_cli_prepared();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let refs = vec![
+            transport_reference(first.path(), "中文 first.png", "image", 1),
+            transport_reference(second.path(), "second image.PNG", "image", 0),
+        ];
+        let mut prepared = transport_prepared(&config, refs, false);
+        prepared
+            .request
+            .prompt
+            .push_str(" Literal C:\\not-a-reference.png must stay prompt text.");
+        let caps = image_caps();
+        let mut new = prepare_with_capabilities(&prepared.request, &caps).unwrap();
+        new.wire["cliIdentity"] = cli_identity(&config).unwrap();
+        prepared = new;
+        let snapshot = serde_json::to_string(&prepared).unwrap();
+        let parent_cwd = std::env::current_dir().unwrap();
+        let mut owned = None;
+        let mut calls = 0;
+        let receipt = submit_with_media_runner(&config, &prepared, |args, cwd| {
+            calls += 1;
+            let cwd = cwd.unwrap();
+            owned = Some(cwd.to_path_buf());
+            assert_eq!(args[0], "image2image");
+            let images = args
+                .iter()
+                .find(|value| value.starts_with("--images="))
+                .unwrap()
+                .strip_prefix("--images=")
+                .unwrap();
+            assert_eq!(images, "./reference-001.PNG,./reference-002.png");
+            for (name, reference) in images.split(',').zip(&prepared.request.references) {
+                assert!(name.starts_with("./") && !name.contains([':', '\\', '"']));
+                let bytes = fs::read(cwd.join(name)).unwrap();
+                assert_eq!(hex_hash(&bytes), reference.sha256);
+                assert_eq!(bytes, fs::read(&reference.path).unwrap());
+            }
+            assert!(args
+                .iter()
+                .any(|value| value == &format!("--prompt={}", prepared.request.prompt)));
+            assert_eq!(std::env::current_dir().unwrap(), parent_cwd);
+            Ok(br#"{"submit_id":"relative-image","gen_status":"querying"}"#.to_vec())
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(receipt.task_id, "relative-image");
+        assert_eq!(serde_json::to_string(&prepared).unwrap(), snapshot);
+        assert!(
+            !owned.unwrap().exists(),
+            "temporary copies live through the runner and are then removed"
+        );
+    }
+
+    #[test]
+    fn local_media_transport_video_preserves_mixed_order_and_each_frozen_file() {
+        let (_cli, config, _) = fake_cli_prepared();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let third = tempfile::tempdir().unwrap();
+        let refs = vec![
+            transport_reference(first.path(), "movie clip.mp4", "video", 2),
+            transport_reference(second.path(), "角色.png", "image", 1),
+            transport_reference(third.path(), "voice reference.wav", "audio", 0),
+        ];
+        // Bytes test only the transport trust boundary, not real containers or visual quality.
+        let prepared = transport_prepared(&config, refs, true);
+        let before = serde_json::to_string(&prepared).unwrap();
+        submit_with_media_runner(&config, &prepared, |args, cwd| {
+            assert_eq!(args[0], "multimodal2video");
+            let paths: Vec<_> = args
+                .iter()
+                .filter(|arg| {
+                    ["--image=", "--video=", "--audio="]
+                        .iter()
+                        .any(|prefix| arg.starts_with(prefix))
+                })
+                .collect();
+            assert_eq!(
+                paths,
+                vec![
+                    "--audio=./reference-001.wav",
+                    "--image=./reference-002.png",
+                    "--video=./reference-003.mp4"
+                ]
+            );
+            for (arg, reference) in paths.into_iter().zip(&prepared.request.references) {
+                let (_, name) = arg.split_once('=').unwrap();
+                assert_eq!(
+                    hex_hash(&fs::read(cwd.unwrap().join(name)).unwrap()),
+                    reference.sha256
+                );
+            }
+            Ok(br#"{"submit_id":"relative-video","gen_status":"querying"}"#.to_vec())
+        })
+        .unwrap();
+        assert_eq!(serde_json::to_string(&prepared).unwrap(), before);
+    }
+
+    #[test]
+    fn local_media_transport_changed_source_or_unknown_profile_never_starts_generation() {
+        let (_cli, config, _) = fake_cli_prepared();
+        let media = tempfile::tempdir().unwrap();
+        let reference = transport_reference(media.path(), "source.png", "image", 0);
+        let mut prepared = transport_prepared(&config, vec![reference.clone()], false);
+        prepared.wire["localMediaTransport"] = json!("unknown-profile");
+        let mut calls = 0;
+        let error = submit_with_media_runner(&config, &prepared, |_, _| {
+            calls += 1;
+            Ok(vec![])
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "UNSUPPORTED_MEDIA_TRANSPORT");
+        assert_eq!(calls, 0);
+        prepared.wire["localMediaTransport"] = json!(LOCAL_MEDIA_TRANSPORT);
+        fs::write(&reference.path, b"changed source").unwrap();
+        let error = submit_with_media_runner(&config, &prepared, |_, _| {
+            calls += 1;
+            Ok(vec![])
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "MEDIA_CHANGED");
+        assert_eq!(calls, 0);
+        assert!(!error.submission_unknown);
+    }
+
+    #[test]
+    fn local_media_transport_copy_rechecks_bytes_even_after_original_preflight() {
+        let media = tempfile::tempdir().unwrap();
+        let reference = transport_reference(media.path(), "source.png", "image", 0);
+        let request = GenerationRequest {
+            references: vec![reference.clone()],
+            ..image_request("5.0", "16:9", "2k")
+        };
+        let args = prepare_with_capabilities(&request, &image_caps())
+            .unwrap()
+            .wire["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        fs::write(&reference.path, b"changed after validation").unwrap();
+        let error = materialize_cli_media(&request, args).err().unwrap();
+        assert_eq!(error.code, "MEDIA_CHANGED");
+        assert!(!error.submission_unknown);
+    }
+
+    #[test]
+    fn local_media_transport_unknown_submit_is_once_only_and_cleans_owned_files() {
+        let (_cli, config, _) = fake_cli_prepared();
+        let media = tempfile::tempdir().unwrap();
+        let prepared = transport_prepared(
+            &config,
+            vec![transport_reference(media.path(), "source.png", "image", 0)],
+            false,
+        );
+        let mut owned = None;
+        let mut calls = 0;
+        let error = submit_with_media_runner(&config, &prepared, |_, cwd| {
+            calls += 1;
+            owned = Some(cwd.unwrap().to_path_buf());
+            Ok(b"not a receipt".to_vec())
+        })
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert!(error.submission_unknown);
+        assert!(!owned.unwrap().exists());
+    }
+
+    #[test]
+    fn local_media_transport_legacy_preparation_stays_exact_and_original_id_query_needs_no_file() {
+        let (_cli, config, _) = fake_cli_prepared();
+        let media = tempfile::tempdir().unwrap();
+        let reference = transport_reference(media.path(), "old input.png", "image", 0);
+        let mut prepared = transport_prepared(&config, vec![reference.clone()], false);
+        prepared
+            .wire
+            .as_object_mut()
+            .unwrap()
+            .remove("localMediaTransport");
+        let old = serde_json::to_string(&prepared).unwrap();
+        submit_with_media_runner(&config, &prepared, |args, cwd| {
+            assert!(args.iter().any(|arg| arg == "--images=./reference-001.png"));
+            assert!(cwd.unwrap().join("reference-001.png").exists());
+            Ok(
+                br#"{"submit_id":"explicit-unsubmitted-operation","gen_status":"querying"}"#
+                    .to_vec(),
+            )
+        })
+        .unwrap();
+        assert_eq!(serde_json::to_string(&prepared).unwrap(), old);
+        fs::remove_file(&reference.path).unwrap();
+        let mut query_calls = 0;
+        let result = query_prepared_with_runner(&prepared, "old-durable-id", || {
+            query_calls += 1;
+            Ok(br#"{"submit_id":"old-durable-id","gen_status":"querying"}"#.to_vec())
+        })
+        .unwrap();
+        assert_eq!(result.task_id, "old-durable-id");
+        assert_eq!(query_calls, 1);
+        assert_eq!(serde_json::to_string(&prepared).unwrap(), old);
+    }
+
+    #[test]
+    fn local_media_transport_simultaneous_invocations_have_private_directories() {
+        let (_cli, config, _) = fake_cli_prepared();
+        let media = tempfile::tempdir().unwrap();
+        let prepared = transport_prepared(
+            &config,
+            vec![transport_reference(media.path(), "source.png", "image", 0)],
+            false,
+        );
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let config = config.clone();
+                let prepared = prepared.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let mut own = None;
+                    submit_with_media_runner(&config, &prepared, |_, cwd| {
+                        own = Some(cwd.unwrap().to_path_buf());
+                        barrier.wait();
+                        assert!(own.as_ref().unwrap().join("reference-001.png").exists());
+                        Ok(br#"{"submit_id":"fixture-once","gen_status":"querying"}"#.to_vec())
+                    })
+                    .unwrap();
+                    own.unwrap()
+                })
+            })
+            .collect();
+        let paths: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert_ne!(paths[0], paths[1]);
+        assert!(paths.iter().all(|path| !path.exists()));
+    }
+
+    #[test]
+    fn local_media_transport_child_command_keeps_verified_absolute_cli_and_rejects_relative_config()
+    {
+        let directory = tempfile::Builder::new()
+            .prefix("director-relative-cli-")
+            .tempdir_in(std::env::current_dir().unwrap())
+            .unwrap();
+        let executable = directory.path().join("offline-cli.exe");
+        fs::write(&executable, b"non-executable fixture").unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let relative = executable.strip_prefix(&cwd).unwrap().to_path_buf();
+        let (_cli, mut config, _) = fake_cli_prepared();
+        config.cli_path = Some(relative);
+        let child = tempfile::tempdir().unwrap();
+        assert_eq!(
+            cli_command_in_directory(&config, Some(child.path()))
+                .unwrap_err()
+                .code,
+            "CLI_PATH",
+            "the configured CLI remains an explicitly selected absolute file"
+        );
+        config.cli_path = Some(executable.clone());
+        let command = cli_command_in_directory(&config, Some(child.path())).unwrap();
+        assert_eq!(
+            Path::new(command.get_program()),
+            fs::canonicalize(executable).unwrap()
+        );
+        assert_eq!(command.get_current_dir(), Some(child.path()));
+        assert_eq!(std::env::current_dir().unwrap(), cwd);
+        let proxy = ProxyEnvironment::default();
+        assert_ne!(
+            safe_launch_fingerprint_for(&proxy),
+            safe_launch_fingerprint_in_directory(&proxy, Some(child.path()))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_media_transport_windows_references_on_available_different_drives_are_relative() {
+        let (_cli, config, _) = fake_cli_prepared();
+        let system = tempfile::tempdir().unwrap();
+        let project = tempfile::Builder::new()
+            .prefix("director-cross-drive-")
+            .tempdir_in(Path::new(env!("CARGO_MANIFEST_DIR")))
+            .unwrap();
+        let refs = vec![
+            transport_reference(system.path(), "C input.png", "image", 0),
+            transport_reference(project.path(), "D input.png", "image", 1),
+        ];
+        let prepared = transport_prepared(&config, refs, false);
+        let distinct_drives = prepared.request.references[0].path.components().next()
+            != prepared.request.references[1].path.components().next();
+        submit_with_media_runner(&config, &prepared, |args, cwd| {
+            assert!(args
+                .iter()
+                .any(|arg| arg == "--images=./reference-001.png,./reference-002.png"));
+            assert!(cwd.unwrap().join("reference-001.png").exists());
+            assert!(cwd.unwrap().join("reference-002.png").exists());
+            Ok(br#"{"submit_id":"drive-fixture","gen_status":"querying"}"#.to_vec())
+        })
+        .unwrap();
+        eprintln!(
+            "offline Windows media transport tested distinct available drives: {distinct_drives}"
+        );
     }
     fn fake_cli_prepared() -> (tempfile::TempDir, ProviderConfig, PreparedRequest) {
         let directory = tempfile::tempdir().unwrap();
@@ -1237,6 +3237,320 @@ mod tests {
                 .unwrap();
         prepared.wire["cliIdentity"] = cli_identity(&config).unwrap();
         (directory, config, prepared)
+    }
+    #[test]
+    fn capability_cache_one_help_round_serves_startup_and_fifty_four_preflights() {
+        let (_directory, config, _) = fake_cli_prepared();
+        let cache = CapabilityCache::default();
+        let clock = std::cell::Cell::new(Instant::now());
+        let probes = std::cell::Cell::new(0);
+        let startup = cache
+            .get_or_inspect(
+                &config,
+                || clock.get(),
+                |cfg| {
+                    capabilities_with_runner(
+                        cfg,
+                        || clock.get(),
+                        |_, args, _| {
+                            probes.set(probes.get() + 1);
+                            Ok(offline_help(args))
+                        },
+                    )
+                },
+            )
+            .unwrap();
+        assert_eq!(probes.get(), 5, "one version and four help commands");
+        for item in 0..54 {
+            let mut request = image_request("5.0", "16:9", "2k");
+            request.request_id = format!("offline-cached-item-{item}");
+            let prepared = prepare_with_capability_resolver(&config, &request, |cfg| {
+                cache.get_or_inspect(
+                    cfg,
+                    || clock.get(),
+                    |_| panic!("a successful unchanged CLI inspection must be reused"),
+                )
+            })
+            .unwrap();
+            assert_eq!(prepared.capability_version, startup.version);
+            assert_eq!(prepared.request.request_id, request.request_id);
+            assert_eq!(
+                validated_submit_args(&config, &prepared).unwrap()[0],
+                "text2image"
+            );
+        }
+        let reread = cache
+            .get_or_inspect(
+                &config,
+                || clock.get(),
+                |_| panic!("unexpected reinspection"),
+            )
+            .unwrap();
+        assert_eq!(reread.checked_at, startup.checked_at);
+        assert_eq!(probes.get(), 5);
+        assert_eq!(config.timeout_seconds, 1, "generation timeout is unchanged");
+    }
+    #[test]
+    fn capability_cache_single_flight_reuses_the_exact_binary_for_concurrent_reads() {
+        let (_directory, config, _) = fake_cli_prepared();
+        let cache = Arc::new(CapabilityCache::default());
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let cache = cache.clone();
+                let config = config.clone();
+                let barrier = barrier.clone();
+                let reads = reads.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    cache
+                        .get_or_inspect(&config, Instant::now, |_| {
+                            reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            std::thread::sleep(Duration::from_millis(10));
+                            Ok(image_caps())
+                        })
+                        .unwrap()
+                })
+            })
+            .collect();
+        let caps: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(caps
+            .iter()
+            .all(|value| value.checked_at == caps[0].checked_at));
+    }
+    #[test]
+    fn capability_cache_different_paths_do_not_share_same_content_capabilities() {
+        let (directory, config, _) = fake_cli_prepared();
+        let cache = CapabilityCache::default();
+        let reads = std::cell::Cell::new(0);
+        let inspect = |_: &ProviderConfig| {
+            reads.set(reads.get() + 1);
+            Ok(image_caps())
+        };
+        cache
+            .get_or_inspect(&config, Instant::now, inspect)
+            .unwrap();
+        let second = directory.path().join("other-dreamina.exe");
+        fs::copy(config.cli_path.as_ref().unwrap(), &second).unwrap();
+        let mut changed = config.clone();
+        changed.cli_path = Some(second);
+        cache
+            .get_or_inspect(&changed, Instant::now, inspect)
+            .unwrap();
+        assert_eq!(reads.get(), 2);
+    }
+    #[test]
+    fn capability_cache_same_length_content_replacement_invalidates_and_blocks_old_submit() {
+        let (_directory, config, old_prepared) = fake_cli_prepared();
+        let cache = CapabilityCache::default();
+        let reads = std::cell::Cell::new(0);
+        let inspect = |_: &ProviderConfig| {
+            reads.set(reads.get() + 1);
+            Ok(image_caps())
+        };
+        cache
+            .get_or_inspect(&config, Instant::now, inspect)
+            .unwrap();
+        let path = config.cli_path.as_ref().unwrap();
+        let original = fs::read(path).unwrap();
+        let replacement = original.to_ascii_uppercase();
+        assert_eq!(replacement.len(), original.len());
+        fs::write(path, replacement).unwrap();
+        cache
+            .get_or_inspect(&config, Instant::now, inspect)
+            .unwrap();
+        assert_eq!(
+            reads.get(),
+            2,
+            "content hash is checked, not only file size"
+        );
+        let submitted = std::cell::Cell::new(0);
+        let error = submit_with_runner(&config, &old_prepared, |_| {
+            submitted.set(submitted.get() + 1);
+            panic!("a replaced binary cannot execute a frozen preparation")
+        })
+        .unwrap_err();
+        assert_eq!(error.code, "CLI_CHANGED");
+        assert_eq!(submitted.get(), 0);
+    }
+    #[test]
+    fn capability_cache_file_metadata_change_also_invalidates_same_bytes() {
+        let (_directory, config, _) = fake_cli_prepared();
+        let cache = CapabilityCache::default();
+        let reads = std::cell::Cell::new(0);
+        let inspect = |_: &ProviderConfig| {
+            reads.set(reads.get() + 1);
+            Ok(image_caps())
+        };
+        cache
+            .get_or_inspect(&config, Instant::now, inspect)
+            .unwrap();
+        let path = config.cli_path.as_ref().unwrap();
+        let bytes = fs::read(path).unwrap();
+        let previous = fs::metadata(path).unwrap().modified().unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(946684800))
+            .unwrap();
+        assert_ne!(fs::metadata(path).unwrap().modified().unwrap(), previous);
+        assert_eq!(fs::read(path).unwrap(), bytes);
+        cache
+            .get_or_inspect(&config, Instant::now, inspect)
+            .unwrap();
+        assert_eq!(reads.get(), 2);
+    }
+    #[test]
+    fn capability_cache_ttl_is_short_and_hits_do_not_extend_the_actual_read_time() {
+        let (_directory, config, _) = fake_cli_prepared();
+        let cache = CapabilityCache::default();
+        let base = Instant::now();
+        let clock = std::cell::Cell::new(base);
+        let reads = std::cell::Cell::new(0);
+        let inspect = |_: &ProviderConfig| {
+            reads.set(reads.get() + 1);
+            let mut value = image_caps();
+            value.checked_at = format!("offline-real-read-{}", reads.get());
+            Ok(value)
+        };
+        let first = cache
+            .get_or_inspect(&config, || clock.get(), inspect)
+            .unwrap();
+        clock.set(base + CAPABILITY_CACHE_TTL - Duration::from_secs(1));
+        let hit = cache
+            .get_or_inspect(&config, || clock.get(), inspect)
+            .unwrap();
+        assert_eq!(hit.checked_at, first.checked_at);
+        assert_eq!(reads.get(), 1);
+        clock.set(base + CAPABILITY_CACHE_TTL);
+        let refreshed = cache
+            .get_or_inspect(&config, || clock.get(), inspect)
+            .unwrap();
+        assert_eq!(reads.get(), 2);
+        assert_ne!(refreshed.checked_at, first.checked_at);
+        assert_eq!(CAPABILITY_CACHE_TTL, Duration::from_secs(300));
+    }
+    #[test]
+    fn capability_cache_failures_keep_typed_probe_error_and_never_prepare_or_submit() {
+        let (_directory, config, _) = fake_cli_prepared();
+        let cache = CapabilityCache::default();
+        let probes = std::cell::Cell::new(0);
+        let submits = std::cell::Cell::new(0);
+        for _ in 0..2 {
+            let result = prepare_with_capability_resolver(
+                &config,
+                &image_request("5.0", "16:9", "2k"),
+                |cfg| {
+                    cache.get_or_inspect(cfg, Instant::now, |cfg| {
+                        capabilities_with_runner(cfg, Instant::now, |_, _, _| {
+                            probes.set(probes.get() + 1);
+                            Err(ProviderError::new(
+                                "CLI_CAPABILITY_TIMEOUT",
+                                "offline bounded inspection timeout",
+                            ))
+                        })
+                    })
+                },
+            );
+            match result {
+                Err(error) => {
+                    assert_eq!(error.code, "CLI_CAPABILITY_TIMEOUT");
+                    assert!(error
+                        .message
+                        .contains("[CLI_CAPABILITY_TIMEOUT; capabilityProbe=version]"));
+                    assert!(!error.auth_required);
+                    assert!(!error.submission_unknown);
+                }
+                Ok(prepared) => {
+                    let _ = submit_with_runner(&config, &prepared, |_| {
+                        submits.set(submits.get() + 1);
+                        panic!("a failed inspection cannot reach submit")
+                    });
+                    panic!("a failed inspection cannot prepare");
+                }
+            }
+        }
+        assert_eq!(
+            probes.get(),
+            2,
+            "failures are not reused as a cached result"
+        );
+        assert_eq!(submits.get(), 0);
+        cache
+            .get_or_inspect(&config, Instant::now, |_| Ok(image_caps()))
+            .unwrap();
+        cache
+            .get_or_inspect(&config, Instant::now, |_| {
+                panic!("success should be cached")
+            })
+            .unwrap();
+    }
+    #[test]
+    fn capability_cache_does_not_grant_unknown_models_or_relax_per_item_capacity() {
+        let (_directory, config, _) = fake_cli_prepared();
+        let cache = CapabilityCache::default();
+        cache
+            .get_or_inspect(&config, Instant::now, |_| {
+                capabilities_from_help(b"{}", VIDEO_HELP, TEXT_VIDEO_HELP, IMAGE_HELP, EDIT_HELP)
+            })
+            .unwrap();
+        let resolve = |cfg: &ProviderConfig| {
+            cache.get_or_inspect(cfg, Instant::now, |_| panic!("cache is fresh"))
+        };
+        let error = prepare_with_capability_resolver(
+            &config,
+            &image_request("unadapted-new-model", "16:9", "2k"),
+            resolve,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "MODEL_UNAVAILABLE");
+        assert!(prepare_with_capability_resolver(
+            &config,
+            &image_request("5.0", "16:9", "1.5k"),
+            resolve
+        )
+        .is_err());
+        let mut video = image_request("seedance2.0", "16:9", "720p");
+        video.kind = "video".into();
+        video.duration = Some(30);
+        assert!(prepare_with_capability_resolver(&config, &video, resolve).is_err());
+        // No account or token is part of the cached local help contract.
+        let cached = resolve(&config).unwrap();
+        assert!(cached.raw.get("accountKey").is_none());
+        assert!(cached.raw.get("credits").is_none());
+        assert_eq!(config.credential_env, None);
+    }
+    #[test]
+    fn capability_cache_changed_binary_during_inspection_is_not_saved() {
+        let (_directory, config, _) = fake_cli_prepared();
+        let cache = CapabilityCache::default();
+        let error = cache
+            .get_or_inspect(&config, Instant::now, |cfg| {
+                fs::write(
+                    cfg.cli_path.as_ref().unwrap(),
+                    b"changed during local help read",
+                )
+                .unwrap();
+                Ok(image_caps())
+            })
+            .unwrap_err();
+        assert_eq!(error.code, "CLI_CHANGED");
+        assert!(!error.auth_required);
+        assert!(!error.submission_unknown);
+        let reads = std::cell::Cell::new(0);
+        cache
+            .get_or_inspect(&config, Instant::now, |_| {
+                reads.set(reads.get() + 1);
+                Ok(image_caps())
+            })
+            .unwrap();
+        assert_eq!(reads.get(), 1);
     }
     #[test]
     fn video_model_sizes_are_specific_and_fixed_choices_are_not_empty() {
@@ -1378,9 +3692,568 @@ mod tests {
     fn auth_output(success: bool, stdout: Value, stderr: &str) -> CliOutput {
         CliOutput {
             success,
+            exit_code: Some(if success { 0 } else { 1 }),
+            launch: "offline-launch".into(),
             stdout: serde_json::to_vec(&stdout).unwrap(),
             stderr: stderr.as_bytes().into(),
         }
+    }
+    fn windows_static(server: &str, bypass: &str) -> WindowsProxySettings {
+        WindowsProxySettings {
+            enabled: true,
+            server: server.into(),
+            bypass: bypass.into(),
+            pac_present: false,
+        }
+    }
+    #[test]
+    fn proxy_parser_accepts_static_default_per_protocol_and_ipv6() {
+        let default = parse_static_proxies("127.0.0.1:17890").unwrap();
+        assert_eq!(default.http.as_deref(), Some("http://127.0.0.1:17890/"));
+        assert_eq!(default.http, default.https);
+        let mapped = parse_static_proxies("http=127.0.0.1:17891; https=https://proxy.example:18443; socks=ignored:18080; ftp=ignored:18081").unwrap();
+        assert_eq!(mapped.http.as_deref(), Some("http://127.0.0.1:17891/"));
+        assert_eq!(
+            mapped.https.as_deref(),
+            Some("https://proxy.example:18443/")
+        );
+        assert_eq!(
+            parse_static_proxies("[::1]:17890")
+                .unwrap()
+                .https
+                .as_deref(),
+            Some("http://[::1]:17890/")
+        );
+        assert!(parse_static_proxies("socks=127.0.0.1:17890")
+            .unwrap()
+            .https
+            .is_none());
+    }
+    #[test]
+    fn proxy_parser_rejects_ambiguous_servers_credentials_urls_and_invalid_ports() {
+        for invalid in [
+            "",
+            "http=a:1;HTTP=b:2",
+            "a:1;b:2",
+            "a:1;http=b:2",
+            "unknown=a:1",
+            "http=",
+            "http://user:PRIVATE@proxy.example:8080",
+            "http://@proxy.example:8080",
+            "http://a.example:8080/path",
+            "http://a.example:8080/?query=PRIVATE",
+            "http://a.example:8080/#fragment",
+            "file:///tmp/proxy",
+            "socks5://proxy.example:8080",
+            "http://proxy.example:0",
+            "http://proxy.example:99999",
+            "http://proxy.example:8080\n",
+            "http://proxy.example:8080\0",
+        ] {
+            assert!(
+                parse_static_proxies(invalid).is_none(),
+                "malformed static configuration must not route requests"
+            );
+        }
+    }
+    #[test]
+    fn proxy_environment_precedence_is_scheme_specific_and_preserves_explicit_bypass() {
+        let explicit = ProxyEnvironment {
+            http: Some("http://explicit.example:18080".into()),
+            bypass: Some("exact-explicit-bypass".into()),
+            ..Default::default()
+        };
+        let settings = windows_static(
+            "http=system.example:18081;https=system.example:18082",
+            "*.system.example;127.0.0.1",
+        );
+        let effective = effective_proxy_environment(explicit, Some(&settings));
+        assert_eq!(
+            effective.http.as_deref(),
+            Some("http://explicit.example:18080")
+        );
+        assert_eq!(
+            effective.https.as_deref(),
+            Some("http://system.example:18082/")
+        );
+        assert_eq!(effective.bypass.as_deref(), Some("exact-explicit-bypass"));
+    }
+    #[test]
+    fn explicit_all_proxy_wins_and_is_mapped_only_to_missing_cli_schemes() {
+        let settings = windows_static("system.example:18082", "*.system.example");
+        let explicit = ProxyEnvironment {
+            http: Some("http://http-explicit.example:18080".into()),
+            all: Some("http://all-explicit.example:18081".into()),
+            ..Default::default()
+        };
+        let effective = effective_proxy_environment(explicit, Some(&settings));
+        assert_eq!(
+            effective.http.as_deref(),
+            Some("http://http-explicit.example:18080")
+        );
+        assert_eq!(
+            effective.https.as_deref(),
+            Some("http://all-explicit.example:18081")
+        );
+        assert!(
+            effective.bypass.is_none(),
+            "system bypass cannot alter an entirely explicit route"
+        );
+        let empty = effective_proxy_environment(
+            ProxyEnvironment {
+                all: Some(String::new()),
+                ..Default::default()
+            },
+            Some(&settings),
+        );
+        assert_eq!(empty.http.as_deref(), Some(""));
+        assert_eq!(empty.https.as_deref(), Some(""));
+    }
+    #[test]
+    fn explicit_empty_scheme_never_falls_back_to_system_proxy() {
+        let settings = windows_static("system.example:18082", "*.system.example");
+        let effective = effective_proxy_environment(
+            ProxyEnvironment {
+                http: Some(String::new()),
+                https: Some(String::new()),
+                bypass: Some(String::new()),
+                ..Default::default()
+            },
+            Some(&settings),
+        );
+        assert_eq!(effective.http.as_deref(), Some(""));
+        assert_eq!(effective.https.as_deref(), Some(""));
+        assert_eq!(effective.bypass.as_deref(), Some(""));
+    }
+    #[test]
+    fn disabled_pac_only_and_invalid_static_proxy_never_inject_guessed_routes() {
+        for settings in [
+            WindowsProxySettings {
+                enabled: false,
+                server: "stale.example:18080".into(),
+                ..Default::default()
+            },
+            WindowsProxySettings {
+                enabled: false,
+                pac_present: true,
+                ..Default::default()
+            },
+            WindowsProxySettings {
+                enabled: true,
+                pac_present: true,
+                ..Default::default()
+            },
+            windows_static("http=bad.example:99999", "*"),
+        ] {
+            let effective =
+                effective_proxy_environment(ProxyEnvironment::default(), Some(&settings));
+            assert!(
+                effective.http.is_none() && effective.https.is_none() && effective.bypass.is_none()
+            );
+        }
+        let static_with_pac = WindowsProxySettings {
+            pac_present: true,
+            ..windows_static("127.0.0.1:17890", "")
+        };
+        assert_eq!(
+            effective_proxy_environment(ProxyEnvironment::default(), Some(&static_with_pac))
+                .https
+                .as_deref(),
+            Some("http://127.0.0.1:17890/")
+        );
+    }
+    #[test]
+    fn bypass_conversion_keeps_only_equivalent_ips_and_explicit_domain_suffixes() {
+        assert_eq!(converted_windows_bypass("<local>;*.EXAMPLE.test;127.0.0.1;::1;*.EXAMPLE.test;exact.example.test;localhost;*;10.0.0.0/8;abc*;http://example.test;example.test:80").as_deref(), Some(".example.test,127.0.0.1,::1"));
+        assert!(converted_windows_bypass("<local>;exact.example.test;*;10.0.0.0/8").is_none());
+        assert!(converted_windows_bypass("*.example.test\n").is_none());
+    }
+    #[test]
+    fn child_command_receives_effective_proxy_without_mutating_parent_environment() {
+        let before: Vec<_> = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"]
+            .into_iter()
+            .map(|k| (k, std::env::var_os(k)))
+            .collect();
+        let environment = effective_proxy_environment(
+            ProxyEnvironment::default(),
+            Some(&windows_static("127.0.0.1:17890", "*.example.test")),
+        );
+        let mut command = Command::new("offline-not-executed");
+        apply_child_proxy_environment(&mut command, &environment);
+        let vars: std::collections::HashMap<_, _> = command
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            vars.get("HTTP_PROXY").and_then(|v| v.as_deref()),
+            Some("http://127.0.0.1:17890/")
+        );
+        assert_eq!(
+            vars.get("HTTPS_PROXY").and_then(|v| v.as_deref()),
+            Some("http://127.0.0.1:17890/")
+        );
+        assert_eq!(
+            vars.get("NO_PROXY").and_then(|v| v.as_deref()),
+            Some(".example.test")
+        );
+        for (key, value) in before {
+            assert_eq!(std::env::var_os(key), value);
+        }
+    }
+    #[test]
+    fn launch_fingerprint_tracks_effective_child_proxy_and_cwd_without_leaking_values() {
+        let direct = ProxyEnvironment::default();
+        let proxy = effective_proxy_environment(
+            direct.clone(),
+            Some(&windows_static("proxy.example:17890", "*.example.test")),
+        );
+        let identities = [
+            ("USERPROFILE", Some("private-user-directory".into())),
+            ("HOME", None),
+            ("DREAMINA_HOME", None),
+        ];
+        let original = launch_fingerprint_from(Some("C:\\launch".into()), &direct, &identities);
+        let effective = launch_fingerprint_from(Some("C:\\launch".into()), &proxy, &identities);
+        assert_ne!(original, effective);
+        assert_eq!(effective.len(), 12);
+        assert!(effective.bytes().all(|v| v.is_ascii_hexdigit()));
+        assert_ne!(
+            effective,
+            launch_fingerprint_from(Some("C:\\other".into()), &proxy, &identities)
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            effective,
+            launch_fingerprint_from(Some("c:\\LAUNCH".into()), &proxy, &identities)
+        );
+        let mut output = auth_output(
+            false,
+            json!({}),
+            "connection refused https://PRIVATE.example/token=PRIVATE",
+        );
+        output.launch = effective.clone();
+        let error = output_error(&output, false);
+        assert!(error.message.contains(&format!("launch={effective}")));
+        for hidden in ["proxy.example", "private-user-directory", "PRIVATE"] {
+            assert!(!error.message.contains(hidden));
+        }
+    }
+    #[test]
+    fn official_result_proxy_configuration_errors_are_sanitized() {
+        let invalid = ProxyEnvironment {
+            https: Some("http://PRIVATE@".into()),
+            ..Default::default()
+        };
+        let error = result_proxies_from_environment(reqwest::blocking::Client::builder(), &invalid)
+            .err()
+            .unwrap();
+        assert_eq!(error.code, "PROXY_CONFIGURATION");
+        assert!(!error.message.contains("PRIVATE"));
+        let configured = effective_proxy_environment(
+            ProxyEnvironment::default(),
+            Some(&windows_static("127.0.0.1:17890", "*.example.test")),
+        );
+        assert!(
+            result_proxies_from_environment(reqwest::blocking::Client::builder(), &configured)
+                .unwrap()
+                .build()
+                .is_ok()
+        );
+    }
+    #[test]
+    fn official_result_client_uses_the_selected_http_proxy_on_loopback_fixture() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(4);
+            let mut socket = loop {
+                match listener.accept() {
+                    Ok((s, _)) => break s,
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(_) => return false,
+                }
+            };
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut bytes = [0; 2048];
+            let count = socket.read(&mut bytes).unwrap();
+            let requested = String::from_utf8_lossy(&bytes[..count])
+                .starts_with("GET http://fixture.invalid/result ");
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+            requested
+        });
+        let env = effective_proxy_environment(
+            ProxyEnvironment::default(),
+            Some(&windows_static(&address.to_string(), "")),
+        );
+        let client = result_proxies_from_environment(
+            reqwest::blocking::Client::builder().timeout(Duration::from_secs(3)),
+            &env,
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        let response = client.get("http://fixture.invalid/result").send();
+        let requested = worker.join().unwrap();
+        assert!(
+            requested,
+            "the loopback proxy must receive the fixture request; no public DNS is used"
+        );
+        assert_eq!(response.unwrap().text().unwrap(), "ok");
+    }
+    #[test]
+    fn network_login_diagnostics_are_not_auth_failures_and_never_leak_raw_streams() {
+        for (body, expected) in [
+            ("authsdk login: dial tcp secret.invalid:443: connection refused token=PRIVATE https://secret.invalid/signed", "CLI_NETWORK"),
+            ("login check: context deadline exceeded authorization=PRIVATE", "CLI_QUERY_TIMEOUT"),
+            ("authsdk: TLS handshake timeout access_token=PRIVATE", "CLI_QUERY_TIMEOUT"),
+        ] {
+            let output = auth_output(false, json!({"private":"PRIVATE"}), body);
+            let read = output_error(&output, false);
+            assert_eq!(read.code, expected);
+            assert!(!read.auth_required);
+            assert!(!read.submission_unknown);
+            assert!(read.message.contains("CLI退出码=1"));
+            assert!(!read.message.contains("PRIVATE"));
+            assert!(!read.message.contains("secret.invalid"));
+            assert!(!read.message.contains("https://"));
+            let submit = output_error(&output, true);
+            assert!(submit.submission_unknown, "a failed transport cannot confirm a submit was rejected");
+            assert!(!submit.auth_required);
+        }
+    }
+    #[test]
+    fn safe_cli_failure_keeps_flag_and_model_semantics_and_original_submit_policy() {
+        let output = auth_output(
+            false,
+            json!({}),
+            "Error: invalid --resolution_type=2k for model_version=5.0; required image input",
+        );
+        for submitting in [false, true] {
+            let original = classified_output_error(&output, submitting);
+            let actual = output_error_with_redactions(&output, submitting, &[]);
+            assert_eq!(actual.code, original.code);
+            assert_eq!(actual.auth_required, original.auth_required);
+            assert_eq!(actual.submission_unknown, original.submission_unknown);
+            assert!(actual.message.starts_with(&original.message));
+            assert!(actual.message.contains("invalid --resolution_type=2k"));
+            assert!(actual.message.contains("model_version=5.0"));
+            assert!(actual.message.contains("required image input"));
+        }
+        for body in [
+            "unknown flag: --unsupported",
+            "context deadline exceeded",
+            "HTTP 401 unauthorized",
+        ] {
+            let output = auth_output(false, json!({}), body);
+            let before = classified_output_error(&output, true);
+            let after = output_error_with_redactions(&output, true, &[]);
+            assert_eq!(
+                (after.code, after.auth_required, after.submission_unknown),
+                (before.code, before.auth_required, before.submission_unknown)
+            );
+        }
+    }
+
+    #[test]
+    fn safe_cli_failure_redacts_full_configured_secrets_and_prompt_before_truncation() {
+        let secret = format!("ConfiguredPrivate{}EndPrivate", "LongValue".repeat(800));
+        let prompt = "PRIVATE 原完整提示词含文字和 C:\\PrivateProject\\reference.png。";
+        let raw = format!(
+            "Error: rejected value {secret}\nError: input creation failed {prompt}\n{}",
+            "Error: unsupported value\n".repeat(200)
+        );
+        let summary =
+            safe_failure_stderr(raw.as_bytes(), &[secret.clone(), prompt.into()]).unwrap();
+        for private in [
+            &secret[..40],
+            "EndPrivate",
+            prompt,
+            "PrivateProject",
+            "PRIVATE",
+        ] {
+            assert!(
+                !summary.contains(private),
+                "a raw truncation or fragmented literal must never be published"
+            );
+        }
+        assert!(summary.contains("Error: rejected value [redacted]"));
+        assert!(summary.chars().count() <= 1001);
+        assert!(summary.ends_with('…'));
+    }
+
+    #[test]
+    fn safe_cli_failure_removes_urls_jwts_headers_and_escaped_private_values() {
+        let raw=concat!(
+            "Error: upload failed https://private.invalid/path?signature=PRIVATE_SIG&token=PRIVATE_TOKEN\n",
+            "Error: request failed https:\\/\\/private.invalid/path?X-Amz-Signature=PRIVATE_SIG\n",
+            "Error: request failed abcdefghijklmnop.abcdefghijklmnop.abcdefghijklmnop\n",
+            "Authorization: Bearer PRIVATE_TOKEN\nPRIVATE_CONTINUATION_TOKEN\n",
+            "Error: token=PRIVATE_TOKEN cookie=PRIVATE_COOKIE\n",
+            "Error: rejected prompt=PRIVATE_PROMPT_SNIPPET\n",
+            "Error: invalid escaped value %50%52%49%56%41%54%45\n",
+            "Error: invalid escaped value \\u0050\\u0052\\u0049\\u0056\n"
+        );
+        let summary = safe_failure_stderr(raw.as_bytes(), &[]).unwrap();
+        for private in [
+            "private.invalid",
+            "signature=",
+            "PRIVATE",
+            "abcdefghijklmnop",
+            "https:",
+            "%50",
+            "\\u0050",
+        ] {
+            assert!(!summary.contains(private));
+        }
+        assert!(summary.contains("upload failed [media-url]"));
+        assert!(summary.contains("此行未安全披露"));
+    }
+
+    #[test]
+    fn safe_cli_failure_hides_complete_private_paths_without_leaking_root_suffixes() {
+        let raw = concat!(
+            "Error: open C:\\Users\\PrivateUser\\AppData\\project-private\\reference.png failed\n",
+            "Error: open \\\\private-server\\private-share\\reference.png failed\n",
+            "Error: open /Users/PrivateUser/project-private/reference.png failed\n",
+            "Error: open ./reference-001.png failed\n",
+            "Error: image upload failed private.invalid:443\n"
+        );
+        let summary = safe_failure_stderr(
+            raw.as_bytes(),
+            &["C:\\Users\\PrivateUser".into(), "/Users/PrivateUser".into()],
+        )
+        .unwrap();
+        for private in [
+            "PrivateUser",
+            "AppData",
+            "project-private",
+            "private-server",
+            "private-share",
+            "reference-001.png",
+            "private.invalid",
+        ] {
+            assert!(!summary.contains(private));
+        }
+        assert!(summary.contains("[private-path]"));
+        assert!(summary.contains("[reference-file]"));
+        assert!(summary.contains("[network-address]"));
+    }
+
+    #[test]
+    fn safe_cli_failure_never_copies_stdout_or_untrusted_binary_control_lines() {
+        let output = auth_output(
+            false,
+            json!({"access_token":"PRIVATE_STDOUT"}),
+            "Error: invalid input",
+        );
+        let error = output_error_with_redactions(&output, true, &[]);
+        assert!(error.message.contains("Error: invalid input"));
+        assert!(!error.message.contains("PRIVATE_STDOUT"));
+        let empty = auth_output(false, json!({"private":"PRIVATE_STDOUT"}), "");
+        assert!(!output_error_with_redactions(&empty, true, &[])
+            .message
+            .contains("stderr摘要"));
+        assert_eq!(
+            safe_failure_stderr(&[0xff, 0xfe], &[]).unwrap(),
+            "[stderr 内容未安全披露]"
+        );
+        for raw in [
+            "Error: invalid \u{1b}UNHANDLED_PRIVATE",
+            "Error: invalid \u{202e}BIDI_PRIVATE",
+            "{\"error\":\"PRIVATE_JSON\"}",
+        ] {
+            let summary = safe_failure_stderr(raw.as_bytes(), &[]).unwrap();
+            assert!(!summary.contains("PRIVATE"));
+            assert!(summary.contains("未安全披露"));
+        }
+    }
+
+    #[test]
+    fn safe_cli_invocation_redactions_include_configured_values_and_original_arguments() {
+        let config = ProviderConfig {
+            kind: "dreamina".into(),
+            endpoint: Some("https://private.invalid/PRIVATE_ENDPOINT".into()),
+            credential_env: Some("PATH".into()),
+            cli_path: Some(PathBuf::from("C:\\PrivateProject\\dreamina.exe")),
+            bridge_token_env: None,
+            timeout_seconds: 60,
+            adapted_models: vec![],
+        };
+        let args = vec![
+            "image2image".into(),
+            "--prompt=PRIVATE_EXACT_PROMPT".into(),
+            "--device_code".into(),
+            "PRIVATE_DEVICE".into(),
+        ];
+        let values = failure_redactions(
+            Some(&config),
+            &args,
+            Some(Path::new("C:\\PrivateTransport")),
+        );
+        for value in [
+            "PRIVATE_EXACT_PROMPT",
+            "PRIVATE_DEVICE",
+            "https://private.invalid/PRIVATE_ENDPOINT",
+            "C:\\PrivateTransport",
+        ] {
+            assert!(values.iter().any(|v| v == value));
+        }
+        if let Ok(value) = std::env::var("PATH") {
+            assert!(values.contains(&value));
+        }
+        let output = auth_output(false, json!({}), "Error: rejected PRIVATE_EXACT_PROMPT");
+        let error = output_error_for_invocation(
+            &output,
+            true,
+            &config,
+            &args,
+            Some(Path::new("C:\\PrivateTransport")),
+        );
+        assert!(!error.message.contains("PRIVATE_EXACT_PROMPT"));
+        assert!(error.message.contains("rejected [redacted]"));
+        assert!(error.submission_unknown);
+    }
+    #[test]
+    fn explicit_authentication_failure_pauses_but_generic_login_advice_does_not() {
+        for message in [
+            "HTTP 401 unauthorized",
+            "not logged in",
+            "token expired",
+            "please run dreamina login",
+        ] {
+            assert!(output_error(&auth_output(false, json!({}), message), false).auth_required);
+        }
+        let generic = output_error(
+            &auth_output(
+                false,
+                json!({}),
+                "command failed; see login documentation token=PRIVATE",
+            ),
+            false,
+        );
+        assert_eq!(generic.code, "CLI_QUERY_FAILED");
+        assert!(!generic.auth_required);
+        assert!(!generic.message.contains("PRIVATE"));
+        assert!(
+            output_error(&auth_output(false, json!({}), "unknown CLI failure"), true)
+                .submission_unknown
+        );
     }
     #[test]
     fn account_identity_hash_and_credit_allowlist_are_stable() {

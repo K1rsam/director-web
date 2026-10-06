@@ -50,7 +50,7 @@ impl TextExecutor for Model {
         }
         if request.stage == "assetVisualFacts" {
             return Ok(
-                json!({"schemaVersion":"asset-visual-facts/v1", "coveredRowIds":input["rows"].as_array().unwrap().iter().map(|row|row["id"].clone()).collect::<Vec<_>>(), "facts":[], "issues":[]}),
+                json!({"schemaVersion":"asset-visual-facts-wire/v1", "coveredPacketRef":input["coveredPacketRef"], "facts":[], "issues":[]}),
             );
         }
         if request.stage == "assetDesign" {
@@ -86,6 +86,25 @@ impl TextExecutor for Model {
                 "provisionalUnits":[{"id":"provisional","packageId":"package","sourceRefs":refs,"secondsRange":[4,4]}],
                 "entryFacts":[],"fantasyCandidates":[]
             })),
+            "storyboardFinish" if input["finishMode"] == "delta" => {
+                assert_eq!(
+                    request.schema["properties"]["schemaVersion"]["enum"][0],
+                    "storyboard-delta/v2"
+                );
+                assert_eq!(
+                    input["productionDirection"]["direction"],
+                    "克制但有行动力度。"
+                );
+                let ids: Vec<_> = input["previousDraft"]["units"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|unit| unit["id"].clone())
+                    .collect();
+                Ok(
+                    json!({"schemaVersion":"storyboard-delta/v2","baseDraftHash":input["baseDraftHash"],"retainedUnitIds":ids,"replacements":[],"revisionNotes":[],"unresolved":[]}),
+                )
+            }
             "storyboardCreate" | "storyboardFinish" => {
                 assert_eq!(
                     request.schema["properties"]["schemaVersion"]["enum"][0],

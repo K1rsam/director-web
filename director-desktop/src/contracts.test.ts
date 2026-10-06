@@ -1,18 +1,84 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assetImages, assetImageSelection, frozenReference, generationChoices, imageBatchEstimate, mediaMatchesAsset, moveItem, normalizeWorkspace, packageEstimate, packageReady, ratioLabel, referenceTimingProblems, resolutionLabel, storyboardRange, unitResultIds, videoAdoptionProblems, videoContainerVerified, workflowResult } from './contracts.ts';
-import type { Workspace } from './types.ts';
+import { createHash } from 'node:crypto';
+import { assetImages, assetImageSelection, createCatalogDiscovery, frozenReference, generationChoices, imageBatchBlocked, imageBatchEstimate, imageDesignBusy, imageDesignJob, initializeImageParameters, mediaMatchesAsset, missingCatalogs, moveItem, normalizeWorkspace, packageEstimate, packageReady, ratioLabel, referenceTimingProblems, resolutionLabel, selectedUnitsForScope, storyboardRange, toggleUnitSelection, unitResultIds, unitsForScope, videoAdoptionProblems, videoContainerVerified, workflowResult } from './contracts.ts';
+import type { PreparedPackage, SourcePromptProvenance, Unit, Workspace } from './types.ts';
 
 function fixture(): Workspace { return { project: { id: 'p', title: '项目' }, assets: [{ id: 'a', name: '形象', variantId: 'v', adoptedMediaId: 'image', candidates: ['shared'] }], media: [{ id: 'image', kind: 'image', path: 'a.png', assetId: 'a', variantId: 'v' }, { id: 'shared', kind: 'image', path: 'b.png', assetId: 'other', variantId: 'other' }, { id: 'old-video', kind: 'video', path: 'old.mp4' }], units: [{ id: 'u', prompt: '完整提示词', duration: 12, version: 2, assetRefs: [{ assetId: 'a', variantId: 'v', use: 'scene', role: '', order: 1 }], preparedPackage: { provider: 'bh', model: 'm', unitVersion: 2, ratio: '16:9', resolution: '720p', duration: 12, prompt: '完整提示词', estimatedCost: 0, references: [{ assetId: 'a', variantId: 'v', role: 'scene', order: 0, mediaId: 'image' }] }, resultMediaIds: ['new-video'], adoptedMediaId: 'old-video' }], jobs: [{ id: 'j', kind: 'video', entityId: 'u', provider: 'bh', status: 'downloaded', snapshot: { model: 'm', unitVersion: 2 }, prepared: { estimatedCost: 0.25 }, result: { mediaIds: ['new-video'], actualCost: 0.2 } }, { id: 'design', kind: 'workflow', entityId: 'images.design:', provider: 'local', status: 'completed', result: { blocked: [{ reason: '来源缺失' }], imagePlan: [{ status: 'awaitingTrial' }] } }], settings: {}, providers: [], rules: [] }; }
 
 test('Rust任务摘要投影保留云端结果、身份与费用', () => { const workspace = normalizeWorkspace(fixture()); const job = workspace.jobs[0]; assert.equal(job.unitId, 'u'); assert.equal(job.model, 'm'); assert.deepEqual(job.resultMediaIds, ['new-video']); assert.equal(job.estimate, 0.25); assert.equal(job.actualCost, 0.2); assert.equal(workspace.units[0].assetRefs?.[0].role, 'scene'); assert.equal(workspace.media[0].adopted, true); });
 test('准备包精确匹配渠道模型、版本、比例尺寸、时长与编译提示词，并保留零费用', () => { const unit = fixture().units[0]; assert.equal(packageEstimate(unit), 0); assert.equal(packageReady(unit, 'bh', 'm'), true); assert.equal(packageReady(unit, 'dreamina', 'm'), false); assert.equal(packageReady(unit, 'bh', 'wrong'), false); assert.equal(packageReady({ ...unit, version: 3 }, 'bh', 'm'), false); assert.equal(packageReady({ ...unit, problems: ['缺图'] }, 'bh', 'm'), false); assert.equal(packageReady(unit, 'bh', 'm', { ratio: '16:9', resolution: '720p' }), true); assert.equal(packageReady(unit, 'bh', 'm', { ratio: '9:16', resolution: '720p' }), false); assert.equal(packageReady(unit, 'bh', 'm', { ratio: '16:9', resolution: '1080p' }), false); assert.equal(packageReady({ ...unit, duration: 15 }, 'bh', 'm'), false); assert.equal(packageReady({ ...unit, prompt: '已经修改' }, 'bh', 'm'), false); assert.equal(packageReady({ ...unit, preparedPackage: { ...unit.preparedPackage!, prompt: undefined } }, 'bh', 'm'), false); assert.equal(packageReady({ ...unit, prompt: '使用{{asset:a:v}}', preparedPackage: { ...unit.preparedPackage!, prompt: '使用@图片1' } }, 'bh', 'm'), true); });
+
+function compiledPackageUnit(): Unit {
+  const unit = fixture().units[0], sourcePrompt = '人物甲推门，门牌显示“继续”。\n[参考素材] 人物甲：character参考；人物甲伤态：character参考；门牌：prop参考\n';
+  const prompt = `${sourcePrompt}\n[本次已绑定参考素材顺序]\n@图片1：人物甲（character参考）\n@图片1：人物甲伤态（character参考）\n【文字素材：门牌；字样“继续”；贴合门牌表面】：门牌（prop参考）\n`;
+  const sourcePromptProvenance: SourcePromptProvenance = { version: 'unit-source-prompt/v1', jobId: 'prepared', unitId: unit.id, unitVersion: unit.version!, sourceVersion: 3, compiledPromptVerified: true, compiledPrompt: prompt, sourcePromptSha256: createHash('sha256').update(sourcePrompt).digest('hex'), origin: 'unit-version-and-reference-compilation' };
+  return { ...unit, sourceVersion: 3, storyboardCreativeProfile: 'original-production-contract/v1', prompt: sourcePrompt, assetRefs: [{ assetId: 'a', variantId: 'v', role: 'character', order: 0 }, { assetId: 'hurt', variantId: 'hurt', role: 'character', order: 1 }, { assetId: 'label', variantId: 'text', role: 'prop', order: 2 }], preparedPackage: { ...unit.preparedPackage!, jobId: 'prepared', prompt, sourcePrompt, sourcePromptProvenance, references: [{ assetId: 'parent', variantId: 'base', mediaId: 'image', kind: 'image', role: 'character', order: 0, semanticBindings: [{ assetId: 'a', variantId: 'v' }, { assetId: 'hurt', variantId: 'hurt' }] }], inlineReferences: [{ assetId: 'label', variantId: 'text', kind: 'inline-text', name: '门牌', description: '字样“继续”', preparation: { mode: 'INLINE', note: '贴合门牌表面' } }] } };
+}
+
+test('核心原提示词证明支持人名模板、INLINE文字与祖先共图，同时不放开冻结参数', () => {
+  const unit = compiledPackageUnit();
+  assert.notEqual(unit.prompt, unit.preparedPackage!.prompt);
+  assert.equal(packageReady(unit, 'bh', 'm', { ratio: '16:9', resolution: '720p' }), true);
+  assert.equal(packageReady(unit, 'dreamina', 'm'), false);
+  assert.equal(packageReady(unit, 'bh', 'other'), false);
+  assert.equal(packageReady(unit, 'bh', 'm', { ratio: '9:16', resolution: '720p' }), false);
+  assert.equal(packageReady(unit, 'bh', 'm', { ratio: '16:9', resolution: '1080p' }), false);
+  for (const changed of [{ version: 3 }, { sourceVersion: 4 }, { sourceVersion: undefined }, { duration: 15 }, { prompt: unit.prompt + ' ' }, { problems: ['缺图'] }]) assert.equal(packageReady({ ...unit, ...changed }, 'bh', 'm'), false);
+});
+
+test('原提示词证明逐字绑定冻结文本与任务身份，缺失或伪证明不能回退放行', () => {
+  const unit = compiledPackageUnit(), pkg = unit.preparedPackage!, proof = pkg.sourcePromptProvenance!;
+  const withPackage = (change: Partial<PreparedPackage>) => ({ ...unit, preparedPackage: { ...pkg, ...change } });
+  for (const change of [{ jobId: 'other-job' }, { sourcePrompt: unit.prompt + '\n' }, { prompt: pkg.prompt + ' ' }, { sourcePromptProvenance: undefined }, { sourcePrompt: undefined }, { sourcePrompt: undefined, sourcePromptProvenance: undefined }]) assert.equal(packageReady(withPackage(change), 'bh', 'm'), false);
+  for (const change of [{ jobId: 'other-job' }, { unitId: 'other-unit' }, { unitVersion: 3 }, { sourceVersion: 2 }, { compiledPromptVerified: false }, { compiledPrompt: unit.prompt }, { sourcePromptSha256: '' }, { version: 'unverified/v1' }, { origin: 'current-unit-version-only' }]) assert.equal(packageReady(withPackage({ sourcePromptProvenance: { ...proof, ...change } as SourcePromptProvenance }), 'bh', 'm'), false, JSON.stringify(change));
+  const partialPlain = { ...fixture().units[0], sourceVersion: 3, preparedPackage: { ...fixture().units[0].preparedPackage!, sourcePrompt: '完整提示词' } };
+  assert.equal(packageReady(partialPlain, 'bh', 'm'), false, 'a present but incomplete proof cannot use the matching legacy text fallback');
+});
+
+test('所有集数就绪数接受11个核心编译证明而保留8个真实阻塞，不使用额外UI编译猜测', () => {
+  const ready = compiledPackageUnit();
+  const units = [...Array.from({ length: 11 }, () => structuredClone(ready)), ...Array.from({ length: 8 }, () => ({ ...structuredClone(ready), problems: ['原文版本需要更新'] }))].map((unit, index) => {
+    unit.id = `unit-${index}`; unit.preparedPackage!.sourcePromptProvenance!.unitId = unit.id; return unit;
+  });
+  assert.equal(selectedUnitsForScope(units, 'all', null).length, 19);
+  assert.equal(selectedUnitsForScope(units, 'all', null).filter(unit => packageReady(unit, 'bh', 'm', { ratio: '16:9', resolution: '720p' })).length, 11);
+  assert.ok(units.slice(11).every(unit => !packageReady(unit, 'bh', 'm')));
+});
 test('冻结配图不依赖UI一基序号，视频保留旧采用与新候选', () => { const workspace = normalizeWorkspace(fixture()), unit = workspace.units[0]; assert.equal(frozenReference(unit.preparedPackage, unit.assetRefs![0]), 'image'); assert.deepEqual(unitResultIds(workspace, unit).sort(), ['new-video', 'old-video']); });
 test('共用图片、设计阻塞与计划可读取，未知参考时长必须阻止提交', () => { const workspace = fixture(); assert.equal(mediaMatchesAsset(workspace.assets[0], workspace.media[1]), true); assert.equal(workflowResult(workspace, 'images.design')?.blocked instanceof Array, true); const unit = { ...workspace.units[0], mediaRefs: [{ mediaId: 'sound', role: 'reference' }] }; assert.equal(referenceTimingProblems(workspace, unit).length, 1); workspace.media.push({ id: 'sound', kind: 'audio', path: 'sound.wav', durationSeconds: 8, metadataVerified: false }); assert.equal(referenceTimingProblems(workspace, unit).length, 1); workspace.media.at(-1)!.metadataVerified = true; assert.equal(referenceTimingProblems(workspace, unit).length, 0); workspace.media.at(-1)!.durationSeconds = 0; assert.equal(referenceTimingProblems(workspace, unit).length, 1); });
 
 test('引用重排改变提交顺序并保留完整身份字段', () => { const refs = [{ mediaId: 'a', role: 'character' }, { mediaId: 'b', role: 'sound' }, { mediaId: 'c', role: 'video' }]; const moved = moveItem(refs, 2, 0); assert.deepEqual(moved.map(item => item.mediaId), ['c', 'a', 'b']); assert.equal(moved[0].role, 'video'); assert.deepEqual(refs.map(item => item.mediaId), ['a', 'b', 'c']); assert.equal(moveItem(refs, -1, 0), refs); });
 
 test('图片计划使用最新相关任务而不会被旧设计结果遮蔽', () => { const workspace = fixture(); workspace.jobs.unshift({ id: 'produce', kind: 'workflow', entityId: 'images.produce:', provider: 'local', status: 'completed', result: { imagePlan: [{ status: 'ready' }] } }); assert.deepEqual(workflowResult(workspace, ['images.design', 'images.produce'])?.imagePlan, [{ status: 'ready' }]); });
+
+test('分镜与制作基础文字任务不阻塞图片设计，相关图片流程保留执行所有权', () => {
+  const job = { id: 'workflow', kind: 'workflow', entityId: 'storyboard.run', provider: 'local', status: 'running' };
+  const unrelated = [job, { ...job, id: 'foundation', entityId: 'foundation.run' }, { ...job, id: 'author', kind: 'text', entityId: 'storyboardCreate:unit-performance-director:request' }];
+  assert.equal(imageDesignBusy(unrelated), false);
+  for (const entityId of ['images.design:', 'images.produce:']) {
+    assert.equal(imageDesignBusy([...unrelated, { ...job, entityId }]), true);
+    assert.equal(imageDesignBusy([{ ...job, entityId, status: 'completed' }]), false);
+    assert.equal(imageDesignBusy([{ ...job, entityId, status: 'submission_unknown' }]), true);
+  }
+  for (const entityId of ['assetDesign:asset-art-director:request', 'assetVisualFacts:asset-art-director:request']) assert.equal(imageDesignBusy([{ ...job, kind: 'text', entityId }]), true);
+  assert.equal(imageDesignBusy([{ ...job, entityId: 'other', snapshot: { stage: 'images.produce' } }]), true);
+  assert.equal(imageDesignJob({ ...job, entityId: 'images.production-other:' }), false);
+  assert.equal(imageDesignJob({ ...job, kind: 'text', entityId: 'assetDesignOther:request' }), false);
+});
+
+test('图片一键制作保留同一资产未决提交阻塞，其他资产及已终态任务互不遮蔽', () => {
+  const job = { id: 'image', kind: 'image', assetId: 'a', provider: 'dreamina', status: 'submission_unknown' };
+  assert.equal(imageBatchBlocked([job], ['a']), true);
+  assert.equal(imageBatchBlocked([{ ...job, status: 'downloaded', submissionUnknown: true }], ['a']), true);
+  assert.equal(imageBatchBlocked([job], ['other']), false);
+  assert.equal(imageBatchBlocked([job], ['a', 'other']), false, 'unblocked items may proceed; the core still rejects each unresolved asset');
+  for (const status of ['queued', 'waiting_dependency', 'query_failed', 'download_failed', 'recovery_paused']) assert.equal(imageBatchBlocked([{ ...job, status }], ['a']), true);
+  for (const status of ['downloaded', 'failed', 'closed_by_user']) assert.equal(imageBatchBlocked([{ ...job, status }], ['a']), false);
+  assert.equal(imageBatchBlocked([{ ...job, assetId: undefined, entityId: 'a' }], ['a']), true);
+  assert.equal(imageBatchBlocked([{ ...job, kind: 'video' }], ['a']), false);
+  assert.equal(imageBatchBlocked([job], []), false);
+});
 
 test('图片只采用已适配单图报价，未知计价与缺图依赖不会伪造总费用', () => {
   const workspace = fixture(); workspace.assets.push({ id: 'parent', name: '基础形象', variantId: 'base', prompt: '基础设计' }); workspace.assets[0].sourceAssetId = 'parent';
@@ -41,6 +107,74 @@ test('模型、比例与尺寸只来自对应类型能力，非法旧值不会�
   for (const invalid of [{ model: '5.0', ratio: '21:9', resolution: '2k' }, { model: '5.0', ratio: '16:9', resolution: '2K' }, { model: 'new', ratio: '1:1', resolution: '2k' }, { model: 'unverified', ratio: '16:9', resolution: '2k' }]) assert.equal(generationChoices(workspace, 'dreamina', 'image', invalid).valid, false);
   assert.equal(generationChoices(workspace, 'dreamina', 'video', { model: '2.0', ratio: '9:16', resolution: '1080p' }).valid, true); assert.equal(generationChoices(workspace, 'dreamina', 'video', { model: '2.0', ratio: '9:16', resolution: '4k' }).valid, false);
   assert.equal(resolutionLabel('1080p', 'image'), '1080P（像素尺寸）'); assert.equal(resolutionLabel('4k', 'image'), '4K'); assert.equal(ratioLabel('9:16'), '9:16 · 竖屏');
+});
+
+function imageCatalogFixture(): Workspace {
+  return { ...fixture(), providers: [{ id: 'dreamina', models: [{ id: '5.0', kind: 'image', adapted: true, available: true, ratios: ['16:9', '9:16'], resolutions: ['2k', '4k'] }, { id: 'video-known', kind: 'video', adapted: true, available: true }] }] };
+}
+test('迟到的真实目录只初始化即梦5.0空模型，保留有效比例尺寸，不猜未知或其他渠道模型', () => {
+  const workspace = imageCatalogFixture(), empty = { model: '', ratio: '', resolution: '' };
+  assert.deepEqual(initializeImageParameters(fixture(), 'dreamina', empty), empty);
+  assert.deepEqual(initializeImageParameters(workspace, 'dreamina', empty), { model: '5.0', ratio: '16:9', resolution: '2k' });
+  assert.deepEqual(initializeImageParameters(workspace, 'dreamina', { ...empty, ratio: '9:16', resolution: '4k' }), { model: '5.0', ratio: '9:16', resolution: '4k' });
+  const rustCatalog = structuredClone(workspace); delete (rustCatalog.providers as { models: { available?: boolean }[] }[])[0].models[0].available;
+  assert.deepEqual(initializeImageParameters(rustCatalog, 'dreamina', empty), { model: '5.0', ratio: '16:9', resolution: '2k' }, 'Rust ModelCapability omits available; adapted typed capability remains selectable');
+  assert.equal(generationChoices(rustCatalog, 'dreamina', 'image', initializeImageParameters(rustCatalog, 'dreamina', empty)).valid, true);
+  for (const change of [{ id: '5.0-Pro' }, { kind: 'video' }, { adapted: false }, { available: false }]) {
+    const changed = structuredClone(workspace); (changed.providers as { models: object[] }[])[0].models = [{ ...(workspace.providers as { models: object[] }[])[0].models[0], ...change }];
+    assert.deepEqual(initializeImageParameters(changed, 'dreamina', empty), empty);
+  }
+  workspace.providers = [{ id: 'bh', models: [{ id: '5.0', kind: 'image', adapted: true, available: true, ratios: ['16:9'], resolutions: ['2k'] }] }];
+  assert.deepEqual(initializeImageParameters(workspace, 'bh', empty), empty);
+});
+test('已保存图片模型优先，非法旧模型和用户当前参数不会被默认值悄悄替换', () => {
+  const workspace = imageCatalogFixture(), parameters = { model: '', ratio: '9:16', resolution: '4k' };
+  workspace.settings = { imageProvider: 'dreamina', imageModel: 'retired-model', ratio: '16:9', imageResolution: '2k' };
+  assert.deepEqual(initializeImageParameters(workspace, 'dreamina', parameters), { ...parameters, model: 'retired-model' });
+  assert.deepEqual(initializeImageParameters(workspace, 'dreamina', { model: 'chosen-model', ratio: 'old-ratio', resolution: 'old-size' }), { model: 'chosen-model', ratio: 'old-ratio', resolution: 'old-size' });
+  workspace.settings.imageModel = '5.0';
+  assert.deepEqual(initializeImageParameters(workspace, 'dreamina', { model: '', ratio: '', resolution: '' }), { model: '5.0', ratio: '16:9', resolution: '2k' });
+  assert.deepEqual(initializeImageParameters(workspace, 'dreamina', { model: '', ratio: 'old-ratio', resolution: 'old-size' }), { model: '5.0', ratio: 'old-ratio', resolution: 'old-size' });
+  workspace.settings.ratio = 'old-ratio'; workspace.settings.imageResolution = 'old-size';
+  assert.deepEqual(initializeImageParameters(workspace, 'dreamina', { model: '', ratio: '', resolution: '' }), { model: '5.0', ratio: 'old-ratio', resolution: 'old-size' });
+});
+test('缺目录发现合并图片视频渠道，字符串与错误类型目录不能冒充核实能力', () => {
+  const workspace = fixture();
+  assert.deepEqual(missingCatalogs(workspace).map(item => [item.provider, item.kinds]), [['dreamina', ['image', 'video']]]);
+  workspace.providers = { dreamina: { models: ['5.0', { id: 'video-known', kind: 'video' }] } };
+  assert.equal(missingCatalogs(workspace).length, 1);
+  workspace.providers = imageCatalogFixture().providers;
+  assert.equal(missingCatalogs(workspace).length, 0);
+  workspace.settings.imageProvider = 'bh';
+  assert.deepEqual(missingCatalogs(workspace).map(item => item.provider), ['bh']);
+});
+test('目录自动读取失败只执行一次，项目与稳定配置变更可独立检查，预览不访问渠道', async () => {
+  let workspace = fixture(), enabled = false, calls = 0; const states: string[] = [];
+  const inspect = createCatalogDiscovery({ enabled: () => enabled, current: () => workspace, busy: () => false, revision: () => 0, refresh: async () => { calls++; throw new Error('offline capability failure'); }, read: async () => { throw new Error('must not read after failure'); }, apply: () => assert.fail('must not apply'), report: state => states.push(state.status) });
+  await inspect(); assert.equal(calls, 0);
+  enabled = true; await Promise.all([inspect(), inspect(), inspect()]); await inspect(); assert.equal(calls, 1); assert.deepEqual(states, ['checking', 'error']);
+  workspace.settings.bhToken = 'test-only-not-a-real-token'; workspace.dreaminaAccount = { status: 'unknown', checkedAt: 'later', identityVerified: false, ready: false }; await inspect();
+  assert.equal(calls, 1); workspace.dreaminaAccount.status = 'error'; workspace.dreaminaAccount.checkedAt = 'latest'; await inspect(); assert.equal(calls, 1, 'error-state polling is not an automatic retry');
+  workspace.dreaminaAccount.status = 'authenticated'; workspace.dreaminaAccount.ready = true; await inspect(); assert.equal(calls, 2, 'a newly connected account can inspect once without automatic login');
+  workspace.settings.dreaminaPath = 'offline-cli-fixture'; await inspect(); assert.equal(calls, 3);
+  workspace = { ...workspace, project: { id: 'other-project', title: '其他项目' } }; await inspect(); assert.equal(calls, 4);
+});
+test('目录读取在新操作期间等待，恢复只补读项目，不重复检查渠道或覆盖新操作', async () => {
+  let workspace = fixture(), busy = false, revision = 0, refreshes = 0, reads = 0;
+  let finishRefresh!: () => void; const waiting = new Promise<void>(resolve => { finishRefresh = resolve; });
+  const inspect = createCatalogDiscovery({ enabled: () => true, current: () => workspace, busy: () => busy, revision: () => revision, refresh: async () => { refreshes++; await waiting; }, read: async () => { reads++; return { ...imageCatalogFixture(), foundation: workspace.foundation }; }, apply: next => { workspace = next; revision++; }, report: () => {} });
+  const first = inspect(); busy = true; revision++; workspace = { ...workspace, foundation: { result: 'newer-operation' } }; finishRefresh(); await first;
+  assert.equal(refreshes, 1); assert.equal(reads, 0); assert.deepEqual(workspace.foundation, { result: 'newer-operation' });
+  busy = false; await inspect(); assert.equal(refreshes, 1); assert.equal(reads, 1); assert.deepEqual(workspace.foundation, { result: 'newer-operation' });
+  await inspect(); assert.equal(refreshes, 1);
+});
+test('打开其他项目时丢弃旧目录读结果并继续新项目，空结果不自动循环重试', async () => {
+  let workspace = fixture(), revision = 0, refreshed: string[] = []; const applied: string[] = [], states: string[] = [];
+  let finishRead!: (workspace: Workspace) => void; const waiting = new Promise<Workspace>(resolve => { finishRead = resolve; });
+  const inspect = createCatalogDiscovery({ enabled: () => true, current: () => workspace, busy: () => false, revision: () => revision, refresh: async projectId => { refreshed.push(projectId); }, read: async projectId => projectId === 'p' ? waiting : workspace, apply: next => { applied.push(next.project.id); workspace = next; }, report: state => states.push(state.status) });
+  const first = inspect(); await Promise.resolve(); workspace = { ...fixture(), project: { id: 'new-project', title: '新项目' } }; revision++; finishRead(imageCatalogFixture()); await first;
+  assert.deepEqual(refreshed, ['p', 'new-project']); assert.deepEqual(applied, ['new-project']); assert.equal(states.at(-1), 'error');
+  await inspect(); assert.equal(refreshed.length, 2);
 });
 
 test('分镜文字创作从当前锁定原文选择制作集，零单元和未配置视频模型也可启动', () => {
@@ -106,4 +240,44 @@ test('共用原图只通过当前形象明确关联显示，全局采用标记�
   const empty = assetImages({ ...workspace, media: [] }, asset);
   assert.equal(empty.current, undefined);
   assert.deepEqual(empty.history, []);
+});
+
+function publishedUnits(): Unit[] {
+  return [
+    ...Array.from({ length: 10 }, (_, index) => ({ id: `retired-${index}`, episodeId: 'ep-1', prompt: '旧稿', retired: true })),
+    ...Array.from({ length: 11 }, (_, index) => ({ id: `current-${index}`, episodeId: 'ep-1', prompt: '当前稿', sourceVersion: 3 })),
+    ...Array.from({ length: 8 }, (_, index) => ({ id: `other-${index}`, episodeId: 'ep-2', prompt: '其他集待处理稿', sourceVersion: 2 })),
+  ];
+}
+test('全选意图从零单元及旧10单元跟随发布后的当前19单元，不提交retired', () => {
+  const units = publishedUnits();
+  assert.deepEqual(selectedUnitsForScope([], 'all', null), []);
+  assert.equal(selectedUnitsForScope(units.slice(0, 10).map(unit => ({ ...unit, retired: false })), 'all', null).length, 10);
+  const selected = selectedUnitsForScope(units, 'all', null);
+  assert.equal(selected.length, 19);
+  assert.ok(selected.every(unit => unit.retired !== true));
+  assert.equal(selected.filter(unit => unit.sourceVersion === 2).length, 8, 'other active episodes remain available; source age is not a retirement decision');
+  assert.equal(units.length, 29, 'selection is read-only and preserves history');
+});
+test('切换制作集时计数、就绪候选和请求ID来自同一范围，隐藏集ID不混入', () => {
+  const units = publishedUnits();
+  assert.equal(unitsForScope(units, 'ep-1').length, 11);
+  assert.equal(unitsForScope(units, 'ep-2').length, 8);
+  assert.equal(selectedUnitsForScope(units, 'ep-1', null).length, 11);
+  const manual = ['current-0', 'other-0', 'retired-0', 'missing', 'current-0'];
+  assert.deepEqual(selectedUnitsForScope(units, 'ep-1', manual).map(unit => unit.id), ['current-0']);
+  assert.deepEqual(selectedUnitsForScope(units, 'ep-2', manual).map(unit => unit.id), ['other-0']);
+  assert.deepEqual(selectedUnitsForScope(units, 'all', manual).map(unit => unit.id), ['current-0', 'other-0']);
+  assert.deepEqual(selectedUnitsForScope(units, 'ep-1', []), []);
+});
+test('手动取消后保留精确筛选，不自动选新稿；再次全选恢复跟随', () => {
+  const units = publishedUnits(), manual = toggleUnitSelection(units, null, 'current-0');
+  assert.equal(manual.length, 18);
+  assert.ok(!manual.includes('current-0'));
+  const updated = [...units.map(unit => unit.id === 'current-1' ? { ...unit, retired: true } : unit), { id: 'new', episodeId: 'ep-1', prompt: '新稿' }];
+  const selected = selectedUnitsForScope(updated, 'all', manual);
+  assert.equal(selected.length, 17);
+  assert.ok(!selected.some(unit => unit.id === 'new' || unit.id === 'current-1'));
+  assert.equal(selectedUnitsForScope(updated, 'all', null).length, 19);
+  assert.ok(selectedUnitsForScope(updated, 'all', null).some(unit => unit.id === 'new'));
 });

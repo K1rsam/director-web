@@ -3,6 +3,8 @@ use super::*;
 use std::collections::{BTreeMap, HashSet};
 
 const CAPACITY: usize = 24_000;
+const WIRE_PROFILE: &str = "asset-visual-facts-compact/v1";
+const WIRE_RESULT: &str = "asset-visual-facts-wire/v1";
 fn text<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or("")
 }
@@ -21,6 +23,232 @@ fn strings(value: &Value, key: &str) -> Vec<String> {
         .filter_map(Value::as_str)
         .map(str::to_string)
         .collect()
+}
+
+/// The cache identity is the original domain packet, never its transport.
+fn canonical_packet(source: &LockedSource, identities: &[Value], rows: &[&SourceRow]) -> Value {
+    json!({"sourceSha256":source.sha256,"identities":identities,"rows":rows.iter().map(|row|json!({"id":row.id,"number":row.number,"text":row.text,"kind":row.kind,"episodeId":row.episode_id,"sceneId":row.scene_id})).collect::<Vec<_>>()})
+}
+
+struct PacketWire {
+    input: Value,
+    row_ids: Vec<String>,
+    row_aliases: Vec<String>,
+    rows_by_alias: BTreeMap<String, String>,
+    packet_hash: String,
+}
+
+fn aliases<'a>(
+    prefix: char,
+    ids: impl IntoIterator<Item = &'a str>,
+    occupied: &mut HashSet<String>,
+) -> BTreeMap<String, String> {
+    let mut result = BTreeMap::new();
+    let mut number = 0;
+    for id in ids {
+        if result.contains_key(id) {
+            continue;
+        }
+        let alias = loop {
+            number += 1;
+            let candidate = format!("{prefix}{number}");
+            if occupied.insert(candidate.clone()) {
+                break candidate;
+            }
+        };
+        result.insert(id.to_string(), alias);
+    }
+    result
+}
+
+impl PacketWire {
+    fn compile(source: &LockedSource, identities: &[Value], rows: &[&SourceRow]) -> Self {
+        let packet = canonical_packet(source, identities, rows);
+        let packet_hash = digest(&packet.to_string());
+        // An alias cannot be confused with any real source/subject identity,
+        // including a legacy identity that already happens to be named r1.
+        let mut occupied: HashSet<String> = source
+            .rows
+            .iter()
+            .map(|r| r.id.clone())
+            .chain(source.episodes.iter().map(|e| e.id.clone()))
+            .chain(source.scenes.iter().map(|s| s.id.clone()))
+            .collect();
+        let mut episode_ids: HashSet<String> =
+            rows.iter().filter_map(|r| r.episode_id.clone()).collect();
+        let mut scene_ids: HashSet<String> =
+            rows.iter().filter_map(|r| r.scene_id.clone()).collect();
+        for identity in identities {
+            occupied.insert(text(identity, "assetId").into());
+            for version in identity["versions"].as_array().into_iter().flatten() {
+                occupied.insert(text(version, "assetRowId").into());
+                occupied.insert(text(version, "variantId").into());
+                episode_ids.extend(strings(&version["applicability"], "episodes"));
+                scene_ids.extend(strings(&version["applicability"], "scenes"));
+            }
+        }
+        episode_ids.extend(
+            source
+                .scenes
+                .iter()
+                .filter(|s| scene_ids.contains(&s.id))
+                .map(|s| s.episode_id.clone()),
+        );
+        // Source order determines aliases; neither names nor text are rewritten.
+        let episode_aliases = aliases(
+            'e',
+            source
+                .episodes
+                .iter()
+                .filter(|e| episode_ids.contains(&e.id))
+                .map(|e| e.id.as_str()),
+            &mut occupied,
+        );
+        let scene_aliases = aliases(
+            's',
+            source
+                .scenes
+                .iter()
+                .filter(|s| scene_ids.contains(&s.id))
+                .map(|s| s.id.as_str()),
+            &mut occupied,
+        );
+        let row_map = aliases('r', rows.iter().map(|r| r.id.as_str()), &mut occupied);
+        let row_ids: Vec<_> = rows.iter().map(|r| r.id.clone()).collect();
+        let row_aliases: Vec<_> = row_ids.iter().map(|id| row_map[id].clone()).collect();
+        let rows_by_alias = row_map
+            .iter()
+            .map(|(id, alias)| (alias.clone(), id.clone()))
+            .collect();
+        let mut compact_identities = identities.to_vec();
+        for identity in &mut compact_identities {
+            for version in identity["versions"].as_array_mut().into_iter().flatten() {
+                for (key, map) in [("episodes", &episode_aliases), ("scenes", &scene_aliases)] {
+                    if let Some(ids) = version["applicability"]
+                        .get_mut(key)
+                        .and_then(Value::as_array_mut)
+                    {
+                        for id in ids {
+                            if let Some(alias) = id.as_str().and_then(|id| map.get(id)) {
+                                *id = json!(alias);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let episodes: Vec<_> = source.episodes.iter().filter_map(|episode| {
+            let alias = episode_aliases.get(&episode.id)?;
+            Some(json!({"id":alias,"number":episode.number,"sourceNumber":episode.source_number,"title":episode.title}))
+        }).collect();
+        let scenes: Vec<_> = source
+            .scenes
+            .iter()
+            .filter_map(|scene| {
+                let alias = scene_aliases.get(&scene.id)?;
+                let mut value = serde_json::to_value(scene).expect("source scene is serializable");
+                value.as_object_mut().unwrap().remove("rowIds");
+                value["id"] = json!(alias);
+                value["episodeId"] = json!(episode_aliases
+                    .get(&scene.episode_id)
+                    .unwrap_or(&scene.episode_id));
+                Some(value)
+            })
+            .collect();
+        let input = json!({"sourceSha256":source.sha256,"referenceEncoding":WIRE_PROFILE,"domain":if rows.iter().all(|r|r.episode_id.is_none()){"AUTHOR"}else{"EPISODE"},"coveredPacketRef":packet_hash,"identities":compact_identities,"episodes":episodes,"scenes":scenes,"rows":rows.iter().map(|row|json!({"id":row_map[&row.id],"number":row.number,"text":row.text,"kind":row.kind,"episodeId":row.episode_id.as_ref().map(|id|episode_aliases.get(id).unwrap_or(id)),"sceneId":row.scene_id.as_ref().map(|id|scene_aliases.get(id).unwrap_or(id))})).collect::<Vec<_>>(),"transportInstructions":"原版A15_A岗位方法不变，仅替换Skill末尾的桌面运输外壳。rows的text和number是锁定原文与真实行号，id为本包短行引用；episodes/scenes提供只读集场名称、原集号和权威信息，identities仍仅为主体及已有版本定位，不能充当外观证据。AUTHOR与EPISODE按本包domain分别处理，不提升角色陈述为客观事实。输出严格asset-visual-facts-wire/v1：schemaVersion、coveredPacketRef、facts、issues；coveredPacketRef原样返回输入值，确认处理本包全部rows一次。facts仍为assetId/variantId/attribute/value/scope/claim/sourceRefs，sourceRefs只用本包row.id短引用，至少一项且不重复；Rust还原到锁定原文。issues为空；无明确事实允许facts为空。不要回抄coveredRowIds、原文、行坐标或集场坐标，不创造范围外证据。"});
+        Self {
+            input,
+            row_ids,
+            row_aliases,
+            rows_by_alias,
+            packet_hash,
+        }
+    }
+
+    fn schema(&self, identities: &[Value]) -> Value {
+        let owner_ids: Vec<_> = identities.iter().map(|i| text(i, "assetId")).collect();
+        let variants: Vec<_> = identities
+            .iter()
+            .flat_map(|i| {
+                i["versions"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|v| json!(text(v, "variantId")))
+            })
+            .chain(std::iter::once(Value::Null))
+            .collect();
+        let mut schema = obj(
+            json!({"schemaVersion":choices(&[WIRE_RESULT]),"coveredPacketRef":{"type":"string","enum":[self.packet_hash]},"facts":array(obj(json!({"assetId":{"type":"string","enum":owner_ids},"variantId":{"type":["string","null"],"enum":variants},"attribute":string(),"value":string(),"scope":choices(&["STABLE","STATE","TRANSITION"]),"claim":choices(&["SOURCE","CHARACTER_CLAIM"]),"sourceRefs":{"type":"array","items":{"$ref":"#/$defs/sourceRow"}}}))),"issues":{"type":"array","maxItems":0,"items":{"type":"string"}}}),
+        );
+        // A single enum belongs to sparse facts, not to a copied coverage table.
+        schema["$defs"] = json!({"sourceRow":{"type":"string","enum":self.row_aliases}});
+        schema
+    }
+
+    /// Legacy canonical replies/checkpoints remain valid. Wire replies must bind
+    /// this exact domain packet before short references can be interpreted.
+    /// Restore and validation are atomic; reject never changes the raw reply.
+    fn materialize(
+        &self,
+        output: &mut Value,
+        identities: &[Value],
+        source_sha: &str,
+    ) -> Result<(), String> {
+        let compact = match text(output, "schemaVersion") {
+            WIRE_RESULT => {
+                if text(output, "coveredPacketRef") != self.packet_hash
+                    || output.get("coveredRowIds").is_some()
+                {
+                    return Err("视觉事实包运输回执不匹配".into());
+                }
+                true
+            }
+            "asset-visual-facts/v1" => {
+                if output["coveredRowIds"] != json!(self.row_ids)
+                    || output.get("coveredPacketRef").is_some()
+                {
+                    return Err("旧视觉事实包范围或回执不完整".into());
+                }
+                false
+            }
+            _ => return Err("视觉事实包运输版本未知".into()),
+        };
+        if output["issues"]
+            .as_array()
+            .map(|v| !v.is_empty())
+            .unwrap_or(true)
+        {
+            return Err("视觉事实包范围或回执不完整".into());
+        }
+        let mut facts = output["facts"]
+            .as_array()
+            .ok_or("视觉事实包缺少facts")?
+            .clone();
+        let known: HashSet<_> = self.row_ids.iter().map(String::as_str).collect();
+        for fact in &mut facts {
+            if compact {
+                let refs = fact
+                    .get_mut("sourceRefs")
+                    .and_then(Value::as_array_mut)
+                    .ok_or("视觉事实缺少源行引用")?;
+                for reference in refs {
+                    let id = reference
+                        .as_str()
+                        .and_then(|alias| self.rows_by_alias.get(alias))
+                        .ok_or("视觉事实短行引用未知、越包或类型错误")?;
+                    *reference = json!(id);
+                }
+            }
+            validate_fact(fact, identities, &known)?;
+            *fact = json!({"assetId":fact["assetId"],"variantId":fact["variantId"],"attribute":fact["attribute"],"value":fact["value"],"scope":fact["scope"],"claim":fact["claim"],"sourceRefs":fact["sourceRefs"]});
+            let id = digest(&fact.to_string());
+            fact["id"] = json!(format!("visual-{id}"));
+            fact["sourceSha256"] = json!(source_sha);
+        }
+        *output = json!({"schemaVersion":"asset-visual-facts/v1","coveredRowIds":self.row_ids,"facts":facts,"issues":[]});
+        Ok(())
+    }
 }
 
 fn affected(
@@ -224,7 +452,7 @@ pub async fn run_asset_visual_facts(
     for (index, rows) in groups.iter().enumerate() {
         let ids: Vec<_> = rows.iter().map(|row| row.id.clone()).collect();
         let ids_set: HashSet<_> = ids.iter().map(String::as_str).collect();
-        let packet = json!({"sourceSha256":source.sha256,"identities":identities,"rows":rows.iter().map(|row|json!({"id":row.id,"number":row.number,"text":row.text,"kind":row.kind,"episodeId":row.episode_id,"sceneId":row.scene_id})).collect::<Vec<_>>()});
+        let packet = canonical_packet(&source, &identities, rows);
         let packet_hash = digest(&serde_json::to_string(&packet).unwrap());
         if let Some(cache) = input
             .pointer("/foundation/visualFactBatches")
@@ -263,61 +491,26 @@ pub async fn run_asset_visual_facts(
             }
             continue;
         }
-        let owner_ids: Vec<_> = identities
-            .iter()
-            .map(|identity| text(identity, "assetId").to_string())
-            .collect();
-        let variant_ids: Vec<_> = identities
-            .iter()
-            .flat_map(|identity| {
-                identity["versions"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .map(|v| text(v, "variantId").to_string())
-            })
-            .collect();
-        let schema = obj(
-            json!({"schemaVersion":choices(&["asset-visual-facts/v1"]),"coveredRowIds":refs(&ids),"facts":array(obj(json!({"assetId":{"type":"string","enum":owner_ids},"variantId":{"type":["string","null"],"enum":variant_ids.iter().map(|v|json!(v)).chain(std::iter::once(Value::Null)).collect::<Vec<_>>()},"attribute":string(),"value":string(),"scope":choices(&["STABLE","STATE","TRANSITION"]),"claim":choices(&["SOURCE","CHARACTER_CLAIM"]),"sourceRefs":refs(&ids)}))),"issues":{"type":"array","maxItems":0,"items":{"type":"string"}}}),
-        );
+        let wire = PacketWire::compile(&source, &identities, rows);
+        debug_assert_eq!(wire.packet_hash, packet_hash);
+        let schema = wire.schema(&identities);
         let result = call_validated(
             executor,
             "assetVisualFacts",
             "asset-visual-facts-extractor",
             model,
             reasoning,
-            packet,
+            wire.input.clone(),
             schema,
             &[],
-            |output| {
-                if text(output, "schemaVersion") != "asset-visual-facts/v1"
-                    || strings(output, "coveredRowIds") != ids
-                    || output["issues"]
-                        .as_array()
-                        .map(|v| !v.is_empty())
-                        .unwrap_or(true)
-                {
-                    return Err("视觉事实包范围或回执不完整".into());
-                }
-                let found = output["facts"]
-                    .as_array_mut()
-                    .ok_or("视觉事实包缺少facts")?;
-                for fact in found.iter_mut() {
-                    validate_fact(fact, &identities, &ids_set)?;
-                    *fact=json!({"assetId":fact["assetId"],"variantId":fact["variantId"],"attribute":fact["attribute"],"value":fact["value"],"scope":fact["scope"],"claim":fact["claim"],"sourceRefs":fact["sourceRefs"]});
-                    let id = digest(&serde_json::to_string(fact).unwrap());
-                    fact["id"] = json!(format!("visual-{id}"));
-                    fact["sourceSha256"] = json!(source.sha256);
-                }
-                Ok(())
-            },
+            |output| wire.materialize(output, &identities, &source.sha256),
         )
         .await;
         match result {
             Ok(result) => {
                 let found = result["facts"].as_array().unwrap();
                 facts.extend(found.iter().cloned());
-                receipts.push(json!({"schemaVersion":"asset-visual-facts-cache/v1","status":"accepted","sourceSha256":source.sha256,"inputFingerprint":packet_hash,"ruleSha256":rule_snapshot("asset-visual-facts-extractor")?["sha256"],"rowIds":ids,"facts":found,"batchIndex":index}));
+                receipts.push(json!({"schemaVersion":"asset-visual-facts-cache/v1","status":"accepted","sourceSha256":source.sha256,"inputFingerprint":packet_hash,"ruleSha256":rule_snapshot("asset-visual-facts-extractor")?["sha256"],"rowIds":ids,"facts":found,"batchIndex":index,"referenceEncoding":WIRE_PROFILE,"coveredPacketRef":packet_hash}));
             }
             Err(reason) => {
                 blocked.extend(affected(&source, &missing, rows, &reason));
@@ -338,6 +531,7 @@ mod tests {
         calls: Mutex<Vec<Value>>,
         accepted: Mutex<Vec<Value>>,
         rejected: Mutex<Vec<String>>,
+        rejected_values: Mutex<Vec<Value>>,
     }
     impl Extractor {
         fn new(mode: &'static str) -> Self {
@@ -346,6 +540,7 @@ mod tests {
                 calls: Mutex::new(Vec::new()),
                 accepted: Mutex::new(Vec::new()),
                 rejected: Mutex::new(Vec::new()),
+                rejected_values: Mutex::new(Vec::new()),
             }
         }
     }
@@ -370,7 +565,7 @@ mod tests {
                 .unwrap_or(&rows[0]);
             let fact = json!({"assetId":if self.mode=="owner"{"unknown"}else{text(identity,"assetId")},"variantId":if self.mode=="variant"{json!("not-owned")}else{Value::Null},"attribute":"hair.color","value":"黑发","scope":"STABLE","claim":"SOURCE","sourceRefs":if self.mode=="source"{json!(["foreign-row"])}else{json!([row["id"]])},"quotes":["模型多余重抄不得保留"]});
             Ok(
-                json!({"schemaVersion":"asset-visual-facts/v1","coveredRowIds":rows.iter().map(|row|row["id"].clone()).collect::<Vec<_>>(),"facts":if self.mode=="empty"||self.mode=="partial"{json!([])}else{json!([fact])},"issues":[]}),
+                json!({"schemaVersion":WIRE_RESULT,"coveredPacketRef":request.input["coveredPacketRef"],"facts":if self.mode=="empty"||self.mode=="partial"{json!([])}else{json!([fact])},"issues":[]}),
             )
         }
         async fn accept(&self, _request: &TextRequest, value: &Value) -> Result<(), String> {
@@ -380,10 +575,11 @@ mod tests {
         async fn reject(
             &self,
             _request: &TextRequest,
-            _value: &Value,
+            value: &Value,
             reason: &str,
         ) -> Result<(), String> {
             self.rejected.lock().unwrap().push(reason.into());
+            self.rejected_values.lock().unwrap().push(value.clone());
             Ok(())
         }
     }
@@ -521,5 +717,316 @@ mod tests {
         assert_eq!(output["visualFactBatches"].as_array().unwrap().len(), 1);
         assert_eq!(output["blocked"].as_array().unwrap().len(), 1);
         assert_eq!(output["blocked"][0]["assetId"], "a");
+    }
+
+    fn identities(source: &LockedSource) -> Vec<Value> {
+        vec![
+            json!({"assetId":"person","name":"e1 r1 苏远","aliases":["s1"],"versions":[{"assetRowId":"person:base","variantId":"base","name":"r1 默认","applicability":{"scope":"SCENES","episodes":source.episodes.iter().map(|e|&e.id).collect::<Vec<_>>(),"scenes":source.scenes.iter().map(|s|&s.id).collect::<Vec<_>>()}}]}),
+        ]
+    }
+    fn wire_reply(wire: &PacketWire, reference: &str) -> Value {
+        json!({"schemaVersion":WIRE_RESULT,"coveredPacketRef":wire.packet_hash,"facts":[{"assetId":"person","variantId":null,"attribute":"hair.color","value":"原文黑发；r1 e1是原样说明","scope":"STABLE","claim":"SOURCE","sourceRefs":[reference]}],"issues":[]})
+    }
+
+    #[test]
+    fn compact_transport_preserves_source_text_order_and_authority_without_identity_leak() {
+        let mut source = prepare_source(
+            "第一集\n场景：e1门口\n△r1和e1黑发出现。\n第二集\n场景：河边\n△苏远白衣。\n",
+        )
+        .unwrap();
+        source.scenes[0].metadata.insert(
+            "authority".into(),
+            json!({"level":"SOURCE","note":"r1 e1原样"}),
+        );
+        let identities = identities(&source);
+        let rows: Vec<_> = source.rows.iter().collect();
+        let wire = PacketWire::compile(&source, &identities, &rows);
+        let packet = canonical_packet(&source, &identities, &rows);
+        assert_eq!(wire.packet_hash, digest(&packet.to_string()));
+        assert_eq!(wire.input["domain"], "EPISODE");
+        for (original, compact) in rows.iter().zip(wire.input["rows"].as_array().unwrap()) {
+            for key in ["number", "text", "kind"] {
+                assert_eq!(compact[key], packet["rows"][original.number - 1][key]);
+            }
+            assert_eq!(wire.rows_by_alias[text(compact, "id")], original.id);
+            assert!(compact.get("range").is_none());
+        }
+        assert_eq!(wire.input["identities"][0]["name"], "e1 r1 苏远");
+        assert_eq!(
+            wire.input["identities"][0]["versions"][0]["name"],
+            "r1 默认"
+        );
+        assert_eq!(
+            wire.input["episodes"][0]["sourceNumber"],
+            source.episodes[0].source_number
+        );
+        assert_eq!(wire.input["scenes"][0]["title"], source.scenes[0].title);
+        assert_eq!(
+            wire.input["scenes"][0]["authority"],
+            source.scenes[0].metadata["authority"]
+        );
+        assert_eq!(
+            wire.input["identities"][0]["versions"][0]["applicability"]["episodes"][0],
+            wire.input["episodes"][0]["id"]
+        );
+        assert_eq!(
+            wire.input["identities"][0]["versions"][0]["applicability"]["scenes"][0],
+            wire.input["scenes"][0]["id"]
+        );
+        let mut raw = wire_reply(&wire, &wire.row_aliases[2]);
+        let original = raw.clone();
+        wire.materialize(&mut raw, &identities, &source.sha256)
+            .unwrap();
+        assert_eq!(
+            raw["coveredRowIds"],
+            json!(rows.iter().map(|r| &r.id).collect::<Vec<_>>())
+        );
+        assert_eq!(raw["facts"][0]["sourceRefs"], json!([source.rows[2].id]));
+        assert_eq!(raw["facts"][0]["value"], original["facts"][0]["value"]);
+        assert_eq!(
+            original["facts"][0]["sourceRefs"],
+            json!([wire.row_aliases[2]]),
+            "raw wire was not rewritten"
+        );
+        let accepted = raw.clone();
+        wire.materialize(&mut raw, &identities, &source.sha256)
+            .unwrap();
+        assert_eq!(
+            raw, accepted,
+            "accepted canonical checkpoint replay is idempotent"
+        );
+    }
+
+    #[test]
+    fn packet_receipt_and_sparse_references_are_strict_and_restore_is_atomic() {
+        let source = prepare_source("作者：苏远黑发。\n第一集\n场景：门口\n△苏远白衣。\n").unwrap();
+        let identities = identities(&source);
+        let author: Vec<_> = source
+            .rows
+            .iter()
+            .filter(|r| r.episode_id.is_none())
+            .collect();
+        let body: Vec<_> = source
+            .rows
+            .iter()
+            .filter(|r| r.episode_id.is_some())
+            .collect();
+        assert!(!author.is_empty() && !body.is_empty());
+        let a = PacketWire::compile(&source, &identities, &author);
+        let b = PacketWire::compile(&source, &identities, &body);
+        assert_ne!(a.packet_hash, b.packet_hash);
+        assert_eq!(
+            a.row_aliases[0], b.row_aliases[0],
+            "short IDs are task local; receipt prevents cross-packet reuse"
+        );
+        let valid = wire_reply(&b, &b.row_aliases[0]);
+        let mut cases = Vec::new();
+        let mut wrong = valid.clone();
+        wrong["coveredPacketRef"] = json!(a.packet_hash);
+        cases.push(wrong);
+        let mut missing = valid.clone();
+        missing.as_object_mut().unwrap().remove("coveredPacketRef");
+        cases.push(missing);
+        let mut duplicate = valid.clone();
+        duplicate["facts"][0]["sourceRefs"] = json!([b.row_aliases[0], b.row_aliases[0]]);
+        cases.push(duplicate);
+        for reference in ["r99999", "e1", &author[0].id, &body[0].id] {
+            let mut unknown = valid.clone();
+            unknown["facts"][0]["sourceRefs"] = json!([reference]);
+            cases.push(unknown);
+        }
+        let mut coords = valid.clone();
+        coords["coveredRowIds"] = json!([b.row_aliases[0]]);
+        cases.push(coords);
+        let mut nonstring = valid.clone();
+        nonstring["facts"][0]["sourceRefs"] = json!([7]);
+        cases.push(nonstring);
+        let mut empty = valid.clone();
+        empty["facts"][0]["sourceRefs"] = json!([]);
+        cases.push(empty);
+        let mut issue = valid.clone();
+        issue["issues"] = json!(["新增审查"]);
+        cases.push(issue);
+        for mut reply in cases {
+            let original = reply.clone();
+            assert!(
+                b.materialize(&mut reply, &identities, &source.sha256)
+                    .is_err(),
+                "{original}"
+            );
+            assert_eq!(reply, original, "rejected raw stays byte-equivalent");
+        }
+        let mut partial = valid.clone();
+        partial["facts"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"assetId":"foreign"}));
+        let original = partial.clone();
+        assert!(b
+            .materialize(&mut partial, &identities, &source.sha256)
+            .is_err());
+        assert_eq!(partial, original);
+    }
+
+    #[test]
+    fn legacy_raw_is_still_source_bound_and_produces_the_same_fact_identity() {
+        let source = prepare_source("第一集\n场景：门口\n△苏远黑发。\n").unwrap();
+        let identities = identities(&source);
+        let rows: Vec<_> = source.rows.iter().collect();
+        let wire = PacketWire::compile(&source, &identities, &rows);
+        let mut compact = wire_reply(&wire, &wire.row_aliases[2]);
+        let mut legacy = json!({"schemaVersion":"asset-visual-facts/v1","coveredRowIds":wire.row_ids,"facts":compact["facts"],"issues":[]});
+        legacy["facts"][0]["sourceRefs"] = json!([source.rows[2].id]);
+        legacy["facts"][0]["quotes"] = json!(["模型引文不采用"]);
+        wire.materialize(&mut compact, &identities, &source.sha256)
+            .unwrap();
+        let old = legacy.clone();
+        wire.materialize(&mut legacy, &identities, &source.sha256)
+            .unwrap();
+        assert_eq!(legacy, compact);
+        for mode in ["partial", "duplicate", "nonstring", "foreign", "alias"] {
+            let mut invalid = old.clone();
+            match mode {
+                "partial" => {
+                    invalid["coveredRowIds"].as_array_mut().unwrap().pop();
+                }
+                "duplicate" => invalid["coveredRowIds"][1] = invalid["coveredRowIds"][0].clone(),
+                "nonstring" => invalid["coveredRowIds"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!(1)),
+                "foreign" => invalid["facts"][0]["sourceRefs"] = json!(["outside"]),
+                "alias" => invalid["facts"][0]["sourceRefs"] = json!([wire.row_aliases[2]]),
+                _ => unreachable!(),
+            }
+            let original = invalid.clone();
+            assert!(
+                wire.materialize(&mut invalid, &identities, &source.sha256)
+                    .is_err(),
+                "{mode}"
+            );
+            assert_eq!(invalid, original);
+        }
+    }
+
+    #[tokio::test]
+    async fn accepted_precompact_cache_uses_unchanged_packet_and_rule_hash_without_a_call() {
+        let mut input = basis();
+        let exec = Extractor::new("valid");
+        let first = run_asset_visual_facts(&input, &exec, "gpt-6.1-sol", "medium")
+            .await
+            .unwrap();
+        let source: LockedSource = serde_json::from_value(input["source"].clone()).unwrap();
+        let rows: Vec<_> = source.rows.iter().collect();
+        let calls = exec.calls.lock().unwrap();
+        // This fixture has no applicability aliases, so its subjects are exactly
+        // the pre-transport identity table used to calculate the old hash.
+        let packet = canonical_packet(&source, calls[0]["identities"].as_array().unwrap(), &rows);
+        assert_eq!(
+            first["visualFactBatches"][0]["inputFingerprint"],
+            digest(&packet.to_string())
+        );
+        let mut old = first["visualFactBatches"].clone();
+        old[0].as_object_mut().unwrap().remove("referenceEncoding");
+        old[0].as_object_mut().unwrap().remove("coveredPacketRef");
+        input["foundation"]["visualFactBatches"] = old.clone();
+        let replay = run_asset_visual_facts(&input, &Never, "gpt-6.1-sol", "medium")
+            .await
+            .unwrap();
+        assert_eq!(replay["visualFactBatches"], old);
+        assert_eq!(replay["facts"], first["facts"]);
+        assert!(replay["blocked"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn author_and_episode_domains_keep_two_requests_and_exact_disjoint_materialized_coverage()
+    {
+        let source = prepare_source(
+            "作者：苏远黑发。\n第一集\n场景：门口\n△苏远白衣。\n第二集\n场景：河边\n△苏远出现。\n",
+        )
+        .unwrap();
+        let explicit: Vec<_> = source
+            .rows
+            .iter()
+            .filter(|r| r.kind == "body")
+            .map(|r| &r.id)
+            .collect();
+        let input = json!({"source":source,"assets":[{"id":"a","baseAssetId":"person","variantId":"base","sourceRefs":explicit}],"foundation":{"facts":[]}});
+        let exec = Extractor::new("empty");
+        let output = run_asset_visual_facts(&input, &exec, "gpt-6.1-sol", "medium")
+            .await
+            .unwrap();
+        let calls = exec.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["domain"], "AUTHOR");
+        assert_eq!(calls[1]["domain"], "EPISODE");
+        let covered: Vec<_> = output["visualFactBatches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|b| strings(b, "rowIds"))
+            .collect();
+        assert_eq!(covered.iter().collect::<HashSet<_>>().len(), covered.len());
+        assert_eq!(
+            covered,
+            source.rows.iter().map(|r| r.id.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .map(|c| c["rows"].as_array().unwrap().len())
+                .sum::<usize>(),
+            covered.len()
+        );
+    }
+
+    #[test]
+    fn three_hundred_sixty_six_rows_have_one_receipt_and_one_short_reference_schema() {
+        let text = format!(
+            "第一集\n场景：门口\n{}",
+            (1..=364)
+                .map(|i| format!("△苏远第{i}行，e1 r1。\n"))
+                .collect::<String>()
+        );
+        let source = prepare_source(&text).unwrap();
+        assert_eq!(source.rows.len(), 366);
+        let identities = identities(&source);
+        let rows: Vec<_> = source.rows.iter().collect();
+        let wire = PacketWire::compile(&source, &identities, &rows);
+        let schema = wire.schema(&identities);
+        assert!(schema["properties"].get("coveredRowIds").is_none());
+        assert_eq!(
+            schema["$defs"]["sourceRow"]["enum"]
+                .as_array()
+                .unwrap()
+                .len(),
+            366
+        );
+        assert_eq!(
+            schema["properties"]["coveredPacketRef"]["enum"],
+            json!([wire.packet_hash])
+        );
+        let packet = canonical_packet(&source, &identities, &rows);
+        let old_ref_bytes = json!(wire.row_ids).to_string().len();
+        let ack_bytes = json!({"coveredPacketRef":wire.packet_hash})
+            .to_string()
+            .len();
+        assert!(
+            ack_bytes * 50 < old_ref_bytes,
+            "{ack_bytes} vs {old_ref_bytes}"
+        );
+        assert!(
+            wire.input.to_string().len() < packet.to_string().len(),
+            "names and instructions still outweigh aliases on short fixtures only"
+        );
+        assert!(
+            schema.to_string().len() < old_ref_bytes,
+            "schema no longer repeats hundreds of canonical IDs"
+        );
+        let mut empty = json!({"schemaVersion":WIRE_RESULT,"coveredPacketRef":wire.packet_hash,"facts":[],"issues":[]});
+        wire.materialize(&mut empty, &identities, &source.sha256)
+            .unwrap();
+        assert_eq!(empty["coveredRowIds"].as_array().unwrap().len(), 366);
+        println!("A15 366 rows: canonical_input_bytes={} compact_input_bytes={} old_coverage_bytes={} packet_ack_bytes={} compact_schema_bytes={}",packet.to_string().len(),wire.input.to_string().len(),old_ref_bytes,ack_bytes,schema.to_string().len());
     }
 }

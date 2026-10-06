@@ -3,12 +3,452 @@
 use crate::store::{
     mark_changed, now, parse, s, same_content, save_asset_tx, save_unit_tx, Result, Store,
 };
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashSet};
 
 fn has_steps(store: &Store) -> Result<bool> {
     store.conn()?.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_steps')",[],|r|r.get(0)).map_err(|e|e.to_string())
+}
+
+// Resolution is a read-only projection of durable domain receipts. It never
+// turns an invalid author into an accepted checkpoint or rewrites its error.
+#[derive(Clone)]
+struct ProgressStep {
+    node: String,
+    hash: String,
+    status: String,
+    error: Value,
+    snapshot: Value,
+    request: crate::pipeline::TextRequest,
+    domain_hash: String,
+    result: Value,
+    raw: Value,
+    receipt: Value,
+    event: Value,
+}
+
+fn progress_step(c: &Connection, run: &str, node: &str) -> Result<Option<ProgressStep>> {
+    let row:Option<Value>=c.query_row("SELECT w.request_hash,w.state,w.error,w.result,j.snapshot,j.result,j.receipt,j.state,j.error,w.stage,j.kind,(SELECT e.data FROM events e WHERE e.job_id=j.id AND e.type='text_received_raw' ORDER BY e.rowid DESC LIMIT 1) FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.node_key=?2",params![run,node],|r|Ok(json!({"hash":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"error":r.get::<_,Option<String>>(2)?,"result":r.get::<_,Option<String>>(3)?,"snapshot":r.get::<_,String>(4)?,"raw":r.get::<_,Option<String>>(5)?,"receipt":r.get::<_,Option<String>>(6)?,"jobStatus":r.get::<_,String>(7)?,"jobError":r.get::<_,Option<String>>(8)?,"stage":r.get::<_,String>(9)?,"kind":r.get::<_,String>(10)?,"event":r.get::<_,Option<String>>(11)?}))).optional().map_err(|e|e.to_string())?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let Some(snapshot_json) = row["snapshot"].as_str() else {
+        return Ok(None);
+    };
+    let Ok(snapshot) = serde_json::from_str::<Value>(snapshot_json) else {
+        return Ok(None);
+    };
+    let Ok(request) = serde_json::from_value::<crate::pipeline::TextRequest>(snapshot.clone())
+    else {
+        return Ok(None);
+    };
+    if row["kind"] != "text"
+        || request.stage != s(&row, "stage")
+        || crate::pipeline::digest(snapshot_json) != s(&row, "hash")
+    {
+        return Ok(None);
+    }
+    let parse_field = |field: &str| {
+        row[field]
+            .as_str()
+            .and_then(|v| serde_json::from_str::<Value>(v).ok())
+            .unwrap_or(Value::Null)
+    };
+    let receipt = parse_field("receipt");
+    let accepted = row["status"] == "accepted"
+        && row["jobStatus"] == "completed"
+        && row["error"].is_null()
+        && row["jobError"].is_null()
+        && receipt["validation"] == "accepted";
+    let rejected = row["status"] == "rejected"
+        && row["jobStatus"] == "rejected"
+        && row["error"] == row["jobError"]
+        && receipt["validation"] == "rejected";
+    if (!accepted && !rejected)
+        || receipt["contract"] != "desktop-runner/v1"
+        || receipt
+            .get("acceptedRequestHash")
+            .is_some_and(|h| *h != row["hash"])
+    {
+        return Ok(None);
+    }
+    let Ok(domain) = serde_json::to_string(&request) else {
+        return Ok(None);
+    };
+    Ok(Some(ProgressStep {
+        node: node.into(),
+        hash: s(&row, "hash").into(),
+        status: s(&row, "status").into(),
+        error: row["error"].clone(),
+        snapshot,
+        request,
+        domain_hash: crate::pipeline::digest(&domain),
+        result: parse_field("result"),
+        raw: parse_field("raw"),
+        receipt,
+        event: parse_field("event"),
+    }))
+}
+
+fn progress_episode(step: &ProgressStep) -> &str {
+    step.request.input["episodeId"]
+        .as_str()
+        .or_else(|| {
+            step.request
+                .input
+                .pointer("/episode/id")
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("")
+}
+
+fn progress_source_bound(step: &ProgressStep, source: &Value) -> bool {
+    let episode = progress_episode(step);
+    if episode.is_empty()
+        || !source["episodes"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|e| e["id"] == episode))
+    {
+        return false;
+    }
+    let Some(rows) = step.request.input["sourceRows"]
+        .as_array()
+        .filter(|rows| !rows.is_empty())
+    else {
+        return false;
+    };
+    let Some(source_rows) = source["rows"].as_array() else {
+        return false;
+    };
+    rows.iter().all(|row| {
+        source_rows.iter().any(|frozen| {
+            frozen["id"] == row["id"]
+                && frozen["episodeId"] == episode
+                && ["text", "range", "kind", "episodeId", "sceneId"]
+                    .iter()
+                    .all(|key| frozen[*key] == row[*key])
+        })
+    })
+}
+
+fn progress_resolution(
+    run: &str,
+    kind: &str,
+    origin: &ProgressStep,
+    resolver: &ProgressStep,
+) -> Value {
+    json!({"version":"workflow-step-resolution/v1","kind":kind,"workflowId":run,"originNodeId":origin.node,"originRequestHash":origin.hash,"resolverNodeId":resolver.node,"resolverRequestHash":resolver.hash,"verified":true})
+}
+
+fn author_scope_resolution(origin: &ProgressStep, resolver: &ProgressStep, source: &Value) -> bool {
+    let request = &resolver.request.input;
+    let proof = &resolver.result["materializedDraft"]["authorRepairProvenance"];
+    let descriptor = &request["authorRepair"];
+    let Some(last) = proof["nodes"].as_array().and_then(|nodes| nodes.last()) else {
+        return false;
+    };
+    let draft = &resolver.result["materializedDraft"];
+    let draft_hash=crate::pipeline::digest(&json!({"schemaVersion":draft["schemaVersion"],"units":draft["units"],"fantasyRealization":draft["fantasyRealization"]}).to_string());
+    origin.status == "rejected"
+        && origin.error == crate::text_executor::AUTHOR_ASSET_SCOPE_REJECTION
+        && origin.request.stage == "storyboardCreate"
+        && origin.request.skill == "unit-performance-director"
+        && origin.request.input["storyboardCreativeProfile"] == "original-production-contract/v1"
+        && origin.receipt["migrationPolicy"].is_null()
+        && origin.result == origin.raw
+        && origin.event["requestHash"] == origin.hash
+        && origin.event["value"] == origin.raw
+        && resolver.status == "accepted"
+        && resolver.request.stage == "storyboardFinish"
+        && resolver.request.skill == "episode-finishing-editor"
+        && request["storyboardCreativeProfile"] == "original-production-contract/v1"
+        && resolver.event["requestHash"] == resolver.hash
+        && resolver.event["value"] == resolver.raw
+        && resolver.raw["schemaVersion"] == "storyboard-delta/v2"
+        && resolver.raw["baseDraftHash"] == descriptor["baseDraftHash"]
+        && resolver.result["baseDraftHash"] == resolver.raw["baseDraftHash"]
+        && request["executionBatch"]["version"] == "author-domain-repair/v1"
+        && descriptor["version"] == "rejected-author-scope-repair/v1"
+        && request["finishMode"] == "delta"
+        && descriptor["maximumAttempts"] == 2
+        && matches!(descriptor["attempt"].as_u64(), Some(1 | 2))
+        && proof["version"] == "accepted-author-scope-repair/v1"
+        && proof["originalAuthorAccepted"] == false
+        && proof["nodes"].as_array().is_some_and(|nodes| {
+            !nodes.is_empty()
+                && nodes.len() <= 2
+                && nodes
+                    .iter()
+                    .enumerate()
+                    .all(|(index, node)| node["attempt"] == json!(index + 1))
+        })
+        && descriptor["sourceSha256"] == source["sha256"]
+        && proof["sourceSha256"] == source["sha256"]
+        && progress_episode(origin) == progress_episode(resolver)
+        && progress_source_bound(origin, source)
+        && progress_source_bound(resolver, source)
+        && origin.request.input["sourceRows"] == request["sourceRows"]
+        && descriptor["originExecutionBatch"] == origin.request.input["executionBatch"]
+        && proof["originDomainRequestSha256"] == origin.domain_hash
+        && descriptor["originDomainRequestSha256"] == origin.domain_hash
+        && proof["originalAuthorRawSha256"] == crate::pipeline::digest(&origin.raw.to_string())
+        && descriptor["originalAuthorRawSha256"] == proof["originalAuthorRawSha256"]
+        && last["canonicalDomainRequestSha256"] == resolver.domain_hash
+        && last["attempt"] == descriptor["attempt"]
+        && last["baseDraftHash"] == descriptor["baseDraftHash"]
+        && descriptor["baseDraftHash"] == request["baseDraftHash"]
+        && last["draftSha256"] == draft_hash
+        && draft["units"].as_array().is_some_and(|units| {
+            !units.is_empty()
+                && units
+                    .iter()
+                    .all(|unit| unit["episodeId"] == progress_episode(origin))
+        })
+        && draft["schemaVersion"] == "storyboard-draft/v2"
+        && origin.snapshot["executorIdentity"] == resolver.snapshot["executorIdentity"]
+        && origin.snapshot["executorPolicy"] == resolver.snapshot["executorPolicy"]
+        && origin.request.model == resolver.request.model
+        && origin.request.reasoning == resolver.request.reasoning
+        && origin.request.input["capabilities"] == request["capabilities"]
+}
+
+fn author_scope_attempt_resolution(
+    origin: &ProgressStep,
+    resolver: &ProgressStep,
+    source: &Value,
+    authors: &[ProgressStep],
+) -> bool {
+    if origin.status != "rejected"
+        || origin.error != crate::text_executor::AUTHOR_ASSET_SCOPE_REJECTION
+        || origin.result != origin.raw
+        || !origin.receipt["migrationPolicy"].is_null()
+        || origin.event["requestHash"] != origin.hash
+        || origin.event["value"] != origin.raw
+        || origin.request.stage != "storyboardFinish"
+        || origin.request.skill != "episode-finishing-editor"
+        || origin.request.input["storyboardCreativeProfile"] != "original-production-contract/v1"
+        || origin.request.input["executionBatch"]["version"] != "author-domain-repair/v1"
+        || origin.request.input["authorRepair"]["version"] != "rejected-author-scope-repair/v1"
+        || origin.request.input["authorRepair"]["attempt"] != 1
+        || origin.request.input["authorRepair"]["maximumAttempts"] != 2
+        || origin.request.input["finishMode"] != "delta"
+        || resolver.request.input["authorRepair"]["attempt"] != 2
+        || origin.request.model != resolver.request.model
+        || origin.request.reasoning != resolver.request.reasoning
+        || origin.request.schema != resolver.request.schema
+        || origin.request.rule_snapshot != resolver.request.rule_snapshot
+        || origin.request.input["capabilities"] != resolver.request.input["capabilities"]
+        || origin.snapshot["executorIdentity"] != resolver.snapshot["executorIdentity"]
+        || origin.snapshot["executorPolicy"] != resolver.snapshot["executorPolicy"]
+        || progress_episode(origin) != progress_episode(resolver)
+        || !progress_source_bound(origin, source)
+        || origin.request.input["sourceRows"] != resolver.request.input["sourceRows"]
+    {
+        return false;
+    }
+    let proof = &resolver.result["materializedDraft"]["authorRepairProvenance"];
+    let Some(nodes) = proof["nodes"].as_array().filter(|nodes| nodes.len() == 2) else {
+        return false;
+    };
+    let earlier = &nodes[0];
+    let last = &nodes[1];
+    earlier["result"] == "rejected-scope"
+        && earlier["canonicalDomainRequestSha256"] == origin.domain_hash
+        && earlier["baseDraftHash"] == origin.request.input["baseDraftHash"]
+        && earlier["draftSha256"] == last["baseDraftHash"]
+        && origin.request.input["authorRepair"]["baseDraftHash"]
+            == origin.request.input["baseDraftHash"]
+        && authors.iter().any(|author| {
+            author_scope_resolution(author, resolver, source)
+                && origin.request.input["authorRepair"]["originDomainRequestSha256"]
+                    == author.domain_hash
+                && origin.request.input["authorRepair"]["originalAuthorRawSha256"]
+                    == proof["originalAuthorRawSha256"]
+                && origin.request.input["authorRepair"]["sourceSha256"] == source["sha256"]
+                && origin.request.input["authorRepair"]["originExecutionBatch"]
+                    == author.request.input["executionBatch"]
+        })
+}
+
+fn continuity_resolution(
+    origin: &ProgressStep,
+    resolver: &ProgressStep,
+    source: &Value,
+    events: &[Value],
+) -> bool {
+    let revision = &resolver.request.input["continuityRevision"];
+    if resolver.status != "accepted"
+        || revision["version"] != "accepted-tail-change/v1"
+        || revision["sourceSha256"] != source["sha256"]
+        || origin.request.stage != resolver.request.stage
+        || origin.request.skill != resolver.request.skill
+        || origin.request.model != resolver.request.model
+        || origin.request.reasoning != resolver.request.reasoning
+        || origin.request.schema != resolver.request.schema
+        || origin.request.rule_snapshot != resolver.request.rule_snapshot
+        || origin.snapshot["executorIdentity"] != resolver.snapshot["executorIdentity"]
+        || origin.snapshot["executorPolicy"] != resolver.snapshot["executorPolicy"]
+        || progress_episode(origin) != progress_episode(resolver)
+        || !progress_source_bound(origin, source)
+        || !progress_source_bound(resolver, source)
+        || origin.request.input["sourceRows"] != resolver.request.input["sourceRows"]
+    {
+        return false;
+    }
+    let suffix = format!(
+        ":continuity:{}",
+        crate::pipeline::digest(&revision.to_string())
+    );
+    let Some(new_base) = resolver.node.strip_suffix(&suffix) else {
+        return false;
+    };
+    let prior = &origin.request.input["continuityRevision"];
+    let prior_suffix = format!(
+        ":continuity:{}",
+        crate::pipeline::digest(&prior.to_string())
+    );
+    let old_base = if prior["version"] == "accepted-tail-change/v1" {
+        origin.node.strip_suffix(&prior_suffix).unwrap_or("")
+    } else {
+        &origin.node
+    };
+    if old_base.is_empty() || old_base != new_base {
+        return false;
+    }
+    let Some(episode_index) = source["episodes"].as_array().and_then(|episodes| {
+        episodes
+            .iter()
+            .position(|e| e["id"] == progress_episode(resolver))
+    }) else {
+        return false;
+    };
+    if episode_index == 0
+        || source["episodes"][episode_index - 1]["id"] != revision["previousEpisodeId"]
+    {
+        return false;
+    }
+    if !events.iter().any(|event| {
+        if event["episodeId"] != progress_episode(resolver)
+            || event["action"] != "recompute_affected_chain"
+        {
+            return false;
+        }
+        let mut frozen = event.clone();
+        if let Some(map) = frozen.as_object_mut() {
+            for field in ["episodeId", "action", "previouslyAcceptedPlan"] {
+                map.remove(field);
+            }
+        }
+        frozen == *revision
+    }) {
+        return false;
+    }
+    // A Planner has explicit old/new previous tails. For later roles an
+    // embedded revision alone cannot prove which actual chain supplied them.
+    // Keep the original notice until a stronger adopted-chain receipt exists.
+    origin.request.stage == "storyboardPlan"
+        && !origin.request.input["previousBoundary"].is_null()
+        && !resolver.request.input["previousBoundary"].is_null()
+        && crate::pipeline::digest(&origin.request.input["previousBoundary"].to_string())
+            == revision["priorTailSha256"]
+        && crate::pipeline::digest(&resolver.request.input["previousBoundary"].to_string())
+            == revision["currentTailSha256"]
+}
+
+fn project_step_resolutions(c: &Connection, run: &str, nodes: &mut [Value]) -> Result<()> {
+    if !nodes.iter().any(|node| {
+        node["stage"] == "storyboardCreate"
+            && node["status"] == "rejected"
+            && node["error"] == crate::text_executor::AUTHOR_ASSET_SCOPE_REJECTION
+            || node["stage"] == "storyboardPlan" && node["status"] != "running"
+    }) {
+        return Ok(());
+    }
+    let mut query=c.prepare("SELECT w.node_key FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.state='accepted' AND j.kind='text' AND j.state='completed' AND (json_extract(j.snapshot,'$.input.executionBatch.version')='author-domain-repair/v1' OR json_extract(j.snapshot,'$.input.continuityRevision.version')='accepted-tail-change/v1')").map_err(|e|e.to_string())?;
+    let keys = query
+        .query_map([run], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let mut resolvers = Vec::new();
+    for key in keys {
+        if nodes
+            .iter()
+            .any(|n| n["id"] == key && n["status"] == "accepted")
+        {
+            if let Some(step) = progress_step(c, run, &key)? {
+                resolvers.push(step);
+            }
+        }
+    }
+    if resolvers.is_empty() {
+        return Ok(());
+    }
+    // Ordinary progress never loads full source or draft histories. Only the
+    // few actual repair/revision receipts need the immutable evidence below.
+    let source:Option<String>=c.query_row("SELECT json_extract(snapshot,'$.input.source') FROM jobs WHERE id=?1 AND kind='workflow' AND entity_id='storyboard.run'",[run],|r|r.get::<_,Option<String>>(0)).optional().map_err(|e|e.to_string())?.flatten();
+    let Some(source) = source.and_then(|v| serde_json::from_str::<Value>(&v).ok()) else {
+        return Ok(());
+    };
+    if source["sha256"].as_str().is_none_or(|sha| sha.len() != 64)
+        || source["text"]
+            .as_str()
+            .is_none_or(|text| crate::pipeline::digest(text) != s(&source, "sha256"))
+    {
+        return Ok(());
+    }
+    let mut events=c.prepare("SELECT data FROM events WHERE job_id=?1 AND type='storyboard_continuity_updated' ORDER BY rowid").map_err(|e|e.to_string())?;
+    let events = events
+        .query_map([run], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|row| {
+            row.ok()
+                .and_then(|v| serde_json::from_str::<Value>(&v).ok())
+        })
+        .collect::<Vec<_>>();
+    let mut origins = Vec::new();
+    for node in nodes.iter().filter(|node| {
+        node["stage"] == "storyboardPlan"
+            || node["status"] == "rejected"
+                && node["error"] == crate::text_executor::AUTHOR_ASSET_SCOPE_REJECTION
+    }) {
+        if let Some(step) = progress_step(c, run, s(node, "id"))? {
+            origins.push(step);
+        }
+    }
+    for node in nodes {
+        let Some(origin) = origins.iter().find(|origin| origin.node == s(node, "id")) else {
+            continue;
+        };
+        let matches: Vec<_> = resolvers
+            .iter()
+            .filter_map(|resolver| {
+                if resolver.node == origin.node {
+                    return None;
+                }
+                let author_resolved = author_scope_resolution(origin, resolver, &source)
+                    && (resolver.request.input["authorRepair"]["attempt"] == 1
+                        || origins.iter().any(|earlier| {
+                            author_scope_attempt_resolution(earlier, resolver, &source, &origins)
+                        }));
+                let kind = if author_resolved
+                    || author_scope_attempt_resolution(origin, resolver, &source, &origins)
+                {
+                    "author-scope-repair"
+                } else if continuity_resolution(origin, resolver, &source, &events) {
+                    "continuity-superseded"
+                } else {
+                    return None;
+                };
+                Some(progress_resolution(run, kind, origin, resolver))
+            })
+            .collect();
+        if matches.len() == 1 {
+            node["resolution"] = matches[0].clone();
+        }
+    }
+    Ok(())
 }
 impl Store {
     /// Additive tables are created only when starting an explicitly requested local run.
@@ -55,18 +495,25 @@ impl Store {
         let mut values = vec![];
         for (id, stage, status, result) in runs {
             // Read only small progress fields; full input/source/results remain lazy.
-            let mut steps=c.prepare("SELECT w.node_key,w.stage,w.state,w.error,json_extract(j.snapshot,'$.input.delivery'),json_extract(j.snapshot,'$.input.scope'),json_extract(j.snapshot,'$.input.episodeId'),json_extract(j.snapshot,'$.input.episode.id') FROM workflow_steps w LEFT JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 ORDER BY w.rowid").map_err(|e|e.to_string())?;
-            let nodes=steps.query_map([&id],|r| {
+            // An older node key can remain after a runner key migration. Its exact
+            // cached request is still one step; keep every checkpoint on disk but
+            // project only the latest state for each stage/request identity.
+            let mut steps=c.prepare("SELECT w.node_key,w.stage,w.state,w.error,json_extract(j.snapshot,'$.input.delivery'),json_extract(j.snapshot,'$.input.scope'),json_extract(j.snapshot,'$.input.episodeId'),json_extract(j.snapshot,'$.input.episode.id'),CASE WHEN e.rowid IS NOT NULL THEN json_object('phase',json_extract(e.data,'$.phase'),'elapsedSeconds',json_extract(e.data,'$.elapsedSeconds'),'outputQuietSeconds',json_extract(e.data,'$.outputQuietSeconds'),'processAlive',json_extract(e.data,'$.processAlive'),'needsDiagnosis',json_extract(e.data,'$.needsDiagnosis'),'observedAt',e.created_at) END,w.request_hash,json_extract(j.snapshot,'$.input.executionBatch.version') FROM workflow_steps w LEFT JOIN jobs j ON j.id=w.text_job_id LEFT JOIN events e ON w.state='running' AND j.state='submitting' AND e.rowid=(SELECT x.rowid FROM events x WHERE x.job_id=w.text_job_id AND x.type='codex_heartbeat' ORDER BY x.rowid DESC LIMIT 1) WHERE w.workflow_id=?1 AND NOT EXISTS(SELECT 1 FROM workflow_steps newer WHERE newer.workflow_id=w.workflow_id AND newer.stage=w.stage AND newer.request_hash=w.request_hash AND (newer.updated_at>w.updated_at OR (newer.updated_at=w.updated_at AND newer.rowid>w.rowid))) ORDER BY w.rowid").map_err(|e|e.to_string())?;
+            let mut nodes=steps.query_map([&id],|r| {
                 let stage=r.get::<_,String>(1)?;
                 let delivery=r.get::<_,Option<String>>(4)?.and_then(|v|serde_json::from_str::<Value>(&v).ok());
                 let scope=r.get::<_,Option<String>>(5)?.and_then(|v|serde_json::from_str::<Value>(&v).ok());
                 let episode=r.get::<_,Option<String>>(6)?.or(r.get::<_,Option<String>>(7)?);
-                Ok(json!({"id":r.get::<_,String>(0)?,"title":step_title(&stage),"stage":stage,"status":r.get::<_,String>(2)?,"error":r.get::<_,Option<String>>(3)?,"input":{"delivery":delivery,"scope":scope,"episodeId":episode}}))
+                let execution=r.get::<_,Option<String>>(8)?.and_then(|v|serde_json::from_str::<Value>(&v).ok());
+                Ok(json!({"id":r.get::<_,String>(0)?,"requestHash":r.get::<_,String>(9)?,"title":step_title(&stage),"stage":stage,"status":r.get::<_,String>(2)?,"error":r.get::<_,Option<String>>(3)?,"execution":execution,"input":{"delivery":delivery,"scope":scope,"episodeId":episode,"executionBatchVersion":r.get::<_,Option<String>>(10)?}}))
             }).map_err(|e|e.to_string())?.collect::<std::result::Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+            if stage == "storyboard.run" {
+                project_step_resolutions(&c, &id, &mut nodes)?;
+            }
             let result = result
                 .and_then(|v| serde_json::from_str::<Value>(&v).ok())
                 .unwrap_or(Value::Null);
-            values.push(json!({"workflowId":id,"stage":stage,"status":status,"completedSteps":nodes.iter().filter(|n|n["status"]=="accepted").count(),"totalSteps":nodes.len(),"nodes":nodes,"waitingDecision":result["waitingDecision"],"blocked":result["blocked"]}));
+            values.push(json!({"workflowId":id,"stage":stage,"status":status,"completedSteps":nodes.iter().filter(|n|n["status"]=="accepted").count(),"totalSteps":nodes.len(),"nodes":nodes,"waitingDecision":result["waitingDecision"],"blocked":result["blocked"],"publishedEpisodeIds":result["updatedEpisodeIds"]}));
         }
         Ok(values)
     }
@@ -145,8 +592,12 @@ impl Store {
     /// Q1 changes scene projections and foundation together; original source bytes
     /// and all submitted cloud tasks remain immutable.
     pub fn publish_foundation_with_source(
-        &self, guard: &Value, mut foundation: Value, assets: Vec<Value>,
-        run: Option<&str>, revised_source: Option<Value>,
+        &self,
+        guard: &Value,
+        mut foundation: Value,
+        assets: Vec<Value>,
+        run: Option<&str>,
+        revised_source: Option<Value>,
     ) -> Result<Value> {
         let mut c = self.conn()?;
         let tx = c
@@ -155,9 +606,16 @@ impl Store {
         verify_guard(&tx, guard)?;
         let mut source_version = guard["sourceVersion"].as_i64().ok_or("冻结源版本缺失")?;
         if let Some(mut revised) = revised_source {
-            let locked: crate::pipeline::LockedSource = serde_json::from_value(revised.clone()).map_err(|e|e.to_string())?;
+            let locked: crate::pipeline::LockedSource =
+                serde_json::from_value(revised.clone()).map_err(|e| e.to_string())?;
             crate::pipeline::validate_source(&locked)?;
-            let original: String = tx.query_row("SELECT data FROM sources WHERE version=?1", [source_version], |r|r.get(0)).map_err(|e|e.to_string())?;
+            let original: String = tx
+                .query_row(
+                    "SELECT data FROM sources WHERE version=?1",
+                    [source_version],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
             let original = parse(original)?;
             if revised["text"] != original["text"] || revised["sha256"] != original["sha256"] {
                 return Err("场次修订不能改写原文".into());
@@ -166,7 +624,17 @@ impl Store {
             if revised != original {
                 source_version += 1;
                 revised["version"] = json!(source_version);
-                tx.execute("INSERT INTO sources VALUES(?1,?2,?3,?4,?5)",params![source_version,s(&revised,"text"),s(&revised,"sha256"),revised.to_string(),now()]).map_err(|e|e.to_string())?;
+                tx.execute(
+                    "INSERT INTO sources VALUES(?1,?2,?3,?4,?5)",
+                    params![
+                        source_version,
+                        s(&revised, "text"),
+                        s(&revised, "sha256"),
+                        revised.to_string(),
+                        now()
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
                 tx.execute("UPDATE jobs SET state='stale',error='集场结构已更新',updated_at=?1,next_attempt_at=0 WHERE task_id IS NULL AND state IN ('ready','queued','preparing','waiting_dependency') AND kind IN ('video','image','text')",[now()]).map_err(|e|e.to_string())?;
             }
         }
@@ -176,15 +644,13 @@ impl Store {
                     foundation[key] = current[key].clone();
                 }
             }
-            if current["sourceSha256"]==foundation["sourceSha256"] && !current["visualFactBatches"].is_null() {
-                foundation["visualFactBatches"]=current["visualFactBatches"].clone();
+            if current["sourceSha256"] == foundation["sourceSha256"]
+                && !current["visualFactBatches"].is_null()
+            {
+                foundation["visualFactBatches"] = current["visualFactBatches"].clone();
             }
         }
-        let foundation = write_foundation(
-            &tx,
-            foundation,
-            source_version,
-        )?;
+        let foundation = write_foundation(&tx, foundation, source_version)?;
         for proposal in assets {
             let raw: Option<String> = tx
                 .query_row(
@@ -226,47 +692,93 @@ impl Store {
         tx.commit().map_err(|e| e.to_string())?;
         Ok(foundation)
     }
-    pub fn publish_asset_design(&self, source_version: i64, foundation_version: i64, output: &Value) -> Result<()> {
-        let mut c=self.conn()?;
-        let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
-        let (current_version,source_raw):(i64,String)=tx.query_row("SELECT version,data FROM sources ORDER BY version DESC LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
-        let (current_foundation,previous)=latest_foundation(&tx)?;
-        if current_version!=source_version || current_foundation!=foundation_version { return Err("原文或制作基础已更新，设计结果保留，未覆盖当前版本".into()); }
-        let source:crate::pipeline::LockedSource=serde_json::from_str(&source_raw).map_err(|e|e.to_string())?;
-        let mut seen=HashSet::new();
+    pub fn publish_asset_design(
+        &self,
+        source_version: i64,
+        foundation_version: i64,
+        output: &Value,
+    ) -> Result<()> {
+        let mut c = self.conn()?;
+        let tx = c
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        let (current_version, source_raw): (i64, String) = tx
+            .query_row(
+                "SELECT version,data FROM sources ORDER BY version DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|e| e.to_string())?;
+        let (current_foundation, previous) = latest_foundation(&tx)?;
+        if current_version != source_version || current_foundation != foundation_version {
+            return Err("原文或制作基础已更新，设计结果保留，未覆盖当前版本".into());
+        }
+        let source: crate::pipeline::LockedSource =
+            serde_json::from_str(&source_raw).map_err(|e| e.to_string())?;
+        let mut seen = HashSet::new();
         for design in output["assets"].as_array().ok_or("设计结果缺少资产列表")? {
-            let aid=s(design,"id");
-            if aid.is_empty() || !seen.insert(aid) {return Err("设计结果资产身份为空或重复".into());}
-            let raw:String=tx.query_row("SELECT data FROM assets WHERE id=?1",[aid],|r|r.get(0)).map_err(|_|"设计资产已经不存在")?;
-            let mut current=parse(raw)?;
-            if current["version"]!=design["version"] {return Err(format!("资产 {} 在设计期间已经编辑，结果保留供核对",aid));}
-            let expected=current["version"].clone();
-            for (key,value) in design.as_object().ok_or("设计资产须为对象")? {current[key]=value.clone();}
-            current["expectedVersion"]=expected;
-            save_asset_tx(&tx,current)?;
+            let aid = s(design, "id");
+            if aid.is_empty() || !seen.insert(aid) {
+                return Err("设计结果资产身份为空或重复".into());
+            }
+            let raw: String = tx
+                .query_row("SELECT data FROM assets WHERE id=?1", [aid], |r| r.get(0))
+                .map_err(|_| "设计资产已经不存在")?;
+            let mut current = parse(raw)?;
+            if current["version"] != design["version"] {
+                return Err(format!("资产 {} 在设计期间已经编辑，结果保留供核对", aid));
+            }
+            let expected = current["version"].clone();
+            for (key, value) in design.as_object().ok_or("设计资产须为对象")? {
+                current[key] = value.clone();
+            }
+            current["expectedVersion"] = expected;
+            save_asset_tx(&tx, current)?;
         }
         let mut foundation=previous.unwrap_or(json!({"schemaVersion":"foundation/v1","sourceSha256":source.sha256,"episodes":[],"assets":[],"facts":[],"issues":[],"overview":"","direction":""}));
-        if let Some(facts)=output["facts"].as_array() {
-            let mut safe=vec![];
+        if let Some(facts) = output["facts"].as_array() {
+            let mut safe = vec![];
             for fact in facts {
-                let mut fact:crate::pipeline::FoundationFact=serde_json::from_value(fact.clone()).map_err(|e|e.to_string())?;
-                if fact.source_refs.is_empty() {return Err("视觉事实没有原文依据".into());}
-                fact.quotes=fact.source_refs.iter().map(|id|source.rows.iter().find(|r|&r.id==id).map(|r|r.text.clone()).ok_or("视觉事实源引用已失效")).collect::<std::result::Result<Vec<_>,_>>()?.into_iter().collect();
+                let mut fact: crate::pipeline::FoundationFact =
+                    serde_json::from_value(fact.clone()).map_err(|e| e.to_string())?;
+                if fact.source_refs.is_empty() {
+                    return Err("视觉事实没有原文依据".into());
+                }
+                fact.quotes = fact
+                    .source_refs
+                    .iter()
+                    .map(|id| {
+                        source
+                            .rows
+                            .iter()
+                            .find(|r| &r.id == id)
+                            .map(|r| r.text.clone())
+                            .ok_or("视觉事实源引用已失效")
+                    })
+                    .collect::<std::result::Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .collect();
                 safe.push(json!(fact));
             }
-            foundation["facts"]=json!(safe);
+            foundation["facts"] = json!(safe);
         }
-        if let Some(receipts)=output["visualFactBatches"].as_array() {
-            let mut all=foundation["visualFactBatches"].as_array().cloned().unwrap_or_default();
+        if let Some(receipts) = output["visualFactBatches"].as_array() {
+            let mut all = foundation["visualFactBatches"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
             for receipt in receipts {
-                if receipt["sourceSha256"]!=source.sha256 || receipt["status"]!="accepted" {return Err("视觉事实缓存回执身份无效".into());}
-                all.retain(|old|old["inputFingerprint"]!=receipt["inputFingerprint"]);
+                if receipt["sourceSha256"] != source.sha256 || receipt["status"] != "accepted" {
+                    return Err("视觉事实缓存回执身份无效".into());
+                }
+                all.retain(|old| old["inputFingerprint"] != receipt["inputFingerprint"]);
                 all.push(receipt.clone());
             }
-            foundation["visualFactBatches"]=json!(all);
+            foundation["visualFactBatches"] = json!(all);
         }
-        write_foundation(&tx,foundation,source_version)?;
-        mark_changed(&tx)?;tx.commit().map_err(|e|e.to_string())
+        write_foundation(&tx, foundation, source_version)?;
+        mark_changed(&tx)?;
+        tx.commit().map_err(|e| e.to_string())
     }
     pub fn publish_storyboard(
         &self,
@@ -274,6 +786,28 @@ impl Store {
         output: &Value,
         input: &Value,
         run: Option<&str>,
+    ) -> Result<()> {
+        self.publish_storyboard_inner(guard, output, input, run, false)
+    }
+    /// Complete episode publication and its running-workflow receipt share one
+    /// transaction. A transport fragment or an accepted author is insufficient.
+    pub fn publish_storyboard_episode(
+        &self,
+        guard: &Value,
+        output: &Value,
+        input: &Value,
+        run: &str,
+    ) -> Result<()> {
+        crate::pipeline::validate_episode_delivery(input, output)?;
+        self.publish_storyboard_inner(guard, output, input, Some(run), true)
+    }
+    fn publish_storyboard_inner(
+        &self,
+        guard: &Value,
+        output: &Value,
+        input: &Value,
+        run: Option<&str>,
+        episode_progress: bool,
     ) -> Result<()> {
         self.ensure_workflow_storage()?;
         let mut c = self.conn()?;
@@ -284,14 +818,44 @@ impl Store {
         let authored = output["units"].as_array().ok_or("创作结果缺少单元数组")?;
         // A successful transport group is a saved draft, not proof that the
         // episode is complete. Failed later groups must retain the old units.
-        let units:Vec<_>=authored.iter().filter(|unit| {
-            output["scope"]!="episodes" || output.get("updatedEpisodeIds").is_none() ||
-                output["updatedEpisodeIds"].as_array().is_some_and(|ids|ids.iter().any(|eid|eid==&unit["episodeId"]))
-        }).cloned().collect();
-        if units.is_empty() {return Ok(());}
+        let units: Vec<_> = authored
+            .iter()
+            .filter(|unit| {
+                output["scope"] != "episodes"
+                    || output.get("updatedEpisodeIds").is_none()
+                    || output["updatedEpisodeIds"]
+                        .as_array()
+                        .is_some_and(|ids| ids.iter().any(|eid| eid == &unit["episodeId"]))
+            })
+            .cloned()
+            .collect();
+        if units.is_empty() {
+            return Ok(());
+        }
         let published: HashSet<_> = units.iter().map(|u| s(u, "id").to_owned()).collect();
         if published.len() != units.len() || published.contains("") {
             return Err("单元ID重复或为空，未发布成果".into());
+        }
+        let delivery_sha = crate::pipeline::digest(&output.to_string());
+        if episode_progress {
+            let run = run.ok_or("逐集发布缺少流程身份")?;
+            let (raw, state): (Option<String>, String) = tx
+                .query_row(
+                    "SELECT prepared,state FROM jobs WHERE id=?1 AND kind='workflow'",
+                    [run],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|e| e.to_string())?;
+            let prepared = raw.map(parse).transpose()?.unwrap_or(json!({}));
+            let episode = s(output, "episodeId");
+            if prepared["publishedEpisodes"][episode]["episodeDeliverySha256"] == delivery_sha {
+                // Guard verification above still detects user edits. Replaying
+                // accepted text cannot create another unit version or receipt.
+                return Ok(());
+            }
+            if state != "running" {
+                return Err("流程已停止，完整单集稿保留但不迟到发布".into());
+            }
         }
         let episodes: HashSet<_> = units.iter().map(|u| s(u, "episodeId").to_owned()).collect();
         let replaced: HashSet<_> = output["replacedUnitIds"]
@@ -450,12 +1014,114 @@ impl Store {
                 .map_err(|e| e.to_string())?;
             let mut prepared = raw.map(parse).transpose()?.unwrap_or(json!({}));
             prepared["publicationGuard"] = next_guard;
-            let status = match s(output, "status") {
-                "waiting_decision" => "waiting_decision",
-                "partially_blocked" => "partially_blocked",
-                _ => "completed",
+            let mut result = output.clone();
+            if episode_progress {
+                let episode = s(output, "episodeId");
+                let old: Option<String> = tx
+                    .query_row("SELECT result FROM jobs WHERE id=?1", [run], |row| {
+                        row.get(0)
+                    })
+                    .map_err(|e| e.to_string())?;
+                result = old.map(parse).transpose()?.unwrap_or(json!({"schemaVersion":"storyboard-delivery/v1","scope":"episodes","units":[],"updatedEpisodeIds":[],"plans":[],"fantasyRealization":[],"revisionNotes":[],"unresolved":[],"blocked":[]}));
+                let old_ids: HashSet<_> = result["units"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|unit| s(unit, "episodeId") == episode)
+                    .map(|unit| s(unit, "id").to_owned())
+                    .collect();
+                for field in ["units", "plans"] {
+                    let mut entries: Vec<_> = result[field]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|entry| s(entry, "episodeId") != episode)
+                        .cloned()
+                        .collect();
+                    entries.extend(output[field].as_array().into_iter().flatten().cloned());
+                    if field == "units" {
+                        let order: Vec<_> = input["source"]["episodes"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|e| s(e, "id"))
+                            .collect();
+                        entries.sort_by_key(|entry| {
+                            order
+                                .iter()
+                                .position(|id| *id == s(entry, "episodeId"))
+                                .unwrap_or(usize::MAX)
+                        });
+                    }
+                    result[field] = json!(entries);
+                }
+                let mut realization: Vec<_> = result["fantasyRealization"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|entry| {
+                        !entry["unitIds"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str)
+                            .any(|id| old_ids.contains(id))
+                    })
+                    .cloned()
+                    .collect();
+                realization.extend(
+                    output["fantasyRealization"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .cloned(),
+                );
+                result["fantasyRealization"] = json!(realization);
+                for field in ["revisionNotes", "unresolved"] {
+                    let mut notes = result[field].as_array().cloned().unwrap_or_default();
+                    for note in output[field].as_array().into_iter().flatten() {
+                        if !notes.contains(note) {
+                            notes.push(note.clone());
+                        }
+                    }
+                    result[field] = json!(notes);
+                }
+                let mut ids = result["updatedEpisodeIds"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                if !ids.iter().any(|id| id.as_str() == Some(episode)) {
+                    ids.push(json!(episode));
+                }
+                result["updatedEpisodeIds"] = json!(ids);
+                result["sourceSha256"] = output["sourceSha256"].clone();
+                result["schemaVersion"] = json!("storyboard-delivery/v1");
+                result["scope"] = json!("episodes");
+                result["status"] = json!("running");
+                result["blocked"] = json!([]);
+                result["waitingDecision"] = Value::Null;
+                result["waitingDecisions"] = json!([]);
+                result["ruleSnapshots"] = output["ruleSnapshots"].clone();
+                result["planningProfile"] = input["capabilities"].clone();
+                result["selection"] = input["selection"].clone();
+                if !prepared["publishedEpisodes"].is_object() {
+                    prepared["publishedEpisodes"] = json!({});
+                }
+                prepared["publishedEpisodes"][episode] = json!({"version":"complete-episode-publication/v1","episodeId":episode,"sourceSha256":output["sourceSha256"],"sourceVersion":guard["sourceVersion"],"episodeDeliverySha256":delivery_sha,"unitIds":output["units"].as_array().unwrap().iter().map(|u|&u["id"]).collect::<Vec<_>>(),"finishProvenance":output["finishProvenance"],"publishedAt":now()});
+            }
+            let status = if episode_progress {
+                "running"
+            } else {
+                match s(output, "status") {
+                    "waiting_decision" => "waiting_decision",
+                    "partially_blocked" => "partially_blocked",
+                    _ => "completed",
+                }
             };
-            tx.execute("UPDATE jobs SET state=?1,prepared=?2,result=?3,error=NULL,updated_at=?4 WHERE id=?5 AND kind='workflow'",params![status,prepared.to_string(),output.to_string(),now(),run]).map_err(|e|e.to_string())?;
+            tx.execute("UPDATE jobs SET state=?1,prepared=?2,result=?3,error=NULL,updated_at=?4 WHERE id=?5 AND kind='workflow'",params![status,prepared.to_string(),result.to_string(),now(),run]).map_err(|e|e.to_string())?;
+            if episode_progress {
+                tx.execute("INSERT INTO events(job_id,type,data,created_at) VALUES(?1,'episode_published',?2,?3)",params![run,prepared["publishedEpisodes"][s(output,"episodeId")].to_string(),now()]).map_err(|e|e.to_string())?;
+            }
         }
         mark_changed(&tx)?;
         tx.commit().map_err(|e| e.to_string())

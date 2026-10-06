@@ -171,7 +171,7 @@ pub(super) fn download_official_result(
     download_result(url, target, true)
 }
 
-fn result_client(direct: bool) -> ProviderResult<Client> {
+fn result_client(direct: bool, official: bool) -> ProviderResult<Client> {
     let mut builder = Client::builder()
         .timeout(Duration::from_secs(300))
         .connect_timeout(Duration::from_secs(15))
@@ -190,6 +190,8 @@ fn result_client(direct: bool) -> ProviderResult<Client> {
         }));
     if direct {
         builder = builder.no_proxy();
+    } else if official {
+        builder = super::dreamina::apply_result_proxies(builder)?;
     }
     builder
         .build()
@@ -209,19 +211,102 @@ fn download_result(
             "结果下载地址必须为 HTTPS。",
         ));
     }
-    let response = match result_client(false)?.get(url).send() {
+    let mut primary_category = None;
+    let response = match result_client(false, direct_fallback)?.get(url).send() {
         Err(error) if direct_fallback && (error.is_connect() || error.is_timeout()) => {
-            result_client(true)?.get(url).send()
+            primary_category = Some(download_transport_category(&error));
+            result_client(true, true)?.get(url).send()
         }
         response => response,
     }
-    .map_err(|_| {
-        ProviderError::new(
-            "DOWNLOAD_FAILED",
-            "结果下载失败；请重新查询原任务刷新地址。",
-        )
+    .map_err(|error| {
+        let route = if primary_category.is_some() {
+            "direct-fallback"
+        } else if direct_fallback {
+            "official-policy"
+        } else {
+            "public-policy"
+        };
+        download_transport_error(&error, route, primary_category)
     })?;
     save_response(response, target, None)
+}
+
+fn transport_category(
+    timeout: bool,
+    connect: bool,
+    builder: bool,
+    body: bool,
+    causes: &str,
+) -> &'static str {
+    if timeout {
+        "TIMEOUT"
+    } else if [
+        "dns error",
+        "failed to lookup",
+        "name resolution",
+        "no such host",
+        "nodename nor servname",
+    ]
+    .iter()
+    .any(|word| causes.contains(word))
+    {
+        "DNS"
+    } else if [
+        "certificate",
+        "tls handshake",
+        "tls alert",
+        "invalid peer",
+        "unknownissuer",
+    ]
+    .iter()
+    .any(|word| causes.contains(word))
+    {
+        "TLS"
+    } else if connect {
+        "CONNECT"
+    } else if builder {
+        "CLIENT_CONFIG"
+    } else if body {
+        "READ"
+    } else {
+        "REQUEST"
+    }
+}
+
+fn download_transport_category(error: &reqwest::Error) -> &'static str {
+    // Never copy Error::to_string(), which includes signed URLs. The bounded
+    // underlying type chain is inspected only to select a fixed category.
+    let mut cause = std::error::Error::source(error);
+    let mut messages = String::new();
+    for _ in 0..8 {
+        let Some(current) = cause else { break };
+        messages.push_str(&current.to_string().to_ascii_lowercase());
+        messages.push('\n');
+        cause = current.source();
+    }
+    transport_category(
+        error.is_timeout(),
+        error.is_connect(),
+        error.is_builder(),
+        error.is_body(),
+        &messages,
+    )
+}
+
+fn download_transport_error(
+    error: &reqwest::Error,
+    route: &str,
+    primary: Option<&str>,
+) -> ProviderError {
+    let category = download_transport_category(error);
+    let primary = primary
+        .map(|category| format!("; primary={category}"))
+        .unwrap_or_default();
+    ProviderError::new(
+        "DOWNLOAD_FAILED",
+        format!("结果下载失败；请重新查询原任务刷新地址。[DOWNLOAD_FAILED; category={category}; route={route}{primary}]"),
+    )
 }
 
 pub(super) fn save_response(
@@ -232,7 +317,7 @@ pub(super) fn save_response(
     if !response.status().is_success() {
         return Err(ProviderError::new(
             "DOWNLOAD_FAILED",
-            "下载地址已失效或暂时不可用；请查询原任务。",
+            format!("下载地址已失效或暂时不可用；请查询原任务。[DOWNLOAD_FAILED; category=HTTP; status={}]", response.status().as_u16()),
         ));
     }
     let mime = response
@@ -308,4 +393,161 @@ pub(super) fn save_response(
     drop(file);
     let _ = fs::remove_file(&temp);
     result
+}
+
+#[cfg(test)]
+mod result_diagnostics_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    fn accept_bounded(listener: &TcpListener) -> std::net::TcpStream {
+        listener.set_nonblocking(true).unwrap();
+        let started = std::time::Instant::now();
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => return stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && started.elapsed() < Duration::from_secs(2) =>
+                {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => {
+                    panic!("bounded loopback fixture did not receive its request: {error}")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn download_categories_use_fixed_labels_and_preserve_transport_types() {
+        for (timeout, connect, builder, body, causes, expected) in [
+            (true, true, false, false, "PRIVATE_TIMEOUT_URL", "TIMEOUT"),
+            (
+                false,
+                true,
+                false,
+                false,
+                "dns error: failed to lookup PRIVATE_HOST",
+                "DNS",
+            ),
+            (
+                false,
+                true,
+                false,
+                false,
+                "invalid peer certificate PRIVATE_SIGNATURE",
+                "TLS",
+            ),
+            (false, true, false, false, "connection refused", "CONNECT"),
+            (false, false, true, false, "PRIVATE_PROXY", "CLIENT_CONFIG"),
+            (false, false, false, true, "PRIVATE_RESPONSE", "READ"),
+            (false, false, false, false, "PRIVATE_UNKNOWN", "REQUEST"),
+        ] {
+            let result = transport_category(
+                timeout,
+                connect,
+                builder,
+                body,
+                &causes.to_ascii_lowercase(),
+            );
+            assert_eq!(result, expected);
+            assert!(!result.contains("PRIVATE"));
+        }
+    }
+
+    #[test]
+    fn actual_loopback_timeout_diagnostic_has_no_signed_url_or_secret() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = std::thread::spawn(move || {
+            let _stream = accept_bounded(&listener);
+            std::thread::sleep(Duration::from_millis(250));
+        });
+        let url = format!("http://{address}/PRIVATE_PATH?x-signature=PRIVATE_SIGNATURE");
+        let error = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(100))
+            .build()
+            .unwrap()
+            .get(&url)
+            .send()
+            .unwrap_err();
+        let safe = download_transport_error(&error, "direct-fallback", Some("CONNECT"));
+        worker.join().unwrap();
+        assert_eq!(safe.code, "DOWNLOAD_FAILED");
+        assert!(safe.message.contains("category=TIMEOUT"));
+        assert!(safe
+            .message
+            .contains("route=direct-fallback; primary=CONNECT"));
+        for hidden in ["PRIVATE", &url, &address.to_string(), "x-signature"] {
+            assert!(!safe.message.contains(hidden));
+        }
+        assert!(!safe.auth_required);
+        assert!(!safe.submission_unknown);
+    }
+
+    #[test]
+    fn actual_unreachable_loopback_error_keeps_its_type_without_copying_error_url() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let url = format!("http://{address}/PRIVATE_PATH?token=PRIVATE_TOKEN");
+        let error = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap()
+            .get(&url)
+            .send()
+            .unwrap_err();
+        let safe = download_transport_error(&error, "official-policy", None);
+        assert_eq!(safe.code, "DOWNLOAD_FAILED");
+        assert!(error.is_connect() || error.is_timeout());
+        let expected = if error.is_timeout() {
+            "TIMEOUT"
+        } else {
+            "CONNECT"
+        };
+        assert!(safe.message.contains(&format!("category={expected}")));
+        assert!(!safe.message.contains("PRIVATE"));
+        assert!(!safe.message.contains(&url));
+        assert!(!safe.message.contains(&address.to_string()));
+    }
+
+    #[test]
+    fn http_rejection_exposes_only_status_and_is_never_auth_or_expiry_proof() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut stream = accept_bounded(&listener);
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0; 8192];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 8\r\nConnection: close\r\n\r\nPRIVATE!").unwrap();
+        });
+        let response = Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap()
+            .get(format!(
+                "http://{address}/PRIVATE_PATH?signature=PRIVATE_SIGNATURE"
+            ))
+            .send()
+            .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("result.png");
+        let error = save_response(response, &target, None).unwrap_err();
+        worker.join().unwrap();
+        assert_eq!(error.code, "DOWNLOAD_FAILED");
+        assert!(error.message.contains("category=HTTP; status=403"));
+        assert!(!error.message.contains("PRIVATE"));
+        assert!(!error.message.contains(&address.to_string()));
+        assert!(!error.auth_required);
+        assert!(!error.submission_unknown);
+        assert!(!target.exists());
+    }
 }

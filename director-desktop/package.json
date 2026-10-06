@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1 --port 1420",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty false",
-    "test:frontend": "node --experimental-strip-types --test src/contracts.test.ts src/generationState.test.ts src/assetManagement.test.ts src/unitAssetEditing.test.ts",
+    "test:frontend": "node --experimental-strip-types --test src/contracts.test.ts src/generationState.test.ts src/assetManagement.test.ts src/unitAssetEditing.test.ts src/workflowProgressModel.test.ts",
     "preview": "vite preview --host 127.0.0.1 --port 1420",
     "tauri": "tauri",
     "desktop:dev": "tauri dev --features desktop",
