@@ -250,6 +250,40 @@ const LEGACY_PARSER_VERSION: &str = "source-parser/v1";
 const CONTEXT_PARSER_VERSION: &str = "source-parser/v2";
 const CURRENT_PARSER_VERSION: &str = "source-parser/v3";
 const STRUCTURAL_PARSER_VERSION: &str = "source-parser/v4";
+const DISPLAY_PARSER_VERSION: &str = "source-parser/v5";
+
+fn display_block_header(text: &str) -> bool {
+    static HEADER: OnceLock<Regex> = OnceLock::new();
+    HEADER.get_or_init(|| Regex::new(r"^[△▲]?\s*(?:面板|屏幕|界面|投影|显示屏)(?:上的?|中)?(?:字幕|文字|内容|显示内容)\s*[：:]\s*$").unwrap()).is_match(text.trim())
+}
+
+/// Only an explicit display header grants the following numbered field labels
+/// a non-spoken role. Ordinary dialogue and voice labels outside it are intact.
+fn display_only_row_ids(source: &LockedSource) -> HashSet<String> {
+    if source.parser_version != DISPLAY_PARSER_VERSION { return HashSet::new(); }
+    static FIELD: OnceLock<Regex> = OnceLock::new();
+    let field=FIELD.get_or_init(|| Regex::new(r"^(?:情报|任务|消息|提示|目标|奖励|内容|选项)[零〇一二三四五六七八九十百千\d]+$").unwrap());
+    static CAST: OnceLock<Regex> = OnceLock::new();
+    let cast=CAST.get_or_init(||Regex::new(r"^\s*(?:人物|出场人物|出场角色|角色)\s*[：:]\s*(.*)$").unwrap());
+    let named:HashSet<_>=source.rows.iter().filter_map(|r|cast.captures(r.text.trim()))
+        .flat_map(|c|c[1].split(['、','，',',','；',';']).map(|name|name.trim().split(['（','(']).next().unwrap_or("").trim().to_string()).collect::<Vec<_>>()).collect();
+    let mut scope=None;
+    let mut ids=HashSet::new();
+    for row in &source.rows {
+        if display_block_header(&row.text) && row.kind=="body" {
+            scope=Some((&row.episode_id,&row.scene_id));
+            continue;
+        }
+        if row.text.trim().is_empty() {continue;}
+        if scope.is_some_and(|(episode,scene)|episode==&row.episode_id && scene==&row.scene_id)
+            && row.kind=="body"
+            && row.text.split(['：',':']).next().is_some_and(|head|field.is_match(head.trim()))
+            && parse_dialogue(&row.text,row.range.start,&row.id,&source.parser_version).is_some_and(|q|q.channel=="现场"&&!named.contains(&q.speaker)) {
+            ids.insert(row.id.clone());
+        } else {scope=None;}
+    }
+    ids
+}
 
 fn episode_heading_re() -> &'static Regex {
     static EPISODE_HEADING: OnceLock<Regex> = OnceLock::new();
@@ -270,6 +304,7 @@ fn tight_scene_heading_re() -> &'static Regex {
 // Only opt fresh parsing into the changed boundary contract when it is needed.
 // Existing v1-v3 sources always replay their original parsing and coordinates.
 fn fresh_parser_version(text: &str) -> &'static str {
+    if raw_lines(text).iter().any(|line|display_block_header(line)) {return DISPLAY_PARSER_VERSION;}
     let mut previous = None;
     for raw in raw_lines(text) {
         let line = raw.trim();
@@ -496,7 +531,7 @@ fn parse_dialogue(
     let normalized_channel;
     let normalized_label;
     let current_voice_rules =
-        [CURRENT_PARSER_VERSION, STRUCTURAL_PARSER_VERSION].contains(&parser_version);
+        [CURRENT_PARSER_VERSION, STRUCTURAL_PARSER_VERSION, DISPLAY_PARSER_VERSION].contains(&parser_version);
     let (channel_text, channel_label) = if current_voice_rules {
         normalized_channel = channel_text.to_ascii_uppercase();
         normalized_label = label.to_ascii_uppercase();
@@ -580,11 +615,13 @@ fn parse_source(text: &str, parser_version: &str) -> Result<LockedSource, String
         CONTEXT_PARSER_VERSION,
         CURRENT_PARSER_VERSION,
         STRUCTURAL_PARSER_VERSION,
+        DISPLAY_PARSER_VERSION,
     ]
     .contains(&parser_version)
     {
         return Err("原文解析规则版本不受支持，请升级客户端".into());
     }
+    let structural=[STRUCTURAL_PARSER_VERSION,DISPLAY_PARSER_VERSION].contains(&parser_version);
     let sha256 = digest(text);
     let episode_re = episode_heading_re();
     let context_re = Regex::new(r"^(?:#{1,6}\s*)?(?:【)?(?:作者资料|故事大纲|人物小传|人物设定|世界观设定|背景资料|附录)(?:】)?(?:\s|[:：｜|]|$)").unwrap();
@@ -651,7 +688,7 @@ fn parse_source(text: &str, parser_version: &str) -> Result<LockedSource, String
                 .find(|s| !s.trim().is_empty())
                 .map(|next| {
                     is_context(next.trim(), true)
-                        || parser_version == STRUCTURAL_PARSER_VERSION
+                        || structural
                             && episode_re
                                 .captures(next.trim())
                                 .and_then(|c| number_value(c.get(1)?.as_str()))
@@ -671,7 +708,7 @@ fn parse_source(text: &str, parser_version: &str) -> Result<LockedSource, String
                     && c.get(3).unwrap().as_str().parse::<u32>().unwrap_or(0) > 0
                     && metadata_re.is_match(c.get(4).unwrap().as_str())
             });
-            let supplemental_heading = parser_version == STRUCTURAL_PARSER_VERSION
+            let supplemental_heading = structural
                 && previous_heading_number == Some(number)
                 && episode_id.is_some()
                 && scene_id.is_none()
@@ -687,7 +724,7 @@ fn parse_source(text: &str, parser_version: &str) -> Result<LockedSource, String
                 // The original production framework supplies all episode-0
                 // material to the full-script foundation, never to a single
                 // production episode. Retain even its scene/dialogue text here.
-                || parser_version == STRUCTURAL_PARSER_VERSION && number == 0;
+                || structural && number == 0;
             scene_id = None;
             source_number = Some(number);
             if context {
@@ -794,7 +831,7 @@ fn parse_source(text: &str, parser_version: &str) -> Result<LockedSource, String
                 })
                 .unwrap_or(true);
             let pair = pair_re.captures(line).or_else(|| {
-                (parser_version == STRUCTURAL_PARSER_VERSION)
+                structural
                     .then(|| tight_scene_heading_re().captures(line))
                     .flatten()
             });
@@ -940,6 +977,8 @@ fn parse_source(text: &str, parser_version: &str) -> Result<LockedSource, String
         });
         offset = end;
     }
+    let display_ids=display_only_row_ids(&source);
+    for row in &mut source.rows {if display_ids.contains(&row.id) {row.dialogue=None;}}
     let speaker_names: HashSet<_> = source
         .rows
         .iter()
@@ -1034,6 +1073,7 @@ pub fn reparse_source(source: &LockedSource) -> Result<LockedSource, String> {
 }
 
 fn validate_integrity(source: &LockedSource) -> Result<(), String> {
+    let display_ids=display_only_row_ids(source);
     if source.schema_version != "locked-source/v1"
         || source.coordinate_system != "utf16"
         || source.sha256 != digest(&source.text)
@@ -1052,7 +1092,7 @@ fn validate_integrity(source: &LockedSource) -> Result<(), String> {
         {
             return Err("来源行存在遗漏、重叠、错序或回读不一致".into());
         }
-        let expected_dialogue = if row.kind == "body" {
+        let expected_dialogue = if row.kind == "body" && !display_ids.contains(&row.id) {
             parse_dialogue(&row.text, row.range.start, &row.id, &source.parser_version)
         } else {
             None
@@ -1279,6 +1319,64 @@ fn apply_decisions_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numbered_display_fields_remain_picture_text_and_keep_explicit_voices() {
+        let text="第一集\n场景：房间\n甲：查看今日情报。\n△面板字幕：\n情报1：原样显示😀。\n情报2：第二条消息。\n系统VO：【请查收！】\n情报3：没有字幕前置时仍按原对白规则。\n△甲抬头。\n甲：走吧。\n第二集\n场景：房间\n情报1：另一场的角色台词。\n";
+        let fresh=prepare_source(text).unwrap();
+        assert_eq!(fresh.parser_version,DISPLAY_PARSER_VERSION);
+        for label in ["情报1：原样显示","情报2：第二条"] {
+            assert!(fresh.rows.iter().find(|r|r.text.starts_with(label)).unwrap().dialogue.is_none());
+        }
+        for label in ["甲：查看","系统VO：","情报3：","甲：走吧","情报1：另一场"] {
+            assert!(fresh.rows.iter().find(|r|r.text.starts_with(label)).unwrap().dialogue.is_some(),"{label}");
+        }
+        validate_source(&fresh).unwrap();
+        let old=parse_source(text,STRUCTURAL_PARSER_VERSION).unwrap();
+        assert!(old.rows.iter().find(|r|r.text.starts_with("情报1：原样显示")).unwrap().dialogue.is_some());
+        assert_eq!(json_value(&upgrade_source_dialogues(&old).unwrap()),json_value(&old),"saved parsing is never silently reclassified");
+        let reparsed=reparse_source(&old).unwrap();
+        assert_eq!(reparsed.sha256,old.sha256);
+        assert_eq!(reparsed.text,old.text);
+        assert_eq!(reparsed.length,old.length);
+        assert_eq!(reparsed.rows.iter().map(|r|(&r.id,&r.range,&r.text)).collect::<Vec<_>>(),old.rows.iter().map(|r|(&r.id,&r.range,&r.text)).collect::<Vec<_>>());
+        let mut polluted=fresh.clone();
+        polluted.rows.iter_mut().find(|r|r.text.starts_with("甲：查看")).unwrap().dialogue=None;
+        assert!(validate_source(&polluted).is_err(),"a real spoken line cannot be deleted under a display exemption");
+    }
+
+    #[test]
+    fn numbered_character_with_delivery_cue_is_not_silenced_by_a_display_header() {
+        let source=prepare_source("第一集\n场景：房间\n△屏幕文字：\n情报1（大喊）：快走！\n情报2：我是继续说话的角色。\n").unwrap();
+        assert!(source.rows.iter().find(|r|r.text.starts_with("情报1（")).unwrap().dialogue.is_some());
+        assert!(source.rows.iter().find(|r|r.text.starts_with("情报2：")).unwrap().dialogue.is_some());
+        let cast=prepare_source("第一集\n场景：房间\n人物：情报1（男）、甲\n△面板字幕：\n情报1：这是登记角色的原话。\n").unwrap();
+        assert!(cast.rows.iter().find(|r|r.text.starts_with("情报1：")).unwrap().dialogue.is_some());
+    }
+
+    fn json_value(source:&LockedSource)->serde_json::Value {serde_json::to_value(source).unwrap()}
+
+    #[test]
+    #[ignore = "Explicit private saved source required; reparse only, no store or model writes"]
+    fn saved_display_source_reparse_preserves_every_original_coordinate_without_execution() {
+        let path=std::path::PathBuf::from(std::env::var("DIRECTOR_DISPLAY_SOURCE_SNAPSHOT").expect("private snapshot required"));
+        let private=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("reports/desktop-real-e2e-20261005").canonicalize().unwrap();
+        assert!(path.canonicalize().unwrap().starts_with(&private));
+        let old:LockedSource=serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let fresh=reparse_source(&old).unwrap();
+        assert_eq!(fresh.sha256,old.sha256);assert!(fresh.text==old.text,"source bytes changed");
+        assert!(fresh.rows.iter().map(|r|(&r.id,&r.range,&r.text)).eq(old.rows.iter().map(|r|(&r.id,&r.range,&r.text))),"original row coordinates changed");
+        let saved=upgrade_source_dialogues(&old).unwrap();
+        assert_eq!(saved.parser_version,old.parser_version);
+        assert!(saved.rows.iter().zip(&old.rows).all(|(a,b)|a.id==b.id&&a.text==b.text&&a.range==b.range&&a.kind==b.kind&&a.episode_id==b.episode_id&&a.scene_id==b.scene_id&&match(&a.dialogue,&b.dialogue){(None,None)=>true,(Some(a),Some(b))=>a.id==b.id&&a.speaker==b.speaker&&a.channel==b.channel&&a.quote==b.quote&&a.range==b.range,_=>false}),"legacy source classification changed; only its existing segment upgrade may run");
+        // Segment materialization already belongs to the existing saved-source
+        // upgrade. Compare classifications against that canonical baseline.
+        let changes=saved.rows.iter().zip(&fresh.rows).filter(|(a,b)|a.dialogue!=b.dialogue).collect::<Vec<_>>();
+        assert!(!changes.is_empty());
+        let allowed=display_only_row_ids(&fresh);
+        assert!(changes.iter().all(|(a,b)|allowed.contains(&a.id)&&a.dialogue.is_some()&&b.dialogue.is_none()));
+        println!("{{\"savedSourceVerified\":true,\"displayRowsCorrected\":{},\"sourceBytesAndCoordinatesPreserved\":true,\"modelExecutions\":0}}",changes.len());
+    }
 
     #[test]
     fn system_message_wrapper_is_spoken_and_legacy_metadata_upgrades_without_source_changes() {
