@@ -1234,7 +1234,7 @@ impl Store {
         if s(receipt, "contract") != "desktop-runner/v1"
             || s(audit, "policy").is_empty()
             || !(matches!(s(audit, "stage"), "foundation:F2" | "foundation:Q1")
-                || storyboard_repair && s(audit, "stage") == "storyboardFinish")
+                || storyboard_repair && matches!(s(audit, "stage"),"storyboardFinish"|"storyboardCreate"))
             || receipt["migrationPolicy"] != audit["policy"]
             || receipt["migrationAudit"] != *audit
             || accepted && receipt["acceptedRequestHash"] != audit["newRequestHash"]
@@ -1265,20 +1265,20 @@ impl Store {
                 .map_err(|_| "整编回放的原回执无效")?;
             let raw_event: Value = serde_json::from_str(s(audit, "originalRawEventDataJson"))
                 .map_err(|_| "整编回放的原始接收事件无效")?;
-            if s(audit, "stage") != "storyboardFinish"
-                || snapshot["stage"] != "storyboardFinish"
-                || snapshot["skill"] != "episode-finishing-editor"
-                || snapshot["input"]["storyboardCreativeProfile"]
-                    != "original-production-contract/v1"
+            if s(audit,"stage") != s(&snapshot,"stage")
+                || !crate::text_executor::source_coverage_replay_stage(s(&snapshot,"stage"),s(&snapshot,"skill"),&snapshot["input"]["storyboardCreativeProfile"])
                 || snapshot["executorIdentity"]["provider"] != "codex"
-                || s(audit, "previousError")
-                    != crate::text_executor::STORYBOARD_FINISH_COVERAGE_REJECTION
+                || ![
+                    crate::text_executor::STORYBOARD_FINISH_COVERAGE_REJECTION,
+                    crate::text_executor::AUTHOR_SOURCE_COVERAGE_REJECTION,
+                ]
+                .contains(&s(audit, "previousError"))
                 || s(audit, "oldRequestHash") != s(audit, "newRequestHash")
                 || crate::pipeline::digest(&snapshot.to_string()) != s(audit, "oldRequestHash")
                 || snapshot.to_string() != s(audit, "originalSnapshotJson")
                 || crate::pipeline::digest(s(audit, "originalResultJson"))
                     != s(audit, "originalResultSha256")
-                || old_receipt != json!({"validation":"rejected","contract":"desktop-runner/v1"})
+                || !crate::text_executor::source_coverage_replay_receipt_valid(&old_receipt,s(audit,"originalSnapshotJson"),s(audit,"originalResultJson"),audit["originalRawEventId"].as_i64().unwrap_or(0),s(audit,"oldRequestHash"),s(audit,"workflowId"),s(audit,"nodeKey"))
                 || audit["originalRawEventId"].as_i64().unwrap_or(0) <= 0
                 || raw_event["requestHash"] != audit["oldRequestHash"]
                 || raw_event["value"] != original

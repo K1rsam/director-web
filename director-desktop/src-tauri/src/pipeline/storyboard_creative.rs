@@ -17,6 +17,16 @@ pub(super) const FINISH_SCOPE_REPAIR_EXECUTION_VERSION: &str = "finish-domain-re
 const AUTHOR_SCOPE_REPAIR_EXECUTION: &str = "本次是原运行时的未采用主创候选→原整编差量修订。authorRepair与validationIssues是执行核绑定的原主创请求、原回包和正式资产适用范围问题；previousDraft仅通过来源与身份硬校验，尚未通过完整领域验收，不是已采用稿。依原episode-finishing-editor方法修好本次明确问题，交完整差量作品；未涉及单元原样保留，连续原文或幻想关联组须完整处理。资产目录与实际集场真值不变，不修改目录、原文、说者、声道或幻想许可来消除错误；纯VO/OS不证明角色入画，按原规则核对实际声画和参考素材。baseDraftHash逐字回填，修订回包仍须完整通过所有来源、身份、适用范围、原话与创作合同校验后才采用。原主创请求及未采用回包保持原样，不重新主创。";
 const FINISH_SCOPE_REPAIR_EXECUTION: &str = "本次是原运行时的未采用整编候选→原整编差量修订。finishRepair与validationIssues绑定原整编请求、原回包、正式资产及其适用范围；previousDraft是未采用候选，不是已验收稿。仍由episode-finishing-editor按原方法修好准确问题，未涉及单元原样保留，连续原文与幻想关联组完整处理。资产目录、原文、说者、声道、事件和已选幻想不变；纯VO/OS不证明人物入画，不为声音角色强加不适用角色图片。保留原已校验作者和原整编请求，不重新主创或规划。baseDraftHash逐字回填，差量作品仍须完整通过全部领域校验后才采用。";
 const SCENE_COORDINATE_REPAIR_EXECUTION: &str = "UNIT_SCENE_COORDINATE只说明本次未采用修订的同集已知sceneId字段，与该单元全部制作来源唯一场及原event场坐标不一致。expectedSceneId是锁定制作来源坐标，不是程序新判剧情；不改源行、事件、资产适用范围或文本事实，不把它当新增或重演场景授权。由原整编协调单元字段、真实声画与参考素材，必要拆合仍在本问题及必要关联组内，修后必须重过最终强校验；不能仅换场号却保留不适用素材。";
+const SOURCE_COORDINATE_REPAIR_EXECUTION: &str = "本次原整编处理程序定位的未采用主创来源坐标问题。DIALOGUE_SOURCE_INTERVAL须依allowedSpokenRanges选择原文绝对UTF16半开区间，括号演法不发声；若跨演法，应拆为连续原话片段并重算声窗，不能改字、删句或裁窗。UNIT_SOURCE_COVERAGE须使本范围requiredSourceRefs顺序完整覆盖，单元拆合与必要关联组由原整编决定，不添剧情、不重演前稿；ASSET_SOURCE_SCOPE须协调实际入画素材与本单元真实来源。previousDraft仍是未采用候选，其错误对白区间尚未物化，不能把其中派生prompt当台词真值；锁定sourceRows的dialogue和spokenSegments为准。只替换问题单元及必要原文/幻想关联组；其余单元原样保留。修后仍完整验证原文、台词、身份、事件、时长和声窗，原主创原包不改、不再次调用主创。";
+
+fn source_coordinate_issue(issue: &Value) -> bool {
+    [
+        "DIALOGUE_SOURCE_INTERVAL",
+        "UNIT_SOURCE_COVERAGE",
+        "ASSET_SOURCE_SCOPE",
+    ]
+    .contains(&text(issue, "code"))
+}
 const CARRIER_REQUIREMENTS: &str = "视频载体执行合同 integer-video-units/v1：当前渠道的每个成品单元总时长必须是正整秒，且满足 capabilities.minDuration/maxDuration 和非空 allowedDurations。各镜头、声窗、跨镜共时允许小数；整秒约束只针对合计后的成品单元，不是每镜上限或固定切镜频率。规划先按此载体组织事件单元；主创和整编必须通过合法表演、声画共时、切点及关联范围拆合满足总时长。不得自动取整、填空凑秒、催读、删词、丢源、裁声窗或改变已选幻想。旧已验收稿若不满足，原整编岗仅差量修订受影响单元及必要关联组；替换组只包含载体问题单元和其完整幻想关联组，低于渠道最短时长时才允许必要紧邻单元；其余单元列 retainedUnitIds 原样保留。修订不得改变本范围已确认的独立初态和末态；末单元实际修改将使后集前置缓存按真实新稿透明更新。";
 
 pub(super) fn uses_carrier_profile(input: &Value) -> Result<bool, String> {
@@ -288,6 +298,7 @@ pub(super) fn prepare_request(mut request: TextRequest) -> Result<TextRequest, S
                     issues.is_empty()
                         || issues.iter().any(|issue| {
                             issue["code"] != "ASSET_SCENE_SCOPE"
+                                && !source_coordinate_issue(issue)
                                 && !(proof["attempt"] == 2
                                     && issue["code"] == "UNIT_SCENE_COORDINATE")
                         })
@@ -433,6 +444,18 @@ pub(super) fn prepare_request(mut request: TextRequest) -> Result<TextRequest, S
         runtime_contract["content"] = json!(content);
         runtime_contract["sha256"] = json!(digest(text(&runtime_contract, "content")));
     }
+    if author_repair
+        && request.input["validationIssues"]
+            .as_array()
+            .is_some_and(|issues| issues.iter().any(source_coordinate_issue))
+    {
+        let content = format!(
+            "{}\n\n{SOURCE_COORDINATE_REPAIR_EXECUTION}",
+            text(&runtime_contract, "content")
+        );
+        runtime_contract["content"] = json!(content);
+        runtime_contract["sha256"] = json!(digest(text(&runtime_contract, "content")));
+    }
     request.rule_snapshot["runtimeContract"] = runtime_contract;
     // Program instructions live only in the trusted rule snapshot. Never promote
     // arbitrary source/raw/user text by copying input.instruction into that slot.
@@ -450,6 +473,10 @@ pub(super) fn prepare_request(mut request: TextRequest) -> Result<TextRequest, S
 pub(super) struct Executor<'a>(pub(super) &'a dyn TextExecutor);
 #[async_trait]
 impl TextExecutor for Executor<'_> {
+    fn input_transport_characters(&self, request: &TextRequest) -> Result<usize, String> {
+        self.0
+            .input_transport_characters(&prepare_request(request.clone())?)
+    }
     async fn execute(&self, request: TextRequest) -> Result<Value, String> {
         self.0.execute(prepare_request(request)?).await
     }
@@ -473,6 +500,9 @@ impl TextExecutor for Executor<'_> {
     }
     async fn continuity_changed(&self, evidence: &Value) -> Result<(), String> {
         self.0.continuity_changed(evidence).await
+    }
+    async fn author_chain_revision(&self, request: &TextRequest, repair: &Value) -> Result<Option<Value>, String> {
+        self.0.author_chain_revision(&prepare_request(request.clone())?, repair).await
     }
 }
 

@@ -223,9 +223,18 @@ fn await_workflow(store: &Store) -> Value {
     let started = Instant::now();
     loop {
         if let Some(job) = store.jobs().unwrap().into_iter().find(|j| {
-            s(j, "kind") == "workflow" && ["completed", "failed"].contains(&s(j, "status"))
+            s(j, "kind") == "workflow"
+                && ["completed", "partially_blocked", "failed"].contains(&s(j, "status"))
         }) {
-            assert_eq!(job["status"], "completed", "{job}");
+            assert_ne!(job["status"], "failed", "{job}");
+            if job["status"] == "partially_blocked" {
+                assert!(!job["result"]["blocked"].as_array().unwrap().is_empty());
+                assert_eq!(job["result"]["status"], "partially_blocked");
+            } else {
+                assert!(job["result"]["blocked"]
+                    .as_array()
+                    .is_none_or(|blocked| blocked.is_empty()));
+            }
             return job;
         }
         assert!(
@@ -636,6 +645,10 @@ fn public_images_produce_keeps_a_good_dependency_branch_when_another_is_invalid(
     fixture.asset("bad-child", &["nonexistent-parent"]);
     fixture.engine.dispatch(json!({"action":"images.produce","projectId":fixture.project_id,"provider":"offline","model":"offline-image","assetIds":["bad-child","good-child"]})).unwrap();
     let workflow = await_workflow(&fixture.store);
+    assert_eq!(
+        workflow["status"], "partially_blocked",
+        "a successful dependency branch cannot make the failed branch completed"
+    );
     assert!(workflow["result"]["blocked"]
         .as_array()
         .unwrap()

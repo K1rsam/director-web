@@ -13,6 +13,8 @@ const THREE_ROLE_PROFILE: &str = "storyboard-lossless-input/v1";
 // greedy finishing partition. Actual dispatch can still use the current wire.
 const LEGACY_FINISH_INPUT_RULE: &str = "【资料单跳等值引用】本次输入中的{\"$same\":\"#/路径\"}表示本JSON对应路径处的完整原值，数字为0基数组下标；目标保留完整且不含引用。{\"$rowIds\":[[\"sourceRows\",起,止],...]}表示按列举顺序取本输入sourceRows或contextRows对应行数组的id，0基且含末项；不变更行顺序或制作覆盖。plan.sourceFingerprints的{\"$sourceFingerprints\":\"SHA256_UTF8_ROWS\"}仅代表执行核已逐项验证的程序核验元数据：两原行目录各id对应其text UTF-8字节SHA256；若有literal字典，该部分原样保留本输入未展示原行的既有核验值，不是新增原行或本批事实权限。模型不要猜测或重算hash，不由此派生创作内容、覆盖或事实权限。这些只替代已由程序逐值核同的重复资料，不是摘要、删减或新的身份；引用不改变制作范围、前情边界或事实权限。按目标完整资料照常审查，输出schema及原始完整id不变。previousDraft完整现稿、sourceRows/contextRows原行、声道与前后连续态保持直接可读，原岗位和方法规则全部生效。";
 pub(crate) const STORYBOARD_LOSSLESS_INPUT_RULE: &str = "【资料单跳等值引用】本次输入中的{\"$same\":\"#/路径\"}表示本JSON对应路径处的完整原值，数字为0基数组下标；目标保留完整且不含引用。{\"$rowIds\":[[\"sourceRows\",起,止],...]}表示按列举顺序取本输入sourceRows或contextRows对应行目录的id，0基且含末项；不变更行顺序或制作覆盖。若原行目录为{\"$sourceRows\":{\"columns\":...,\"values\":...}}，values逐行与columns.row列名一一对应；其中range数组对应columns.range，dialogue数组对应columns.dialogue，spokenSegments/performanceSegments每项数组对应columns.segment，其range同样对应columns.range。null仍为原null，未压缩的对象仍是完整原行。所有原行正文、quote、说者、声道、分段正文及绝对UTF16半开区间均直接存在，不须猜测、摘要或补全；原id完整不变。plan.sourceFingerprints的{\"$sourceFingerprints\":\"SHA256_UTF8_ROWS\"}仅代表执行核已逐项验证的程序核验元数据：两原行目录各id对应其text UTF-8字节SHA256；若有literal字典，该部分原样保留本输入未展示原行的既有核验值，不是新增原行或本批事实权限。模型不要猜测或重算hash，不由此派生创作内容、覆盖或事实权限。这些只替代已由程序逐值核同的重复资料，不是摘要、删减或新的身份；引用不改变制作范围、前情边界或事实权限。按目标完整资料照常审查，输出schema及原始完整id不变。previousDraft完整现稿、sourceRows/contextRows原行、声道与前后连续态保持直接可读，原岗位和方法规则全部生效。";
+const SHARED_ROW_RULE: &str = "【原行共享列补充】shared.version=source-row-shared/v1时，tuple行的episodeId/sceneId若为整数，分别取shared.episodeIds/shared.sceneIds中0基位置的完整字符串；null仍为原null。dialogue.id若为null，完整值是字符串dialogue:加该行完整id；分段text若为null，完整值就是同一dialogue的完整quote。只有程序已逐值验证相等的重复字段使用上述写法；行text、quote、说者、声道、分段坐标均保留。输出始终使用完整原id，不输出共享列索引。";
+fn shared_row_rule() -> String { format!("{STORYBOARD_LOSSLESS_INPUT_RULE}\n{SHARED_ROW_RULE}") }
 
 fn supported_request(request: &TextRequest) -> bool {
     matches!(
@@ -36,6 +38,10 @@ pub(crate) fn storyboard_transport_rule(
 ) -> Option<&'static str> {
     let rule = match input.get("losslessInputRule").and_then(Value::as_str) {
         Some(rule) if rule == STORYBOARD_LOSSLESS_INPUT_RULE => STORYBOARD_LOSSLESS_INPUT_RULE,
+        Some(rule) if rule == shared_row_rule() => {
+            static RULE:std::sync::OnceLock<String>=std::sync::OnceLock::new();
+            RULE.get_or_init(shared_row_rule).as_str()
+        },
         Some(rule)
             if rule == LEGACY_FINISH_INPUT_RULE
                 && request.stage == "storyboardFinish"
@@ -236,15 +242,43 @@ fn decode_row_table(value: &Value) -> Result<Value, String> {
     let table = wrapper
         .get("$sourceRows")
         .and_then(Value::as_object)
-        .filter(|map| map.len() == 2 && map.get("columns") == Some(&row_columns()))
+        .filter(|map| (map.len()==2 || map.len()==3 && map.contains_key("shared")) && map.get("columns") == Some(&row_columns()))
         .ok_or("无损原行表列定义无效")?;
     let values = table
         .get("values")
         .and_then(Value::as_array)
         .ok_or("无损原行表values缺失")?;
-    Ok(Value::Array(
-        values.iter().map(decode_row).collect::<Result<_, _>>()?,
-    ))
+    let shared=table.get("shared");
+    if shared.is_some_and(|v|v["version"]!="source-row-shared/v1" || !v.as_object().is_some_and(|m|m.len()==3)
+        || !["episodeIds","sceneIds"].iter().all(|k|v[*k].as_array().is_some_and(|a|a.iter().all(Value::is_string)))) {
+        return Err("无损共享原行列定义无效".into());
+    }
+    let mut decoded=Vec::new();
+    for value in values {
+        let mut value=value.clone();
+        if let (Some(shared),Some(row))=(shared,value.as_array_mut()) {
+            if row.len()!=8 {return Err("无损共享原行列数不匹配".into())}
+            for (field,catalog) in [(5,"episodeIds"),(6,"sceneIds")] {
+                if let Some(index)=row[field].as_u64() {
+                    row[field]=shared[catalog].as_array().and_then(|a|a.get(index as usize)).cloned().ok_or("无损共享原行身份索引越界")?;
+                }
+            }
+            let row_id=row[0].as_str().ok_or("共享原行缺少完整id")?.to_string();
+            if let Some(dialogue)=row[7].as_array_mut() {
+                if dialogue.len()!=7 {return Err("共享对白列数不匹配".into())}
+                if dialogue[0].is_null(){dialogue[0]=json!(format!("dialogue:{row_id}"));}
+                let quote=dialogue[3].as_str().ok_or("共享对白缺少完整quote")?.to_string();
+                for field in [5,6] {
+                    for segment in dialogue[field].as_array_mut().ok_or("共享对白分段不是数组")? {
+                        let segment=segment.as_array_mut().filter(|a|a.len()==2).ok_or("共享对白分段列数不匹配")?;
+                        if segment[0].is_null(){segment[0]=json!(quote);}
+                    }
+                }
+            }
+        }
+        decoded.push(decode_row(&value)?);
+    }
+    Ok(Value::Array(decoded))
 }
 
 fn catalog_rows(input: &Value, catalog: &str) -> Result<Value, String> {
@@ -269,6 +303,36 @@ fn compact_source_rows(input: &mut Value, canonical: &Value) {
         {
             input[catalog] = projected;
         }
+    }
+}
+
+fn compact_shared_source_rows(input:&mut Value,canonical:&Value) {
+    for catalog in ["sourceRows","contextRows"] {
+        let Some(rows)=canonical[catalog].as_array() else{continue};
+        let mut episodes=Vec::new();let mut scenes=Vec::new();
+        let values:Vec<_>=rows.iter().map(|original| {
+            let mut encoded=encode_row(original);
+            if let Some(row)=encoded.as_array_mut() {
+                for (field,ids) in [(5,&mut episodes),(6,&mut scenes)] {
+                    if row[field].is_string() {
+                        let index=ids.iter().position(|id|id==&row[field]).unwrap_or_else(||{ids.push(row[field].clone());ids.len()-1});
+                        row[field]=json!(index);
+                    }
+                }
+                let id=row[0].as_str().unwrap().to_string();
+                if let Some(dialogue)=row[7].as_array_mut() {
+                    if dialogue[0]==format!("dialogue:{id}"){dialogue[0]=Value::Null;}
+                    let quote=dialogue[3].clone();
+                    for field in [5,6] { for segment in dialogue[field].as_array_mut().unwrap() {
+                        if segment[0]==quote {segment[0]=Value::Null;}
+                    }}
+                }
+            }
+            encoded
+        }).collect();
+        let projected=json!({"$sourceRows":{"columns":row_columns(),"values":values,"shared":{"version":"source-row-shared/v1","episodeIds":episodes,"sceneIds":scenes}}});
+        if projected.to_string().encode_utf16().count()<input[catalog].to_string().encode_utf16().count()
+            && decode_row_table(&projected).ok().as_ref()==Some(&canonical[catalog]) {input[catalog]=projected;}
     }
 }
 
@@ -709,7 +773,7 @@ pub(super) fn expand_storyboard_input(input: &Value) -> Result<Value, String> {
         .get("losslessInputRule")
         .and_then(Value::as_str)
         .is_some_and(|rule| {
-            [STORYBOARD_LOSSLESS_INPUT_RULE, LEGACY_FINISH_INPUT_RULE].contains(&rule)
+            [STORYBOARD_LOSSLESS_INPUT_RULE, LEGACY_FINISH_INPUT_RULE].contains(&rule) || rule==shared_row_rule()
         })
     {
         return Err("无损资料缺少已知运输声明".into());
@@ -728,6 +792,59 @@ pub(crate) fn compile_storyboard_transport(
     request: &TextRequest,
 ) -> Result<Option<CompiledStoryboardTransport>, String> {
     compile_transport(request, false)
+}
+
+/// Select only the actual outgoing wire. Capacity planning and finishing
+/// partitions keep their existing compiler, even when this wire is smaller.
+pub(crate) fn compile_storyboard_dispatch_transport(
+    request: &TextRequest,
+) -> Result<Option<CompiledStoryboardTransport>, String> {
+    let baseline = compile_storyboard_transport(request)?;
+    if !supported_request(request)
+        || has_notation(&request.input)
+        || request.input.get("losslessInputRule").is_some()
+    {
+        return Ok(baseline);
+    }
+    let mut input = baseline.as_ref().map(|wire|wire.input.clone()).unwrap_or_else(||request.input.clone());
+    input.as_object_mut().unwrap().remove("losslessInputRule");
+    compact_direct_copies(&mut input, &request.input);
+    compact_shared_source_rows(&mut input, &request.input);
+    if input == request.input {
+        return Ok(baseline);
+    }
+    if expand(&input, &input)? != request.input {
+        return Err("分镜发送运输反解未逐值还原原资料；未派发请求".into());
+    }
+    input["losslessInputRule"] = json!(shared_row_rule());
+    let (baseline_input, baseline_schema) = baseline
+        .as_ref()
+        .map(|wire| (&wire.input, &wire.schema))
+        .unwrap_or((&request.input, &request.schema));
+    let baseline_characters = crate::text_executor::transport_payload_characters(
+        request,
+        baseline_input,
+        baseline_schema,
+    );
+    let candidate_characters =
+        crate::text_executor::transport_payload_characters(request, &input, baseline_schema);
+    // This includes both copies of the trusted explanation, strict schema and
+    // JSON message escaping. A smaller input alone is not sufficient.
+    if baseline_characters
+        .checked_sub(candidate_characters)
+        .is_none_or(|gain| gain < 2_048)
+    {
+        return Ok(baseline);
+    }
+    Ok(Some(CompiledStoryboardTransport {
+        profile: if request.stage == "storyboardFinish" {
+            PROFILE
+        } else {
+            THREE_ROLE_PROFILE
+        },
+        input,
+        schema: baseline_schema.clone(),
+    }))
 }
 
 /// Measurement compatibility, not a second creative or dispatch pipeline.
@@ -844,6 +961,26 @@ fn compile_transport(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_source_columns_roundtrip_full_ids_speech_and_unicode_with_no_canonical_changes() {
+        let mut request=dispatch_fixture();
+        let original=serde_json::to_vec(&request).unwrap();
+        let baseline=compile_storyboard_transport(&request).unwrap();
+        let legacy=compile_legacy_finish_grouping_transport(&request).unwrap();
+        let wire=compile_storyboard_dispatch_transport(&request).unwrap().unwrap();
+        assert_eq!(expand_storyboard_input(&wire.input).unwrap(),request.input);
+        assert_eq!(serde_json::to_vec(&request).unwrap(),original);
+        assert_eq!(baseline.is_some(),compile_storyboard_transport(&request).unwrap().is_some());
+        assert_eq!(legacy.is_some(),compile_legacy_finish_grouping_transport(&request).unwrap().is_some());
+        assert_eq!(wire.input["contextRows"]["$sourceRows"]["shared"]["version"],"source-row-shared/v1");
+        let mut corrupt=wire.input.clone();corrupt["contextRows"]["$sourceRows"]["values"][0][5]=json!(9999);
+        assert!(expand_storyboard_input(&corrupt).is_err());
+        request.input["contextRows"][0]["dialogue"]["spokenSegments"][0]["range"]["start"]=json!(1);
+        let mut projected=request.input.clone();compact_shared_source_rows(&mut projected,&request.input);
+        assert_eq!(expand(&projected,&projected).unwrap(),request.input);
+        assert_eq!(projected["contextRows"]["$sourceRows"]["values"][0],request.input["contextRows"][0]);
+    }
 
     fn fixture() -> TextRequest {
         let package = json!({"id":"canonical-package","sourceRefs":["canonical-row"],"emotionContract":{"subject":"同名角色","change":"必须保留的完整变化。".repeat(2000)},"state":{"claim":"CHARACTER_CLAIM","sourceRefs":["canonical-row"],"currentApplicability":"UNKNOWN"}});
@@ -1473,6 +1610,240 @@ mod tests {
             source_fingerprints(&projected).unwrap(),
             canonical["plan"]["sourceFingerprints"]
         );
+    }
+
+    fn dispatch_fixture() -> TextRequest {
+        let mut script = "第一集\n场景：同一处\n".to_string();
+        for index in 0..64 {
+            script.push_str(&format!(
+                "甲OS：第{index}句原话🙂（压低声音）还要逐字保留。\n"
+            ));
+        }
+        let source = super::super::prepare_source(&script).unwrap();
+        let rows: Vec<Value> = source
+            .rows
+            .iter()
+            .filter(|row| row.kind == "body")
+            .map(|row| serde_json::to_value(row).unwrap())
+            .collect();
+        let package = json!({"id":"original-package","sourceRefs":[rows[0]["id"]],"emotionContract":{"change":"原情绪变化完整保留。".repeat(30)}});
+        let fact = json!({"sourceRefs":[rows[0]["id"]],"evidence":"原事实与适用范围不得改变。".repeat(20)});
+        let continuity = json!({"unit":{"id":"accepted-predecessor","exitState":"已采用连续态完整保留。".repeat(30)}});
+        let mut request = fixture();
+        request.input = json!({"finishMode":"delta","sourceRows":rows[..8],"contextRows":rows[8..],"plan":{"workPackages":[package.clone()],"entryFacts":[fact.clone()],"fantasyCandidates":[],"acceptedContinuity":continuity.clone()},"workPackages":[package],"entryFacts":[fact.clone()],"selectedFantasy":[],"facts":[fact],"acceptedContinuity":continuity,"previousDraft":{"units":[{"id":"accepted-unit","prompt":"完整已采用现稿不改。"}]},"nextBoundary":{"unit":"后续边界保持原值"},"assets":[{"id":"person:state","variantId":"state","version":9,"sourceRefs":[rows[0]["id"]]}]});
+        request
+    }
+
+    #[test]
+    fn dispatch_selector_compacts_short_three_roles_without_changing_capacity_or_canonical() {
+        for (stage, skill) in [
+            ("storyboardPlan", "episode-emotion-planner"),
+            ("storyboardCreate", "unit-performance-director"),
+            ("storyboardFinish", "episode-finishing-editor"),
+        ] {
+            let mut request = dispatch_fixture();
+            request.stage = stage.into();
+            request.skill = skill.into();
+            let frozen = serde_json::to_vec(&request).unwrap();
+            let hash = digest(&request.input.to_string());
+            let baseline = crate::text_executor::transport_payload_characters(
+                &request,
+                &request.input,
+                &request.schema,
+            );
+            assert!(baseline < STORYBOARD_TRANSPORT_LIMIT);
+            assert!(compile_storyboard_transport(&request).unwrap().is_none());
+            assert!(compile_legacy_finish_grouping_transport(&request)
+                .unwrap()
+                .is_none());
+            let wire = compile_storyboard_dispatch_transport(&request)
+                .unwrap()
+                .unwrap();
+            let actual = crate::text_executor::transport_payload_characters(
+                &request,
+                &wire.input,
+                &wire.schema,
+            );
+            assert!(baseline - actual >= 2_048);
+            assert!(wire.input["sourceRows"].get("$sourceRows").is_some());
+            assert!(wire.input["contextRows"].get("$sourceRows").is_some());
+            assert_eq!(
+                wire.input["workPackages"],
+                json!({"$same":"#/plan/workPackages"})
+            );
+            assert_eq!(wire.schema, request.schema);
+            assert_eq!(expand_storyboard_input(&wire.input).unwrap(), request.input);
+            assert_eq!(
+                storyboard_transport_rule(&request, &wire.input),
+                Some(shared_row_rule().as_str())
+            );
+            for field in [
+                "previousDraft",
+                "acceptedContinuity",
+                "nextBoundary",
+                "assets",
+                "facts",
+            ] {
+                assert_eq!(wire.input[field], request.input[field]);
+            }
+            assert_eq!(serde_json::to_vec(&request).unwrap(), frozen);
+            assert_eq!(digest(&request.input.to_string()), hash);
+            assert!(compile_storyboard_transport(&request).unwrap().is_none());
+            assert!(compile_legacy_finish_grouping_transport(&request)
+                .unwrap()
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn dispatch_selector_requires_2048_utf16_net_gain_in_complete_envelopes() {
+        let request_for = |padding: usize| {
+            let continuity = json!({"tail":"a".repeat(padding)});
+            let mut request = fixture();
+            request.stage = "storyboardPlan".into();
+            request.input = json!({"acceptedContinuity":continuity.clone(),"plan":{"acceptedContinuity":continuity},"sourceRows":[],"contextRows":[]});
+            request
+        };
+        let measure_gain = |request: &TextRequest| {
+            let mut input = request.input.clone();
+            input["plan"]["acceptedContinuity"] = json!({"$same":"#/acceptedContinuity"});
+            input["losslessInputRule"] = json!(shared_row_rule());
+            crate::text_executor::transport_payload_characters(
+                request,
+                &request.input,
+                &request.schema,
+            ) as i64
+                - crate::text_executor::transport_payload_characters(
+                    request,
+                    &input,
+                    &request.schema,
+                ) as i64
+        };
+        let gain_at_1000 = measure_gain(&request_for(1_000));
+        for expected_gain in [2_047_i64, 2_048] {
+            let request = request_for((1_000 + expected_gain - gain_at_1000) as usize);
+            assert_eq!(measure_gain(&request), expected_gain);
+            let frozen = request.clone();
+            let wire = compile_storyboard_dispatch_transport(&request).unwrap();
+            assert_eq!(wire.is_some(), expected_gain == 2_048);
+            if let Some(wire) = wire {
+                assert_eq!(expand_storyboard_input(&wire.input).unwrap(), request.input);
+                assert_eq!(wire.schema, request.schema);
+            }
+            assert_eq!(
+                serde_json::to_value(request).unwrap(),
+                serde_json::to_value(frozen).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn dispatch_selector_rejects_source_notation_and_preserves_old_wire_without_net_gain() {
+        for marker in [
+            json!({"$same":"#/plan/workPackages"}),
+            json!({"$rowIds":[["sourceRows",0,0]]}),
+            json!({"$sourceFingerprints":"SHA256_UTF8_ROWS"}),
+            json!({"$sourceRows":{"columns":[],"values":[]}}),
+        ] {
+            let mut request = dispatch_fixture();
+            request.input["untrustedEvidence"] = marker;
+            let frozen = serde_json::to_value(&request).unwrap();
+            assert!(compile_storyboard_dispatch_transport(&request)
+                .unwrap()
+                .is_none());
+            assert_eq!(serde_json::to_value(&request).unwrap(), frozen);
+        }
+        let mut request = dispatch_fixture();
+        request.input["losslessInputRule"] = json!(STORYBOARD_LOSSLESS_INPUT_RULE);
+        assert!(compile_storyboard_dispatch_transport(&request)
+            .unwrap()
+            .is_none());
+        request
+            .input
+            .as_object_mut()
+            .unwrap()
+            .remove("losslessInputRule");
+        request.input["finishMode"] = json!("full");
+        assert!(compile_storyboard_dispatch_transport(&request)
+            .unwrap()
+            .is_none());
+        let request = fixture();
+        let baseline = compile_storyboard_transport(&request).unwrap().unwrap();
+        let wire = compile_storyboard_dispatch_transport(&request)
+            .unwrap()
+            .unwrap();
+        assert_eq!(wire.profile, baseline.profile);
+        assert_eq!(wire.input, baseline.input);
+        assert_eq!(wire.schema, baseline.schema);
+    }
+
+    #[test]
+    fn dispatch_selector_keeps_unknown_rows_literal_and_rejects_tampered_authority() {
+        let mut request = dispatch_fixture();
+        request.input["contextRows"][0]["unknownExtension"] =
+            json!({"scope":"HISTORICAL_EVIDENCE_ONLY"});
+        request.input["contextRows"][1]["dialogue"]["quote"] = json!("与锁定区间不符的资料原值");
+        let wire = compile_storyboard_dispatch_transport(&request)
+            .unwrap()
+            .unwrap();
+        for index in [0, 1] {
+            assert_eq!(
+                wire.input["contextRows"]["$sourceRows"]["values"][index],
+                request.input["contextRows"][index]
+            );
+        }
+        assert_eq!(expand_storyboard_input(&wire.input).unwrap(), request.input);
+        let mut tampered = wire.input;
+        tampered["sourceRows"]["$sourceRows"]["values"][0][3] = json!("擅改原文");
+        assert!(storyboard_transport_rule(&request, &tampered).is_none());
+        assert!(expand_storyboard_input(&tampered).is_err());
+    }
+
+    #[test]
+    #[ignore = "explicit saved latest three-role requests; read-only, no channels or production writes"]
+    fn saved_latest_three_role_dispatch_selector_measures_actual_rust_envelope_gain() {
+        let path = std::env::var("DIRECTOR_STAGE3_READONLY_DB")
+            .expect("explicit readonly DB fixture required");
+        let workflow = std::env::var("DIRECTOR_STAGE3_READONLY_WORKFLOW")
+            .expect("explicit workflow fixture required");
+        let conn =
+            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        conn.execute_batch("PRAGMA query_only=ON; PRAGMA busy_timeout=1500;")
+            .unwrap();
+        for stage in ["storyboardPlan", "storyboardCreate", "storyboardFinish"] {
+            let raw: String = conn.query_row("SELECT j.snapshot FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.stage=?2 AND w.state='accepted' AND j.state='completed' AND json_extract(j.receipt,'$.validation')='accepted' ORDER BY w.updated_at DESC LIMIT 1", rusqlite::params![workflow, stage], |row| row.get(0)).unwrap();
+            let request: TextRequest = serde_json::from_str(&raw).unwrap();
+            let frozen = serde_json::to_vec(&request).unwrap();
+            let baseline = compile_storyboard_transport(&request).unwrap();
+            let (input, schema) = baseline
+                .as_ref()
+                .map(|wire| (&wire.input, &wire.schema))
+                .unwrap_or((&request.input, &request.schema));
+            let canonical = crate::text_executor::transport_payload_characters(
+                &request,
+                &request.input,
+                &request.schema,
+            );
+            let current =
+                crate::text_executor::transport_payload_characters(&request, input, schema);
+            let wire = compile_storyboard_dispatch_transport(&request)
+                .unwrap()
+                .unwrap();
+            let actual = crate::text_executor::transport_payload_characters(
+                &request,
+                &wire.input,
+                &wire.schema,
+            );
+            assert_eq!(expand_storyboard_input(&wire.input).unwrap(), request.input);
+            assert_eq!(wire.schema, request.schema);
+            assert_eq!(serde_json::to_vec(&request).unwrap(), frozen);
+            assert!(current
+                .checked_sub(actual)
+                .is_some_and(|gain| gain >= 2_048));
+            assert!(actual <= STORYBOARD_TRANSPORT_LIMIT);
+            println!("{stage} canonicalCharacters={canonical} currentCapacityWireCharacters={current} dispatchWireCharacters={actual} netGain={} canonicalEqual=true schemaEqual=true modelCalls=0", current - actual);
+        }
     }
 
     #[test]

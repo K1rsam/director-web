@@ -121,6 +121,150 @@ fn preferred_executable(path: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Only the application's native, versioned Windows installation is relocatable.
+/// An arbitrary explicit path (including npm wrappers) remains authoritative.
+pub(crate) fn managed_codex_root() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join("AppData/Local"))
+            })
+            .map(|p| p.join("OpenAI/Codex/bin"))
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+fn path_equal(a: &Path, b: &Path) -> bool {
+    let normalized = |p: &Path| p.components().collect::<PathBuf>();
+    #[cfg(windows)]
+    {
+        normalized(a)
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&normalized(b).to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        normalized(a) == normalized(b)
+    }
+}
+
+pub(crate) fn managed_codex_path_at(path: &Path, root: &Path) -> bool {
+    let path = path.components().collect::<PathBuf>();
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        || !path
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("codex.exe"))
+    {
+        return false;
+    }
+    let Some(version) = path.parent() else {
+        return false;
+    };
+    let Some(name) = version.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    name.len() == 16
+        && name.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && version
+            .parent()
+            .is_some_and(|parent| path_equal(parent, root))
+}
+
+fn no_reparse_ancestors(path: &Path) -> bool {
+    path.ancestors().all(|part| {
+        let Ok(metadata) = std::fs::symlink_metadata(part) else {
+            return false;
+        };
+        if metadata.file_type().is_symlink() {
+            return false;
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes() & 0x400 != 0 {
+                return false;
+            }
+        }
+        true
+    })
+}
+
+/// Filesystem identity for a native executable, never a wrapper or a reparse
+/// route. Separator spelling is transport data, not executable identity.
+pub(crate) fn verified_native_path(path: &Path) -> Result<PathBuf> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        || !is_executable(path)
+        || !no_reparse_ancestors(path)
+    {
+        return Err("Codex CLI 原生文件身份无法核实；原任务保留，未执行请求".into());
+    }
+    let native = std::fs::canonicalize(path)
+        .map_err(|_| "Codex CLI 原生文件身份无法核实；原任务保留，未执行请求".to_string())?;
+    #[cfg(windows)]
+    let native = {
+        let value = native.to_string_lossy();
+        if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+            PathBuf::from(format!(r"\\{rest}"))
+        } else if let Some(rest) = value.strip_prefix(r"\\?\") {
+            PathBuf::from(rest)
+        } else {
+            native
+        }
+    };
+    Ok(native)
+}
+
+fn managed_native_at(root: &Path) -> Option<PathBuf> {
+    if !no_reparse_ancestors(root) {
+        return None;
+    }
+    let mut candidates: Vec<_> = std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path().join("codex.exe");
+            (managed_codex_path_at(&path, root)
+                && is_executable(&path)
+                && no_reparse_ancestors(&path))
+            .then(|| {
+                (
+                    entry
+                        .metadata()
+                        .and_then(|metadata| metadata.modified())
+                        .ok(),
+                    path,
+                )
+            })
+        })
+        .collect();
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    candidates.into_iter().next().map(|(_, path)| path)
+}
+
+fn relocate_deleted_managed_at(path: &Path, root: &Path) -> Option<PathBuf> {
+    if path.try_exists().ok() != Some(false) || !managed_codex_path_at(path, root) {
+        return None;
+    }
+    managed_native_at(root)
+}
+
+pub(crate) fn configured_managed_path(settings: &Value) -> Option<PathBuf> {
+    let path = PathBuf::from(s(settings, "codexPath").trim().trim_matches('"'));
+    let root = managed_codex_root()?;
+    managed_codex_path_at(&path, &root).then_some(path)
+}
+
 /// A configured path is authoritative. Wrapper paths are mapped to their native
 /// package binary instead of invoking a shell/Node wrapper from a GUI process.
 pub fn resolve_executable(settings: &Value) -> Result<PathBuf> {
@@ -134,6 +278,11 @@ pub fn resolve_executable(settings: &Value) -> Result<PathBuf> {
     if !configured.is_empty() {
         let path = PathBuf::from(configured);
         if let Some(native) = preferred_executable(&path) {
+            return Ok(native);
+        }
+        if let Some(native) =
+            managed_codex_root().and_then(|root| relocate_deleted_managed_at(&path, &root))
+        {
             return Ok(native);
         }
         return Err("指定的 Codex CLI 不可用，请选择原生可执行文件或检查安装位置".into());
@@ -170,20 +319,7 @@ pub fn resolve_executable(settings: &Value) -> Result<PathBuf> {
             .or_else(|| home.as_ref().map(|h| h.join("AppData/Local")));
         if let Some(local) = local {
             let root = local.join("OpenAI/Codex/bin");
-            let mut directories: Vec<_> = std::fs::read_dir(root)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter(|entry| entry.path().is_dir())
-                .collect();
-            directories.sort_by_key(|entry| {
-                std::cmp::Reverse(entry.metadata().and_then(|m| m.modified()).ok())
-            });
-            if let Some(path) = directories
-                .into_iter()
-                .map(|e| e.path().join(name))
-                .find(|p| is_executable(p))
-            {
+            if let Some(path) = managed_native_at(&root) {
                 return Ok(path);
             }
         }
@@ -557,9 +693,10 @@ pub async fn resolve_settings(settings: &Value) -> Result<Value> {
         s(&resolved, "textModel"),
         s(&resolved, "reasoning"),
     )?;
+    let native = verified_native_path(Path::new(s(&inspected, "executable")))?;
     resolved["textCliVersion"] = inspected["version"].clone();
-    resolved["textCliExecutable"] = inspected["executable"].clone();
-    resolved["codexPath"] = inspected["executable"].clone();
+    resolved["textCliExecutable"] = json!(native);
+    resolved["codexPath"] = json!(native);
     Ok(resolved)
 }
 
@@ -801,6 +938,62 @@ mod tests {
         let status =
             resolve_executable(&json!({"codexPath":"Z:/definitely-not-installed/codex.exe"}));
         assert!(status.is_err());
+    }
+    #[test]
+    fn managed_installation_relocation_only_uses_complete_native_versions() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("OpenAI/Codex/bin");
+        std::fs::create_dir_all(root.join("0000000000000001")).unwrap();
+        std::fs::create_dir_all(root.join("0000000000000002")).unwrap();
+        std::fs::create_dir_all(root.join("not-an-official-version")).unwrap();
+        let native = root.join("0000000000000001/codex.exe");
+        std::fs::write(&native, b"offline fixture; never executed").unwrap();
+        std::fs::write(root.join("not-an-official-version/codex.exe"), b"excluded").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let removed = root.join("0000000000000000/codex.exe");
+        assert_eq!(
+            relocate_deleted_managed_at(&removed, &root),
+            Some(native.clone())
+        );
+        assert!(
+            relocate_deleted_managed_at(&native, &root).is_none(),
+            "existing explicit binaries stay pinned"
+        );
+        for foreign in [
+            directory.path().join("codex.exe"),
+            root.join("0000000000000000/nested/codex.exe"),
+            root.join("not-an-official-version/codex.exe"),
+            root.join("0000000000000000/../0000000000000002/codex.exe"),
+        ] {
+            assert!(relocate_deleted_managed_at(&foreign, &root).is_none());
+        }
+        std::fs::remove_file(&native).unwrap();
+        assert!(
+            relocate_deleted_managed_at(&removed, &root).is_none(),
+            "incomplete updates cannot become execution targets"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_installation_rejects_reparse_root_and_binary() {
+        use std::os::unix::{fs::symlink, fs::PermissionsExt};
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("bin");
+        let version = root.join("0000000000000001");
+        std::fs::create_dir_all(&version).unwrap();
+        let foreign = directory.path().join("foreign.exe");
+        std::fs::write(&foreign, b"never executed").unwrap();
+        std::fs::set_permissions(&foreign, std::fs::Permissions::from_mode(0o755)).unwrap();
+        symlink(&foreign, version.join("codex.exe")).unwrap();
+        assert!(managed_native_at(&root).is_none());
+        let link = directory.path().join("linked-bin");
+        symlink(&root, &link).unwrap();
+        assert!(managed_native_at(&link).is_none());
     }
     #[tokio::test]
     async fn untrusted_login_url_is_rejected_before_starting_browser() {

@@ -76,6 +76,122 @@ struct Fixture {
 }
 
 #[test]
+fn image_partial_completion_and_resume_are_limited_to_the_frozen_original_production() {
+    assert_eq!(
+        image_stage_completion_state(&json!({"blocked":[]})),
+        "completed"
+    );
+    assert_eq!(
+        image_stage_completion_state(&json!({"blocked":[{"assetId":"one"}]})),
+        "partially_blocked"
+    );
+    let original = json!({"kind":"workflow","entityId":"images.produce:","status":"completed","snapshot":{"stage":"images.produce","request":{"action":"images.produce"},"settings":{},"sourceVersion":1},"result":{"status":"partiallyQueued","blocked":[{"assetId":"one"}]}});
+    assert!(image_production_resume_eligible(&original));
+    for (pointer, value) in [
+        ("/result/blocked", json!([])),
+        ("/result/status", json!("queuedForGeneration")),
+        ("/snapshot/stage", json!("storyboard.run")),
+        ("/snapshot/request/action", json!("images.run")),
+        ("/snapshot/sourceVersion", json!(0)),
+        ("/entityId", json!("foundation.run")),
+    ] {
+        let mut changed = original.clone();
+        *changed.pointer_mut(pointer).unwrap() = value;
+        assert!(
+            !image_production_resume_eligible(&changed),
+            "must not reopen {pointer}"
+        );
+    }
+}
+
+#[test]
+fn workspace_job_summary_preserves_explicit_manual_video_submission_without_altering_snapshot() {
+    let f = Fixture::new(Duration::ZERO);
+    let snapshot = json!({"autoSubmit":false,"model":"offline","unitVersion":2,"prompt":"完整素材包正文","references":[],"ruleSnapshot":{"content":"private full rule"}});
+    let key = f
+        .store
+        .add_job(
+            "video",
+            "video-manual-unit",
+            "offline",
+            "local",
+            &snapshot,
+            "ready",
+        )
+        .unwrap();
+    let original = raw_job_record(&f.store, &key);
+    let workspace = f.engine.workspace(&f.store, None).unwrap();
+    let summary = workspace["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|job| job["id"] == key)
+        .unwrap();
+    assert_eq!(summary["snapshot"]["autoSubmit"], false);
+    assert_eq!(summary["snapshot"]["model"], "offline");
+    assert!(summary["snapshot"].get("prompt").is_none());
+    assert!(summary["snapshot"].get("references").is_none());
+    assert!(summary["snapshot"].get("ruleSnapshot").is_none());
+    assert_eq!(raw_job_record(&f.store, &key), original);
+    assert_eq!(f.channels.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn native_resume_of_legacy_completed_but_blocked_image_production_preserves_record_and_never_submits(
+) {
+    let f = Fixture::new(Duration::ZERO);
+    f.store.save_asset(json!({"id":"manual","variantId":"base","baseAssetId":"manual","name":"手写形象","kind":"CH","prompt":"完整手写提示词","promptOrigin":"MANUAL","sourceRefs":[],"applicability":{"episodes":[],"scenes":[]}})).unwrap();
+    let saved_settings = f.store.settings().unwrap();
+    let request = json!({"action":"images.produce","projectId":f.project_id,"provider":"offline","model":"offline-image","assetIds":["manual"],"imageProductionPolicy":"automatic"});
+    let source_version = f.store.source().unwrap()["version"].clone();
+    let snapshot = json!({"stage":"images.produce","sourceVersion":source_version,"settings":saved_settings,"request":request,"imageProductionPolicy":"automatic"});
+    let old = f
+        .store
+        .add_job(
+            "workflow",
+            "images.produce:",
+            "local",
+            "local",
+            &snapshot,
+            "completed",
+        )
+        .unwrap();
+    f.store.update_job(&old,"completed",&json!({"result":{"status":"partiallyQueued","blocked":[{"assetId":"manual","reason":"legacy extraction blocked"}],"assets":[],"imagePlan":[]}})).unwrap();
+    let before = raw_job_record(&f.store, &old);
+    f.engine
+        .dispatch(json!({"action":"workflows.resume","projectId":f.project_id,"workflowId":old}))
+        .unwrap();
+    assert!(f.engine.await_worker_shutdown(3));
+    assert_eq!(
+        raw_job_record(&f.store, &old),
+        before,
+        "resuming adds an audit event, never rewrites the original snapshot/receipt/result"
+    );
+    let jobs = f.store.jobs().unwrap();
+    assert_eq!(jobs.iter().filter(|job| job["kind"] == "text").count(), 0);
+    let resumed = jobs
+        .iter()
+        .find(|job| job["kind"] == "workflow" && job["id"] != old)
+        .unwrap();
+    assert_eq!(resumed["status"], "completed");
+    assert_eq!(resumed["snapshot"]["settings"], snapshot["settings"]);
+    assert_eq!(
+        resumed["snapshot"]["request"]["assetIds"],
+        snapshot["request"]["assetIds"]
+    );
+    assert_eq!(
+        resumed["snapshot"]["request"]["imageResumeOrigin"]["workflowId"],
+        old
+    );
+    assert_eq!(jobs.iter().filter(|job| job["kind"] == "image").count(), 1);
+    assert_eq!(
+        f.channels.calls.load(Ordering::SeqCst),
+        0,
+        "resume queues; no real channel may be invoked"
+    );
+}
+
+#[test]
 fn startup_channel_contention_defers_catalog_without_marking_a_refresh_attempt() {
     let f = Fixture::new(Duration::ZERO);
     f.store

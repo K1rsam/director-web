@@ -60,6 +60,77 @@ test('同一只读请求未返回时不会再启动另一轮', async () => {
   const first = h.poll(); await h.poll(); assert.equal(h.reads, 1);
   pending.resolve(fixture()); await first; assert.equal(h.applied, 1);
 });
+function videoReadiness(ready: number): Workspace {
+  const workspace = fixture(); workspace.workflowProgress = [];
+  workspace.jobs = Array.from({ length: 37 }, (_, index) => ({ id: `offline-video-${index}`, kind: 'video', provider: 'dreamina', status: index < ready ? 'ready' : 'queued', snapshot: { autoSubmit: false } }));
+  return workspace;
+}
+test('后台取得最后一批准备结果后停止空闲读取，37条等待提交不再算活跃', async () => {
+  const h = harness(videoReadiness(22), async () => videoReadiness(37));
+  assert.equal(hasActiveWorkspaceTasks(h.current!), true);
+  await h.poll(); assert.equal(h.current!.jobs.filter(job => job.status === 'ready').length, 37);
+  assert.equal(hasActiveWorkspaceTasks(h.current!), false);
+  await h.poll(); assert.equal(h.reads, 1, 'cached queued tasks must allow the final completion read before pausing');
+  await h.poll(true); assert.equal(h.reads, 2, 'foreground refresh remains available while waiting for explicit submit');
+});
+test('恢复前台合并一次后续读取，旧22/37响应不能覆盖最新37/37且始终单读', async () => {
+  const old = deferred<Workspace>(), latest = deferred<Workspace>();
+  let calls = 0, concurrent = 0, peak = 0;
+  const h = harness(videoReadiness(22), async () => {
+    peak = Math.max(peak, ++concurrent);
+    try { return await (++calls === 1 ? old.promise : latest.promise); } finally { concurrent--; }
+  });
+  const first = h.poll();
+  await Promise.all(Array.from({ length: 30 }, () => h.poll(true)));
+  assert.equal(h.reads, 1, 'foreground events never start parallel IPC reads');
+  old.resolve(videoReadiness(22));
+  await new Promise<void>(done => setImmediate(done));
+  assert.equal(h.applied, 0, 'the response begun before foreground refresh is superseded');
+  assert.equal(h.reads, 2, 'focus and visibility events coalesce into exactly one new read');
+  latest.resolve(videoReadiness(37)); await first;
+  assert.equal(h.applied, 1); assert.equal(peak, 1);
+  assert.equal(h.current!.jobs.filter(job => job.status === 'ready').length, 37);
+});
+test('排队的前台读取随写revision、项目切换或卸载失效，不串读新scope', async () => {
+  for (const change of ['revision', 'project', 'unmount']) {
+    const old = deferred<Workspace>(), h = harness(videoReadiness(22), () => old.promise);
+    const first = h.poll(); await h.poll(true);
+    if (change === 'revision') h.changeRevision();
+    if (change === 'project') h.setCurrent({ ...videoReadiness(37), project: { id: 'other', title: '另一离线项目' } });
+    if (change === 'unmount') h.close();
+    old.resolve(videoReadiness(22)); await first;
+    assert.equal(h.reads, 1, change); assert.equal(h.applied, 0, change); assert.equal(h.failures, 0, change);
+  }
+});
+test('不同revision的前台事件不能借旧请求排队，保留更新操作的结果', async () => {
+  const old = deferred<Workspace>(), h = harness(videoReadiness(22), () => old.promise);
+  const first = h.poll(); h.changeRevision(); h.setCurrent(videoReadiness(37)); await h.poll(true);
+  old.resolve(videoReadiness(22)); await first;
+  assert.equal(h.reads, 1); assert.equal(h.applied, 0);
+  assert.equal(h.current!.jobs.filter(job => job.status === 'ready').length, 37);
+});
+test('旧读取失败后合并的前台读取仍执行，成功清除失败提示', async () => {
+  const old = deferred<Workspace>(); let reads = 0;
+  const h = harness(videoReadiness(22), async () => {
+    if (++reads === 1) { await old.promise; throw new Error('old foreground race read failed'); }
+    return videoReadiness(37);
+  });
+  const first = h.poll(); await h.poll(true); old.resolve(videoReadiness(22)); await first;
+  assert.equal(h.reads, 2); assert.equal(h.failures, 1); assert.equal(h.applied, 1);
+  assert.equal(h.current!.readState!.error, undefined);
+});
+test('前台事件不能让未返回读请求堆积，超时只提示一次并等原请求结束', async () => {
+  const old = deferred<Workspace>(), warned = deferred<void>();
+  let workspace = videoReadiness(22), reads = 0, failures = 0, applied = 0;
+  const poll = createWorkspacePoller({ current: () => workspace, busy: () => false, hidden: () => true, revision: () => 0, alive: () => true, readTimeoutMs: 20,
+    read: async () => ++reads === 1 ? old.promise : videoReadiness(37),
+    apply: next => { workspace = next; applied++; }, fail: () => { failures++; warned.resolve(); } });
+  const first = poll(); await Promise.all(Array.from({ length: 20 }, () => poll(true))); await warned.promise;
+  await Promise.all(Array.from({ length: 20 }, () => poll(true)));
+  assert.equal(reads, 1); assert.equal(failures, 1); assert.equal(applied, 0);
+  old.resolve(videoReadiness(22)); await first;
+  assert.equal(reads, 2); assert.equal(applied, 1); assert.equal(failures, 1);
+});
 test('未返回的本地读取有超时提示，仍只持有原读请求并在完成后恢复', async () => {
   const pending = deferred<Workspace>(), warned = deferred<void>();
   let reads = 0, failed = '', applied = 0;

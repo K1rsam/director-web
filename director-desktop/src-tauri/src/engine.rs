@@ -16,8 +16,35 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+fn image_stage_completion_state(output: &Value) -> &'static str {
+    if output["blocked"]
+        .as_array()
+        .is_some_and(|blocked| !blocked.is_empty())
+    {
+        "partially_blocked"
+    } else {
+        "completed"
+    }
+}
+
+fn image_production_resume_eligible(job: &Value) -> bool {
+    s(job, "kind") == "workflow"
+        && s(job, "entityId").starts_with("images.produce:")
+        && ["completed", "partially_blocked", "failed", "interrupted"].contains(&s(job, "status"))
+        && job["snapshot"]["stage"] == "images.produce"
+        && job["snapshot"]["request"]["action"] == "images.produce"
+        && job["snapshot"]["settings"].is_object()
+        && job["snapshot"]["sourceVersion"]
+            .as_i64()
+            .is_some_and(|version| version > 0)
+        && job["result"]["blocked"]
+            .as_array()
+            .is_some_and(|blocked| !blocked.is_empty())
+        && ["partiallyQueued", "partially_blocked"].contains(&s(&job["result"], "status"))
+}
 
 pub struct Engine {
     pub home: PathBuf,
@@ -735,10 +762,18 @@ impl Engine {
             }
         }
         let mut summaries = jobs.clone();
+        let mut auto_query = c.prepare("SELECT id,json_extract(snapshot,'$.autoSubmit') FROM jobs WHERE kind IN ('image','video')").map_err(|e|e.to_string())?;
+        let auto_submit = auto_query
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<bool>>(1)?))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<std::result::Result<HashMap<_, _>, _>>()
+            .map_err(|e| e.to_string())?;
         for j in &mut summaries {
             let snap = j["snapshot"].clone();
             let prepared = j["prepared"].clone();
-            j["snapshot"] = json!({"model":snap["model"],"unitVersion":snap["unitVersion"],"problems":snap["problems"]});
+            j["snapshot"] = json!({"model":snap["model"],"unitVersion":snap["unitVersion"],"problems":snap["problems"],"autoSubmit":auto_submit.get(s(j,"id")).copied().flatten()});
             j["prepared"] = json!({"estimatedCost":prepared["estimatedCost"]});
             if let Some(obj) = j.as_object_mut() {
                 obj.remove("receipt");
@@ -1157,10 +1192,22 @@ impl Engine {
                 workspace["videoPreflight"] = verified.report;
                 return Ok(workspace);
             }
-            "videos.prepare" | "videos.submit" => {
+            "videos.prepare" => {
+                let provider = video_provider(&store, &request)?;
+                let report = if provider == "dreamina" {
+                    self.prepare_dreamina_videos(&store, &request, Duration::from_secs(30))?
+                } else {
+                    let _guard = self.acquire_keys(vec![format!("channel:{provider}")])?;
+                    self.queue_videos(&store, &request, false)?
+                };
+                let mut workspace = self.workspace(&store, None)?;
+                workspace["videoQueueReport"] = report;
+                return Ok(workspace);
+            }
+            "videos.submit" => {
                 let provider = video_provider(&store, &request)?;
                 let _guard = self.acquire_keys(vec![format!("channel:{provider}")])?;
-                let report = self.queue_videos(&store, &request, action == "videos.submit")?;
+                let report = self.queue_videos(&store, &request, true)?;
                 let mut workspace = self.workspace(&store, None)?;
                 workspace["videoQueueReport"] = report;
                 return Ok(workspace);
@@ -1399,6 +1446,15 @@ impl Engine {
                     })
                     .then_with(|| s(a, "updatedAt").cmp(s(b, "updatedAt")))
             });
+            // Review-only preparations share one bounded channel reservation.
+            // Paid submissions and original-ID recovery retain their existing slot/fairness rules.
+            let mut prepare_candidates: HashMap<String, Vec<String>> = HashMap::new();
+            for job in jobs.iter().filter(|job| tasks::prepare_only_eligible(job)) {
+                prepare_candidates
+                    .entry(s(job, "provider").to_owned())
+                    .or_default()
+                    .push(s(job, "id").to_owned());
+            }
             let mut served = HashSet::new();
             for j in jobs {
                 let state = s(&j, "status");
@@ -1424,7 +1480,10 @@ impl Engine {
                 {
                     continue;
                 }
-                if state == "ready" && j["snapshot"]["autoSubmit"].as_bool() != Some(true) {
+                if state == "ready"
+                    && s(&j, "providerTaskId").is_empty()
+                    && j["snapshot"]["autoSubmit"].as_bool() != Some(true)
+                {
                     continue;
                 }
                 let key = s(&j, "id").to_owned();
@@ -1435,6 +1494,15 @@ impl Engine {
                 // local state was incorrectly left queued/ready.
                 let is_gen =
                     ["queued", "ready"].contains(&state) && s(&j, "providerTaskId").is_empty();
+                let review_only = tasks::prepare_only_eligible(&j);
+                let prepare_keys = if review_only {
+                    prepare_candidates
+                        .get(provider)
+                        .cloned()
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 let locks = project_worker_keys(
                     &store,
                     vec![format!("channel:{provider}"), format!("job:{key}")],
@@ -1448,13 +1516,52 @@ impl Engine {
                             return Ok(());
                         }
                     };
+                    if review_only {
+                        let started = Instant::now();
+                        let fingerprint = capability_fingerprint(&cfg, &account);
+                        for (attempt, candidate) in prepare_keys.iter().enumerate() {
+                            // This is a between-items soft budget. One upstream upload may take longer.
+                            if attempt >= 64 || started.elapsed() >= Duration::from_secs(2) || engine.stop.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            let _job_guard = if candidate == &key {
+                                None // The original reservation already owns this job.
+                            } else {
+                                match engine.acquire_keys(vec![format!("job:{candidate}")]) {
+                                    Ok(guard) => Some(guard),
+                                    Err(_) => continue,
+                                }
+                            };
+                            // Configuration edits must not make a burst silently use another account.
+                            let (current_config, current_account) = match engine.config(&st, &cfg.kind) {
+                                Ok(config) => config,
+                                Err(error) => {
+                                    if let Err(persist_error) = st.event(candidate, "local_error", &json!({"message":error})) {
+                                        eprintln!("本地素材准备配置错误未能写入任务记录：{error}；{persist_error}");
+                                    }
+                                    break;
+                                }
+                            };
+                            if capability_fingerprint(&current_config, &current_account) != fingerprint {
+                                break;
+                            }
+                            if let Err(error) = tasks::prepare_only(&st, candidate, &cfg, &account, channels.as_ref()) {
+                                if let Err(persist_error) = st.event(candidate, "local_error", &json!({"message":error})) {
+                                    eprintln!("本地素材准备错误未能写入任务记录：{error}；{persist_error}");
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     let r = if is_gen {
                         tasks::run_generation(&st, &key, &cfg, &account, channels.as_ref())
                     } else {
                         tasks::resume_job(&st, &key, &cfg, &account, channels.as_ref(), true)
                     };
                     if let Err(e) = r {
-                        let _ = st.event(&key, "local_error", &json!({"message":e}));
+                        if let Err(persist_error) = st.event(&key, "local_error", &json!({"message":e})) {
+                            eprintln!("本地任务错误未能写入任务记录：{e}；{persist_error}");
+                        }
                     }
                     drop(engine);
                     Ok(())
@@ -1716,35 +1823,7 @@ impl Engine {
             return Err("账户身份已变化，请核对当前账户后重新准备".into());
         }
         let fingerprint = capability_fingerprint(&config, &account);
-        let cached: Option<(String, String)> = store
-            .conn()?
-            .query_row(
-                "SELECT data,fetched_at FROM catalogs WHERE provider=?1",
-                [provider],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .ok();
-        let marker: Option<String> = store
-            .conn()?
-            .query_row(
-                "SELECT value FROM metadata WHERE key=?1",
-                [format!("capability_binding:{provider}")],
-                |row| row.get(0),
-            )
-            .ok();
-        let marker = marker.and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
-        let usable = cached.and_then(|(raw, at)| {
-            let cap: Capabilities = serde_json::from_str(&raw).ok()?;
-            let bound = marker.as_ref().is_some_and(|m| {
-                s(m, "fingerprint") == fingerprint && s(m, "version") == cap.version
-            });
-            (bound
-                && timestamp_fresh(&at, 900)
-                && timestamp_fresh(&cap.checked_at, 900)
-                && cap.provider == provider
-                && !cap.version.is_empty())
-            .then_some(cap)
-        });
+        let usable = cached_video_capabilities(store, provider, &fingerprint)?;
         let (capabilities, source) = if let Some(cap) = usable {
             (cap, "cache")
         } else {
@@ -1786,7 +1865,131 @@ impl Engine {
             report,
         })
     }
+    /// The official adapter's prepare compiles local paths/arguments only. This
+    /// verified cache path never acquires the paid/query channel reservation.
+    fn cached_dreamina_video_channel(
+        &self,
+        store: &Store,
+        r: &Value,
+    ) -> Result<Option<VideoChannel>> {
+        if !self.live_accounts {
+            return Ok(None);
+        }
+        let (config, account) = self.config(store, "dreamina")?;
+        let status = self.dreamina_sessions.snapshot(&config)?;
+        if !verified_dreamina_session(&status, self.dreamina_sessions.due(&config)?) {
+            return Ok(None);
+        }
+        if r.get("expectedAccountKey")
+            .and_then(Value::as_str)
+            .filter(|key| !key.is_empty())
+            .is_some_and(|expected| expected != account)
+        {
+            return Err("账户身份已变化，请核对当前账户后重新准备".into());
+        }
+        let fingerprint = capability_fingerprint(&config, &account);
+        Ok(cached_video_capabilities(store, "dreamina", &fingerprint)?.map(|capabilities| {
+            let report = json!({"provider":"dreamina","capabilityVersion":capabilities.version,"source":"cache","checkedAt":capabilities.checked_at});
+            VideoChannel { account, fingerprint, capabilities, report }
+        }))
+    }
+    fn video_prepare_context(&self, store: &Store, r: &Value) -> Result<Value> {
+        if self.stop.load(Ordering::SeqCst) {
+            return Err("客户端正在退出，未排入新的准备任务".into());
+        }
+        let project = store.project()?;
+        let registry = self.registry()?;
+        let registered = registry
+            .as_array()
+            .ok_or("项目索引损坏")?
+            .iter()
+            .find(|p| p["id"] == project["id"])
+            .ok_or("项目登记已变化，未排入新的准备任务")?;
+        if project_archived(registered) {
+            return Err("项目已归档，未排入新的准备任务".into());
+        }
+        let (config, account) = self.config(store, "dreamina")?;
+        let settings = store.settings()?;
+        let connection = store.conn()?;
+        let ids = r["unitIds"].to_string();
+        let source: i64 = connection
+            .query_row("SELECT COALESCE(MAX(version),0) FROM sources", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| e.to_string())?;
+        let units: String = connection.query_row("SELECT json_group_array(json_object('id',id,'version',version,'retired',retired)) FROM (SELECT id,version,COALESCE(json_extract(data,'$.retired'),0) AS retired FROM units WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY id)", [&ids], |row| row.get(0)).map_err(|e| e.to_string())?;
+        let references: String = connection.query_row("SELECT json_group_array(json_object('unit',unit_id,'order',position,'asset',asset_id,'variant',variant_id,'version',version,'media',media_id)) FROM (SELECT r.unit_id,r.position,r.asset_id,r.variant_id,a.version,d.media_id FROM unit_refs r LEFT JOIN assets a ON a.id=r.asset_id LEFT JOIN adoptions d ON d.asset_id=r.asset_id AND d.variant_id=r.variant_id WHERE r.unit_id IN (SELECT value FROM json_each(?1)) ORDER BY r.unit_id,r.position)", [&ids], |row| row.get(0)).map_err(|e| e.to_string())?;
+        Ok(
+            json!({"project":registered,"config":capability_fingerprint(&config,&account),"sourceVersion":source,"units":units,"references":references,"parameters":{"videoProvider":settings["videoProvider"],"videoModel":settings["videoModel"],"ratio":settings["ratio"],"videoResolution":settings["videoResolution"]}}),
+        )
+    }
+    fn prepare_dreamina_videos(
+        self: &Arc<Self>,
+        store: &Store,
+        r: &Value,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let started = Instant::now();
+        let timeout = timeout.min(Duration::from_secs(30));
+        let pid = s(&store.project()?, "id").to_owned();
+        let original = self.video_prepare_context(store, r)?;
+        // A duplicate preparation click is excluded without consuming the
+        // channel slot used by unrelated images or known-ID queries.
+        let _operation = self.acquire_keys(vec![format!("video-prepare:{pid}:dreamina")])?;
+        loop {
+            if self.video_prepare_context(store, r)? != original {
+                return Err(
+                    "项目、渠道、账户或所选分镜在等待核实时已变化；未排入新的准备任务，请刷新核对"
+                        .into(),
+                );
+            }
+            if let Some(verified) = self.cached_dreamina_video_channel(store, r)? {
+                if self.video_prepare_context(store, r)? != original {
+                    return Err("准备依据已变化，未排入新的准备任务".into());
+                }
+                return self.queue_videos_verified(store, r, false, Some(verified));
+            }
+            if started.elapsed() >= timeout {
+                return Err("即梦渠道核实等待已达上限（最多30秒）；未排入新的准备任务，已有生成和原任务查询继续保留".into());
+            }
+            let guard = {
+                let mut active = self.active.lock().map_err(|e| e.to_string())?;
+                if self.stop.load(Ordering::SeqCst) {
+                    return Err("客户端正在退出，未排入新的准备任务".into());
+                }
+                let key = "channel:dreamina".to_owned();
+                if active.contains(&key) {
+                    None
+                } else {
+                    active.insert(key.clone());
+                    Some(ActiveGuard {
+                        engine: self.clone(),
+                        keys: vec![key],
+                    })
+                }
+            };
+            if let Some(_guard) = guard {
+                let verified = self.video_channel(store, "dreamina", r)?;
+                if self.video_prepare_context(store, r)? != original {
+                    return Err("准备核实期间依据已变化，未排入新的准备任务".into());
+                }
+                return self.queue_videos_verified(store, r, false, Some(verified));
+            }
+            std::thread::sleep(
+                Duration::from_millis(20).min(timeout.saturating_sub(started.elapsed())),
+            );
+        }
+    }
     fn queue_videos(&self, store: &Store, r: &Value, submit: bool) -> Result<Value> {
+        self.queue_videos_verified(store, r, submit, None)
+    }
+    fn queue_videos_verified(
+        &self,
+        store: &Store,
+        r: &Value,
+        submit: bool,
+        verified: Option<VideoChannel>,
+    ) -> Result<Value> {
         let ids = r["unitIds"]
             .as_array()
             .filter(|ids| !ids.is_empty())
@@ -1811,7 +2014,10 @@ impl Engine {
         if model.is_empty() {
             return Err("请选择视频模型".into());
         }
-        let verified = self.video_channel(store, &provider, r)?;
+        let verified = match verified {
+            Some(value) => value,
+            None => self.video_channel(store, &provider, r)?,
+        };
         let capability = verified
             .capabilities
             .models
@@ -2005,14 +2211,54 @@ impl Engine {
         )
     }
     fn queue_images(&self, store: &Store, r: &Value) -> Result<Value> {
+        self.queue_images_with_account_check(store, r, |config, account| {
+            self.checked_account(config, account)
+        })
+    }
+    fn queue_images_with_account_check(
+        &self,
+        store: &Store,
+        r: &Value,
+        check: impl FnOnce(&ProviderConfig, &str) -> ProviderResult<String>,
+    ) -> Result<Value> {
         let settings = store.settings()?;
         let provider = s(r, "provider");
         let model = s(r, "model");
         if model.is_empty() {
             return Err("请选择图片模型".into());
         }
-        self.require_account(store, provider)?;
-        let (_, account) = self.config(store, provider)?;
+        let (config, cached_account) = self.config(store, provider)?;
+        let account = if provider == "dreamina" && self.live_accounts {
+            // Long asset design may outlive a failed background identity check.
+            // Inspect the official account now; a cached failure is not logout proof.
+            let account = match check(&config, &cached_account) {
+                Ok(account) => account,
+                Err(error) => {
+                    store.event(
+                        "",
+                        "image_account_preflight_failed",
+                        &json!({"provider":provider,"error":error,"newGenerationQueued":false}),
+                    )?;
+                    return Err(format!(
+                        "即梦账户核实未完成（{}）：{}；尚未排入新的图片生成任务。",
+                        error.code, error.message
+                    ));
+                }
+            };
+            if account.trim().is_empty() {
+                return Err("即梦未返回可核实的账户身份，未排入新的图片生成任务".into());
+            }
+            let current = self.dreamina_config(store)?;
+            if serde_json::to_value(&current).map_err(|e| e.to_string())?
+                != serde_json::to_value(&config).map_err(|e| e.to_string())?
+            {
+                return Err("即梦 CLI 配置在账户核实时已变化，请重试图片制作".into());
+            }
+            account
+        } else {
+            self.require_account(store, provider)?;
+            cached_account
+        };
         let selected = r["assetIds"].as_array();
         if selected.is_some_and(|ids| {
             ids.iter()
@@ -2250,6 +2496,22 @@ impl Engine {
     fn resume_production(self: &Arc<Self>, store: Store, request: &Value) -> Result<()> {
         let id = s(request, "workflowId");
         let job = store.job(id)?;
+        // Early Stage2 records incorrectly called a wholly/partly blocked
+        // image-production run completed. Resume is an explicit continuation
+        // using its saved selection/settings; never rewrite that old receipt.
+        if image_production_resume_eligible(&job) {
+            if s(request, "action") != "workflows.resume" {
+                return Err("图片制作流程不能采用分镜创作选择".into());
+            }
+            if job["snapshot"]["sourceVersion"] != store.source()?["version"] {
+                return Err("图片流程原文版本已变化，请从当前原文明确重新启动图片阶段".into());
+            }
+            let mut resumed = job["snapshot"]["request"].clone();
+            resumed["action"] = json!("images.produce");
+            resumed["imageResumeOrigin"] = json!({"version":"image-production-resume/v1","workflowId":id,"snapshotSha256":pipeline::digest(&job["snapshot"].to_string())});
+            store.event(id,"image_production_resume_requested",&json!({"version":"image-production-resume/v1","sourceVersion":job["snapshot"]["sourceVersion"],"originalStatus":job["status"],"snapshotSha256":pipeline::digest(&job["snapshot"].to_string()),"preserveOriginalRecord":true}))?;
+            return self.spawn_stage(store, resumed);
+        }
         if s(&job, "kind") != "workflow"
             || !matches!(
                 s(&job, "status"),
@@ -2314,6 +2576,7 @@ impl Engine {
             let runtime=tokio::runtime::Runtime::new().map_err(|e|e.to_string())?;
             let result:Result<Value>=runtime.block_on(async {
                 let stage=s(&snapshot,"stage");let mut input=snapshot["input"].clone();
+                store.refresh_storyboard_audit_guard(&run,&snapshot)?;
                 let record=store.job(&run)?;
                 let guard=record["prepared"].get("publicationGuard").unwrap_or(&snapshot["guard"]).clone();
                 {let mut c=store.conn()?;let tx=c.transaction().map_err(|e|e.to_string())?;crate::workflow::verify_guard(&tx,&guard)?;}
@@ -2385,7 +2648,29 @@ impl Engine {
         }
         let all_assets = store.values("assets")?;
         let (wanted, _) = image_closure(&store, &all_assets, r["assetIds"].as_array());
-        let saved_settings = store.settings()?;
+        let saved_settings = if let Some(origin) = r.get("imageResumeOrigin") {
+            let old = store.job(s(origin, "workflowId"))?;
+            if origin["version"] != "image-production-resume/v1"
+                || !image_production_resume_eligible(&old)
+                || origin["snapshotSha256"] != pipeline::digest(&old["snapshot"].to_string())
+                || old["snapshot"]["sourceVersion"] != store.source()?["version"]
+            {
+                return Err("图片续跑原流程/范围绑定已变化，未重新提取或生成".into());
+            }
+            let mut expected = old["snapshot"]["request"].clone();
+            let mut actual = r.clone();
+            actual
+                .as_object_mut()
+                .ok_or("图片续跑请求结构无效")?
+                .remove("imageResumeOrigin");
+            expected["action"] = json!("images.produce");
+            if actual != expected {
+                return Err("图片续跑不能修改冻结选集、资产或渠道参数".into());
+            }
+            old["snapshot"]["settings"].clone()
+        } else {
+            store.settings()?
+        };
         let policy = pipeline::image_production_policy(&saved_settings);
         r["imageProductionPolicy"] = json!(policy);
         let active_image_ids: Vec<_> = store
@@ -2394,8 +2679,11 @@ impl Engine {
             .filter(|j| s(j, "kind") == "image" && is_active_generation(s(j, "status")))
             .map(|j| j["entityId"].clone())
             .collect();
-        let design_input = json!({"source":store.source()?,"foundation":store.foundation()?,"assets":all_assets,"activeImageAssetIds":active_image_ids});
+        let design_input = json!({"source":store.source()?,"foundation":store.foundation()?,"assets":all_assets,"activeImageAssetIds":active_image_ids,"selection":{"assetIds":wanted}});
+        let needs_visual_check =
+            pipeline::asset_visual_facts::cached_visual_check_required(&design_input)?;
         let needs_design = stage == "images.design"
+            || needs_visual_check
             || all_assets.iter().any(|asset| {
                 wanted.iter().any(|id| id == s(asset, "id"))
                     && pipeline::automatic_design_required(&design_input, asset)
@@ -2441,13 +2729,15 @@ impl Engine {
                         let active_image_ids:Vec<_>=store.job_summaries()?.iter().filter(|j|s(j,"kind")=="image"&&is_active_generation(s(j,"status"))).map(|j|j["entityId"].clone()).collect();
                         let input=json!({"source":store.source()?,"foundation":basis,"assets":all,"settings":settings,"imageProductionPolicy":policy,"automaticDesign":true,"activeImageAssetIds":active_image_ids,"selection":{"assetIds":wanted}});
                         let needs_design=all.iter().any(|a|wanted.iter().any(|id|id==s(a,"id"))&&pipeline::automatic_design_required(&input,a));
-                        let mut output=if needs_design {
+                        let needs_visual_check=pipeline::asset_visual_facts::cached_visual_check_required(&input)?;
+                        let needs_asset_step=needs_design||needs_visual_check;
+                        let mut output=if needs_asset_step {
                             image_design_source(&store)?;
                             pipeline::run_asset_design(&input,&exec,model,reasoning).await?
                         } else {json!({"assets":[],"blocked":[],"imagePlan":[],"imageProductionPolicy":policy})};
                         if let Some(blocked)=output["blocked"].as_array_mut(){blocked.extend(dependency_errors);}
                         if store.source()?["version"]!=version{return Err("原文已更新；设计结果保留，不覆盖当前资产".into())}
-                        if needs_design{store.publish_asset_design(version.as_i64().ok_or("原文版本缺失")?,basis_version,&output)?;}
+                        if needs_asset_step{store.publish_asset_design(version.as_i64().ok_or("原文版本缺失")?,basis_version,&output)?;}
                         let approved=settings["trialApproved"].as_bool()==Some(true);let trial=r["trial"].as_bool()==Some(true);
                         if policy=="trialReview"&&!approved&&!trial{output["status"]=json!("awaitingTrial");return Ok(output)}
                         let mut generation=r.clone();generation["action"]=json!("images.run");generation["imageProductionPolicy"]=json!(policy);
@@ -2471,7 +2761,7 @@ impl Engine {
                         generation["assetIds"]=json!(ids);
                         let report=engine.queue_images(&store,&generation)?;
                         if let (Some(blocked),Some(queue_blocked))=(output["blocked"].as_array_mut(),report["blocked"].as_array()){blocked.extend(queue_blocked.iter().cloned());}
-                        output["status"]=json!(if output["blocked"].as_array().is_some_and(|blocked|!blocked.is_empty()){"partiallyQueued"}else if report["queuedCount"].as_u64().unwrap_or(0)>0{"queuedForGeneration"}else if report["reusedCount"].as_u64().unwrap_or(0)>0{"processingExisting"}else{"noGenerationNeeded"});
+                        output["status"]=json!(if output["blocked"].as_array().is_some_and(|blocked|!blocked.is_empty()){"partially_blocked"}else if report["queuedCount"].as_u64().unwrap_or(0)>0{"queuedForGeneration"}else if report["reusedCount"].as_u64().unwrap_or(0)>0{"processingExisting"}else{"noGenerationNeeded"});
                         output["imageProductionPolicy"]=json!(policy);
                         output["imagePlan"]=json!(wanted.iter().filter_map(|key|rows.iter().find(|a|s(a,"id")==key)).map(|a|{
                             let queued=report["queued"].as_array().into_iter().flatten().chain(report["reused"].as_array().into_iter().flatten()).find(|q|q["assetId"]==a["id"]);
@@ -2483,7 +2773,7 @@ impl Engine {
                     },
                     _=>Err("未知阶段".into())
                 }
-            });match result{Ok(v)=>store.update_job(&job,"completed",&json!({"result":v})),Err(e)=>store.update_job(&job,"failed",&json!({"error":e}))}
+            });match result{Ok(v)=>store.update_job(&job,image_stage_completion_state(&v),&json!({"result":v})),Err(e)=>store.update_job(&job,"failed",&json!({"error":e}))}
         });
         if let Err(e) = &result {
             status_store.update_job(&status_job, "failed", &json!({"error":e}))?;
@@ -2637,17 +2927,58 @@ fn model_refresh_account(
     refresh_due: bool,
     refresh: impl FnOnce() -> Result<Value>,
 ) -> Result<Value> {
-    if !refresh_due
-        && s(&snapshot, "status") == "authenticated"
-        && snapshot["ready"] == true
-        && snapshot["identityVerified"] == true
-        && !s(&snapshot, "accountKey").is_empty()
-        && timestamp_fresh(s(&snapshot, "checkedAt"), 60)
-    {
+    if verified_dreamina_session(&snapshot, refresh_due) {
         Ok(snapshot)
     } else {
         refresh()
     }
+}
+fn verified_dreamina_session(snapshot: &Value, refresh_due: bool) -> bool {
+    !refresh_due
+        && s(snapshot, "status") == "authenticated"
+        && snapshot["ready"] == true
+        && snapshot["identityVerified"] == true
+        && !s(snapshot, "accountKey").is_empty()
+        && timestamp_fresh(s(snapshot, "checkedAt"), 60)
+}
+// Both ordinary preflight and the local-only entry use this same durable
+// fingerprint/version/time predicate. No second capability cache is created.
+fn cached_video_capabilities(
+    store: &Store,
+    provider: &str,
+    fingerprint: &str,
+) -> Result<Option<Capabilities>> {
+    use rusqlite::OptionalExtension;
+    let connection = store.conn()?;
+    let cached: Option<(String, String)> = connection
+        .query_row(
+            "SELECT data,fetched_at FROM catalogs WHERE provider=?1",
+            [provider],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let marker: Option<String> = connection
+        .query_row(
+            "SELECT value FROM metadata WHERE key=?1",
+            [format!("capability_binding:{provider}")],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let marker = marker.and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+    Ok(cached.and_then(|(raw, at)| {
+        let cap: Capabilities = serde_json::from_str(&raw).ok()?;
+        let bound = marker
+            .as_ref()
+            .is_some_and(|m| s(m, "fingerprint") == fingerprint && s(m, "version") == cap.version);
+        (bound
+            && timestamp_fresh(&at, 900)
+            && timestamp_fresh(&cap.checked_at, 900)
+            && cap.provider == provider
+            && !cap.version.is_empty())
+        .then_some(cap)
+    }))
 }
 fn capability_fingerprint(config: &ProviderConfig, account: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -3948,8 +4279,688 @@ fn choose_files(r: &Value) -> Result<Value> {
 }
 
 #[cfg(test)]
+mod local_video_prepare_tests {
+    use super::*;
+    use crate::providers::{
+        DownloadReceipt, GenerationRequest, PreparedRequest, QueryResult, SubmitReceipt,
+    };
+    use std::sync::atomic::AtomicUsize;
+
+    #[derive(Default)]
+    struct LocalChannels {
+        caps: AtomicUsize,
+        prepares: AtomicUsize,
+        submits: AtomicUsize,
+        queries: AtomicUsize,
+        capability_error: Mutex<Option<ProviderError>>,
+    }
+    impl LocalChannels {
+        fn capability() -> Capabilities {
+            serde_json::from_value(json!({"provider":"dreamina","version":"offline-local/v1","source":"offline fixture","checkedAt":now(),"models":[{"id":"offline-video","kind":"video","adapted":true,"minDuration":4,"maxDuration":15,"allowedDurations":[],"ratios":["16:9"],"resolutions":["720p"],"images":9,"videos":3,"audios":3,"totalReferences":12,"requiredImages":0,"raw":{}}],"canCancel":false,"canReconcileUnknown":false,"raw":{}})).unwrap()
+        }
+        fn assert_no_cloud_call(&self) {
+            assert_eq!(self.submits.load(Ordering::SeqCst), 0);
+            assert_eq!(self.queries.load(Ordering::SeqCst), 0);
+        }
+    }
+    impl Channels for LocalChannels {
+        fn capabilities(&self, _: &ProviderConfig) -> ProviderResult<Capabilities> {
+            self.caps.fetch_add(1, Ordering::SeqCst);
+            match self.capability_error.lock().unwrap().clone() {
+                Some(error) => Err(error),
+                None => Ok(Self::capability()),
+            }
+        }
+        fn prepare(
+            &self,
+            _: &ProviderConfig,
+            r: &GenerationRequest,
+        ) -> ProviderResult<PreparedRequest> {
+            self.prepares.fetch_add(1, Ordering::SeqCst);
+            Ok(PreparedRequest {
+                provider: "dreamina".into(),
+                request: r.clone(),
+                capability_version: "offline-local/v1".into(),
+                upload_receipts: vec![],
+                wire: json!({"offlineLocal":true}),
+                estimated_cost: None,
+                prepared_at: now(),
+            })
+        }
+        fn submit(&self, _: &ProviderConfig, _: &PreparedRequest) -> ProviderResult<SubmitReceipt> {
+            self.submits.fetch_add(1, Ordering::SeqCst);
+            panic!("local preparation must never submit")
+        }
+        fn query(&self, _: &ProviderConfig, _: &str) -> ProviderResult<QueryResult> {
+            self.queries.fetch_add(1, Ordering::SeqCst);
+            panic!("local preparation must never query or reconcile an existing task")
+        }
+        fn download(
+            &self,
+            _: &ProviderConfig,
+            _: &str,
+            _: &Path,
+        ) -> ProviderResult<DownloadReceipt> {
+            panic!("no download")
+        }
+        fn reconcile(&self, _: &ProviderConfig, _: &str) -> ProviderResult<QueryResult> {
+            panic!("unknown submissions stay untouched")
+        }
+    }
+    struct Fixture {
+        _temp: tempfile::TempDir,
+        engine: Arc<Engine>,
+        store: Store,
+        pid: String,
+        channels: Arc<LocalChannels>,
+        ids: Vec<String>,
+    }
+    impl Fixture {
+        fn new(count: usize) -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let channels = Arc::new(LocalChannels::default());
+            let engine = Engine::build(temp.path().join("home"), channels.clone(), true).unwrap();
+            let p = engine
+                .dispatch(json!({"action":"projects.create","title":"离线本地准备回归"}))
+                .unwrap();
+            let pid = s(&p, "id").to_owned();
+            let store = engine.store(&pid).unwrap();
+            let cli = temp.path().join("offline-cli");
+            fs::write(&cli, b"non-executable offline identity fixture").unwrap();
+            store.save_settings(&json!({"dreaminaPath":cli,"videoProvider":"dreamina","videoModel":"offline-video","ratio":"16:9","videoResolution":"720p"})).unwrap();
+            let source = serde_json::to_value(
+                pipeline::prepare_source("第1集\n场景：门口\n甲：走吧。\n").unwrap(),
+            )
+            .unwrap();
+            store.save_source(source.clone()).unwrap();
+            let row = source["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| s(r, "kind") == "body")
+                .unwrap();
+            store.save_asset(json!({"id":"reference","variantId":"base","name":"甲","kind":"CH","prompt":"离线形象","sourceRefs":[row["id"]]})).unwrap();
+            let image = temp.path().join("reference.png");
+            image::RgbImage::from_pixel(4, 3, image::Rgb([10, 20, 30]))
+                .save(&image)
+                .unwrap();
+            let media = store
+                .import_media(&image, "image", Some("reference"), Some("base"))
+                .unwrap();
+            store.adopt("reference", "base", s(&media, "id")).unwrap();
+            let ids = (0..count).map(|i| format!("u{i:02}")).collect::<Vec<_>>();
+            for uid in &ids {
+                store.save_unit(json!({"id":uid,"episodeId":source["episodes"][0]["id"],"sceneId":source["scenes"][0]["id"],"sourceRefs":[row["id"]],"duration":5,"prompt":"{{asset:reference:base}} 甲在门口说走吧。","assetRefs":[{"assetId":"reference","variantId":"base","order":0}]})).unwrap();
+            }
+            let config = engine.dreamina_config(&store).unwrap();
+            engine.dreamina_sessions.seed_for_test(&config,json!({"status":"authenticated","ready":true,"identityVerified":true,"accountKey":"offline-official-account","checkedAt":now()})).unwrap();
+            save_capability_cache(
+                &store,
+                &config,
+                "offline-official-account",
+                &capability_fingerprint(&config, "offline-official-account"),
+                &LocalChannels::capability(),
+            )
+            .unwrap();
+            Self {
+                _temp: temp,
+                engine,
+                store,
+                pid,
+                channels,
+                ids,
+            }
+        }
+        fn request(&self) -> Value {
+            json!({"action":"videos.prepare","projectId":self.pid,"provider":"dreamina","model":"offline-video","unitIds":self.ids,"ratio":"16:9","resolution":"720p"})
+        }
+        fn expire_capabilities(&self) {
+            self.store
+                .conn()
+                .unwrap()
+                .execute("UPDATE catalogs SET fetched_at='2000-01-01T00:00:00Z'", [])
+                .unwrap();
+        }
+        fn wait_reserved(&self) {
+            let start = Instant::now();
+            let key = format!("video-prepare:{}:dreamina", self.pid);
+            while !self.engine.active.lock().unwrap().contains(&key) {
+                assert!(
+                    start.elapsed() < Duration::from_secs(3),
+                    "request must reserve the preparation intent"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        fn spawn(&self) -> std::thread::JoinHandle<Result<Value>> {
+            let engine = self.engine.clone();
+            let r = self.request();
+            std::thread::spawn(move || engine.dispatch(r))
+        }
+    }
+    #[test]
+    fn verified_cache_prepares_57_while_image_channel_is_held_reusing_37_without_submission() {
+        let f = Fixture::new(57);
+        let mut initial = f.request();
+        initial["unitIds"] = json!(f.ids[..37]);
+        let first = f.engine.dispatch(initial).unwrap();
+        let (config, account) = f.engine.config(&f.store, "dreamina").unwrap();
+        let mut frozen = Vec::new();
+        for entry in first["videoQueueReport"]["queued"].as_array().unwrap() {
+            let key = s(entry, "jobId");
+            tasks::prepare_only(&f.store, key, &config, &account, f.channels.as_ref()).unwrap();
+            let job = f.store.job(key).unwrap();
+            assert_eq!(job["status"], "ready");
+            frozen.push(job);
+        }
+        let _image = f
+            .engine
+            .acquire_keys(vec![
+                "channel:dreamina".into(),
+                "job:offline-image-worker".into(),
+            ])
+            .unwrap();
+        let result = f.engine.dispatch(f.request()).unwrap();
+        let report = &result["videoQueueReport"];
+        assert_eq!(report["reusedCount"], 37);
+        assert_eq!(report["queuedCount"], 20);
+        assert_eq!(report["blockedCount"], 0);
+        assert_eq!(f.channels.caps.load(Ordering::SeqCst), 0);
+        assert_eq!(f.channels.prepares.load(Ordering::SeqCst), 37);
+        for job in frozen {
+            assert_eq!(
+                f.store.job(s(&job, "id")).unwrap(),
+                job,
+                "existing reviewed package remains immutable"
+            );
+        }
+        let jobs = f.store.jobs().unwrap();
+        assert_eq!(jobs.len(), 57);
+        for job in &jobs {
+            assert_eq!(job["snapshot"]["autoSubmit"], false);
+            assert!(s(job, "providerTaskId").is_empty());
+        }
+        // The separately owned local worker may compile new packages later; even
+        // a direct local compile contains no submit path while images hold the slot.
+        for job in jobs.iter().filter(|job| job["status"] == "queued") {
+            tasks::prepare_only(
+                &f.store,
+                s(job, "id"),
+                &config,
+                &account,
+                f.channels.as_ref(),
+            )
+            .unwrap();
+        }
+        assert!(f
+            .store
+            .jobs()
+            .unwrap()
+            .iter()
+            .all(|job| job["status"] == "ready"));
+        assert_eq!(f.channels.prepares.load(Ordering::SeqCst), 57);
+        f.channels.assert_no_cloud_call();
+        let mut submit = f.request();
+        submit["action"] = json!("videos.submit");
+        assert!(f
+            .engine
+            .dispatch(submit)
+            .unwrap_err()
+            .contains("渠道正在检查"));
+        assert!(f
+            .store
+            .jobs()
+            .unwrap()
+            .iter()
+            .all(|job| job["snapshot"]["autoSubmit"] == false));
+    }
+    #[test]
+    fn expired_capability_waits_same_click_then_refreshes_once_and_excludes_duplicate_click() {
+        let f = Fixture::new(2);
+        f.expire_capabilities();
+        let held = f
+            .engine
+            .acquire_keys(vec!["channel:dreamina".into()])
+            .unwrap();
+        let pending = f.spawn();
+        f.wait_reserved();
+        assert!(f.store.jobs().unwrap().is_empty());
+        assert_eq!(f.channels.caps.load(Ordering::SeqCst), 0);
+        assert!(f
+            .engine
+            .dispatch(f.request())
+            .unwrap_err()
+            .contains("这项操作正在执行"));
+        drop(held);
+        let result = pending.join().unwrap().unwrap();
+        assert_eq!(result["videoQueueReport"]["queuedCount"], 2);
+        assert_eq!(
+            result["videoQueueReport"]["preflight"]["source"],
+            "refreshed"
+        );
+        assert_eq!(f.channels.caps.load(Ordering::SeqCst), 1);
+        f.channels.assert_no_cloud_call();
+    }
+    #[test]
+    fn cached_local_entry_requires_every_official_identity_and_capability_proof() {
+        let f = Fixture::new(1);
+        let config = f.engine.dreamina_config(&f.store).unwrap();
+        let good = f.engine.dreamina_sessions.snapshot(&config).unwrap();
+        for (key, value) in [
+            ("status", json!("error")),
+            ("ready", json!(false)),
+            ("identityVerified", json!(false)),
+            ("accountKey", json!("")),
+            ("checkedAt", json!("2000-01-01T00:00:00Z")),
+        ] {
+            let mut bad = good.clone();
+            bad[key] = value;
+            f.engine
+                .dreamina_sessions
+                .seed_for_test(&config, bad)
+                .unwrap();
+            assert!(
+                f.engine
+                    .cached_dreamina_video_channel(&f.store, &f.request())
+                    .unwrap()
+                    .is_none(),
+                "invalid {key} must not enter local fast path"
+            );
+        }
+        f.engine
+            .dreamina_sessions
+            .seed_for_test(&config, good)
+            .unwrap();
+        let mut wrong = f.request();
+        wrong["expectedAccountKey"] = json!("another-account");
+        assert!(f
+            .engine
+            .cached_dreamina_video_channel(&f.store, &wrong)
+            .is_err());
+        f.store
+            .conn()
+            .unwrap()
+            .execute(
+                "UPDATE metadata SET value='{}' WHERE key='capability_binding:dreamina'",
+                [],
+            )
+            .unwrap();
+        assert!(f
+            .engine
+            .cached_dreamina_video_channel(&f.store, &f.request())
+            .unwrap()
+            .is_none());
+        assert!(f.store.jobs().unwrap().is_empty());
+        f.channels.assert_no_cloud_call();
+    }
+    #[test]
+    fn held_channel_timeout_and_shutdown_create_no_jobs_or_preflight_calls() {
+        let f = Fixture::new(1);
+        f.expire_capabilities();
+        let _held = f
+            .engine
+            .acquire_keys(vec!["channel:dreamina".into()])
+            .unwrap();
+        let start = Instant::now();
+        let error = f
+            .engine
+            .prepare_dreamina_videos(&f.store, &f.request(), Duration::from_millis(80))
+            .unwrap_err();
+        assert!(error.contains("等待已达上限"));
+        assert!(start.elapsed() < Duration::from_secs(3));
+        let pending = f.spawn();
+        f.wait_reserved();
+        f.engine.stop.store(true, Ordering::SeqCst);
+        assert!(pending.join().unwrap().unwrap_err().contains("正在退出"));
+        assert!(f.store.jobs().unwrap().is_empty());
+        assert_eq!(f.channels.caps.load(Ordering::SeqCst), 0);
+        f.channels.assert_no_cloud_call();
+    }
+    #[test]
+    fn held_channel_rejects_configuration_unit_reference_and_archive_drift_without_jobs() {
+        for drift in [
+            "config",
+            "source",
+            "unit",
+            "reference",
+            "archive",
+            "account",
+        ] {
+            let f = Fixture::new(1);
+            f.expire_capabilities();
+            let _held = f
+                .engine
+                .acquire_keys(vec!["channel:dreamina".into()])
+                .unwrap();
+            let pending = f.spawn();
+            f.wait_reserved();
+            match drift {
+                "config" => {
+                    f.store
+                        .save_settings(&json!({"providerTimeoutSeconds":60}))
+                        .unwrap();
+                }
+                "source" => {
+                    f.store
+                        .save_source(
+                            serde_json::to_value(
+                                pipeline::prepare_source(
+                                    "第1集\n场景：门口\n甲：走吧。\n乙：等等。\n",
+                                )
+                                .unwrap(),
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                }
+                "unit" => {
+                    let mut unit = f.store.get("units", &f.ids[0]).unwrap();
+                    unit["prompt"] = json!("更新后的离线提示词");
+                    f.store.save_unit(unit).unwrap();
+                }
+                "reference" => {
+                    let mut asset = f.store.get("assets", "reference").unwrap();
+                    asset["prompt"] = json!("更新后的离线形象");
+                    f.store.save_asset(asset).unwrap();
+                }
+                "archive" => {
+                    let mut registry = f.engine.registry().unwrap();
+                    registry[0]["archivedAt"] = json!(now());
+                    atomic_json(&f.engine.home.join("projects.json"), &registry).unwrap();
+                }
+                "account" => {
+                    let config = f.engine.dreamina_config(&f.store).unwrap();
+                    f.engine.dreamina_sessions.seed_for_test(&config,json!({"status":"authenticated","ready":true,"identityVerified":true,"accountKey":"changed-offline-account","checkedAt":now()})).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let error = pending.join().unwrap().unwrap_err();
+            assert!(
+                error.contains("变化") || error.contains("归档"),
+                "{drift}: {error}"
+            );
+            assert!(f.store.jobs().unwrap().is_empty(), "{drift}");
+            assert_eq!(f.channels.caps.load(Ordering::SeqCst), 0);
+            f.channels.assert_no_cloud_call();
+        }
+    }
+    #[test]
+    fn failed_readonly_refresh_preserves_original_known_and_unknown_jobs_without_submission() {
+        for auth in [false, true] {
+            let f = Fixture::new(1);
+            f.expire_capabilities();
+            let mut original = Vec::new();
+            for (entity, state, remote) in [
+                ("old-known", "processing", Some("original-cloud-id")),
+                ("old-unknown", "submission_unknown", None),
+            ] {
+                let key = f
+                    .store
+                    .add_job(
+                        "video",
+                        entity,
+                        "dreamina",
+                        "offline-official-account",
+                        &json!({"prompt":"original frozen prompt","autoSubmit":true}),
+                        state,
+                    )
+                    .unwrap();
+                let mut fields = json!({"receipt":{"original":true}});
+                if let Some(remote) = remote {
+                    fields["providerTaskId"] = json!(remote);
+                }
+                f.store.update_job(&key, state, &fields).unwrap();
+                original.push(f.store.job(&key).unwrap());
+            }
+            let expected = if auth {
+                ProviderError::auth()
+            } else {
+                ProviderError::new("OFFLINE_NETWORK", "readonly fixture transport failure")
+            };
+            *f.channels.capability_error.lock().unwrap() = Some(expected.clone());
+            let error = f.engine.dispatch(f.request()).unwrap_err();
+            assert_eq!(error, expected.message);
+            assert_eq!(f.channels.caps.load(Ordering::SeqCst), 1);
+            assert_eq!(f.store.jobs().unwrap().len(), 2);
+            for job in original {
+                assert_eq!(f.store.job(s(&job, "id")).unwrap(), job);
+            }
+            f.channels.assert_no_cloud_call();
+        }
+    }
+}
+
+#[cfg(test)]
 mod account_tests {
     use super::*;
+    use crate::providers::{
+        DownloadReceipt, GenerationRequest, PreparedRequest, QueryResult, SubmitReceipt,
+    };
+    use std::sync::atomic::AtomicUsize;
+
+    #[derive(Default)]
+    struct ImageQueueChannels {
+        submits: AtomicUsize,
+        queries: Mutex<Vec<String>>,
+    }
+    impl Channels for ImageQueueChannels {
+        fn capabilities(&self, _: &ProviderConfig) -> ProviderResult<Capabilities> {
+            panic!("identity-only queue preflight must not inspect a model or generate")
+        }
+        fn prepare(
+            &self,
+            _: &ProviderConfig,
+            _: &GenerationRequest,
+        ) -> ProviderResult<PreparedRequest> {
+            panic!("queue preflight must not upload or prepare cloud materials")
+        }
+        fn submit(&self, _: &ProviderConfig, _: &PreparedRequest) -> ProviderResult<SubmitReceipt> {
+            self.submits.fetch_add(1, Ordering::SeqCst);
+            Err(ProviderError::new(
+                "OFFLINE_ONLY",
+                "no generation permitted",
+            ))
+        }
+        fn query(&self, _: &ProviderConfig, task: &str) -> ProviderResult<QueryResult> {
+            self.queries.lock().unwrap().push(task.to_owned());
+            Ok(QueryResult {
+                task_id: task.to_owned(),
+                status: "processing".into(),
+                result_urls: vec![],
+                error: None,
+                actual_cost: None,
+                raw: json!({}),
+            })
+        }
+        fn download(
+            &self,
+            _: &ProviderConfig,
+            _: &str,
+            _: &Path,
+        ) -> ProviderResult<DownloadReceipt> {
+            panic!("identity checks cannot download")
+        }
+        fn reconcile(&self, _: &ProviderConfig, _: &str) -> ProviderResult<QueryResult> {
+            panic!("unknown submission must remain untouched")
+        }
+    }
+    fn image_queue_fixture() -> (
+        tempfile::TempDir,
+        Store,
+        Arc<Engine>,
+        Arc<ImageQueueChannels>,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("project")).unwrap();
+        store
+            .create("offline image identity", "image-identity")
+            .unwrap();
+        store
+            .save_settings(
+                &json!({"dreaminaPath":"offline-original-cli","imageProductionPolicy":"automatic"}),
+            )
+            .unwrap();
+        store.save_asset(json!({"id":"fresh-asset","variantId":"base","name":"离线形象","kind":"character","prompt":"离线形象提示词","preparation":{"mode":"IMAGE"}})).unwrap();
+        let channels = Arc::new(ImageQueueChannels::default());
+        let engine = Engine::build(temp.path().join("home"), channels.clone(), true).unwrap();
+        (temp, store, engine, channels)
+    }
+    fn image_queue_request(assets: Value) -> Value {
+        json!({"provider":"dreamina","model":"offline-image-model","assetIds":assets,"imageProductionPolicy":"automatic"})
+    }
+    #[test]
+    fn images_queue_fresh_identity_succeeds_without_a_ready_cached_projection() {
+        let (_temp, store, engine, channels) = image_queue_fixture();
+        let report = engine
+            .queue_images_with_account_check(
+                &store,
+                &image_queue_request(json!(["fresh-asset"])),
+                |config, cached| {
+                    assert_eq!(config.kind, "dreamina");
+                    assert_eq!(cached, "dreamina:official:unverified");
+                    Ok("verified-current-account".into())
+                },
+            )
+            .unwrap();
+        assert_eq!(report["queuedCount"], 1);
+        let jobs = store.jobs().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0]["accountId"], "verified-current-account");
+        assert_eq!(jobs[0]["status"], "queued");
+        assert_eq!(channels.submits.load(Ordering::SeqCst), 0);
+        assert!(channels.queries.lock().unwrap().is_empty());
+    }
+    fn assert_image_queue_identity_error(error: ProviderError) {
+        let (_temp, store, engine, channels) = image_queue_fixture();
+        let actual = engine
+            .queue_images_with_account_check(
+                &store,
+                &image_queue_request(json!(["fresh-asset"])),
+                |_, _| Err(error.clone()),
+            )
+            .unwrap_err();
+        assert!(actual.contains(&error.code));
+        assert!(actual.contains(&error.message));
+        assert!(!actual.contains("刷新现有登录状态"));
+        let raw: String = store.conn().unwrap().query_row("SELECT data FROM events WHERE type='image_account_preflight_failed' ORDER BY rowid DESC LIMIT 1", [], |row| row.get(0)).unwrap();
+        let event: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(event["error"], serde_json::to_value(error).unwrap());
+        assert_eq!(event["newGenerationQueued"], false);
+        assert!(store.jobs().unwrap().is_empty());
+        assert_eq!(channels.submits.load(Ordering::SeqCst), 0);
+    }
+    #[test]
+    fn images_queue_network_identity_failure_keeps_its_type_and_does_not_claim_logout() {
+        assert_image_queue_identity_error(ProviderError::new(
+            "CLI_NETWORK",
+            "temporary offline network failure",
+        ));
+    }
+    #[test]
+    fn images_queue_real_authentication_failure_keeps_the_authentication_flag() {
+        assert_image_queue_identity_error(ProviderError::auth());
+    }
+    #[test]
+    fn images_queue_rejects_cli_configuration_changes_during_identity_inspection() {
+        let (_temp, store, engine, channels) = image_queue_fixture();
+        let error = engine
+            .queue_images_with_account_check(
+                &store,
+                &image_queue_request(json!(["fresh-asset"])),
+                |_, _| {
+                    store
+                        .save_settings(&json!({"dreaminaPath":"offline-replaced-cli"}))
+                        .unwrap();
+                    Ok("verified-current-account".into())
+                },
+            )
+            .unwrap_err();
+        assert!(error.contains("配置在账户核实时已变化"));
+        assert!(store.jobs().unwrap().is_empty());
+        assert_eq!(channels.submits.load(Ordering::SeqCst), 0);
+    }
+    #[test]
+    fn images_queue_changed_account_binds_new_jobs_but_preserves_known_and_unknown_identity() {
+        let (_temp, store, engine, channels) = image_queue_fixture();
+        let mut original = Vec::new();
+        for (asset_id, state, remote) in [
+            ("known-asset", "processing", Some("original-cloud-task")),
+            ("unknown-asset", "submission_unknown", None),
+        ] {
+            store.save_asset(json!({"id":asset_id,"variantId":"base","name":asset_id,"prompt":"offline existing prompt"})).unwrap();
+            let key = store
+                .add_job(
+                    "image",
+                    asset_id,
+                    "dreamina",
+                    "original-account",
+                    &json!({"requestId":format!("frozen-{asset_id}"),"prompt":"unchanged"}),
+                    state,
+                )
+                .unwrap();
+            let mut fields = json!({"receipt":{"original":asset_id},"result":{"preserved":true}});
+            if let Some(remote) = remote {
+                fields["providerTaskId"] = json!(remote);
+            }
+            store.update_job(&key, state, &fields).unwrap();
+            original.push((key.clone(), store.job(&key).unwrap()));
+        }
+        let report = engine
+            .queue_images_with_account_check(
+                &store,
+                &image_queue_request(json!(["fresh-asset", "known-asset", "unknown-asset"])),
+                |_, _| Ok("newly-verified-account".into()),
+            )
+            .unwrap();
+        assert_eq!(report["queuedCount"], 1);
+        assert_eq!(report["reusedCount"], 2);
+        assert_eq!(report["blockedCount"], 1);
+        for (key, before) in &original {
+            assert_eq!(
+                store.job(key).unwrap(),
+                *before,
+                "existing task and receipt must not be rewritten"
+            );
+        }
+        let jobs = store.jobs().unwrap();
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(
+            jobs.iter()
+                .find(|job| job["entityId"] == "fresh-asset")
+                .unwrap()["accountId"],
+            "newly-verified-account"
+        );
+        let config = engine.dreamina_config(&store).unwrap();
+        assert!(tasks::resume_job(
+            &store,
+            &original[0].0,
+            &config,
+            "newly-verified-account",
+            channels.as_ref(),
+            false
+        )
+        .is_err());
+        assert!(channels.queries.lock().unwrap().is_empty());
+        tasks::resume_job(
+            &store,
+            &original[0].0,
+            &config,
+            "original-account",
+            channels.as_ref(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            *channels.queries.lock().unwrap(),
+            vec!["original-cloud-task"]
+        );
+        assert_eq!(
+            store.job(&original[0].0).unwrap()["receipt"],
+            original[0].1["receipt"]
+        );
+        assert_eq!(store.job(&original[1].0).unwrap(), original[1].1);
+        assert_eq!(channels.submits.load(Ordering::SeqCst), 0);
+    }
     fn known_identity_fixture() -> (tempfile::TempDir, Store, String) {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::open(temp.path().join("project")).unwrap();

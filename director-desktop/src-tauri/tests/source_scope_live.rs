@@ -13,7 +13,9 @@ fn imported_source_structure_can_be_reparsed_in_isolation_without_text_changes()
     pipeline::validate_source(&locked).expect("old saved classifications remain valid");
     let dir = tempfile::tempdir().unwrap();
     let engine = Engine::with_channels(dir.path().to_owned(), Arc::new(RealChannels)).unwrap();
-    let project = engine.dispatch(json!({"action":"projects.create","title":"来源结构隔离核验"})).unwrap();
+    let project = engine
+        .dispatch(json!({"action":"projects.create","title":"来源结构隔离核验"}))
+        .unwrap();
     let id = project["id"].as_str().unwrap();
     let store = engine.store(id).unwrap();
     let imported = store.save_source(saved.clone()).unwrap();
@@ -28,9 +30,20 @@ fn imported_source_structure_can_be_reparsed_in_isolation_without_text_changes()
     assert_eq!(source["scenes"].as_array().unwrap().len(), 21);
     assert!(source["diagnostics"].as_array().unwrap().is_empty());
     let rows = source["rows"].as_array().unwrap();
-    assert!(rows.iter().filter(|r| r["number"].as_u64().unwrap() <= 24).all(|r| r["kind"] == "context" || r["kind"] == "format"));
-    assert!(rows.iter().take(24).all(|r| r["episodeId"].is_null() && r["sceneId"].is_null() && r["dialogue"].is_null()));
-    assert_eq!(rows.iter().map(|r|r["text"].as_str().unwrap()).collect::<String>(), saved["text"].as_str().unwrap());
+    assert!(rows
+        .iter()
+        .filter(|r| r["number"].as_u64().unwrap() <= 24)
+        .all(|r| r["kind"] == "context" || r["kind"] == "format"));
+    assert!(rows
+        .iter()
+        .take(24)
+        .all(|r| r["episodeId"].is_null() && r["sceneId"].is_null() && r["dialogue"].is_null()));
+    assert_eq!(
+        rows.iter()
+            .map(|r| r["text"].as_str().unwrap())
+            .collect::<String>(),
+        saved["text"].as_str().unwrap()
+    );
     pipeline::validate_source(&serde_json::from_value(source.clone()).unwrap()).unwrap();
     let repeated = engine.dispatch(json!({"action":"source.reparse","projectId":id,"expectedSourceVersion":source["version"]})).unwrap();
     assert_eq!(repeated["source"]["version"], source["version"]);
@@ -38,6 +51,8 @@ fn imported_source_structure_can_be_reparsed_in_isolation_without_text_changes()
     assert!(actual["assets"].as_array().unwrap().is_empty());
     assert!(actual["units"].as_array().unwrap().is_empty());
     let report = json!({"ok":true,"rows":461,"episodes":10,"scenes":21,"backgroundRange":{"firstLine":1,"lastLine":24},"remainingBlockingIssues":0,"textAndSha256Unchanged":true,"episodeSceneIdentitiesAndMembershipUnchanged":true,"repeatedReparseCreatesVersion":false,"generationRequestsSent":0,"productionDatabaseWritten":false,"sourceSnapshotRead":true,"isolation":"temporary Engine project"});
-    if let Ok(output) = std::env::var("DIRECTOR_TEST_SOURCE_REPORT") { fs::write(output, serde_json::to_vec_pretty(&report).unwrap()).unwrap(); }
+    if let Ok(output) = std::env::var("DIRECTOR_TEST_SOURCE_REPORT") {
+        fs::write(output, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    }
     println!("{report}");
 }

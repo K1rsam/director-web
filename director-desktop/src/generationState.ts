@@ -1,5 +1,16 @@
 import type { Job } from './types.ts';
 
+const ACTIVE = /^(queued|preparing|ready|running|submitted|pending|processing|uploading|submitting|executing|downloading)$/i;
+/** Running work is separate from the ownership that prevents duplicate generation. */
+export function jobActive(job: Job): boolean {
+  if (job.submissionUnknown || !ACTIVE.test(job.status)) return false;
+  const snapshot = job.snapshot;
+  const awaitingVideoSubmission = job.kind === 'video' && job.status.toLowerCase() === 'ready'
+    && !job.providerTaskId && snapshot !== null && typeof snapshot === 'object' && !Array.isArray(snapshot)
+    && (snapshot as Record<string, unknown>).autoSubmit === false;
+  return !awaitingVideoSubmission;
+}
+
 // These states retain ownership of a generation request, even while local work is paused.
 const BLOCKING = new Set(['queued', 'preparing', 'ready', 'submitting', 'submitted', 'processing', 'downloading', 'auth_required', 'submission_unknown', 'query_failed', 'download_failed', 'recovery_paused', 'waiting_dependency', 'succeeded']);
 export function generationBlocksNewJob(job: Job): boolean {

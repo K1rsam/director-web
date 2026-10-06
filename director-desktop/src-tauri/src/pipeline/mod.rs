@@ -18,14 +18,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 pub use source::*;
 use std::collections::{HashMap, HashSet};
-pub(crate) use storyboard::validate_episode_delivery;
+pub(crate) use storyboard::{finish_base_hash, validate_episode_delivery};
 pub use storyboard::{
     compile_reference_template, render_legacy_unit, run_storyboard, validate_storyboard,
 };
 pub(crate) use storyboard_transport::{
-    compile_legacy_finish_grouping_transport, compile_storyboard_transport,
-    storyboard_transport_rule, CompiledStoryboardTransport, STORYBOARD_LOSSLESS_INPUT_RULE,
-    STORYBOARD_TRANSPORT_LIMIT,
+    compile_legacy_finish_grouping_transport, compile_storyboard_dispatch_transport,
+    compile_storyboard_transport, storyboard_transport_rule, CompiledStoryboardTransport,
+    STORYBOARD_LOSSLESS_INPUT_RULE, STORYBOARD_TRANSPORT_LIMIT,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +43,27 @@ pub struct TextRequest {
 #[async_trait]
 pub trait TextExecutor: Send + Sync {
     async fn execute(&self, request: TextRequest) -> Result<Value, String>;
+    fn input_transport_characters(&self, request: &TextRequest) -> Result<usize, String> {
+        let wire = compile_storyboard_dispatch_transport(request)?;
+        let (input, schema) = wire
+            .as_ref()
+            .map(|wire| (&wire.input, &wire.schema))
+            .unwrap_or((&request.input, &request.schema));
+        Ok(crate::text_executor::transport_payload_characters(
+            request, input, schema,
+        ))
+    }
+    /// Read-only, source-bound evidence for the one legacy A15 attempt whose
+    /// accepted result omitted already-adopted production constraints.
+    async fn visual_fact_repair_context(
+        &self,
+        _source_sha: &str,
+        _packet_hash: &str,
+        _original_domain_hash: &str,
+        _original_raw_hash: &str,
+    ) -> Result<Option<Value>, String> {
+        Ok(None)
+    }
     async fn accept(&self, _request: &TextRequest, _value: &Value) -> Result<(), String> {
         Ok(())
     }
@@ -61,6 +82,11 @@ pub trait TextExecutor: Send + Sync {
     }
     async fn continuity_changed(&self, _evidence: &Value) -> Result<(), String> {
         Ok(())
+    }
+    /// Select a new node only when an adopted upstream repair changed the
+    /// continuity of an existing author. Identical requests retain their cache.
+    async fn author_chain_revision(&self, _request: &TextRequest, _repair: &Value) -> Result<Option<Value>, String> {
+        Ok(None)
     }
 }
 

@@ -533,13 +533,17 @@ pub async fn run_asset_design(
             }) };
             json!({"assetId":id,"variantId":asset["variantId"],"mode":"INLINE","status":status,"sourceAssetId":parent,"adoptedMediaId":own_media.or(parent_media),"reason":reason})
         }).collect();
+    let cached_visual_ids = super::asset_visual_facts::cached_visual_check_asset_ids(input)?;
     let visual_assets: Vec<_> = assets
         .iter()
         .filter(|asset| {
             if !wanted.contains(text(asset, "id")) || inline_asset(asset) {
                 return false;
             }
-            if automatic && !automatic_design_required(input, asset) {
+            if automatic
+                && !automatic_design_required(input, asset)
+                && !cached_visual_ids.iter().any(|id| id == text(asset, "id"))
+            {
                 return false;
             }
             let mut seen = HashSet::new();
@@ -562,6 +566,7 @@ pub async fn run_asset_design(
         json!({"facts":input.pointer("/foundation/facts").cloned().unwrap_or(json!([])),"blocked":[],"visualFactBatches":[]})
     } else {
         let mut visual_input = input.clone();
+        visual_input["assetRegistry"] = input["assets"].clone();
         visual_input["assets"] = json!(visual_assets);
         super::asset_visual_facts::run_asset_visual_facts(&visual_input, executor, model, reasoning)
             .await?
@@ -948,7 +953,7 @@ pub async fn run_asset_design(
         })
         .collect();
     Ok(
-        json!({"schemaVersion":"asset-design-batch/v1","sourceSha256":source.sha256,"assets":updated,"designs":designs,"imagePlan":image_plan,"imageProductionPolicy":policy,"facts":visual["facts"],"visualFactBatches":visual["visualFactBatches"],"blocked":blocked,"skipped":skipped,"trialApproved":trial_approved,"ruleSnapshots":[rule_snapshot("asset-visual-facts-extractor")?,rule_snapshot("asset-art-director")?,rule_snapshot("asset-image-production")?]}),
+        json!({"schemaVersion":"asset-design-batch/v1","sourceSha256":source.sha256,"assets":updated,"designs":designs,"imagePlan":image_plan,"imageProductionPolicy":policy,"facts":visual["facts"],"visualFactBatches":visual["visualFactBatches"],"visualFactCacheReuses":visual["visualFactCacheReuses"].as_array().cloned().unwrap_or_default(),"blocked":blocked,"skipped":skipped,"trialApproved":trial_approved,"ruleSnapshots":[rule_snapshot("asset-visual-facts-extractor")?,rule_snapshot("asset-art-director")?,rule_snapshot("asset-image-production")?]}),
     )
 }
 
@@ -2086,5 +2091,73 @@ mod tests {
         assert_eq!(requests[0]["parentDesign"]["origin"], "MANUAL");
         assert_eq!(output["assets"].as_array().unwrap().len(), 1);
         assert_eq!(output["assets"][0]["id"], "child");
+    }
+
+    struct UnassignedVisual;
+    #[async_trait]
+    impl TextExecutor for UnassignedVisual {
+        async fn execute(&self, request: TextRequest) -> Result<Value, String> {
+            assert_eq!(request.stage, "assetVisualFacts");
+            if request.input.get("visualFactRepair").is_some() {
+                return Ok(
+                    json!({"schemaVersion":"asset-visual-fact-repair/v1","originalRawSha256":request.input["visualFactRepair"]["originalRawSha256"],"corrections":request.input["unassignedVisualFacts"].as_array().unwrap().iter().map(|item|json!({"factIndex":item["factIndex"],"action":"UNRESOLVED","variantId":null,"reason":"原文未定位未来外观到当前形象，保留原事实。"})).collect::<Vec<_>>()}),
+                );
+            }
+            let identity = &request.input["identities"][0];
+            let row = &request.input["rows"][0];
+            Ok(
+                json!({"schemaVersion":"asset-visual-facts-wire/v1","coveredPacketRef":request.input["coveredPacketRef"],"facts":[{"assetId":identity["assetId"],"variantId":null,"attribute":"hair.style","value":"后期短发","scope":"TRANSITION","claim":"SOURCE","sourceRefs":[row["id"]]}],"issues":[]}),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn existing_prompt_cannot_bypass_cached_unassigned_state_or_redesign_unrelated_assets() {
+        let source =
+            prepare_source("第一集\n场景：门口\n△甲当前长发，后期短发。乙出现。\n").unwrap();
+        let row = source.rows[2].id.clone();
+        let assets = json!([
+            {"id":"subject-base","baseAssetId":"subject","variantId":"base","name":"甲","kind":"CH","sourceRefs":[row],"prompt":"用户已有设计","promptOrigin":"MANUAL","preparation":{"mode":"REFERENCE"}},
+            {"id":"unrelated","baseAssetId":"other","variantId":"base","name":"乙","kind":"CH","sourceRefs":[row],"prompt":"其它已有设计","promptOrigin":"MANUAL","preparation":{"mode":"REFERENCE"}}
+        ]);
+        let mut input = json!({"source":source,"assets":assets,"automaticDesign":true,"imageProductionPolicy":"automatic","selection":{"assetIds":["subject-base","unrelated"]},"foundation":{"sourceSha256":source.sha256,"facts":[]}});
+        let mut seed = input.clone();
+        seed["assets"] = json!([assets[0].clone()]);
+        let visual = super::super::asset_visual_facts::run_asset_visual_facts(
+            &seed,
+            &UnassignedVisual,
+            "offline",
+            "medium",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            visual["visualFactBatches"][0]["unassignedFacts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        input["foundation"]["visualFactBatches"] = visual["visualFactBatches"].clone();
+        assert!(super::super::asset_visual_facts::cached_visual_check_required(&input).unwrap());
+        let before = input.clone();
+        let output = run_asset_design(&input, &Never, "offline", "medium")
+            .await
+            .unwrap();
+        assert!(
+            output["assets"].as_array().unwrap().is_empty(),
+            "existing prompts must never be designed again"
+        );
+        assert!(output["blocked"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["assetId"] == "subject-base"));
+        assert!(output["blocked"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["assetId"] != "unrelated"));
+        assert_eq!(input, before);
     }
 }

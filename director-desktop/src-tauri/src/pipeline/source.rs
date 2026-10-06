@@ -154,6 +154,21 @@ fn dialogue_segments(
     (spoken, performance)
 }
 
+// System announcements commonly wrap the actual spoken message in 【】.
+// That typography is not an acting cue. Keep the original characters and
+// coordinates; only change the classification of this unambiguous wrapper.
+fn system_message_segments(dialogue: &mut SourceDialogue) {
+    if !["系统", "系统音"].contains(&dialogue.speaker.as_str())
+        || !["VO", "系统音"].contains(&dialogue.channel.as_str())
+        || !dialogue.quote.starts_with('【')
+        || !dialogue.quote.ends_with('】')
+        || dialogue.performance_segments.iter().filter(|part| part.range.start >= dialogue.range.start).count() != 1
+        || !dialogue.spoken_segments.is_empty()
+    { return; }
+    dialogue.performance_segments.retain(|part| part.range.end <= dialogue.range.start);
+    dialogue.spoken_segments.push(SourceSegment { text:dialogue.quote.clone(), range:dialogue.range.clone() });
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceRow {
@@ -537,7 +552,7 @@ fn parse_dialogue(
     };
     let (spoken_segments, performance_segments) =
         dialogue_segments(line, start, quote_start, &range);
-    Some(SourceDialogue {
+    let mut dialogue = SourceDialogue {
         id: format!("dialogue:{row_id}"),
         speaker: speaker.into(),
         channel: channel.into(),
@@ -545,7 +560,9 @@ fn parse_dialogue(
         range,
         spoken_segments,
         performance_segments,
-    })
+    };
+    system_message_segments(&mut dialogue);
+    Some(dialogue)
 }
 
 pub fn prepare_source(text: &str) -> Result<LockedSource, String> {
@@ -970,6 +987,9 @@ pub fn validate_source(source: &LockedSource) -> Result<(), String> {
                 actual.spoken_segments = expected.spoken_segments.clone();
                 actual.performance_segments = expected.performance_segments.clone();
             }
+            // Integrity already proved any legacy segments are the exact old
+            // parser projection. Normalize only the known system wrapper here.
+            system_message_segments(actual);
         }
     }
     if serde_json::to_value(&rows).unwrap() != serde_json::to_value(&expected.rows).unwrap()
@@ -1042,6 +1062,17 @@ fn validate_integrity(source: &LockedSource) -> Result<(), String> {
             if actual.spoken_segments.is_empty() && actual.performance_segments.is_empty() {
                 actual.spoken_segments = expected.spoken_segments.clone();
                 actual.performance_segments = expected.performance_segments.clone();
+            }
+            // Previously saved parser metadata may contain the exact legacy
+            // bracket classification. Upgrade that one known parser defect
+            // from the locked source, never accept arbitrary changed segments.
+            if actual != expected {
+                let colon_end = expected.range.start - row.range.start;
+                let prefix = slice_utf16(&row.text, &SourceRange { start:0, end:colon_end })?;
+                let legacy = dialogue_segments(&row.text, row.range.start, prefix.len(), &expected.range);
+                if actual.spoken_segments == legacy.0 && actual.performance_segments == legacy.1 {
+                    system_message_segments(actual);
+                }
             }
         }
         if actual_dialogue != expected_dialogue {
@@ -1248,6 +1279,31 @@ fn apply_decisions_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_message_wrapper_is_spoken_and_legacy_metadata_upgrades_without_source_changes() {
+        let source=prepare_source("第一集\r\n场景：海边\r\n系统VO：【叮！今日有青蟹😀，请查看位置。】\r\n甲（低声）：别动（抬手），回来。\r\n").unwrap();
+        let system=source.rows[2].dialogue.as_ref().unwrap();
+        assert_eq!(system.speaker,"系统");assert_eq!(system.channel,"VO");
+        assert_eq!(spoken_text(system),"【叮！今日有青蟹😀，请查看位置。】");
+        assert!(system.performance_segments.is_empty());
+        let mut legacy=source.clone();
+        let row=&mut legacy.rows[2];let dialogue=row.dialogue.as_mut().unwrap();
+        let prefix=slice_utf16(&row.text,&SourceRange{start:0,end:dialogue.range.start-row.range.start}).unwrap();
+        let segments=dialogue_segments(&row.text,row.range.start,prefix.len(),&dialogue.range);
+        dialogue.spoken_segments=segments.0;dialogue.performance_segments=segments.1;
+        assert!(dialogue.spoken_segments.is_empty());
+        validate_source(&legacy).unwrap();
+        let upgraded=upgrade_source_dialogues(&legacy).unwrap();
+        assert_eq!(serde_json::to_value(&upgraded).unwrap(),serde_json::to_value(&source).unwrap());
+        assert_eq!(upgraded.sha256,legacy.sha256);assert_eq!(upgraded.text,legacy.text);
+        assert_eq!(spoken_text(upgraded.rows[3].dialogue.as_ref().unwrap()),"别动，回来。");
+        legacy.rows[2].dialogue.as_mut().unwrap().performance_segments[0].range.start+=1;
+        assert!(validate_source(&legacy).is_err());
+        let ordinary=prepare_source("第一集\n甲VO：【压低声音】\n系统VO：请看（抬手）位置。\n").unwrap();
+        assert!(ordinary.rows[1].dialogue.as_ref().unwrap().spoken_segments.is_empty());
+        assert_eq!(spoken_text(ordinary.rows[2].dialogue.as_ref().unwrap()),"请看位置。");
+    }
 
     #[test]
     fn source_structuring_adjacent_equal_headings_share_one_exact_boundary() {

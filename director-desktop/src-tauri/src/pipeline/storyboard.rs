@@ -108,7 +108,7 @@ fn draft_schema(
 const FINISH_TRANSPORT_LIMIT: usize = STORYBOARD_TRANSPORT_LIMIT;
 
 fn finish_transport_characters(request: &TextRequest) -> Result<usize, String> {
-    let wire = compile_storyboard_transport(request)?;
+    let wire = compile_storyboard_dispatch_transport(request)?;
     let (input, schema) = wire
         .as_ref()
         .map(|wire| (&wire.input, &wire.schema))
@@ -126,7 +126,17 @@ fn finish_grouping_characters(
     compact_dependency_exits: bool,
 ) -> Result<usize, String> {
     if compact_dependency_exits {
-        return finish_transport_characters(request);
+        // Keep the existing editor partitions. Only the indivisible request's
+        // preflight uses the exact outgoing compiler; a smaller wire cannot
+        // regroup already frozen adjacent author scopes.
+        let wire = compile_storyboard_transport(request)?;
+        let (input, schema) = wire
+            .as_ref()
+            .map(|wire| (&wire.input, &wire.schema))
+            .unwrap_or((&request.input, &request.schema));
+        return Ok(crate::text_executor::transport_payload_characters(
+            request, input, schema,
+        ));
     }
     let wire = compile_legacy_finish_grouping_transport(request)?;
     let (input, schema) = wire
@@ -146,7 +156,7 @@ struct AcceptedAuthorScope {
     draft: Value,
 }
 
-fn finish_base_hash(base: &Value) -> String {
+pub(crate) fn finish_base_hash(base: &Value) -> String {
     digest(&json!({"schemaVersion":base["schemaVersion"],"units":base["units"],"fantasyRealization":base["fantasyRealization"]}).to_string())
 }
 
@@ -391,6 +401,17 @@ fn finish_request(
         "revisionNotes":[],"unresolved":[]});
     let identity=digest(&json!({"episodeId":episode_id,"authorBatchIds":scopes.iter().map(|scope|&scope.batch.id).collect::<Vec<_>>(),"sourceRefs":refs}).to_string());
     let mut input = scopes[0].input.clone();
+    let mut author_revisions = Vec::new();
+    for scope in scopes {
+        if let Some(revision) = scope.input.get("authorChainRevision") {
+            if !author_revisions.contains(revision) { author_revisions.push(revision.clone()); }
+        }
+    }
+    if author_revisions.len() == 1 {
+        input["authorChainRevision"] = author_revisions[0].clone();
+    } else if !author_revisions.is_empty() {
+        input["authorChainRevision"] = json!({"version":"accepted-author-chain-change/v1","authorRevisions":author_revisions});
+    }
     input.as_object_mut().unwrap().remove("workPackage");
     input.as_object_mut().unwrap().remove("dependencyOutputs");
     input["workPackages"] = json!(owners);
@@ -483,18 +504,17 @@ fn refs_valid(items: &[String], allowed: &HashSet<&str>, nonempty: bool) -> Resu
     Ok(())
 }
 
-fn normalize_coverage(_source: &LockedSource, covered: &[String]) -> Result<Vec<String>, String> {
-    let mut once = Vec::new();
-    for id in covered {
-        // Source references are evidence anchors, not an execution count. One
-        // ongoing action can inform both sides of a unit boundary. Fold only
-        // adjacent anchors; nonadjacent repeats still fail ordered coverage,
-        // while dialogue ranges are independently checked exactly once.
-        if once.last() != Some(id) {
-            once.push(id.clone());
-        }
-    }
-    Ok(once)
+fn normalize_coverage(source: &LockedSource, covered: &[String]) -> Result<Vec<String>, String> {
+    // Port the original coordinator's evidence-set coverage. Citing a source
+    // again does not replay it; actual speech and its order are checked below,
+    // while Rust materializes unique locked body intervals independently.
+    let cited: HashSet<_> = covered.iter().map(String::as_str).collect();
+    Ok(source
+        .rows
+        .iter()
+        .filter(|row| cited.contains(row.id.as_str()))
+        .map(|row| row.id.clone())
+        .collect())
 }
 
 fn validate_plan(
@@ -1326,6 +1346,7 @@ fn validate_storyboard_repair_scope(
             }
             let rs = strings(shot, "sourceRefs")?;
             refs_valid(&rs, &all, true)?;
+            covered.extend(rs.iter().cloned());
             if rs.iter().any(|r| !source_refs.contains(r)) {
                 return Err("镜头引用越出本单元来源".into());
             }
@@ -1439,7 +1460,12 @@ fn validate_storyboard_repair_scope(
         })
         .map(|r| r.id.clone())
         .collect();
-    if normalize_coverage(source, &covered)? != expected {
+    let shot_covered: Vec<_> = units
+        .iter()
+        .flat_map(|unit| unit["shots"].as_array().into_iter().flatten())
+        .flat_map(|shot| strings(shot, "sourceRefs").unwrap_or_default())
+        .collect();
+    if normalize_coverage(source, &shot_covered)? != expected {
         return Err(
             "单元须依源顺序完整覆盖制作正文；跨单元同句仅允许连续原片段且全句恰好一次".into(),
         );
@@ -1880,6 +1906,7 @@ fn incompatible_resume_scopes(
                 "related-range-finish/v1",
                 "carrier-repair/v1",
                 creative::AUTHOR_SCOPE_REPAIR_EXECUTION_VERSION,
+                creative::FINISH_SCOPE_REPAIR_EXECUTION_VERSION,
             ]
             .contains(&version)
             && (schema == "storyboard-delta/v2" || (!accepted && schema.is_empty()))
@@ -2138,6 +2165,7 @@ pub async fn run_storyboard(
             let mut accepted_boundary=previous.clone();let mut previous_batch:Option<String>=None;
             let mut package_outputs:Vec<(String,Value)>=Vec::new();
             let mut authored_scopes=Vec::new();
+            let mut author_repair_cause = Value::Null;
             for (batch_index,batch) in batches.iter().enumerate() {
                 let owners:Vec<_>=packages.iter().filter(|p|batch.package_ids.iter().any(|id|id==text(p,"id"))).collect();
                 let dependencies:HashSet<_>=owners.iter().flat_map(|p|strings(p,"dependsOn").unwrap_or_default()).filter(|id|!batch.package_ids.contains(id)).collect();
@@ -2179,14 +2207,20 @@ pub async fn run_storyboard(
                 let batch_result:Result<Value,String>=async {
                     let methods=methods_for(&package_rows,&candidates,&scenario_keys,false,&entry_facts)?;
                     let schema=draft_schema(&package_rows,&package_context,&current_assets,&event_ids,&episode.id);
+                    if !author_repair_cause.is_null() {
+                        let request = creative::prepare_request(TextRequest{stage:"storyboardCreate".into(),skill:"unit-performance-director".into(),model:model.into(),reasoning:reasoning.into(),input:author_input.clone(),schema:schema.clone(),rule_snapshot:snapshot("unit-performance-director",&methods)?})?;
+                        if let Some(revision) = executor.author_chain_revision(&request,&author_repair_cause).await? {
+                            author_input["authorChainRevision"] = revision;
+                        }
+                    }
                     let mut repair_candidate=None;
                     let result=call_validated(executor,"storyboardCreate","unit-performance-director",model,reasoning,
                         author_input.clone(),
                         schema.clone(),&methods,|value| {
                             let raw=value.clone();
                             if let Err(reason)=validate_authored(&source,value,&current_assets,caps,&batch.source_refs,style,&prefix) {
-                                if creative_enabled && reason==crate::text_executor::AUTHOR_ASSET_SCOPE_REJECTION {
-                                    let (candidate,issues)=author_scope_candidate(&source,&raw,&current_assets,caps,&batch.source_refs,style,&prefix,&plan,&candidates,true)?;
+                                if creative_enabled && crate::text_executor::author_repairable_rejection(&reason) {
+                                    let (candidate,issues)=author_validation_candidate(&source,&raw,&current_assets,caps,&batch.source_refs,style,&prefix,&plan,&candidates,&reason)?;
                                     if issues.is_empty(){return Err("主创待修原包没有可证实的适用范围问题；保留原拒绝，不重发".into());}
                                     repair_candidate=Some((raw,candidate,issues));
                                 }
@@ -2196,7 +2230,7 @@ pub async fn run_storyboard(
                             creative::add_delivery(value,&source,style,&current_assets,creative_enabled)
                         }).await;
                     match (result,repair_candidate) {
-                        (Err(reason),Some((raw,candidate,issues))) if reason==crate::text_executor::AUTHOR_ASSET_SCOPE_REJECTION=>{
+                        (Err(reason),Some((raw,candidate,issues))) if crate::text_executor::author_repairable_rejection(&reason)=>{
                             let origin=creative::prepare_request(TextRequest{stage:"storyboardCreate".into(),skill:"unit-performance-director".into(),model:model.into(),reasoning:reasoning.into(),input:author_input.clone(),schema,rule_snapshot:snapshot("unit-performance-director",&methods)?})?;
                             let scope=AcceptedAuthorScope{index:batch_index,batch:batch.clone(),input:author_input.clone(),draft:candidate};
                             repair_author_scope(&source,&raw,&origin,&scope,issues,&plan,&rows,&context,&current_assets,&selected,&episode.id,model,reasoning,input.get("voiceReference"),caps,style,executor).await
@@ -2211,7 +2245,10 @@ pub async fn run_storyboard(
                         // happens only after the related authors are complete.
                         accepted_boundary=authored["units"].as_array().unwrap().last().cloned().unwrap();previous_batch=Some(batch.id.clone());
                         for id in &batch.package_ids {package_outputs.push((id.clone(),authored.clone()));}
-                        if !authored["authorRepairProvenance"].is_null(){author_input["authorRepairProvenance"]=authored["authorRepairProvenance"].clone();}
+                        if !authored["authorRepairProvenance"].is_null(){
+                            author_input["authorRepairProvenance"]=authored["authorRepairProvenance"].clone();
+                            author_repair_cause=authored["authorRepairProvenance"].clone();
+                        }
                         authored_scopes.push(AcceptedAuthorScope{index:batch_index,batch:batch.clone(),input:author_input,draft:authored});
                     }
                     Err(reason)=>{local_blocked.push(json!({"episodeId":episode.id,"executionBatchId":batch.id,"packageIds":batch.package_ids,"status":"blocked","reason":reason}));failed_owners.extend(batch.package_ids.iter().cloned());accepted_boundary=Value::Null;}
@@ -2229,9 +2266,8 @@ pub async fn run_storyboard(
                 let prior=if prior_finish_index.map(|index|index+1==first.index).unwrap_or(false){prior_finish.as_ref()}else{None};
                 let mut end=start+1;
                 let mut prepared=finish_request(&authored_scopes[start..end],&plan,&rows,&context,&current_assets,&selected,&episode.id,model,reasoning,input.get("voiceReference"),prior,authored_scopes.get(end).and_then(|scope|scope.draft["units"].as_array().unwrap().first()))?;
-                let measure=|request:&TextRequest|finish_transport_characters(request);
-                if measure(&prepared.0)?>FINISH_TRANSPORT_LIMIT {
-                    local_blocked.push(json!({"episodeId":episode.id,"executionBatchId":first.batch.id,"packageIds":first.batch.package_ids,"status":"blocked","code":"FINISH_TRANSPORT_CAPACITY","actualCharacters":measure(&prepared.0)?,"limit":FINISH_TRANSPORT_LIMIT,"reason":"不可再分的完整作者范围超过桌面请求容量；已校验主创保留，不截断原文、现稿或规则。"}));
+                if executor.input_transport_characters(&prepared.0)?>FINISH_TRANSPORT_LIMIT {
+                    local_blocked.push(json!({"episodeId":episode.id,"executionBatchId":first.batch.id,"packageIds":first.batch.package_ids,"status":"blocked","code":"FINISH_TRANSPORT_CAPACITY","actualCharacters":executor.input_transport_characters(&prepared.0)?,"limit":FINISH_TRANSPORT_LIMIT,"reason":"不可再分的完整作者范围超过桌面请求容量；已校验主创保留，不截断原文、现稿或规则。"}));
                     failed_finish_owners.extend(first.batch.package_ids.iter().cloned());start+=1;continue;
                 }
                 // Greedily retain the full adjacent range. Neither source video
@@ -2690,6 +2726,165 @@ fn author_scope_candidate(
     )
 }
 
+/// A rejected model result is data for the original editor, never an accepted
+/// author. Source coordinates remain locked; only an explicitly known local
+/// validation defect may reach the existing two-attempt delta route.
+fn author_validation_candidate(
+    source: &LockedSource,
+    raw: &Value,
+    assets: &[Value],
+    caps: &Value,
+    refs: &[String],
+    style: &str,
+    prefix: &str,
+    plan: &Value,
+    selected: &[Value],
+    reason: &str,
+) -> Result<(Value, Vec<Value>), String> {
+    if reason == crate::text_executor::AUTHOR_ASSET_SCOPE_REJECTION {
+        return author_scope_candidate(
+            source, raw, assets, caps, refs, style, prefix, plan, selected, true,
+        );
+    }
+    let code = match reason {
+        crate::text_executor::AUTHOR_DIALOGUE_INTERVAL_REJECTION => "DIALOGUE_SOURCE_INTERVAL",
+        crate::text_executor::AUTHOR_SOURCE_COVERAGE_REJECTION => "UNIT_SOURCE_COVERAGE",
+        crate::text_executor::AUTHOR_ASSET_SOURCE_REJECTION => "ASSET_SOURCE_SCOPE",
+        _ => return Err("该原主创错误没有明确的原整编修订入口；保留原回包".into()),
+    };
+    if raw["schemaVersion"] != "storyboard-draft/v2" {
+        return Err("原主创修订缺少已知原话区间协议".into());
+    }
+    let allowed: HashSet<_> = refs.iter().map(String::as_str).collect();
+    let known: HashSet<_> = source.rows.iter().map(|row| row.id.as_str()).collect();
+    let quotes: HashMap<_, _> = source
+        .rows
+        .iter()
+        .filter_map(|row| {
+            row.dialogue
+                .as_ref()
+                .map(|quote| (quote.id.as_str(), quote))
+        })
+        .collect();
+    let mut draft = raw.clone();
+    materialize_asset_references(&mut draft, assets)?;
+    prefix_ids(&mut draft, prefix)?;
+    validate_event_bindings(&draft, plan)?;
+    validate_fantasy_profile(&draft, selected, true)?;
+    let mut issues = Vec::new();
+    let units = draft["units"]
+        .as_array()
+        .filter(|units| !units.is_empty())
+        .ok_or("原主创候选缺少完整单元")?;
+    for unit in units {
+        let unit_refs = strings(unit, "sourceRefs")?;
+        refs_valid(&unit_refs, &allowed, true)?;
+        let mut dialogue_issues = Vec::new();
+        for (shot_index, shot) in unit["shots"]
+            .as_array()
+            .filter(|shots| !shots.is_empty())
+            .ok_or("原主创候选缺少完整镜表")?
+            .iter()
+            .enumerate()
+        {
+            refs_valid(&strings(shot, "sourceRefs")?, &allowed, true)?;
+            refs_valid(&strings(shot, "contextRefs")?, &known, false)?;
+            let duration = shot["duration"]
+                .as_f64()
+                .filter(|number| number.is_finite() && *number > 0.0)
+                .ok_or("原主创候选镜长无效")?;
+            for (part_index, part) in shot["dialogueParts"]
+                .as_array()
+                .ok_or("原主创候选缺少对白范围")?
+                .iter()
+                .enumerate()
+            {
+                let line = text(part, "lineId");
+                let quote = quotes.get(line).ok_or("对白引用未知源句")?;
+                let owner = source
+                    .rows
+                    .iter()
+                    .find(|row| row.dialogue.as_ref().is_some_and(|q| q.id == line))
+                    .ok_or("对白引用未知源句")?;
+                if !allowed.contains(owner.id.as_str()) {
+                    return Err("对白引用越出冻结主创范围".into());
+                }
+                let start = part["quoteStart"]
+                    .as_u64()
+                    .ok_or("原主创修订缺少完整UTF16区间")? as usize;
+                let end = part["quoteEnd"]
+                    .as_u64()
+                    .ok_or("原主创修订缺少完整UTF16区间")? as usize;
+                if start >= end || end > source.text.encode_utf16().count() {
+                    return Err("原主创区间越出锁定原文，未交给模型猜补".into());
+                }
+                let voice_start = part["voiceStart"]
+                    .as_f64()
+                    .filter(|number| number.is_finite())
+                    .ok_or("原主创声窗无效")?;
+                let voice_end = part["voiceEnd"]
+                    .as_f64()
+                    .filter(|number| number.is_finite())
+                    .ok_or("原主创声窗无效")?;
+                if voice_start < 0.0 || voice_end <= voice_start || voice_end > duration + 0.000001
+                {
+                    return Err("声窗越出镜长或为空，禁止机械裁窗过关".into());
+                }
+                if part.get("speaker").is_some() && text(part, "speaker") != quote.speaker
+                    || part.get("channel").is_some() && text(part, "channel") != quote.channel
+                {
+                    return Err("传入说者或声道不符合原话来源".into());
+                }
+                if part.get("text").is_some()
+                    && spoken_ranges(quote)
+                        .iter()
+                        .any(|range| start >= range.start && end <= range.end)
+                    && text(part, "text") != slice_utf16(&source.text, &SourceRange { start, end })?
+                {
+                    return Err("传入对白与原话区间不一致，禁止改词或把演法念出".into());
+                }
+                if !spoken_ranges(quote)
+                    .iter()
+                    .any(|range| start >= range.start && end <= range.end)
+                {
+                    dialogue_issues.push(json!({"code":code,"unitId":unit["id"],"coordinate":format!("{}.shots[{shot_index}].dialogueParts[{part_index}]",text(unit,"id")),"lineId":line,"quoteStart":start,"quoteEnd":end,"allowedSpokenRanges":spoken_ranges(quote),"sourceRefs":[owner.id],"problem":reason}));
+                }
+            }
+        }
+        for reference in unit["assetRefs"]
+            .as_array()
+            .ok_or("原主创缺少资产引用数组")?
+        {
+            refs_valid(&strings(reference, "sourceRefs")?, &allowed, true)?;
+        }
+        if code == "DIALOGUE_SOURCE_INTERVAL" {
+            issues.extend(dialogue_issues);
+        } else if code == "UNIT_SOURCE_COVERAGE" {
+            issues.push(json!({"code":code,"unitId":unit["id"],"coordinate":format!("{}.sourceRefs",text(unit,"id")),"sourceRefs":unit["sourceRefs"],"requiredSourceRefs":refs,"problem":reason}));
+        } else if unit["assetRefs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reference| {
+                strings(reference, "sourceRefs")
+                    .unwrap()
+                    .iter()
+                    .any(|id| !unit_refs.contains(id))
+            })
+        {
+            issues.push(json!({"code":code,"unitId":unit["id"],"coordinate":format!("{}.assetRefs",text(unit,"id")),"sourceRefs":unit["sourceRefs"],"problem":reason}));
+        }
+    }
+    if issues.is_empty() {
+        return Err("原主创拒绝没有可定位的本范围问题；不重新生成".into());
+    }
+    if code != "DIALOGUE_SOURCE_INTERVAL" {
+        materialize_dialogue(source, &mut draft, false)?;
+    }
+    add_delivery_fields(&mut draft, style)?;
+    Ok((draft, issues))
+}
+
 fn scope_repair_candidate(
     source: &LockedSource,
     raw: &Value,
@@ -2735,6 +2930,9 @@ fn author_scope_problem_signature(issues: &[Value]) -> String {
         refs.sort_by_key(Value::to_string);refs.dedup();
         let mut identity=json!({"code":issue["code"],"assetId":issue["assetId"],"variantId":issue["variantId"],"episodeId":issue["episodeId"],"sceneId":issue["sceneId"],"sourceRefs":refs});
         if issue["code"]=="UNIT_SCENE_COORDINATE" {identity["expectedSceneId"]=issue["expectedSceneId"].clone();}
+        if ["DIALOGUE_SOURCE_INTERVAL","UNIT_SOURCE_COVERAGE","ASSET_SOURCE_SCOPE"].contains(&text(issue,"code")) {
+            for field in ["coordinate","lineId","quoteStart","quoteEnd","allowedSpokenRanges","requiredSourceRefs"] {identity[field]=issue[field].clone();}
+        }
         identity.to_string()
     }).collect::<HashSet<_>>().into_iter().collect();
     keys.sort();
@@ -2853,6 +3051,14 @@ async fn repair_author_scope(
     let raw_hash = digest(&original_raw.to_string());
     let mut current = scope.clone();
     let mut lineage = Vec::new();
+    let source_repair = issues.iter().any(|issue| {
+        [
+            "DIALOGUE_SOURCE_INTERVAL",
+            "UNIT_SOURCE_COVERAGE",
+            "ASSET_SOURCE_SCOPE",
+        ]
+        .contains(&text(issue, "code"))
+    });
     for attempt in 1..=2 {
         let signature = author_scope_problem_signature(&issues);
         let (mut request, base, refs) = finish_request(
@@ -2883,7 +3089,7 @@ async fn repair_author_scope(
         request.input["validationIssues"] = json!(issues);
         request.input["executionBatch"] = json!({"version":execution_version,"id":format!("{}:{identity}",if finish_origin{"finish-domain-repair"}else{"author-domain-repair"}),"sourceRefs":refs,"packageIds":scope.batch.package_ids,"originExecutionBatchId":scope.batch.id});
         request = creative::prepare_request(request)?;
-        if finish_transport_characters(&request)? > FINISH_TRANSPORT_LIMIT {
+        if executor.input_transport_characters(&request)? > FINISH_TRANSPORT_LIMIT {
             return Err(format!("{error_prefix}_TRANSPORT_CAPACITY：原回包、来源与方法卡完整保留，修订超过实际请求容量；未提交新请求"));
         }
         let raw = executor.execute(request.clone()).await?;
@@ -2928,19 +3134,54 @@ async fn repair_author_scope(
             let selected = request.input["selectedFantasy"]
                 .as_array()
                 .ok_or("主创修订缺少冻结幻想选择")?;
-            let (next, remaining) = scope_repair_candidate(
-                source,
-                &draft,
-                assets,
-                caps,
-                &refs,
-                style,
-                &format!("{episode_id}:"),
-                plan,
-                selected,
-                true,
-                true,
-            )?;
+            let (next, remaining) = if source_repair {
+                let mut checked = draft.clone();
+                match validate_authored(
+                    source,
+                    &mut checked,
+                    assets,
+                    caps,
+                    &refs,
+                    style,
+                    &format!("{episode_id}:"),
+                ) {
+                    Ok(()) => {
+                        validate_event_bindings(&checked, plan)?;
+                        validate_fantasy_profile(&checked, selected, true)?;
+                        creative::add_delivery(&mut checked, source, style, assets, true)?;
+                        (checked, Vec::new())
+                    }
+                    Err(reason) if crate::text_executor::author_repairable_rejection(&reason) => {
+                        author_validation_candidate(
+                            source,
+                            &draft,
+                            assets,
+                            caps,
+                            &refs,
+                            style,
+                            &format!("{episode_id}:"),
+                            plan,
+                            selected,
+                            &reason,
+                        )?
+                    }
+                    Err(reason) => return Err(reason),
+                }
+            } else {
+                scope_repair_candidate(
+                    source,
+                    &draft,
+                    assets,
+                    caps,
+                    &refs,
+                    style,
+                    &format!("{episode_id}:"),
+                    plan,
+                    selected,
+                    true,
+                    true,
+                )?
+            };
             if remaining.is_empty() {
                 // A hard failure is rejected with this original raw too; it
                 // cannot escape the bounded repair as an unvalidated receipt.
@@ -2980,6 +3221,15 @@ async fn repair_author_scope(
                             .any(|issue| issue["code"] == "UNIT_SCENE_COORDINATE")
                         {
                             "单元来源跨集/跨场或包含非制作资料"
+                        } else if source_repair {
+                            remaining
+                                .iter()
+                                .find_map(|issue| {
+                                    issue["problem"].as_str().filter(|reason| {
+                                        crate::text_executor::author_repairable_rejection(reason)
+                                    })
+                                })
+                                .ok_or("原文坐标修订缺少准确问题")?
                         } else {
                             crate::text_executor::AUTHOR_ASSET_SCOPE_REJECTION
                         },
@@ -3224,7 +3474,7 @@ async fn repair_video_carrier(
         // prepare_request retains the original primary/method rules. The new
         // trusted carrier appendix is tied only to this explicit new node.
         request = creative::prepare_request(request)?;
-        if finish_transport_characters(&request)? > FINISH_TRANSPORT_LIMIT {
+        if executor.input_transport_characters(&request)? > FINISH_TRANSPORT_LIMIT {
             return Err("VIDEO_CARRIER_REPAIR_TRANSPORT_CAPACITY：原稿及方法卡完整保留，修订请求仍超过容量；未提交新请求".into());
         }
         let raw = executor.execute(request.clone()).await?;
@@ -4063,57 +4313,107 @@ fn preserve_revision_ids(draft: &mut Value, originals: &[Value]) -> Result<(), S
 
 fn materialize_unit_coverage(source: &LockedSource, draft: &mut Value) -> Result<(), String> {
     materialize_dialogue(source, draft, true)?;
-    let mut quote_offsets: HashMap<String, usize> = HashMap::new();
-    let mut covered_actions = HashSet::new();
-    for unit in draft
-        .get_mut("units")
-        .and_then(Value::as_array_mut)
-        .ok_or("缺少单元")?
-    {
-        let mut ranges = Vec::new();
-        for row_id in strings(unit, "sourceRefs")? {
-            let row = source
-                .rows
-                .iter()
-                .find(|r| r.id == row_id)
-                .ok_or("来源行不存在")?;
-            if let Some(q) = &row.dialogue {
-                let old = *quote_offsets.get(&q.id).unwrap_or(&row.range.start);
-                let fragments: Vec<_> = unit["shots"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .flat_map(|s| s["dialogueParts"].as_array().unwrap())
-                    .filter(|p| text(p, "lineId") == q.id)
-                    .map(|p| p["quoteEnd"].as_u64().unwrap() as usize)
-                    .collect();
-                if fragments.is_empty() && expected_spoken(source, q)?.is_empty() {
-                    if covered_actions.insert(row.id.clone()) {
-                        ranges.push(
-                            json!({"rowId":row.id,"start":row.range.start,"end":row.range.end}),
-                        );
-                    }
-                    continue;
+    let units = draft["units"].as_array().ok_or("缺少单元")?;
+    let cited: HashSet<_> = units
+        .iter()
+        .flat_map(|unit| unit["shots"].as_array().into_iter().flatten())
+        .flat_map(|shot| strings(shot, "sourceRefs").unwrap_or_default())
+        .collect();
+    let rows: Vec<_> = source
+        .rows
+        .iter()
+        .filter(|row| cited.contains(&row.id))
+        .collect();
+    let mut spoken_owners: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+    for (index, unit) in units.iter().enumerate() {
+        for shot in unit["shots"].as_array().ok_or("缺少镜表")? {
+            for part in shot["dialogueParts"].as_array().ok_or("缺少对白")? {
+                let end = part["quoteEnd"].as_u64().ok_or("对白覆盖区间缺失")? as usize;
+                let owners = spoken_owners
+                    .entry(text(part, "lineId").to_owned())
+                    .or_default();
+                if let Some(last) = owners.last_mut().filter(|(owner, _)| *owner == index) {
+                    last.1 = end;
+                } else {
+                    owners.push((index, end));
                 }
-                if fragments.is_empty() {
-                    return Err("单元重复引用一行对白却没有承担对应原句片段".into());
+            }
+        }
+    }
+    let mut coverage = vec![Vec::<Value>::new(); units.len()];
+    let mut previous_owner = 0;
+    for (position, row) in rows.iter().enumerate() {
+        let spoken_quote = match row.dialogue.as_ref() {
+            Some(quote) if !expected_spoken(source, quote)?.is_empty() => Some(quote),
+            _ => None,
+        };
+        if let Some(quote) = spoken_quote {
+            let owners = spoken_owners
+                .get(&quote.id)
+                .filter(|owners| !owners.is_empty())
+                .ok_or("对白源行没有实际发声片段，不能以引用补足")?;
+            let mut start = row.range.start;
+            let spoken_end = spoken_ranges(quote)
+                .last()
+                .map(|range| range.end)
+                .unwrap_or(quote.range.end);
+            for &(owner, last) in owners {
+                if owner < previous_owner {
+                    return Err("正文覆盖归属与原话执行顺序不一致".into());
                 }
-                let last = *fragments.last().unwrap();
-                let spoken_end = spoken_ranges(q)
-                    .last()
-                    .map(|range| range.end)
-                    .unwrap_or(q.range.end);
-                let new = if last == spoken_end {
+                let end = if last == spoken_end {
                     row.range.end
                 } else {
                     last
                 };
-                ranges.push(json!({"rowId":row.id,"start":old,"end":new,"dialogueId":q.id}));
-                quote_offsets.insert(q.id.clone(), new);
-            } else if covered_actions.insert(row.id.clone()) {
-                ranges.push(json!({"rowId":row.id,"start":row.range.start,"end":row.range.end}));
+                if start >= end {
+                    return Err("正文覆盖区间空或重复".into());
+                }
+                coverage[owner]
+                    .push(json!({"rowId":row.id,"start":start,"end":end,"dialogueId":quote.id}));
+                start = end;
+                previous_owner = owner;
             }
+            if start != row.range.end {
+                return Err("对白源行没有完整覆盖，不能以引用补足".into());
+            }
+        } else {
+            let upper = rows[position + 1..]
+                .iter()
+                .filter_map(|next| next.dialogue.as_ref())
+                .find_map(|quote| {
+                    spoken_owners
+                        .get(&quote.id)
+                        .and_then(|owners| owners.first())
+                        .map(|(owner, _)| *owner)
+                })
+                .unwrap_or(units.len().saturating_sub(1));
+            let owner = units
+                .iter()
+                .enumerate()
+                .find_map(|(index, unit)| {
+                    (index >= previous_owner
+                        && index <= upper
+                        && unit["shots"].as_array().unwrap().iter().any(|shot| {
+                            strings(shot, "sourceRefs")
+                                .unwrap_or_default()
+                                .iter()
+                                .any(|id| id == &row.id)
+                        }))
+                    .then_some(index)
+                })
+                .ok_or("正文动作的实际镜头引用不能按原文顺序归属，需原整编处理")?;
+            coverage[owner]
+                .push(json!({"rowId":row.id,"start":row.range.start,"end":row.range.end}));
+            previous_owner = owner;
         }
+    }
+    for (unit, ranges) in draft["units"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .zip(coverage)
+    {
         unit["sourceCoverage"] = json!(ranges);
     }
     Ok(())
@@ -4570,6 +4870,9 @@ mod production_contract_tests {
         plan_override: Option<Value>,
         long_dialogue: bool,
         author_scope_response: Option<&'static str>,
+        author_chain_branch: bool,
+        author_source_error: Option<&'static str>,
+        source_repair_no_progress: bool,
         finish_scope_response: Option<&'static str>,
         rejected_raw: Mutex<HashMap<String, Value>>,
         rejected_values: Mutex<Vec<(TextRequest, Value)>>,
@@ -4658,7 +4961,11 @@ mod production_contract_tests {
                 ]
                 .contains(&text(&request.input["executionBatch"], "version"))
                 {
-                    let mode = if request.input["finishRepair"].is_object() {
+                    let mode = if self.source_repair_no_progress {
+                        "NO_PROGRESS"
+                    } else if self.author_source_error.is_some() {
+                        "SOURCE_FIX"
+                    } else if request.input["finishRepair"].is_object() {
                         self.finish_scope_response.unwrap()
                     } else {
                         self.author_scope_response.unwrap()
@@ -4690,6 +4997,44 @@ mod production_contract_tests {
                         })
                         .collect();
                     let mut groups = Vec::new();
+                    if mode == "SOURCE_FIX" {
+                        let mut writer = request.clone();
+                        writer.input["workPackage"] = request.input["workPackages"][0].clone();
+                        if self.author_source_error == Some("COVERAGE") {
+                            let repaired = mock_draft(&writer, false);
+                            return Ok(
+                                json!({"schemaVersion":"storyboard-delta/v2","baseDraftHash":request.input["baseDraftHash"],"retainedUnitIds":[],"replacements":[{"replaces":retained,"units":repaired["units"],"fantasyRealization":[]}],"revisionNotes":[],"unresolved":[]}),
+                            );
+                        }
+                        for (index, old) in selected.iter().enumerate() {
+                            writer.input["sourceRows"] = json!(request.input["sourceRows"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .filter(|row| old["sourceRefs"]
+                                    .as_array()
+                                    .unwrap()
+                                    .contains(&row["id"]))
+                                .cloned()
+                                .collect::<Vec<_>>());
+                            let mut repaired = mock_draft(&writer, false);
+                            for (position, unit) in repaired["units"]
+                                .as_array_mut()
+                                .unwrap()
+                                .iter_mut()
+                                .enumerate()
+                            {
+                                unit["id"] = json!(format!("source-fixed-{index}-{position}"));
+                                unit["shots"][0]["id"] =
+                                    json!(format!("source-shot-{index}-{position}"));
+                            }
+                            retained.retain(|id| *id != old["id"]);
+                            groups.push(json!({"replaces":[old["id"]],"units":repaired["units"],"fantasyRealization":[]}));
+                        }
+                        return Ok(
+                            json!({"schemaVersion":"storyboard-delta/v2","baseDraftHash":request.input["baseDraftHash"],"retainedUnitIds":retained,"replacements":groups,"revisionNotes":[],"unresolved":[]}),
+                        );
+                    }
                     for old in selected {
                         let mut next = old.clone();
                         if ["PARTIAL", "LIMIT"].contains(&mode) && attempt == 1 {
@@ -4862,6 +5207,27 @@ mod production_contract_tests {
                         }
                     }
                 }
+                if let Some(mode) = self.author_source_error {
+                    match mode {
+                        "DIALOGUE" => {
+                            for part in draft["units"][0]["shots"][0]["dialogueParts"]
+                                .as_array_mut()
+                                .unwrap()
+                            {
+                                part["quoteStart"] = request.input["sourceRows"][0]["dialogue"]
+                                    ["range"]["start"]
+                                    .clone();
+                            }
+                        }
+                        "COVERAGE" => {
+                            draft["units"].as_array_mut().unwrap().pop();
+                        }
+                        "ASSET_SOURCE" => {
+                            draft["units"][0]["assetRefs"] = json!([{"assetId":request.input["assets"][0]["id"],"variantId":request.input["assets"][0]["variantId"],"use":"character","order":1,"sourceRefs":[request.input["sourceRows"][1]["id"]]}]);
+                        }
+                        _ => panic!("unknown source-error fixture"),
+                    }
+                }
                 Ok(draft)
             }
         }
@@ -4878,7 +5244,10 @@ mod production_contract_tests {
             value: &Value,
             reason: &str,
         ) -> Result<(), String> {
-            if self.author_scope_response.is_some() || self.finish_scope_response.is_some() {
+            if self.author_scope_response.is_some()
+                || self.finish_scope_response.is_some()
+                || self.author_source_error.is_some()
+            {
                 self.rejected_raw
                     .lock()
                     .await
@@ -4903,6 +5272,9 @@ mod production_contract_tests {
             self.continuity_updates.lock().await.push(evidence.clone());
             Ok(())
         }
+        async fn author_chain_revision(&self, request:&TextRequest, repair:&Value) -> Result<Option<Value>,String> {
+            Ok(self.author_chain_branch.then(||json!({"version":"accepted-author-chain-change/v1","repairProofSha256":digest(&repair.to_string()),"executionBatchId":request.input["executionBatch"]["id"]})))
+        }
     }
 
     fn input(source: &LockedSource) -> Value {
@@ -4921,6 +5293,167 @@ mod production_contract_tests {
         request[creative::PROFILE_FIELD] = json!(creative::PROFILE);
         request["assets"]=json!((0..2).map(|i|json!({"id":format!("voice-person-{i}:base"),"variantId":"base","name":format!("源声人物{i}"),"kind":"CHARACTER","applicability":{"episodes":[source.episodes[0].id],"scenes":["another-scene"]},"preparation":{"mode":"REFERENCE"}})).collect::<Vec<_>>());
         (source, request)
+    }
+
+    #[test]
+    fn original_editor_repair_history_is_not_an_old_author_batch_finish() {
+        let source = prepare_source("第一集\n场景：门口\n甲：原话。\n").unwrap();
+        let mut request = input(&source);
+        request["storyboardMethod"] = json!(STORYBOARD_METHOD);
+        for version in [
+            creative::AUTHOR_SCOPE_REPAIR_EXECUTION_VERSION,
+            creative::FINISH_SCOPE_REPAIR_EXECUTION_VERSION,
+        ] {
+            request["storyboardHistory"] = json!([{"stage":"storyboardFinish","status":"accepted","episodeId":source.episodes[0].id,"finishMode":"delta","executionBatchVersion":version,"outputSchemaVersion":"storyboard-delta/v2","requestHash":"original-frozen-repair"}]);
+            assert!(incompatible_resume_scopes(&request, &source)
+                .unwrap()
+                .is_empty());
+            request["storyboardHistory"][0]["outputSchemaVersion"] = json!("storyboard-draft/v2");
+            assert!(
+                !incompatible_resume_scopes(&request, &source)
+                    .unwrap()
+                    .is_empty(),
+                "a full draft cannot impersonate an accepted delta repair"
+            );
+            request["storyboardHistory"][0]["outputSchemaVersion"] = json!("storyboard-delta/v2");
+            request["storyboardHistory"][0]["finishMode"] = json!("full");
+            assert!(!incompatible_resume_scopes(&request, &source)
+                .unwrap()
+                .is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn original_editor_repairs_source_coordinates_without_reauthoring_or_adopting_rejected_raw(
+    ) {
+        for mode in ["DIALOGUE", "COVERAGE", "ASSET_SOURCE"] {
+            let source = prepare_source(
+                "第一集\n场景：门口\n甲：（低声）原话😀完整保留。\n甲：下一句完整保留。\n",
+            )
+            .unwrap();
+            let mut request = input(&source);
+            request[creative::PROFILE_FIELD] = json!(creative::PROFILE);
+            request["assets"] = json!([{"id":"person-base","variantId":"base","name":"甲","kind":"CH","applicability":{"episodes":[source.episodes[0].id],"scenes":[source.scenes[0].id]},"preparation":{"mode":"REFERENCE"}}]);
+            let frozen = request.clone();
+            let exec = Recorded {
+                author_source_error: Some(mode),
+                ..Default::default()
+            };
+            let output = run_storyboard(&request, &exec, "offline", "medium")
+                .await
+                .unwrap();
+            assert_eq!(
+                output["status"], "completed",
+                "{mode}: {}",
+                output["blocked"]
+            );
+            validate_storyboard_scope(
+                &source,
+                &output,
+                request["assets"].as_array().unwrap(),
+                &request["capabilities"],
+                None,
+            )
+            .unwrap();
+            let calls = exec.calls.lock().await.clone();
+            assert_eq!(
+                calls.iter().filter(|r| r.stage == "storyboardPlan").count(),
+                1
+            );
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|r| r.stage == "storyboardCreate")
+                    .count(),
+                1
+            );
+            let repair = calls.iter().find(|r| is_author_repair_request(r)).unwrap();
+            assert_eq!(repair.skill, "episode-finishing-editor");
+            assert_eq!(repair.input["authorRepair"]["maximumAttempts"], 2);
+            assert!(repair.rule_snapshot["runtimeContract"]["content"]
+                .as_str()
+                .unwrap()
+                .contains("括号演法不发声"));
+            let rejected = exec.rejected_values.lock().await.clone();
+            let original = rejected
+                .iter()
+                .find(|(r, _)| r.stage == "storyboardCreate")
+                .unwrap();
+            assert!(!exec
+                .accepted
+                .lock()
+                .await
+                .contains_key(&serde_json::to_string(&original.0).unwrap()));
+            let count = calls.len();
+            let again = run_storyboard(&request, &exec, "offline", "medium")
+                .await
+                .unwrap();
+            assert_eq!(again, output);
+            assert_eq!(
+                exec.calls.lock().await.len(),
+                count,
+                "cached repair resumes with zero new role calls"
+            );
+            assert_eq!(request, frozen);
+            for row in source.rows.iter().filter(|row| row.dialogue.is_some()) {
+                for segment in spoken_ranges(row.dialogue.as_ref().unwrap()) {
+                    let quote = slice_utf16(&source.text, &segment).unwrap();
+                    assert!(
+                        output["units"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|unit| text(unit, "prompt").contains(&quote)),
+                        "{mode}: locked speech must be retained"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unchanged_source_coordinate_repair_stops_once_and_resume_does_not_reset_budget() {
+        for mode in ["DIALOGUE", "COVERAGE", "ASSET_SOURCE"] {
+            let source = prepare_source(
+                "第一集\n场景：门口\n甲：（低声）原话😀完整保留。\n甲：下一句完整保留。\n",
+            )
+            .unwrap();
+            let mut request = input(&source);
+            request[creative::PROFILE_FIELD] = json!(creative::PROFILE);
+            request["assets"] = json!([{"id":"person-base","variantId":"base","name":"甲","kind":"CH","applicability":{"episodes":[source.episodes[0].id],"scenes":[source.scenes[0].id]},"preparation":{"mode":"REFERENCE"}}]);
+            let exec = Recorded {
+                author_source_error: Some(mode),
+                source_repair_no_progress: true,
+                ..Default::default()
+            };
+            let output = run_storyboard(&request, &exec, "offline", "medium")
+                .await
+                .unwrap();
+            assert_eq!(output["status"], "partially_blocked");
+            assert!(
+                output["blocked"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| text(item, "reason").contains("NO_PROGRESS")),
+                "{mode}: {}",
+                output["blocked"]
+            );
+            assert!(output["units"].as_array().unwrap().is_empty());
+            let calls = exec.calls.lock().await.clone();
+            assert_eq!(
+                calls.iter().filter(|r| is_author_repair_request(r)).count(),
+                1
+            );
+            run_storyboard(&request, &exec, "offline", "medium")
+                .await
+                .unwrap();
+            assert_eq!(
+                exec.calls.lock().await.len(),
+                calls.len(),
+                "no unchanged repair or author dispatch on resume"
+            );
+        }
     }
 
     #[tokio::test]
@@ -5549,6 +6082,23 @@ mod production_contract_tests {
             before,
             "resume revalidates raw and reuses the repaired editor without a new author or planner"
         );
+    }
+
+    #[tokio::test]
+    async fn repaired_author_dependency_branch_reaches_related_finisher_and_reuses_its_cache() {
+        let (source, request)=author_scope_input(6);
+        let executor=Recorded{author_scope_response:Some("FIX"),rough_per_row:true,author_chain_branch:true,..Default::default()};
+        let output=run_storyboard(&request,&executor,"offline","medium").await.unwrap();
+        assert_eq!(output["status"],"completed","{}",output["blocked"]);
+        validate_storyboard_scope(&source,&output,request["assets"].as_array().unwrap(),&request["capabilities"],None).unwrap();
+        let calls=executor.calls.lock().await.clone();
+        let authors:Vec<_>=calls.iter().filter(|r|r.stage=="storyboardCreate").collect();
+        assert!(authors.len()>1);
+        assert!(authors[0].input.get("authorChainRevision").is_none());
+        assert_eq!(authors[1].input["authorChainRevision"]["version"],"accepted-author-chain-change/v1");
+        assert!(calls.iter().any(|r|r.stage=="storyboardFinish" && !is_author_repair_request(r) && r.input["authorChainRevision"]["version"]=="accepted-author-chain-change/v1"));
+        assert_eq!(run_storyboard(&request,&executor,"offline","medium").await.unwrap(),output);
+        assert_eq!(executor.calls.lock().await.len(),calls.len(),"resume must reuse the same repaired dependency branch");
     }
 
     fn is_author_repair_request(request: &TextRequest) -> bool {
@@ -6417,8 +6967,8 @@ mod production_contract_tests {
         missing["units"][1]["shots"][0]["sourceRefs"] = json!([refs[2]]);
         cases.push(("missing source row", missing, "完整覆盖"));
         let mut reordered = draft.clone();
-        reordered["units"][1]["sourceRefs"] = json!([refs[2], refs[1]]);
-        cases.push(("nonadjacent repeated anchor", reordered, "完整覆盖"));
+        reordered["units"].as_array_mut().unwrap().swap(0, 1);
+        cases.push(("reordered actual speech", reordered, "原话顺序"));
         for (name, mut invalid, expected_error) in cases {
             let error = validate_authored(
                 &source,
@@ -6432,6 +6982,221 @@ mod production_contract_tests {
             .expect_err(name);
             assert!(error.contains(expected_error), "{name}: {error}");
         }
+    }
+
+    #[test]
+    fn repeated_evidence_materializes_locked_source_once_without_replaying_speech() {
+        let (source, mut draft, refs) = continuous_action_fixture();
+        for unit in draft["units"].as_array_mut().unwrap() {
+            unit["sourceRefs"] = json!(refs);
+        }
+        let frozen_shots: Vec<_> = draft["units"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|unit| unit["shots"].clone())
+            .collect();
+        validate_authored(
+            &source,
+            &mut draft,
+            &[],
+            &json!({"minDuration":1,"maxDuration":30,"imageLimit":5}),
+            &refs,
+            "16:9真人",
+            "",
+        )
+        .unwrap();
+        let ranges: Vec<_> = draft["units"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|unit| unit["sourceCoverage"].as_array().unwrap())
+            .collect();
+        let rows: Vec<_> = source
+            .rows
+            .iter()
+            .filter(|row| refs.contains(&row.id))
+            .collect();
+        assert_eq!(ranges.len(), rows.len());
+        for (range, row) in ranges.iter().zip(rows) {
+            assert_eq!(range["rowId"], row.id);
+            assert_eq!(range["start"], row.range.start);
+            assert_eq!(range["end"], row.range.end);
+        }
+        for (index, unit) in draft["units"].as_array().unwrap().iter().enumerate() {
+            assert_eq!(
+                unit["sourceRefs"],
+                json!(refs),
+                "evidence citations remain immutable"
+            );
+            assert_eq!(
+                unit["shots"].as_array().unwrap().len(),
+                frozen_shots[index].as_array().unwrap().len()
+            );
+            for (shot, old) in unit["shots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .zip(frozen_shots[index].as_array().unwrap())
+            {
+                for field in [
+                    "duration",
+                    "camera",
+                    "picture",
+                    "lighting",
+                    "sound",
+                    "transition",
+                    "sourceRefs",
+                    "contextRefs",
+                ] {
+                    assert_eq!(
+                        shot[field], old[field],
+                        "actual performance remains unchanged"
+                    );
+                }
+            }
+        }
+        let spoken: String = draft["units"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|unit| unit["shots"].as_array().unwrap())
+            .flat_map(|shot| shot["dialogueParts"].as_array().unwrap())
+            .map(|part| text(part, "text"))
+            .collect();
+        assert_eq!(spoken, "走开。等等。");
+    }
+
+    #[test]
+    #[ignore = "explicit private read-only rejected source evidence; zero model/provider calls"]
+    fn readonly_source_evidence_revalidates_original_body_and_delta_without_writing() {
+        let path = std::env::var("DIRECTOR_EVIDENCE_READONLY_DB").expect("explicit read-only DB");
+        let run = std::env::var("DIRECTOR_EVIDENCE_READONLY_WORKFLOW")
+            .expect("explicit original workflow");
+        let jobs =
+            std::env::var("DIRECTOR_EVIDENCE_READONLY_JOBS").expect("explicit original jobs");
+        let connection =
+            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        let parent:String=connection.query_row("SELECT snapshot FROM jobs WHERE id=?1 AND kind='workflow' AND entity_id='storyboard.run'",[run],|row|row.get(0)).unwrap();
+        let input: Value = serde_json::from_str(&parent).unwrap();
+        let source: LockedSource =
+            serde_json::from_value(input["input"]["source"].clone()).unwrap();
+        let source = upgrade_source_dialogues(&source).unwrap();
+        let assets = input["input"]["assets"].as_array().unwrap();
+        let mut checked = 0;
+        for id in jobs.split(',').map(str::trim).filter(|id| !id.is_empty()) {
+            let (saved,raw):(String,String)=connection.query_row("SELECT snapshot,result FROM jobs WHERE id=?1 AND kind='text' AND state='rejected'",[id],|row|Ok((row.get(0)?,row.get(1)?))).unwrap();
+            let request: TextRequest = serde_json::from_str(&saved).unwrap();
+            let result: Value = serde_json::from_str(&raw).unwrap();
+            let mut draft = if request.stage == "storyboardFinish" {
+                // The persisted model view omits program exports, while the
+                // opaque base hash refers to the complete runtime base. Rebuild
+                // that base from the sealed original author for this first
+                // repair, rather than weakening the delta hash check.
+                assert_eq!(
+                    request.input["authorRepair"]["attempt"], 1,
+                    "this fixture requires the first sealed editor repair"
+                );
+                let mut statement=connection.prepare("SELECT snapshot,result,error FROM jobs WHERE kind='text' AND state='rejected' AND json_extract(snapshot,'$.stage')='storyboardCreate'").unwrap();
+                let original = statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })
+                    .unwrap()
+                    .filter_map(|row| {
+                        let (snapshot, value, error) = row.unwrap();
+                        let origin: TextRequest = serde_json::from_str(&snapshot).unwrap();
+                        (digest(&serde_json::to_string(&origin).unwrap())
+                            == request.input["authorRepair"]["originDomainRequestSha256"])
+                            .then_some((
+                                origin,
+                                serde_json::from_str::<Value>(&value).unwrap(),
+                                error,
+                            ))
+                    })
+                    .next()
+                    .expect("sealed original author");
+                assert_eq!(
+                    digest(&original.1.to_string()),
+                    request.input["authorRepair"]["originalAuthorRawSha256"]
+                );
+                let prefix = format!(
+                    "{}:{}:",
+                    text(&original.0.input, "episodeId"),
+                    text(&original.0.input["executionBatch"], "id")
+                );
+                let (candidate, _) = author_validation_candidate(
+                    &source,
+                    &original.1,
+                    assets,
+                    &original.0.input["capabilities"],
+                    &strings(&original.0.input["executionBatch"], "sourceRefs").unwrap(),
+                    text(&original.0.input["settings"], "visualStyle"),
+                    &prefix,
+                    &original.0.input["plan"],
+                    original.0.input["selectedFantasy"].as_array().unwrap(),
+                    &original.2,
+                )
+                .unwrap();
+                let base = json!({"schemaVersion":"storyboard-draft/v2","units":candidate["units"],"fantasyRealization":candidate["fantasyRealization"],"revisionNotes":[],"unresolved":[]});
+                assert_eq!(finish_base_hash(&base), request.input["baseDraftHash"]);
+                apply_finish_delta(&base, &result).unwrap()
+            } else {
+                result
+            };
+            let refs = strings(&request.input["executionBatch"], "sourceRefs").unwrap();
+            validate_authored(
+                &source,
+                &mut draft,
+                assets,
+                &request.input["capabilities"],
+                &refs,
+                text(&request.input["settings"], "visualStyle"),
+                &format!("{}:", text(&request.input, "episodeId")),
+            )
+            .unwrap();
+            validate_event_bindings(&draft, &request.input["plan"]).unwrap();
+            validate_fantasy_profile(
+                &draft,
+                request.input["selectedFantasy"].as_array().unwrap(),
+                true,
+            )
+            .unwrap();
+            let ranges: Vec<_> = draft["units"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|unit| unit["sourceCoverage"].as_array().unwrap())
+                .collect();
+            for row in source.rows.iter().filter(|row| refs.contains(&row.id)) {
+                let selected: Vec<_> = ranges
+                    .iter()
+                    .filter(|range| range["rowId"] == row.id)
+                    .collect();
+                assert!(!selected.is_empty());
+                let mut cursor = row.range.start;
+                for range in selected {
+                    assert_eq!(range["start"], cursor);
+                    cursor = range["end"].as_u64().unwrap() as usize;
+                }
+                assert_eq!(cursor, row.range.end);
+            }
+            let after: (String, String) = connection
+                .query_row(
+                    "SELECT snapshot,result FROM jobs WHERE id=?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(after, (saved, raw));
+            checked += 1;
+        }
+        println!("readOnly=true checked={checked} originalSourceCoverageExact=true newModelCalls=0 databaseWrites=0");
     }
 
     #[tokio::test]
@@ -6737,11 +7502,9 @@ mod production_contract_tests {
             old > FINISH_TRANSPORT_LIMIT,
             "an old workflow cannot greedily merge this extra adjacent scope"
         );
-        assert_eq!(
-            finish_grouping_characters(&request, true).unwrap(),
-            actual,
-            "a new explicitly marked workflow may use the latest lossless budget"
-        );
+        let grouping=finish_grouping_characters(&request,true).unwrap();
+        assert!(grouping<=FINISH_TRANSPORT_LIMIT);
+        assert!(actual<=grouping,"dispatch can be smaller without changing existing marked grouping");
         let wire = compile_storyboard_transport(&request).unwrap().unwrap();
         assert_eq!(wire.input["previousDraft"], request.input["previousDraft"]);
         assert_eq!(
@@ -7152,6 +7915,38 @@ mod production_contract_tests {
             "{}",
             json!({"readOnlySavedEvidence":true,"episodes":episode_count,"plannerModelDispatches":0,"authorModelDispatches":0,"reusedPlannerRequests":episode_count,"reusedAuthorRequests":if episode_count==1 {3}else{5},"mockEditorRequests":dispatched.len(),"measurements":measurements,"units":output["units"].as_array().unwrap().len(),"scopeRows":expected.len(),"videoRequests":0})
         );
+    }
+
+    #[test]
+    #[ignore = "explicit read-only accepted author evidence; zero model calls or database writes"]
+    fn readonly_indivisible_author_finish_measures_actual_cli_after_lossless_projection() {
+        let path=std::env::var("DIRECTOR_CAPACITY_READONLY_DB").unwrap();
+        let job=std::env::var("DIRECTOR_CAPACITY_READONLY_JOB").unwrap();
+        let connection=rusqlite::Connection::open_with_flags(path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        connection.execute_batch("PRAGMA query_only=ON;").unwrap();
+        let (snapshot,raw):(String,String)=connection.query_row("SELECT snapshot,result FROM jobs WHERE id=?1 AND kind='text' AND state='completed' AND json_extract(receipt,'$.validation')='accepted'",[&job],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        let author:TextRequest=serde_json::from_str(&snapshot).unwrap();let draft:Value=serde_json::from_str(&raw).unwrap();
+        assert_eq!(author.stage,"storyboardCreate");
+        let workflow=std::env::var("DIRECTOR_CAPACITY_READONLY_WORKFLOW").unwrap();
+        let plan:String=connection.query_row("SELECT j.result FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.stage='storyboardPlan' AND w.state='accepted' AND j.state='completed' AND json_extract(j.snapshot,'$.input.episode.id')=?2",rusqlite::params![workflow,text(&author.input,"episodeId")],|r|r.get(0)).unwrap();
+        let plan:Value=serde_json::from_str(&plan).unwrap();
+        let execution=&author.input["executionBatch"];
+        let scope=AcceptedAuthorScope{index:0,batch:original::ExecutionBatch{
+            id:text(execution,"id").into(),package_ids:strings(execution,"packageIds").unwrap(),source_refs:strings(execution,"sourceRefs").unwrap(),
+            provisional_unit_ids:strings(execution,"provisionalUnitIds").unwrap(),estimated_seconds:execution["estimatedSeconds"].as_f64().unwrap(),exceeds_soft_target:execution["exceedsSoftTarget"].as_bool().unwrap(),
+        },input:author.input.clone(),draft};
+        let rows:Vec<SourceRow>=serde_json::from_value(author.input["sourceRows"].clone()).unwrap();
+        let context:Vec<SourceRow>=serde_json::from_value(author.input["contextRows"].clone()).unwrap();
+        let (request,_,_)=finish_request(&[scope],&plan,&rows,&context,author.input["assets"].as_array().unwrap(),author.input["selectedFantasy"].as_array().unwrap(),text(&author.input,"episodeId"),&author.model,&author.reasoning,None,None,None).unwrap();
+        let baseline=compile_storyboard_transport(&request).unwrap();
+        let old=baseline.as_ref().map(|w|(&w.input,&w.schema)).unwrap_or((&request.input,&request.schema));
+        let wire=compile_storyboard_dispatch_transport(&request).unwrap().unwrap();
+        let current=crate::text_executor::codex_wire_characters(&request,&wire.input,&wire.schema);
+        println!("{}",json!({"readOnly":true,"newModelCalls":0,"databaseWrites":0,"baselineCliCharacters":crate::text_executor::codex_wire_characters(&request,old.0,old.1),"dispatchCliCharacters":current,"limit":FINISH_TRANSPORT_LIMIT}));
+        assert_eq!(super::storyboard_transport::expand_storyboard_input(&wire.input).unwrap(),request.input);
+        assert!(current<=FINISH_TRANSPORT_LIMIT);
+        let after:(String,String)=connection.query_row("SELECT snapshot,result FROM jobs WHERE id=?1",[&job],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(after,(snapshot,raw));
     }
 
     fn applied_interpretation(source: &LockedSource, scope: Value, refs: Vec<String>) -> Value {

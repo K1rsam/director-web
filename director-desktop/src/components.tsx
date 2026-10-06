@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { mediaUrl } from './api';
 import { assetImages } from './contracts';
-import type { Asset, Job, Media, Provider, Workspace } from './types';
+import type { Asset, Media, Provider, Workspace } from './types';
 
 export type IconName = 'home' | 'source' | 'image' | 'story' | 'video' | 'tasks' | 'settings' | 'plus' | 'arrow' | 'upload' | 'download' | 'refresh' | 'check' | 'close' | 'folder' | 'play' | 'copy' | 'spark' | 'search' | 'chevron';
 const paths: Record<IconName, ReactNode> = {
@@ -63,7 +63,7 @@ export const PROVIDER_NAMES: Record<string, string> = { dreamina: '即梦官方 
 export function providerName(id: string) { return PROVIDER_NAMES[id] || id; }
 export function kindName(value?: string) { const names: Record<string, string> = { CH: '人物', GROUP: '群像', BEAST: '非人角色', LOC: '场景', PROP: '道具', character: '人物', scene: '场景', prop: '道具', beast: '非人角色', image: '图片', video: '视频', audio: '音频', text: '文本', workflow: '制作流程' }; return names[value || ''] || value || '资产'; }
 export function adoptedImage(workspace: Workspace, asset: Asset): Media | undefined { return assetImages(workspace, asset).current; }
-export function jobActive(job: Job): boolean { return /^(queued|preparing|ready|running|submitted|pending|processing|uploading|submitting|executing|downloading)$/i.test(job.status) && !job.submissionUnknown; }
+export { jobActive } from './generationState';
 export function formatDate(value?: string): string { if (!value) return ''; const date = new Date(value); return Number.isNaN(date.valueOf()) ? value : date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
 export function costText(value: unknown): string { if (value === undefined || value === null || value === '') return '未知'; if (typeof value === 'number') return value.toFixed(3); if (typeof value === 'string') return value; if (typeof value === 'object') { const cost = value as Record<string, unknown>; return cost.amount !== undefined ? `${cost.currency || '计价单位待核对'} ${cost.amount}` : cost.total !== undefined ? `${cost.currency || '计价单位待核对'} ${cost.total}` : '未知'; } return '未知'; }
 export function JsonDetails({ title, value, open = false }: { title: string; value: unknown; open?: boolean }) { return <details className="details" open={open}><summary>{title}</summary><pre className="json-document">{typeof value === 'string' ? value : JSON.stringify(value, null, 2) || '暂无记录'}</pre></details>; }

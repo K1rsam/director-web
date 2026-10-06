@@ -94,6 +94,198 @@ pub fn generation_request(snapshot: &Value) -> Result<GenerationRequest> {
     serde_json::from_value(snapshot.clone()).map_err(|e| format!("请求契约无效: {e}"))
 }
 
+fn unsubmitted(job: &Value) -> bool {
+    let receipt = &job["receipt"];
+    (job["providerTaskId"].is_null() || job["providerTaskId"] == "")
+        && job["submissionUnknown"].as_bool() != Some(true)
+        && s(job, "status") != "submission_unknown"
+        && (receipt.is_null() || receipt == &json!({}) || receipt.as_str() == Some(""))
+}
+
+/// Only an explicit review-only queued video may use the local preparation burst.
+pub fn prepare_only_eligible(job: &Value) -> bool {
+    s(job, "kind") == "video"
+        && s(job, "status") == "queued"
+        && job["snapshot"]["autoSubmit"].as_bool() == Some(false)
+        && job["nextAttemptAt"].as_i64().unwrap_or(0) <= chrono::Utc::now().timestamp()
+        && unsubmitted(job)
+}
+
+enum LocalTaskFailure {
+    PreparedContract(serde_json::Error),
+    PreparePersistence(String),
+    SyncReceiptContract(serde_json::Error),
+}
+
+/// The error's originating operation, never its message text, decides the terminal policy.
+fn fail_local_task(store: &Store, key: &str, from: &str, failure: LocalTaskFailure) -> Result<()> {
+    let current = store.job(key)?;
+    if s(&current, "status") != from {
+        return Ok(());
+    }
+    let (code, message, needs_unsubmitted) = match failure {
+        LocalTaskFailure::PreparedContract(error) => (
+            "LOCAL_PREPARED_CONTRACT",
+            format!("准备记录无法解析，未提交生成：{error}"),
+            true,
+        ),
+        LocalTaskFailure::PreparePersistence(error) => (
+            "LOCAL_PREPARE_PERSISTENCE",
+            format!("本地素材准备结果无法保存，未提交生成：{error}"),
+            true,
+        ),
+        LocalTaskFailure::SyncReceiptContract(error) => (
+            "LOCAL_SYNC_RECEIPT_CONTRACT",
+            format!("原同步图片回执无法解析；保留原任务身份，未重新生成：{error}"),
+            false,
+        ),
+    };
+    if needs_unsubmitted && !unsubmitted(&current) {
+        return Ok(());
+    }
+    if !needs_unsubmitted && !s(&current, "providerTaskId").starts_with("sync:") {
+        return Ok(());
+    }
+    // A concurrent edit/terminal transition owns the newer state. No identity,
+    // original receipt, frozen request, or existing retry counter is rewritten.
+    let persisted = store
+        .claim_job_fields(
+            key,
+            from,
+            "failed",
+            &json!({"error":message,"nextAttemptAt":0}),
+        )
+        .map_err(|error| format!("{message}；终态也未能持久化：{error}"))?;
+    if persisted {
+        store.event(key, "local_error", &json!({"code":code,"message":message}))?;
+    }
+    Ok(())
+}
+
+/// Contains no submission route, even if another caller changes autoSubmit later.
+pub fn prepare_only(
+    store: &Store,
+    key: &str,
+    cfg: &ProviderConfig,
+    account: &str,
+    channels: &dyn Channels,
+) -> Result<()> {
+    prepare_generation(store, key, cfg, account, channels, true).map(|_| ())
+}
+
+fn prepare_generation(
+    store: &Store,
+    key: &str,
+    cfg: &ProviderConfig,
+    account: &str,
+    channels: &dyn Channels,
+    review_only: bool,
+) -> Result<Option<Value>> {
+    let mut j = store.job(key)?;
+    if !unsubmitted(&j) || review_only && !prepare_only_eligible(&j) {
+        return Ok(None);
+    }
+    let state = s(&j, "status").to_owned();
+    if !["queued", "ready"].contains(&state.as_str()) {
+        return Ok(None);
+    }
+    if s(&j, "accountId") != account {
+        store.claim_job_fields(
+            key,
+            &state,
+            "auth_required",
+            &json!({"error":"账户身份已变化；请恢复原账户后继续"}),
+        )?;
+        return Ok(None);
+    }
+    if j["snapshot"]["problems"]
+        .as_array()
+        .map(|p| !p.is_empty())
+        .unwrap_or(false)
+    {
+        store.claim_job_fields(
+            key,
+            &state,
+            "blocked",
+            &json!({"error":"素材包仍存在待处理问题"}),
+        )?;
+        return Ok(None);
+    }
+    if let Err(e) = binding::validate_generation_snapshot(store, &j["snapshot"]) {
+        store.claim_job_fields(key, &state, "stale", &json!({"error":e}))?;
+        return Ok(None);
+    }
+    if state == "queued" {
+        let request = match generation_request(&j["snapshot"]) {
+            Ok(r) => r,
+            Err(e) => {
+                store.claim_job_fields(key, "queued", "blocked", &json!({"error":e}))?;
+                return Ok(None);
+            }
+        };
+        if !store.claim_job(key, "queued", "preparing")? {
+            return Ok(None);
+        }
+        match channels.prepare(cfg, &request) {
+            Ok(p) => {
+                // Uploads are a separate durable receipt class, never mistaken for generation IDs.
+                let saved: Result<bool> = (|| {
+                    let mut c = store.conn()?;
+                    let tx = c.transaction().map_err(|e| e.to_string())?;
+                    for upload in &p.upload_receipts {
+                        tx.execute(
+                            "INSERT INTO uploads VALUES(?1,?2,?3,?4)",
+                            rusqlite::params![
+                                id(),
+                                key,
+                                serde_json::to_string(upload).map_err(|e| e.to_string())?,
+                                now()
+                            ],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+                    tx.commit().map_err(|e| e.to_string())?;
+                    // An edit/adoption during upload has already invalidated this preparation.
+                    if let Err(e) = binding::validate_generation_snapshot(store, &j["snapshot"]) {
+                        store.claim_job_fields(key, "preparing", "stale", &json!({"error":e}))?;
+                        return Ok(false);
+                    }
+                    let current = store.job(key)?;
+                    if !unsubmitted(&current) {
+                        return Ok(false);
+                    }
+                    store.claim_job_fields(key, "preparing", "ready", &json!({"prepared":p}))
+                })();
+                match saved {
+                    Ok(true) => j = store.job(key)?,
+                    Ok(false) => return Ok(None),
+                    Err(error) => {
+                        fail_local_task(
+                            store,
+                            key,
+                            "preparing",
+                            LocalTaskFailure::PreparePersistence(error),
+                        )?;
+                        return Ok(None);
+                    }
+                }
+            }
+            Err(e) => {
+                if unsubmitted(&store.job(key)?) {
+                    store.claim_job_fields(
+                        key,
+                        "preparing",
+                        error_state(&e),
+                        &json!({"error":e.message}),
+                    )?;
+                }
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(j))
+}
+
 /// One invocation may prepare or submit once. Resume never enters this path for known/unknown submits.
 pub fn run_generation(
     store: &Store,
@@ -102,84 +294,29 @@ pub fn run_generation(
     account: &str,
     channels: &dyn Channels,
 ) -> Result<()> {
-    let mut j = store.job(key)?;
-    if s(&j, "accountId") != account {
-        store.update_job(
-            key,
-            "auth_required",
-            &json!({"error":"账户身份已变化；请恢复原账户后继续"}),
-        )?;
-        return Err("账户身份已变化；请恢复原账户后继续".into());
-    }
-    let mut state = s(&j, "status").to_owned();
-    if !["queued", "ready"].contains(&state.as_str()) {
+    let Some(j) = prepare_generation(store, key, cfg, account, channels, false)? else {
         return Ok(());
-    }
-    if j["snapshot"]["problems"]
-        .as_array()
-        .map(|p| !p.is_empty())
-        .unwrap_or(false)
+    };
+    if s(&j, "status") == "ready"
+        && j["snapshot"]["autoSubmit"].as_bool() == Some(true)
+        && unsubmitted(&j)
     {
-        store.update_job(key, "blocked", &json!({"error":"素材包仍存在待处理问题"}))?;
-        return Ok(());
-    }
-    if let Err(e) = binding::validate_generation_snapshot(store, &j["snapshot"]) {
-        store.update_job(key, "stale", &json!({"error":e}))?;
-        return Ok(());
-    }
-    if state == "queued" {
-        let request = match generation_request(&j["snapshot"]) {
-            Ok(r) => r,
-            Err(e) => {
-                store.update_job(key, "blocked", &json!({"error":e}))?;
+        if let Err(e) = binding::validate_generation_snapshot(store, &j["snapshot"]) {
+            store.claim_job_fields(key, "ready", "stale", &json!({"error":e}))?;
+            return Ok(());
+        }
+        let prepared: PreparedRequest = match serde_json::from_value(j["prepared"].clone()) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                fail_local_task(
+                    store,
+                    key,
+                    "ready",
+                    LocalTaskFailure::PreparedContract(error),
+                )?;
                 return Ok(());
             }
         };
-        if !store.claim_job(key, "queued", "preparing")? {
-            return Ok(());
-        }
-        match channels.prepare(cfg, &request) {
-            Ok(p) => {
-                // Uploads are a separate durable receipt class, never mistaken for generation IDs.
-                let mut c = store.conn()?;
-                let tx = c.transaction().map_err(|e| e.to_string())?;
-                for upload in &p.upload_receipts {
-                    tx.execute(
-                        "INSERT INTO uploads VALUES(?1,?2,?3,?4)",
-                        rusqlite::params![
-                            id(),
-                            key,
-                            serde_json::to_string(upload).map_err(|e| e.to_string())?,
-                            now()
-                        ],
-                    )
-                    .map_err(|e| e.to_string())?;
-                }
-                tx.commit().map_err(|e| e.to_string())?;
-                // An edit/adoption during upload has already invalidated this preparation.
-                if let Err(e) = binding::validate_generation_snapshot(store, &j["snapshot"]) {
-                    store.update_job(key, "stale", &json!({"error":e}))?;
-                    return Ok(());
-                }
-                if !store.claim_job_fields(key, "preparing", "ready", &json!({"prepared":p}))? {
-                    return Ok(());
-                }
-                state = "ready".into();
-                j = store.job(key)?;
-            }
-            Err(e) => {
-                store.update_job(key, error_state(&e), &json!({"error":e.message}))?;
-                return Ok(());
-            }
-        }
-    }
-    if state == "ready" && j["snapshot"]["autoSubmit"].as_bool() == Some(true) {
-        if let Err(e) = binding::validate_generation_snapshot(store, &j["snapshot"]) {
-            store.update_job(key, "stale", &json!({"error":e}))?;
-            return Ok(());
-        }
-        let prepared: PreparedRequest =
-            serde_json::from_value(j["prepared"].clone()).map_err(|e| e.to_string())?;
         // Persist intent BEFORE any billable network/CLI request.
         if !store.claim_job(key, "ready", "submitting")? {
             return Ok(());
@@ -262,8 +399,26 @@ pub fn resume_job(
         None
     };
     if task.starts_with("sync:") {
-        let receipt: SubmitReceipt =
-            serde_json::from_value(j["receipt"].clone()).map_err(|e| e.to_string())?;
+        let receipt: SubmitReceipt = match serde_json::from_value(j["receipt"].clone()) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                if already_downloaded {
+                    store.event(
+                        key,
+                        "query_error",
+                        &json!({"message":format!("原同步图片回执无法解析：{error}")}),
+                    )?;
+                } else {
+                    fail_local_task(
+                        store,
+                        key,
+                        s(&j, "status"),
+                        LocalTaskFailure::SyncReceiptContract(error),
+                    )?;
+                }
+                return Ok(());
+            }
+        };
         if download {
             return download_result(
                 store,

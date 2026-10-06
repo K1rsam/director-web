@@ -113,7 +113,10 @@ fn project_summary_counts_only_active_units_and_preserves_retired_history() {
         .unwrap();
     }
     let active_count = || {
-        let list = f.engine.dispatch(json!({"action":"projects.list"})).unwrap();
+        let list = f
+            .engine
+            .dispatch(json!({"action":"projects.list"}))
+            .unwrap();
         list.as_array()
             .unwrap()
             .iter()

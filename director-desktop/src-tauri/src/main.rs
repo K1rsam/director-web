@@ -15,6 +15,60 @@ struct StartupVerification {
     development_server_at_start: bool,
 }
 
+// Startup verification owns an isolated project and must not inherit the host's
+// CLI, credentials or network latency through automatic catalogue discovery.
+struct StartupChannels;
+fn startup_channel_disabled<T>() -> director_core::providers::ProviderResult<T> {
+    Err(director_core::providers::ProviderError::new(
+        "OFFLINE_STARTUP_VERIFICATION",
+        "离线启动验收不调用渠道、账户或生成接口。",
+    ))
+}
+impl director_core::tasks::Channels for StartupChannels {
+    fn capabilities(
+        &self,
+        _: &director_core::providers::ProviderConfig,
+    ) -> director_core::providers::ProviderResult<director_core::providers::Capabilities> {
+        startup_channel_disabled()
+    }
+    fn prepare(
+        &self,
+        _: &director_core::providers::ProviderConfig,
+        _: &director_core::providers::GenerationRequest,
+    ) -> director_core::providers::ProviderResult<director_core::providers::PreparedRequest> {
+        startup_channel_disabled()
+    }
+    fn submit(
+        &self,
+        _: &director_core::providers::ProviderConfig,
+        _: &director_core::providers::PreparedRequest,
+    ) -> director_core::providers::ProviderResult<director_core::providers::SubmitReceipt> {
+        startup_channel_disabled()
+    }
+    fn query(
+        &self,
+        _: &director_core::providers::ProviderConfig,
+        _: &str,
+    ) -> director_core::providers::ProviderResult<director_core::providers::QueryResult> {
+        startup_channel_disabled()
+    }
+    fn download(
+        &self,
+        _: &director_core::providers::ProviderConfig,
+        _: &str,
+        _: &std::path::Path,
+    ) -> director_core::providers::ProviderResult<director_core::providers::DownloadReceipt> {
+        startup_channel_disabled()
+    }
+    fn reconcile(
+        &self,
+        _: &director_core::providers::ProviderConfig,
+        _: &str,
+    ) -> director_core::providers::ProviderResult<director_core::providers::QueryResult> {
+        startup_channel_disabled()
+    }
+}
+
 fn development_server_available() -> bool {
     ["127.0.0.1:1420", "[::1]:1420"].iter().any(|address| {
         std::net::TcpStream::connect_timeout(
@@ -298,7 +352,7 @@ fn main() {
             // Diagnostic projects have no channel account configured. Disable live-account
             // lookup so automatic Stage 4 preflight fails locally without touching a user session.
             let engine = if setup_verification.is_some() {
-                Engine::with_channels(home, Arc::new(director_core::tasks::RealChannels))
+                Engine::with_channels(home, Arc::new(StartupChannels))
             } else {
                 Engine::new(home)
             }.map_err(std::io::Error::other)?;

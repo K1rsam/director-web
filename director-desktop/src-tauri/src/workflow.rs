@@ -151,7 +151,7 @@ fn author_scope_resolution(origin: &ProgressStep, resolver: &ProgressStep, sourc
     let draft = &resolver.result["materializedDraft"];
     let draft_hash=crate::pipeline::digest(&json!({"schemaVersion":draft["schemaVersion"],"units":draft["units"],"fantasyRealization":draft["fantasyRealization"]}).to_string());
     origin.status == "rejected"
-        && origin.error == crate::text_executor::AUTHOR_ASSET_SCOPE_REJECTION
+        && crate::text_executor::author_repairable_rejection(origin.error.as_str().unwrap_or(""))
         && origin.request.stage == "storyboardCreate"
         && origin.request.skill == "unit-performance-director"
         && origin.request.input["storyboardCreativeProfile"] == "original-production-contract/v1"
@@ -220,7 +220,7 @@ fn author_scope_attempt_resolution(
     authors: &[ProgressStep],
 ) -> bool {
     if origin.status != "rejected"
-        || origin.error != crate::text_executor::AUTHOR_ASSET_SCOPE_REJECTION
+        || !crate::text_executor::author_repairable_rejection(origin.error.as_str().unwrap_or(""))
         || origin.result != origin.raw
         || !origin.receipt["migrationPolicy"].is_null()
         || origin.event["requestHash"] != origin.hash
@@ -360,7 +360,7 @@ fn project_step_resolutions(c: &Connection, run: &str, nodes: &mut [Value]) -> R
     if !nodes.iter().any(|node| {
         node["stage"] == "storyboardCreate"
             && node["status"] == "rejected"
-            && node["error"] == crate::text_executor::AUTHOR_ASSET_SCOPE_REJECTION
+            && crate::text_executor::author_repairable_rejection(s(node, "error"))
             || node["stage"] == "storyboardPlan" && node["status"] != "running"
     }) {
         return Ok(());
@@ -411,7 +411,7 @@ fn project_step_resolutions(c: &Connection, run: &str, nodes: &mut [Value]) -> R
     for node in nodes.iter().filter(|node| {
         node["stage"] == "storyboardPlan"
             || node["status"] == "rejected"
-                && node["error"] == crate::text_executor::AUTHOR_ASSET_SCOPE_REJECTION
+                && crate::text_executor::author_repairable_rejection(s(node, "error"))
     }) {
         if let Some(step) = progress_step(c, run, s(node, "id"))? {
             origins.push(step);
@@ -1165,6 +1165,89 @@ pub fn guard_from_input(input: &Value) -> Value {
         units.insert(s(previous, "id").to_owned(), previous["version"].clone());
     }
     json!({"sourceVersion":input["source"]["version"],"foundationVersion":input["foundation"]["version"].as_i64().unwrap_or(0),"assets":assets,"units":units,"episodeIds":input["selection"]["episodeIds"]})
+}
+
+impl Store {
+    /// Image-stage audit receipts are not new creative input. Rebind only the
+    /// publication guard when every foundation field consumed by Stage 3 is
+    /// exactly unchanged; source, catalogue and unit guards still must pass.
+    pub(crate) fn refresh_storyboard_audit_guard(&self, run: &str, snapshot: &Value) -> Result<()> {
+        if snapshot["stage"] != "storyboard.run" || snapshot["runnerVersion"] != "desktop-runner/v1"
+        {
+            return Ok(());
+        }
+        let mut connection = self.conn()?;
+        let tx = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        let (saved_snapshot,saved_prepared):(String,Option<String>)=tx.query_row("SELECT snapshot,prepared FROM jobs WHERE id=?1 AND kind='workflow' AND entity_id='storyboard.run'",[run],|row|Ok((row.get(0)?,row.get(1)?))).map_err(|e|e.to_string())?;
+        if parse(saved_snapshot.clone())? != *snapshot {
+            return Err("原分镜流程快照已变化，未更新发布依据".into());
+        }
+        let mut prepared = saved_prepared
+            .as_ref()
+            .map(|raw| parse(raw.clone()))
+            .transpose()?
+            .unwrap_or(json!({}));
+        let guard = prepared
+            .get("publicationGuard")
+            .unwrap_or(&snapshot["guard"]);
+        let (version, current) = latest_foundation(&tx)?;
+        if guard["foundationVersion"] == version {
+            return Ok(());
+        }
+        if guard["foundationVersion"]
+            .as_i64()
+            .is_none_or(|old| version <= old)
+        {
+            return Ok(());
+        }
+        let source_sha: String = tx
+            .query_row(
+                "SELECT sha256 FROM sources ORDER BY version DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if snapshot["input"]["source"]["sha256"] != source_sha {
+            return Err("锁定原文摘要已变化，未更新分镜发布依据".into());
+        }
+        let Some(mut current) = current else {
+            return Ok(());
+        };
+        let mut frozen = snapshot["input"]["foundation"].clone();
+        if !frozen.is_object() || !current.is_object() {
+            return Ok(());
+        }
+        if frozen["sourceSha256"] != snapshot["input"]["source"]["sha256"]
+            || current["sourceSha256"] != frozen["sourceSha256"]
+        {
+            return Ok(());
+        }
+        for field in ["version", "visualFactBatches"] {
+            frozen.as_object_mut().unwrap().remove(field);
+            current.as_object_mut().unwrap().remove(field);
+        }
+        if frozen != current {
+            return Ok(());
+        }
+        let mut next = guard.clone();
+        next["foundationVersion"] = json!(version);
+        verify_guard(&tx, &next)?;
+        let proof = json!({"sourceVersion":next["sourceVersion"],"sourceSha256":snapshot["input"]["source"]["sha256"],"previousFoundationVersion":guard["foundationVersion"],"currentFoundationVersion":version,"unchangedCreativeInputSha256":crate::pipeline::digest(&current.to_string()),"frozenSnapshotSha256":crate::pipeline::digest(&saved_snapshot),"newModelCalls":0});
+        prepared["publicationGuard"] = next;
+        let updated = tx
+            .execute(
+                "UPDATE jobs SET prepared=?1 WHERE id=?2 AND snapshot=?3 AND prepared IS ?4",
+                params![prepared.to_string(), run, saved_snapshot, saved_prepared],
+            )
+            .map_err(|e| e.to_string())?;
+        if updated != 1 {
+            return Err("分镜发布依据发生竞争，未更新或重新生成".into());
+        }
+        tx.execute("INSERT INTO events(job_id,type,data,created_at) VALUES(?1,'foundation_audit_guard_refreshed',?2,?3)",params![run,proof.to_string(),now()]).map_err(|e|e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())
+    }
 }
 pub fn verify_guard(tx: &Transaction<'_>, guard: &Value) -> Result<()> {
     let source: i64 = tx

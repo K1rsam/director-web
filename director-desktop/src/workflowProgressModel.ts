@@ -1,10 +1,10 @@
 import { matchesStage, record, records, stageJobs, words } from './stageProduction.ts';
+import { jobActive } from './generationState.ts';
 import type { Job, Workspace } from './types.ts';
 
 type Node = Record<string, unknown>;
 type Stage = 'foundation' | 'storyboard';
 const accepted = (node: Node) => words(node.status) === 'accepted';
-const activeStates = /^(queued|preparing|ready|running|submitted|pending|processing|uploading|submitting|executing|downloading)$/i;
 
 function progressEntries(workspace: Workspace): Node[] {
   const value: unknown = workspace.workflowProgress;
@@ -91,7 +91,7 @@ export function executionSummary(node: Node, now = Date.now(), readFailed = fals
 }
 
 export function hasActiveWorkspaceTasks(workspace: Workspace): boolean {
-  return workspace.jobs.some(job => activeStates.test(job.status) && !job.submissionUnknown)
+  return workspace.jobs.some(jobActive)
     || progressEntries(workspace).some(progress => ['queued', 'running'].includes(words(progress.status)));
 }
 
@@ -109,23 +109,36 @@ type PollOptions = {
 };
 /** Only reads persisted workspaces. This function has no mutation/generation route. */
 export function createWorkspacePoller(options: PollOptions) {
-  let inFlight = false;
-  return async (force = false): Promise<void> => {
+  type ReadIdentity = { projectId: string; revision: number };
+  let inFlight: ReadIdentity | null = null, foreground: ReadIdentity | null = null;
+  return async function poll(force = false): Promise<void> {
     const workspace = options.current();
-    if (!options.alive() || !workspace || inFlight || options.busy() || !force && options.hidden() && !hasActiveWorkspaceTasks(workspace)) return;
+    if (!options.alive() || !workspace || options.busy() || !force && options.hidden() && !hasActiveWorkspaceTasks(workspace)) return;
     const projectId = workspace.project.id, revision = options.revision();
+    if (inFlight) {
+      // Focus/visibility may arrive while a background read is still returning.
+      // Coalesce one same-workspace read after it, without creating concurrent IPCs.
+      if (force && inFlight.projectId === projectId && inFlight.revision === revision) foreground = { projectId, revision };
+      return;
+    }
     const current = () => options.alive() && options.current()?.project.id === projectId && options.revision() === revision && !options.busy();
     const fail = (error: unknown) => { if (current()) options.fail(error, projectId, new Date((options.now || Date.now)()).toISOString()); };
-    inFlight = true;
+    inFlight = { projectId, revision };
     // An unreturned IPC read must become visible, but must not create a pile
     // of additional reads. Keep owning this one request until it settles.
     const watchdog = setTimeout(() => fail(new Error('本地进度读取超过期限，正在等待本次读取结束；以下为上次保存状态。')), options.readTimeoutMs ?? 15000);
     try {
       const next = await options.read(projectId);
       if (next.project.id !== projectId) throw new Error('读取结果与当前项目不一致，保留上次状态。');
-      if (current()) options.apply(next, new Date((options.now || Date.now)()).toISOString());
+      if (current() && !foreground) options.apply(next, new Date((options.now || Date.now)()).toISOString());
     } catch (error) {
       fail(error);
-    } finally { clearTimeout(watchdog); inFlight = false; }
+    } finally {
+      clearTimeout(watchdog); inFlight = null;
+      const pending = foreground; foreground = null;
+      // A write, project switch, or unmount invalidates both the old response
+      // and the coalesced foreground request. It must never read a new scope.
+      if (pending && pending.projectId === projectId && pending.revision === revision && current()) await poll(true);
+    }
   };
 }

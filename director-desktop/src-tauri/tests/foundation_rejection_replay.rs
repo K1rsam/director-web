@@ -23,6 +23,7 @@ struct Fixture {
     directory: tempfile::TempDir,
     executable: PathBuf,
     counter: PathBuf,
+    generation_counter: PathBuf,
 }
 impl Fixture {
     fn new() -> Self {
@@ -33,6 +34,7 @@ impl Fixture {
             "offline"
         });
         let counter = directory.path().join("invocations.txt");
+        let generation_counter = directory.path().join("generation-invocations.txt");
         let source = directory.path().join("offline.rs");
         let code = r#"
 use std::io::{BufRead, Read, Write};
@@ -46,17 +48,19 @@ fn main() {
       let line=line.unwrap();
       if line.contains("\"initialize\"") { println!("{{\"id\":1,\"result\":{{}}}}"); }
       else if line.contains("account/read") { println!("{{\"id\":2,\"result\":{{\"account\":{{\"type\":\"chatgpt\",\"planType\":\"offline\"}}}}}}"); }
-      else if line.contains("model/list") { println!("{{\"id\":10,\"result\":{{\"data\":[{{\"model\":\"offline-fixture-model\",\"isDefault\":true,\"defaultReasoningEffort\":\"medium\",\"supportedReasoningEfforts\":[{{\"reasoningEffort\":\"medium\"}}]}}],\"nextCursor\":null}}}}"); }
+      else if line.contains("model/list") { println!("{{\"id\":10,\"result\":{{\"data\":[{{\"model\":\"offline-fixture-model\",\"isDefault\":true,\"defaultReasoningEffort\":\"medium\",\"supportedReasoningEfforts\":[{{\"reasoningEffort\":\"medium\"}},{{\"reasoningEffort\":\"high\"}}]}}],\"nextCursor\":null}}}}"); }
       else if line.contains("account/rateLimits/read") { println!("{{\"id\":30,\"result\":{{\"rateLimitsByLimitId\":{{}}}}}}"); }
       std::io::stdout().flush().unwrap();
     }
     return;
   }
+  std::fs::OpenOptions::new().create(true).append(true).open(__GENERATIONS__).unwrap().write_all(b"generated\n").unwrap();
   let path=args.windows(2).find(|a|a[0]=="--output-last-message").unwrap();
   let mut prompt=String::new(); std::io::stdin().read_to_string(&mut prompt).unwrap();
   std::fs::write(&path[1], b"{\"draft\":\"fresh-offline-result\"}").unwrap();
 }
-"#.replace("__COUNTER__", &json!(counter).to_string());
+"#.replace("__COUNTER__", &json!(counter).to_string())
+  .replace("__GENERATIONS__", &json!(generation_counter).to_string());
         std::fs::write(&source, code).unwrap();
         let compiler = std::env::var_os("RUSTC")
             .map(PathBuf::from)
@@ -95,6 +99,7 @@ fn main() {
             directory,
             executable,
             counter,
+            generation_counter,
         }
     }
     fn store(&self) -> Store {
@@ -102,6 +107,12 @@ fn main() {
     }
     fn calls(&self) -> usize {
         std::fs::read_to_string(&self.counter)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    }
+    fn generation_calls(&self) -> usize {
+        std::fs::read_to_string(&self.generation_counter)
             .unwrap_or_default()
             .lines()
             .count()
@@ -124,6 +135,17 @@ fn make_store(root: PathBuf) -> Store {
         .unwrap();
     store.ensure_workflow_storage().unwrap();
     store
+}
+fn job_evidence(store: &Store, job: &str) -> String {
+    store
+        .conn()
+        .unwrap()
+        .query_row(
+            "SELECT json_array(snapshot,result,receipt,error,state) FROM jobs WHERE id=?1",
+            [job],
+            |row| row.get(0),
+        )
+        .unwrap()
 }
 fn request() -> TextRequest {
     TextRequest {
@@ -402,6 +424,8 @@ async fn replay_requires_exact_workflow_step_snapshot_identity_and_known_error()
             settings: json!({"textProvider":"codex","codexPath":executor_path}),
             workflow_id: selected_run,
         };
+        let old_evidence = job_evidence(&store, &job);
+        let generation_calls = fixture.generation_calls();
         let result = executor.execute(request).await;
         assert_ne!(
             result.as_ref().ok(),
@@ -415,9 +439,40 @@ async fn replay_requires_exact_workflow_step_snapshot_identity_and_known_error()
                 r.get(0)
             })
             .unwrap();
+        if change == "model" {
+            assert_eq!(
+                result.unwrap_err(),
+                "所选文本模型不在 CLI 模型目录中，请刷新并选择模型"
+            );
+            assert_eq!(
+                count, 1,
+                "an unavailable model fails before a new text job is created"
+            );
+            assert_eq!(
+                fixture.generation_calls(),
+                generation_calls,
+                "readiness rejection cannot execute generation"
+            );
+        } else {
+            assert_eq!(
+                count, 2,
+                "unmatched {change} must take the normal fresh-job path"
+            );
+            assert_eq!(
+                result.unwrap(),
+                json!({"draft":"fresh-offline-result"}),
+                "{change} must return only the fresh offline result"
+            );
+            assert_eq!(
+                fixture.generation_calls(),
+                generation_calls + 1,
+                "a valid fresh {change} request executes the offline fixture once"
+            );
+        }
         assert_eq!(
-            count, 2,
-            "unmatched {change} must take the normal fresh-job path, including readiness rejection"
+            job_evidence(&store, &job),
+            old_evidence,
+            "{change} must not change the original snapshot/raw/receipt/error/state"
         );
         assert_eq!(
             store.job(&job).unwrap()["status"],
@@ -425,6 +480,48 @@ async fn replay_requires_exact_workflow_step_snapshot_identity_and_known_error()
             "{change} must preserve old job"
         );
     }
+}
+
+#[tokio::test]
+async fn unsupported_reasoning_rejects_before_a_new_job_or_generation_and_holds_original_raw() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let run = workflow(&store);
+    let mut request = request();
+    let saved_snapshot = snapshot(&request, &fixture.executable);
+    let raw = json!({"draft":"rejected raw cannot become a readiness result"});
+    let job = seed(&store, &run, &request, &saved_snapshot, &raw, OLD_ERROR);
+    let evidence = job_evidence(&store, &job);
+    request.reasoning = "unsupported-strength".into();
+    let error = fixture
+        .executor(&store, Some(run))
+        .execute(request)
+        .await
+        .unwrap_err();
+    assert_eq!(error, "所选文本模型不支持此推理强度，请调整后再生成");
+    assert_eq!(fixture.generation_calls(), 0);
+    assert_eq!(job_evidence(&store, &job), evidence);
+    let jobs: i64 = store
+        .conn()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM jobs WHERE kind='text'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(jobs, 1);
+    let replays: i64 = store
+        .conn()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE job_id=?1 AND type='validation_replay'",
+            [&job],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        replays, 0,
+        "an unavailable reasoning choice cannot reuse rejected raw"
+    );
 }
 
 #[tokio::test]

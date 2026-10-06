@@ -80,6 +80,10 @@ impl DreaminaSessions {
         );
         Ok(public)
     }
+    #[cfg(test)]
+    pub(crate) fn seed_for_test(&self, config: &ProviderConfig, public: Value) -> Result<Value> {
+        self.save(config, public)
+    }
     pub fn due(&self, config: &ProviderConfig) -> Result<bool> {
         let entries = self.entries.lock().map_err(|e| e.to_string())?;
         Ok(match entries.get(&config_key(config)) {

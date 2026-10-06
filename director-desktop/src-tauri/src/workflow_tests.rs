@@ -22,6 +22,109 @@ fn input(store: &Store) -> Value {
     json!({"source":store.source().unwrap(),"foundation":store.foundation().unwrap(),"assets":store.values("assets").unwrap(),"existingUnits":store.values("units").unwrap(),"selection":{"episodeIds":store.source().unwrap()["episodes"].as_array().unwrap().iter().map(|e|e["id"].clone()).collect::<Vec<_>>()},"capabilities":{"version":"test"}})
 }
 
+#[test]
+fn audit_only_foundation_update_keeps_frozen_storyboard_inputs_and_all_other_guards() {
+    let (_dir, store) = project();
+    let source = store.source().unwrap();
+    let first = input(&store);
+    let initial = guard_from_input(&first);
+    store.publish_foundation(&initial,json!({"sourceSha256":source["sha256"],"productionDirection":"既定制作方向","facts":[],"episodes":[],"visualFactBatches":[]}),vec![],None).unwrap();
+    let frozen = input(&store);
+    let guard = guard_from_input(&frozen);
+    let snapshot = json!({"runnerVersion":"desktop-runner/v1","stage":"storyboard.run","input":frozen,"guard":guard});
+    let run = store
+        .add_job(
+            "workflow",
+            "storyboard.run",
+            "local",
+            "local",
+            &snapshot,
+            "failed",
+        )
+        .unwrap();
+    let old = store.job(&run).unwrap()["snapshot"].clone();
+    store.publish_asset_design(1,frozen["foundation"]["version"].as_i64().unwrap(),&json!({"assets":[],"facts":[],"visualFactBatches":[{"sourceSha256":source["sha256"],"status":"accepted","inputFingerprint":"audit-only-receipt"}]})).unwrap();
+    store
+        .refresh_storyboard_audit_guard(&run, &snapshot)
+        .unwrap();
+    let saved = store.job(&run).unwrap();
+    assert_eq!(saved["snapshot"], old);
+    let fresh = &saved["prepared"]["publicationGuard"];
+    assert_eq!(
+        fresh["foundationVersion"],
+        store.foundation().unwrap()["version"]
+    );
+    let mut connection = store.conn().unwrap();
+    let tx = connection.transaction().unwrap();
+    crate::workflow::verify_guard(&tx, fresh).unwrap();
+    tx.rollback().unwrap();
+    let evidence=store.conn().unwrap().query_row("SELECT count(*) FROM events WHERE job_id=?1 AND type='foundation_audit_guard_refreshed'",[&run],|row|row.get::<_,i64>(0)).unwrap();
+    store
+        .refresh_storyboard_audit_guard(&run, &snapshot)
+        .unwrap();
+    assert_eq!(store.conn().unwrap().query_row("SELECT count(*) FROM events WHERE job_id=?1 AND type='foundation_audit_guard_refreshed'",[&run],|row|row.get::<_,i64>(0)).unwrap(),evidence);
+    assert_eq!(
+        store.jobs().unwrap().len(),
+        1,
+        "no new model or generation task"
+    );
+}
+
+#[test]
+fn creative_source_and_catalogue_changes_cannot_use_audit_only_guard_refresh() {
+    for mutation in ["direction", "facts", "source", "asset"] {
+        let (_dir, store) = project();
+        let source = store.source().unwrap();
+        let initial = guard_from_input(&input(&store));
+        store.publish_foundation(&initial,json!({"sourceSha256":source["sha256"],"productionDirection":"既定制作方向","facts":[],"episodes":[],"visualFactBatches":[]}),vec![],None).unwrap();
+        let frozen = input(&store);
+        let guard = guard_from_input(&frozen);
+        let snapshot = json!({"runnerVersion":"desktop-runner/v1","stage":"storyboard.run","input":frozen,"guard":guard});
+        let run = store
+            .add_job(
+                "workflow",
+                "storyboard.run",
+                "local",
+                "local",
+                &snapshot,
+                "failed",
+            )
+            .unwrap();
+        store.publish_asset_design(1,frozen["foundation"]["version"].as_i64().unwrap(),&json!({"assets":[],"facts":[],"visualFactBatches":[{"sourceSha256":source["sha256"],"status":"accepted","inputFingerprint":"audit-only-receipt"}]})).unwrap();
+        match mutation {
+            "direction" => store
+                .save_production_direction("新的制作方向", 1, None)
+                .unwrap(),
+            "source" => {
+                store
+                    .save_source(
+                        serde_json::to_value(
+                            pipeline::prepare_source("第1集\n场景：门口\n甲：新原文。\n").unwrap(),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+            }
+            "asset" => {
+                store.save_asset(json!({"id":"new-asset","variantId":"base","name":"新资产","kind":"character","sourceRefs":[]})).unwrap();
+            }
+            "facts" => {
+                let mut basis = store.foundation().unwrap();
+                basis["facts"] = json!([{"id":"new-fact","statement":"新事实"}]);
+                let g = guard_from_input(&input(&store));
+                store.publish_foundation(&g, basis, vec![], None).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let before = store.job(&run).unwrap();
+        let _ = store.refresh_storyboard_audit_guard(&run, &snapshot);
+        let after = store.job(&run).unwrap();
+        assert_eq!(after["snapshot"], before["snapshot"]);
+        assert_eq!(after["prepared"], before["prepared"], "{mutation}");
+        assert_eq!(store.conn().unwrap().query_row("SELECT count(*) FROM events WHERE job_id=?1 AND type='foundation_audit_guard_refreshed'",[&run],|row|row.get::<_,i64>(0)).unwrap(),0);
+    }
+}
+
 fn complete_episode(store: &Store, episode: usize) -> Value {
     let source = store.source().unwrap();
     let eid = &source["episodes"][episode]["id"];

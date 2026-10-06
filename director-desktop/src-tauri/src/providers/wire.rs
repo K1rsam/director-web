@@ -405,7 +405,12 @@ mod result_diagnostics_tests {
         let started = std::time::Instant::now();
         loop {
             match listener.accept() {
-                Ok((stream, _)) => return stream,
+                Ok((stream, _)) => {
+                    // Windows may inherit the listener's nonblocking mode. The fixture
+                    // polls accept only; its request read uses a bounded blocking socket.
+                    stream.set_nonblocking(false).unwrap();
+                    return stream;
+                }
                 Err(error)
                     if error.kind() == std::io::ErrorKind::WouldBlock
                         && started.elapsed() < Duration::from_secs(2) =>
