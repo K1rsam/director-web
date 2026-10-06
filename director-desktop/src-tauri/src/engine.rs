@@ -4115,6 +4115,7 @@ fn production_input(store: &Store, request: &Value) -> Result<Value> {
         input["storyboardCreativeProfile"] = json!("original-production-contract/v1");
         input["storyboardCarrierProfile"] = json!("integer-video-units/v1");
         input["storyboardAssetInputProfile"] = json!("asset-production-card/v2");
+        input[pipeline::CONTEXT_INPUT_PROFILE_FIELD] = json!(pipeline::CONTEXT_INPUT_PROFILE);
         input[pipeline::storyboard_dependencies::PROFILE_FIELD] =
             json!(pipeline::storyboard_dependencies::PROFILE);
         if let Some(ids) = request["unitIds"].as_array() {

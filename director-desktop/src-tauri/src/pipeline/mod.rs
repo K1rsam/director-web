@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 pub use source::*;
 use std::collections::{HashMap, HashSet};
-pub(crate) use storyboard::{finish_base_hash, validate_episode_delivery};
+pub(crate) use storyboard::{finish_base_hash, validate_episode_delivery, CONTEXT_INPUT_PROFILE_FIELD, CONTEXT_INPUT_PROFILE};
 pub use storyboard::{
     compile_reference_template, render_legacy_unit, run_storyboard, validate_storyboard,
 };
@@ -43,6 +43,10 @@ pub struct TextRequest {
 #[async_trait]
 pub trait TextExecutor: Send + Sync {
     async fn execute(&self, request: TextRequest) -> Result<Value, String>;
+    /// Recover only a proven stopped text transport. Default executors never retry.
+    async fn prepare_transport_request(&self, request: TextRequest) -> Result<TextRequest, String> {
+        Ok(request)
+    }
     fn input_transport_characters(&self, request: &TextRequest) -> Result<usize, String> {
         let wire = compile_storyboard_dispatch_transport(request)?;
         let (input, schema) = wire
@@ -288,7 +292,21 @@ pub(crate) async fn call_validated(
         schema,
         rule_snapshot: snapshot(skill, methods)?,
     };
-    let mut value = executor.execute(request.clone()).await?;
+    let mut request = executor.prepare_transport_request(request).await?;
+    let mut value = match executor.execute(request.clone()).await {
+        Ok(value) => value,
+        Err(error) => {
+            let next = executor.prepare_transport_request(request.clone()).await?;
+            if serde_json::to_value(&next).map_err(|e| e.to_string())?
+                == serde_json::to_value(&request).map_err(|e| e.to_string())? {
+                return Err(error);
+            }
+            // One additional execution at most. A domain rejection is handled
+            // below and can never enter this transport recovery path.
+            request = next;
+            executor.execute(request.clone()).await?
+        }
+    };
     let original = value.clone();
     if let Err(reason) = validate(&mut value) {
         executor.reject(&request, &original, &reason).await?;
@@ -301,6 +319,39 @@ pub(crate) async fn call_validated(
 pub(crate) fn obj(properties: Value) -> Value {
     let keys: Vec<_> = properties.as_object().unwrap().keys().cloned().collect();
     json!({"type":"object","properties":properties,"required":keys,"additionalProperties":false})
+}
+
+#[cfg(test)]
+mod transport_recovery_runner_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize,Ordering};
+    struct Executor { calls:AtomicUsize, accepted:AtomicUsize, rejected:AtomicUsize, mode:u8 }
+    #[async_trait]
+    impl TextExecutor for Executor {
+        async fn prepare_transport_request(&self, mut request:TextRequest)->Result<TextRequest,String> {
+            if self.calls.load(Ordering::SeqCst)>0 { request.input["textTransportRetry"]=json!({"offlineBoundProof":true}); }
+            Ok(request)
+        }
+        async fn execute(&self, request:TextRequest)->Result<Value,String> {
+            let count=self.calls.fetch_add(1,Ordering::SeqCst);
+            if self.mode==2 || count==0 && self.mode==1 {return Err("offline stopped transport".into())}
+            if count>0 {assert_eq!(request.input["textTransportRetry"]["offlineBoundProof"],true)}
+            Ok(json!({"value":"exact original domain output"}))
+        }
+        async fn accept(&self,_:&TextRequest,_:&Value)->Result<(),String>{self.accepted.fetch_add(1,Ordering::SeqCst);Ok(())}
+        async fn reject(&self,_:&TextRequest,_:&Value,_:&str)->Result<(),String>{self.rejected.fetch_add(1,Ordering::SeqCst);Ok(())}
+    }
+    #[tokio::test]
+    async fn transport_recovery_is_bounded_and_domain_rejection_never_reexecutes() {
+        for mode in [0,1,2,3] {
+            let executor=Executor{calls:AtomicUsize::new(0),accepted:AtomicUsize::new(0),rejected:AtomicUsize::new(0),mode};
+            let result=call_validated(&executor,"storyboardPlan","episode-emotion-planner","offline","medium",json!({}),json!({"type":"object"}),&[],|_|if mode==3{Err("invalid domain".into())}else{Ok(())}).await;
+            assert_eq!(executor.calls.load(Ordering::SeqCst),if [1,2].contains(&mode){2}else{1});
+            assert_eq!(result.is_ok(),[0,1].contains(&mode));
+            assert_eq!(executor.accepted.load(Ordering::SeqCst),usize::from([0,1].contains(&mode)));
+            assert_eq!(executor.rejected.load(Ordering::SeqCst),usize::from(mode==3));
+        }
+    }
 }
 pub(crate) fn array(items: Value) -> Value {
     json!({"type":"array","items":items})

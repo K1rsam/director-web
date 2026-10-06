@@ -356,7 +356,22 @@ fn continuity_resolution(
             == revision["currentTailSha256"]
 }
 
-fn project_step_resolutions(c: &Connection, run: &str, nodes: &mut [Value]) -> Result<()> {
+fn project_transport_resolutions(store:&Store,c:&Connection,run:&str,nodes:&mut[Value])->Result<()> {
+    if !nodes.iter().any(|node|node["status"]=="failed") {return Ok(())}
+    let mut query=c.prepare("SELECT w.node_key FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.state='accepted' AND j.kind='text' AND j.state='completed' AND json_extract(j.snapshot,'$.input.textTransportRetry.version')='stopped-text-transport-retry/v1'").map_err(|e|e.to_string())?;
+    let keys=query.query_map([run],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?.collect::<std::result::Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+    for key in keys {
+        let Some(resolver)=progress_step(c,run,&key)? else {continue};
+        if !crate::text_executor::accepted_transport_retry_proof(store,run,&resolver.request)? {continue}
+        let proof=&resolver.request.input["textTransportRetry"];
+        if let Some(origin)=nodes.iter_mut().find(|node|node["status"]=="failed" && node["id"]==proof["originNodeKey"] && node["requestHash"]==proof["originRequestHash"]) {
+            origin["resolution"]=json!({"version":"workflow-step-resolution/v1","kind":"text-transport-recovered","workflowId":run,"originNodeId":origin["id"],"originRequestHash":origin["requestHash"],"resolverNodeId":resolver.node,"resolverRequestHash":resolver.hash,"verified":true});
+        }
+    }
+    Ok(())
+}
+fn project_step_resolutions(store:&Store,c: &Connection, run: &str, nodes: &mut [Value]) -> Result<()> {
+    project_transport_resolutions(store,c,run,nodes)?;
     if !nodes.iter().any(|node| {
         node["stage"] == "storyboardCreate"
             && node["status"] == "rejected"
@@ -498,7 +513,7 @@ impl Store {
             // An older node key can remain after a runner key migration. Its exact
             // cached request is still one step; keep every checkpoint on disk but
             // project only the latest state for each stage/request identity.
-            let mut steps=c.prepare("SELECT w.node_key,w.stage,w.state,w.error,json_extract(j.snapshot,'$.input.delivery'),json_extract(j.snapshot,'$.input.scope'),json_extract(j.snapshot,'$.input.episodeId'),json_extract(j.snapshot,'$.input.episode.id'),CASE WHEN e.rowid IS NOT NULL THEN json_object('phase',json_extract(e.data,'$.phase'),'elapsedSeconds',json_extract(e.data,'$.elapsedSeconds'),'outputQuietSeconds',json_extract(e.data,'$.outputQuietSeconds'),'processAlive',json_extract(e.data,'$.processAlive'),'needsDiagnosis',json_extract(e.data,'$.needsDiagnosis'),'observedAt',e.created_at) END,w.request_hash,json_extract(j.snapshot,'$.input.executionBatch.version') FROM workflow_steps w LEFT JOIN jobs j ON j.id=w.text_job_id LEFT JOIN events e ON w.state='running' AND j.state='submitting' AND e.rowid=(SELECT x.rowid FROM events x WHERE x.job_id=w.text_job_id AND x.type='codex_heartbeat' ORDER BY x.rowid DESC LIMIT 1) WHERE w.workflow_id=?1 AND NOT EXISTS(SELECT 1 FROM workflow_steps newer WHERE newer.workflow_id=w.workflow_id AND newer.stage=w.stage AND newer.request_hash=w.request_hash AND (newer.updated_at>w.updated_at OR (newer.updated_at=w.updated_at AND newer.rowid>w.rowid))) ORDER BY w.rowid").map_err(|e|e.to_string())?;
+            let mut steps=c.prepare("SELECT w.node_key,w.stage,w.state,w.error,json_extract(j.snapshot,'$.input.delivery'),json_extract(j.snapshot,'$.input.scope'),json_extract(j.snapshot,'$.input.episodeId'),json_extract(j.snapshot,'$.input.episode.id'),CASE WHEN e.rowid IS NOT NULL THEN json_object('phase',json_extract(e.data,'$.phase'),'elapsedSeconds',json_extract(e.data,'$.elapsedSeconds'),'outputQuietSeconds',json_extract(e.data,'$.outputQuietSeconds'),'processAlive',json_extract(e.data,'$.processAlive'),'needsDiagnosis',json_extract(e.data,'$.needsDiagnosis'),'observedAt',e.created_at,'stderrCategory',json_extract(e.data,'$.stderrCategory')) END,w.request_hash,json_extract(j.snapshot,'$.input.executionBatch.version') FROM workflow_steps w LEFT JOIN jobs j ON j.id=w.text_job_id LEFT JOIN events e ON w.state='running' AND j.state='submitting' AND e.rowid=(SELECT x.rowid FROM events x WHERE x.job_id=w.text_job_id AND x.type='codex_heartbeat' ORDER BY x.rowid DESC LIMIT 1) WHERE w.workflow_id=?1 AND NOT EXISTS(SELECT 1 FROM workflow_steps newer WHERE newer.workflow_id=w.workflow_id AND newer.stage=w.stage AND newer.request_hash=w.request_hash AND (newer.updated_at>w.updated_at OR (newer.updated_at=w.updated_at AND newer.rowid>w.rowid))) ORDER BY w.rowid").map_err(|e|e.to_string())?;
             let mut nodes=steps.query_map([&id],|r| {
                 let stage=r.get::<_,String>(1)?;
                 let delivery=r.get::<_,Option<String>>(4)?.and_then(|v|serde_json::from_str::<Value>(&v).ok());
@@ -508,7 +523,7 @@ impl Store {
                 Ok(json!({"id":r.get::<_,String>(0)?,"requestHash":r.get::<_,String>(9)?,"title":step_title(&stage),"stage":stage,"status":r.get::<_,String>(2)?,"error":r.get::<_,Option<String>>(3)?,"execution":execution,"input":{"delivery":delivery,"scope":scope,"episodeId":episode,"executionBatchVersion":r.get::<_,Option<String>>(10)?}}))
             }).map_err(|e|e.to_string())?.collect::<std::result::Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
             if stage == "storyboard.run" {
-                project_step_resolutions(&c, &id, &mut nodes)?;
+                project_step_resolutions(self, &c, &id, &mut nodes)?;
             }
             let result = result
                 .and_then(|v| serde_json::from_str::<Value>(&v).ok())

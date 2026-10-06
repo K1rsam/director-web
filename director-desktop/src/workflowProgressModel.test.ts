@@ -39,6 +39,24 @@ test('没有活跃任务才暂停后台轮询，回到前台强制立即读取',
   const h = harness(idle); await h.poll(); assert.equal(h.reads, 0);
   await h.poll(true); assert.equal(h.reads, 1);
 });
+test('CLI诊断只使用固定分类，旧心跳和不可信分类不作为当前网络状态', () => {
+  const current = selectWorkflowProgress(fixture(), 'storyboard').nodes[2];
+  const execution = current.execution as Record<string, unknown>;
+  execution.stderrCategory = 'NETWORK_RETRY';
+  assert.match(executionSummary(current, stamp + 5000), /CLI 报告网络重连/);
+  assert.doesNotMatch(executionSummary(current, stamp + 180000), /报告网络重连/);
+  execution.stderrCategory = 'https://PRIVATE_HOST/?token=PRIVATE_KEY';
+  assert.doesNotMatch(executionSummary(current, stamp + 5000), /PRIVATE/);
+});
+
+test('文本恢复仅凭核心的完整绑定证明移出当前失败，不能掩盖未采用或跨岗结果', () => {
+  const origin = { id: 'original', stage: 'storyboardCreate', status: 'failed', requestHash: 'a'.repeat(64), resolution: { version: 'workflow-step-resolution/v1', kind: 'text-transport-recovered', verified: true, workflowId: 'run', originNodeId: 'original', originRequestHash: 'a'.repeat(64), resolverNodeId: 'retry', resolverRequestHash: 'b'.repeat(64) } };
+  const resolver = { id: 'retry', stage: 'storyboardCreate', status: 'accepted', requestHash: 'b'.repeat(64) };
+  assert.equal(workflowNodeResolution(origin, [origin, resolver], 'run'), 'text-transport-recovered');
+  for (const changed of [{ ...resolver, status: 'failed' }, { ...resolver, stage: 'storyboardPlan' }, { ...resolver, requestHash: 'c'.repeat(64) }]) assert.equal(workflowNodeResolution(origin, [origin, changed], 'run'), null);
+  assert.equal(workflowNodeResolution(origin, [origin, resolver, resolver], 'run'), null);
+  assert.equal(workflowNodeResolution({ ...origin, status: 'rejected' }, [origin, resolver], 'run'), null);
+});
 test('后台活跃媒体任务也更新，未知提交不能被当成待执行任务', () => {
   const workspace = fixture(); workspace.workflowProgress = []; workspace.jobs = [{ id: 'video', kind: 'video', provider: 'dreamina', status: 'processing' }];
   assert.equal(hasActiveWorkspaceTasks(workspace), true);

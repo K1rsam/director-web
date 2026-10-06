@@ -14,12 +14,13 @@ function runId(value: Node): string { return words(value.workflowId) || words(va
 function created(job: Job): number { const stamp = Date.parse(job.createdAt || ''); return Number.isFinite(stamp) ? stamp : 0; }
 
 /** Consume only Rust's bound resolution proof; titles and eventual completion aren't evidence. */
-export function workflowNodeResolution(node: Node, nodes: Node[], workflowId: string): 'author-scope-repair' | 'continuity-superseded' | null {
+export function workflowNodeResolution(node: Node, nodes: Node[], workflowId: string): 'author-scope-repair' | 'continuity-superseded' | 'text-transport-recovered' | null {
   const proof = record(node.resolution), kind = words(proof.kind), originId = words(node.id), originHash = words(node.requestHash);
   if (!workflowId || proof.version !== 'workflow-step-resolution/v1' || proof.verified !== true || proof.workflowId !== workflowId
-    || !['author-scope-repair', 'continuity-superseded'].includes(kind) || !originId || proof.originNodeId !== originId
+    || !['author-scope-repair', 'continuity-superseded', 'text-transport-recovered'].includes(kind) || !originId || proof.originNodeId !== originId
     || !/^[a-f0-9]{64}$/i.test(originHash) || proof.originRequestHash !== originHash || proof.resolverNodeId === originId) return null;
   if (kind === 'author-scope-repair' && words(node.status) !== 'rejected') return null;
+  if (kind === 'text-transport-recovered' && words(node.status) !== 'failed') return null;
   const origins = nodes.filter(item => words(item.id) === originId), resolvers = nodes.filter(item => words(item.id) === words(proof.resolverNodeId));
   if (origins.length !== 1 || origins[0].requestHash !== originHash || resolvers.length !== 1) return null;
   const resolver = resolvers[0], resolverHash = words(resolver.requestHash);
@@ -29,7 +30,8 @@ export function workflowNodeResolution(node: Node, nodes: Node[], workflowId: st
   // Only Planner supersession currently has a complete core proof. Carrying a
   // tail revision on an Author/Finisher does not prove that its failure expired.
   if (kind === 'continuity-superseded' && (words(node.stage) !== 'storyboardPlan' || words(resolver.stage) !== 'storyboardPlan')) return null;
-  return kind as 'author-scope-repair' | 'continuity-superseded';
+  if (kind === 'text-transport-recovered' && words(node.stage) !== words(resolver.stage)) return null;
+  return kind as 'author-scope-repair' | 'continuity-superseded' | 'text-transport-recovered';
 }
 
 export function selectWorkflowProgress(workspace: Workspace, stage: Stage) {
@@ -87,7 +89,9 @@ export function executionSummary(node: Node, now = Date.now(), readFailed = fals
   const label = phase === 'writing_stdin' ? '正在发送制作资料' : phase === 'output_received' || !alive ? '已收到结果，正在核对' : '等待 CLI 返回';
   const liveAge = alive ? age : 0;
   const diagnosis = alive && phase === 'executing' && (execution.needsDiagnosis === true || execution.needsDiagnosis === 1 || Number.isFinite(quiet) && quiet + liveAge >= 120);
-  return label + ' · 已用时 ' + secondsLabel(elapsed + liveAge) + (diagnosis ? ' · 较长时间未收到新输出，执行监控持续跟踪' : '');
+  const diagnosticLabels: Record<string, string> = { NETWORK_RETRY: 'CLI 报告网络重连', NETWORK_TRANSPORT: 'CLI 报告网络连接异常', TIMEOUT: 'CLI 报告连接超时', RATE_LIMIT: 'CLI 报告请求限流', AUTHENTICATION: 'CLI 报告鉴权异常', CLI_ERROR: 'CLI 有运行错误记录' };
+  const diagnostic = alive && phase === 'executing' ? diagnosticLabels[words(execution.stderrCategory)] : '';
+  return label + ' · 已用时 ' + secondsLabel(elapsed + liveAge) + (diagnostic ? ' · ' + diagnostic : '') + (diagnosis ? ' · 较长时间未收到新输出，执行监控持续跟踪' : '');
 }
 
 export function hasActiveWorkspaceTasks(workspace: Workspace): boolean {

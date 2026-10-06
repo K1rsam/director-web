@@ -22,6 +22,7 @@ const SOURCE_COORDINATE_REPAIR_EXECUTION: &str = "本次原整编处理程序定
 fn source_coordinate_issue(issue: &Value) -> bool {
     [
         "DIALOGUE_SOURCE_INTERVAL",
+        "DIALOGUE_SOURCE_COVERAGE",
         "UNIT_SOURCE_COVERAGE",
         "ASSET_SOURCE_SCOPE",
     ]
@@ -457,6 +458,12 @@ pub(super) fn prepare_request(mut request: TextRequest) -> Result<TextRequest, S
         runtime_contract["sha256"] = json!(digest(text(&runtime_contract, "content")));
     }
     request.rule_snapshot["runtimeContract"] = runtime_contract;
+    if author_repair && request.input["validationIssues"].as_array().is_some_and(|issues|
+        issues.iter().any(|issue|issue["code"]=="DIALOGUE_SOURCE_COVERAGE")) {
+        let content=format!("{}\n\nDIALOGUE_SOURCE_COVERAGE：本单元缺失或只覆盖部分锁定对白。依lineId与allowedSpokenRanges完整选择全部原话区间，逐字恰好一次，不发声括号演法；由Rust物化说者与文字。可以在问题单元及其连续源关联组内合理拆镜、拆单元和重算声窗，不补写源外台词，不删除其它原话。",text(&request.rule_snapshot["runtimeContract"],"content"));
+        request.rule_snapshot["runtimeContract"]["content"]=json!(content);
+        request.rule_snapshot["runtimeContract"]["sha256"]=json!(digest(text(&request.rule_snapshot["runtimeContract"],"content")));
+    }
     // Program instructions live only in the trusted rule snapshot. Never promote
     // arbitrary source/raw/user text by copying input.instruction into that slot.
     request
@@ -473,6 +480,9 @@ pub(super) fn prepare_request(mut request: TextRequest) -> Result<TextRequest, S
 pub(super) struct Executor<'a>(pub(super) &'a dyn TextExecutor);
 #[async_trait]
 impl TextExecutor for Executor<'_> {
+    async fn prepare_transport_request(&self, request: TextRequest) -> Result<TextRequest, String> {
+        self.0.prepare_transport_request(prepare_request(request)?).await
+    }
     fn input_transport_characters(&self, request: &TextRequest) -> Result<usize, String> {
         self.0
             .input_transport_characters(&prepare_request(request.clone())?)
