@@ -33,7 +33,7 @@ function disabled(html, title, expected) { assert.equal(button(html, title).incl
 function select(html, label) { const match = html.match(new RegExp('<span>' + label + '<\\/span><select([^>]*)>([\\s\\S]*?)<\\/select>')); assert.ok(match, label); return { disabled: match[1].includes('disabled=""'), values: [...match[2].matchAll(/<option\b[^>]*value="([^"]*)"[^>]*>/g)].map(item => item[1]).filter(Boolean), html: match[0] }; }
 let unexpectedSsrMutations = 0;
 const props = { writable: true, mutate: async () => { unexpectedSsrMutations++; throw new Error('SSR must not call the desktop core.'); }, inspect() {}, onNotice() {}, onError() {} };
-const server = await createServer({ logLevel: 'error', optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true }, appType: 'custom' });
+const server = await createServer({ logLevel: 'error', optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, hmr: false }, appType: 'custom' });
 try {
   const { UnitPanel } = await server.ssrLoadModule('/src/UnitPanel.tsx');
   const render = (workspace, extra = {}) => renderToStaticMarkup(React.createElement(UnitPanel, { ...props, workspace, mode: 'videos', ...extra }));
@@ -135,7 +135,7 @@ function descendants(tree) { return !tree || typeof tree !== 'object' ? [] : [tr
 function textOf(value) { return typeof value === 'string' || typeof value === 'number' ? String(value) : React.Children.toArray(value?.props?.children).map(textOf).join(''); }
 function action(tree, label) { const found = descendants(tree).find(node => node.type?.name === 'Button' && React.Children.toArray(node.props.children).map(textOf).join('') === label); assert.ok(found, label); return found.props; }
 function field(tree, label) { const found = descendants(tree).find(node => node.type === 'label' && textOf(node).startsWith(label)); assert.ok(found, label); const input = descendants(found).find(node => node.type === 'select'); assert.ok(input, label); return input.props; }
-const replayServer = await createServer({ logLevel: 'error', optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true }, appType: 'custom', plugins: [{ name: 'isolated-unitpanel-hook-host', enforce: 'pre', transform(code, id) { if (id.replaceAll('\\', '/').split('?')[0].endsWith('/src/UnitPanel.tsx')) return code.replaceAll("from 'react'", "from '/@unitpanel-hook-host'"); }, resolveId(id) { if (id === '/@unitpanel-hook-host') return '\0isolated-unitpanel-react'; }, load(id) { if (id === '\0isolated-unitpanel-react') return ['useState', 'useRef', 'useMemo', 'useEffect'].map(name => `export function ${name}(...args) { return globalThis.__unitPanelHooks.${name}(...args); }`).join('\n'); } }] });
+const replayServer = await createServer({ logLevel: 'error', optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, hmr: false }, appType: 'custom', plugins: [{ name: 'isolated-unitpanel-hook-host', enforce: 'pre', transform(code, id) { if (id.replaceAll('\\', '/').split('?')[0].endsWith('/src/UnitPanel.tsx')) return code.replaceAll("from 'react'", "from '/@unitpanel-hook-host'"); }, resolveId(id) { if (id === '/@unitpanel-hook-host') return '\0isolated-unitpanel-react'; }, load(id) { if (id === '\0isolated-unitpanel-react') return ['useState', 'useRef', 'useMemo', 'useEffect'].map(name => `export function ${name}(...args) { return globalThis.__unitPanelHooks.${name}(...args); }`).join('\n'); } }] });
 let simulatedMutations = 0;
 try {
   const { UnitPanel } = await replayServer.ssrLoadModule('/src/UnitPanel.tsx');
@@ -156,11 +156,57 @@ try {
     assert.equal(item.calls.length, 0);
     assert.ok(item.errors[0].includes('重新准备'));
   });
-  await test('Partial submit passes all selected IDs to core and never invokes prepare', async () => {
+  await test('Opening review sends zero requests; explicit confirmation submits only reviewed ready units', async () => {
     const item = setup({ ...base, units: [unit, blocked] }), tree = item.render();
     assert.equal(action(tree, '生成所选视频').disabled, false);
     action(tree, '生成所选视频').onClick(); await Promise.resolve();
-    assert.deepEqual(item.calls, [{ name: 'videos.submit', input: { unitIds: ['unit-1', 'unit-2'], provider: 'dreamina', model: 'seedance2.5', ratio: '16:9', resolution: '720p' } }]);
+    assert.equal(item.calls.length, 0);
+    const review = item.render();
+    assert.ok(textOf(review).includes('1 个视频单元'));
+    assert.ok(textOf(review).includes('1 个单元尚未就绪，本次不会提交'));
+    assert.ok(textOf(review).includes('0.250'));
+    action(review, '确认提交并生成视频').onClick(); await Promise.resolve();
+    assert.deepEqual(item.calls, [{ name: 'videos.submit', input: { unitIds: ['unit-1'], provider: 'dreamina', model: 'seedance2.5', ratio: '16:9', resolution: '720p' } }]);
+  });
+  await test('Cancelling a video review sends zero requests and removes the submit action', async () => {
+    const item = setup(); action(item.render(), '生成所选视频').onClick();
+    action(item.render(), '取消生成').onClick(); await Promise.resolve();
+    assert.equal(item.calls.length, 0);
+    assert.ok(!textOf(item.render()).includes('确认提交并生成视频'));
+  });
+  await test('Unknown estimates are explicitly not represented as free generation', () => {
+    const item = setup({ ...base, units: [{ ...unit, preparedPackage: { ...unit.preparedPackage, estimatedCost: null } }] });
+    action(item.render(), '生成所选视频').onClick(); const review = item.render();
+    assert.ok(textOf(review).includes('合计未知'));
+    assert.ok(textOf(review).includes('不代表免费'));
+    assert.equal(item.calls.length, 0);
+  });
+  for (const [name, change] of [
+    ['unit version', workspace => ({ ...workspace, units: [{ ...unit, version: 2 }] })],
+    ['estimated cost', workspace => ({ ...workspace, units: [{ ...unit, preparedPackage: { ...unit.preparedPackage, estimatedCost: { currency: 'CNY', amount: 9 } } }] })],
+    ['frozen media hash', workspace => ({ ...workspace, media: [{ ...workspace.media[0], sha256: 'changed-hash' }] })],
+    ['selected range expanded', workspace => ({ ...workspace, units: [...workspace.units, { ...unit, id: 'new-ready-unit' }] })],
+    ['blocked unit became ready', workspace => ({ ...workspace, units: [unit, { ...unit, id: blocked.id }] })],
+    ['official account', workspace => ({ ...workspace, dreaminaAccount: { ...workspace.dreaminaAccount, accountKey: 'different-account' } })],
+  ]) await test(`Changed ${name} invalidates review without submitting`, async () => {
+    const item = setup({ ...base, units: [unit, blocked] });
+    action(item.render(), '生成所选视频').onClick();
+    item.values.workspace = change(item.values.workspace);
+    action(item.render(), '确认提交并生成视频').onClick(); await Promise.resolve();
+    assert.equal(item.calls.length, 0);
+    assert.ok(item.errors[0].includes('已变化'));
+    assert.ok(!textOf(item.render()).includes('确认提交并生成视频'));
+  });
+  await test('Rapid duplicate confirmation starts only one isolated submission', async () => {
+    const item = setup(); let finish;
+    item.values.mutate = async (name, input) => { simulatedMutations++; item.calls.push({ name, input }); return new Promise(resolve => { finish = resolve; }); };
+    action(item.render(), '生成所选视频').onClick();
+    const confirm = action(item.render(), '确认提交并生成视频');
+    confirm.onClick(); confirm.onClick();
+    assert.equal(item.calls.length, 1);
+    assert.equal(item.calls[0].name, 'videos.submit');
+    assert.ok(!textOf(item.render()).includes('确认提交并生成视频'));
+    finish(base); await Promise.resolve(); await Promise.resolve();
   });
   await test('Programmatic zero-ready submit is rejected before calling core', () => {
     const item = setup({ ...base, units: [blocked] }), tree = item.render();

@@ -93,8 +93,8 @@ export default function App() {
       if (next && (next.project.id === workspaceRef.current?.project.id || action === 'backup.restore')) setWorkspace(next);
       const imageQueue = next?.imageQueueReport;
       const videoQueue = next?.videoQueueReport;
-      const videoNotice = videoQueue?.blockedCount ? `视频${action === 'videos.submit' ? '提交' : '素材准备'}：${videoQueue.queuedCount + (videoQueue.reusedCount || 0)} 个单元已接收，${videoQueue.blockedCount} 个需要处理：${videoQueue.blocked.map(item => `${next?.units.find(unit => unit.id === item.unitId)?.title || item.unitId} · ${item.reason}`).join('；')}` : '';
-      setNotice(videoNotice || (imageQueue?.blockedCount ? `已排队 ${imageQueue.queuedCount} 项图片，${imageQueue.blockedCount} 项需要处理：${imageQueue.blocked.map(item => `${next?.assets.find(asset => asset.id === item.assetId)?.name || item.assetId} · ${item.reason}`).join('；')}` : success)); void listProjects(); return next;
+      const videoNotice = videoQueue?.blockedCount ? `视频${action === 'videos.submit' ? '提交' : '素材准备'}：${videoQueue.queuedCount + (videoQueue.reusedCount || 0)} 个单元已接收，${videoQueue.blockedCount} 个尚未就绪。具体原因见对应单元的配图与问题。` : '';
+      setNotice(videoNotice || (imageQueue?.blockedCount ? `已排队 ${imageQueue.queuedCount} 项图片，${imageQueue.blockedCount} 项尚未就绪。具体原因见资产的任务状态与任务记录。` : success)); void listProjects(); return next;
     } catch (reason) { setError(messageOf(reason)); return null; } finally { busyRef.current = ''; setBusy(''); }
   }, [listProjects]);
 
