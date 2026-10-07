@@ -4522,6 +4522,10 @@ pub(crate) fn author_repairable_rejection(reason: &str) -> bool {
     .contains(&reason) || author_missing_dialogue(reason).is_some()
 }
 
+pub(crate) fn planner_repairable_rejection(reason:&str) -> bool {
+    matches!(reason,"真实跨场景不能声明 continuous")
+}
+
 fn is_author_scope_repair(request: &TextRequest) -> bool {
     request.stage == "storyboardFinish"
         && request.skill == "episode-finishing-editor"
@@ -5039,6 +5043,12 @@ impl TextExecutor for SavedTextExecutor {
             self.store.event(&job,"author_scope_rejection_replayed",&json!({"workflowId":self.workflow_id,"requestHash":hash,"newModelCalls":0,"originalAuthorAccepted":false}))?;
             return Ok(value);
         }
+        if let Some((_,value,_))=self.rejected_planner_result(&request,&snapshot,&hash)? {
+            return Ok(value);
+        }
+        if let Some(replay) = self.scope_group_validator_replay(&request, &snapshot, &hash)? {
+            return Ok(replay.value);
+        }
         if let Some((job, value, _)) = self.carrier_rejected_result(&request, &snapshot, &hash)? {
             self.store.event(
                 &job,
@@ -5319,6 +5329,10 @@ impl TextExecutor for SavedTextExecutor {
         {
             return Err("原岗适用范围回包保持未采用；必须采用完整校验后的原整编差量结果".into());
         }
+        if let Some(replay) = self.scope_group_validator_replay(request, &snapshot, &hash)? {
+            self.commit_carrier_received_replay(&replay, value, None)?;
+            return Ok(());
+        }
         if self
             .carrier_rejected_result(request, &snapshot, &hash)?
             .is_some()
@@ -5455,6 +5469,10 @@ impl TextExecutor for SavedTextExecutor {
         if self.managed_accepted_value(request, &snapshot)?.is_some() {
             return Err("已验收的冻结文本节点不能由重复校验改写为拒绝；原证据保留".into());
         }
+        if let Some((_,raw,original_reason))=self.rejected_planner_result(request,&snapshot,&hash)? {
+            if raw!=*value || original_reason!=reason {return Err("规划原拒绝回包或校验原因变化；原证据保留".into());}
+            return Ok(());
+        }
         if let Some((job, original)) =
             self.scope_rejected_author_result(request, &snapshot, &hash)?
         {
@@ -5464,6 +5482,13 @@ impl TextExecutor for SavedTextExecutor {
             if !author_repairable_rejection(reason) {
                 self.store.event(&job,"author_scope_hard_validation_rejected",&json!({"requestHash":hash,"error":reason,"originalAuthorAccepted":false,"newModelCalls":0}))?;
             }
+            return Ok(());
+        }
+        if let Some(replay) = self.scope_group_validator_replay(request, &snapshot, &hash)? {
+            if replay.value != *value { return Err("整编关联组复验不是原回包；原证据保留".into()); }
+            // The new validator may still find a genuine domain error. Keep
+            // the original rejected bytes and append that diagnosis only.
+            self.store.event(&replay.job,"scope_group_validation_rejected",&json!({"requestHash":hash,"error":reason,"generationRequestsSent":0}))?;
             return Ok(());
         }
         if let Some((_, original, error)) =
@@ -5944,6 +5969,20 @@ impl SavedTextExecutor {
         tx.commit().map_err(|e| e.to_string())
     }
 
+    fn rejected_planner_result(&self, request:&TextRequest, snapshot:&Value, hash:&str) -> Result<Option<(String,Value,String)>> {
+        if request.stage!="storyboardPlan" || request.skill!="episode-emotion-planner" || request.input["storyboardCreativeProfile"]!="original-production-contract/v1" {return Ok(None);}
+        let Some(run)=self.workflow_id.as_deref() else{return Ok(None);};
+        let found:Option<(String,String,String,String)>=self.store.conn()?.query_row(
+            "SELECT j.id,j.result,e.data,j.error FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id JOIN jobs parent ON parent.id=w.workflow_id JOIN events e ON e.id=(SELECT MAX(x.id) FROM events x WHERE x.job_id=j.id AND x.type='text_received_raw') WHERE w.workflow_id=?1 AND w.node_key=?2 AND w.stage='storyboardPlan' AND w.request_hash=?3 AND w.state='rejected' AND parent.kind='workflow' AND parent.entity_id='storyboard.run' AND j.kind='text' AND j.provider=?4 AND j.state='rejected' AND j.error=w.error AND j.snapshot=?5 AND j.result IS NOT NULL AND w.result=j.result AND json_extract(j.receipt,'$.validation')='rejected' AND json_extract(j.receipt,'$.contract')='desktop-runner/v1' AND json_extract(j.receipt,'$.migrationPolicy') IS NULL",
+            params![run,step_key(request),hash,s(&self.settings,"textProvider"),snapshot.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(|e|e.to_string())?;
+        let Some((job,raw,event,reason))=found else{return Ok(None);};
+        if !planner_repairable_rejection(&reason){return Ok(None);}
+        let raw:Value=serde_json::from_str(&raw).map_err(|e|e.to_string())?;
+        let event:Value=serde_json::from_str(&event).map_err(|e|e.to_string())?;
+        if crate::pipeline::digest(&snapshot.to_string())!=hash || event["requestHash"]!=hash || event["value"]!=raw {return Err("规划原回包的快照或接收事件不匹配；禁止重发".into());}
+        Ok(Some((job,raw,reason)))
+    }
+
     fn scope_rejected_author_result(
         &self,
         request: &TextRequest,
@@ -6137,6 +6176,30 @@ impl SavedTextExecutor {
         tx.execute("INSERT INTO events(job_id,type,data,created_at) VALUES(?1,?2,?3,?4)",params![replay.job,event,json!({"requestHash":replay.hash,"generationRequestsSent":0,"error":reason,"validatedResult":value,"originalEvidencePreserved":true}).to_string(),now]).map_err(|e|e.to_string())?;
         tx.execute("INSERT INTO metadata(key,value) VALUES('changed_at',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[now]).map_err(|e|e.to_string())?;
         tx.commit().map_err(|e| e.to_string())
+    }
+
+    /// Exact replay for the confirmed same-event repair-group validator bug.
+    /// Only attempt two with a source-proved scene-coordinate issue qualifies;
+    /// all immutable request, raw event, receipt and step bindings stay exact.
+    fn scope_group_validator_replay(&self, request:&TextRequest, snapshot:&Value, hash:&str) -> Result<Option<CarrierReceivedReplay>> {
+        if !is_author_scope_repair(request) || request.input["authorRepair"]["attempt"] != 2
+            || !request.input["validationIssues"].as_array().is_some_and(|items| items.iter().any(|issue|issue["code"]=="UNIT_SCENE_COORDINATE")) {
+            return Ok(None);
+        }
+        let Some(run)=self.workflow_id.as_deref() else { return Ok(None); };
+        let key=step_key(request); let snapshot_json=snapshot.to_string();
+        if crate::pipeline::digest(&snapshot_json)!=hash { return Ok(None); }
+        let reason="主创适用范围修订越出问题单元及原文/幻想关联组；不扩大重做范围";
+        let found=self.store.conn()?.query_row(
+            "SELECT j.id,j.result,e.id,e.data,j.state,j.error,j.receipt,w.state,w.result,w.error FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id JOIN jobs parent ON parent.id=w.workflow_id JOIN events e ON e.id=(SELECT MAX(x.id) FROM events x WHERE x.job_id=j.id AND x.type='text_received_raw') WHERE w.workflow_id=?1 AND w.node_key=?2 AND w.stage='storyboardFinish' AND w.request_hash=?3 AND j.snapshot=?4 AND parent.kind='workflow' AND parent.entity_id='storyboard.run' AND j.kind='text' AND j.provider=?5 AND w.state='rejected' AND j.state='rejected' AND w.error=?6 AND j.error=w.error AND j.result IS NOT NULL AND w.result=j.result AND json_extract(j.receipt,'$.validation')='rejected' AND json_extract(j.receipt,'$.contract')='desktop-runner/v1' AND json_extract(j.receipt,'$.migrationPolicy') IS NULL",
+            params![run,key,hash,snapshot_json,s(&self.settings,"textProvider"),reason],
+            |row|Ok(CarrierReceivedReplay{author_scope:true,job:row.get(0)?,run:run.into(),key:key.clone(),hash:hash.into(),snapshot:snapshot_json.clone(),raw:row.get(1)?,value:Value::Null,event_id:row.get(2)?,event_data:row.get(3)?,job_state:row.get(4)?,job_error:row.get(5)?,receipt:row.get(6)?,step_state:row.get(7)?,step_result:row.get(8)?,step_error:row.get(9)?})
+        ).optional().map_err(|e|e.to_string())?;
+        let Some(mut replay)=found else { return Ok(None); };
+        let raw:Value=serde_json::from_str(&replay.raw).map_err(|e|e.to_string())?;
+        let event:Value=serde_json::from_str(&replay.event_data).map_err(|e|e.to_string())?;
+        if event["requestHash"]!=hash || event["value"]!=raw { return Err("整编关联组原接收证据变化；禁止重发".into()); }
+        replay.value=raw; Ok(Some(replay))
     }
 
     /// Read the same rejected carrier attempt without resetting its budget or
@@ -6661,8 +6724,11 @@ impl SavedTextExecutor {
     }
 
     fn saved_author_chain_revision(&self, request: &TextRequest, repair: &Value) -> Result<Option<Value>> {
-        if request.stage != "storyboardCreate" || request.skill != "unit-performance-director"
-            || repair["version"] != "accepted-author-scope-repair/v1"
+        if request.stage != "storyboardCreate" || request.skill != "unit-performance-director" {
+            return Ok(None);
+        }
+        if let Some(proof)=self.recovered_predecessor_revision(request)? { return Ok(Some(proof)); }
+        if repair["version"] != "accepted-author-scope-repair/v1"
             || repair["originalAuthorAccepted"] != false { return Ok(None); }
         let Some(run) = self.workflow_id.as_deref() else { return Ok(None); };
         let connection = self.store.conn()?;
@@ -6705,6 +6771,52 @@ impl SavedTextExecutor {
         }
         if !bound { return Ok(None); }
         Ok(Some(json!({"version":"accepted-author-chain-change/v1","sourceSha256":repair["sourceSha256"],"episodeId":request.input["episodeId"],"executionBatchId":request.input["executionBatch"]["id"],"repairProofSha256":crate::pipeline::digest(&repair.to_string()),"priorRequestHash":old_hash,"currentDomainRequestSha256":crate::pipeline::digest(&self.request_domain_snapshot(request)?.to_string())})))
+    }
+
+    /// A previously unavailable predecessor may now have a fully adopted tail.
+    /// Fork only a proven stopped/no-result author, only for that bound tail,
+    /// and only when every non-continuity byte of the old domain is identical.
+    fn recovered_predecessor_revision(&self, request:&TextRequest) -> Result<Option<Value>> {
+        let tail=&request.input["acceptedContinuity"];
+        if tail["version"]!="accepted-tail-v1" || tail["unit"].is_null()
+            || tail["evidenceRole"]!="ACCEPTED_CREATIVE_STATE_ONLY" || tail["sourceRefs"]!=tail["unit"]["sourceRefs"]
+            || tail["boundaryBefore"]!=request.input["plan"]["events"].as_array().and_then(|events|events.first()).map(|event|event["boundaryBefore"].clone()).unwrap_or(Value::Null) { return Ok(None); }
+        let Some(run)=self.workflow_id.as_deref() else { return Ok(None); };
+        let connection=self.store.conn()?;
+        let old:Option<(String,String)>=connection.query_row(
+            "SELECT j.snapshot,w.request_hash FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.node_key=?2 AND w.state='failed' AND j.state='failed' AND j.kind='text' AND j.provider='codex' AND j.result IS NULL AND w.result IS NULL",
+            params![run,step_key(request)],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|e.to_string())?;
+        let Some((old_json,old_hash))=old else {return Ok(None);};
+        if crate::pipeline::digest(&old_json)!=old_hash {return Ok(None);}
+        let old_request:TextRequest=serde_json::from_str(&old_json).map_err(|e|e.to_string())?;
+        if !old_request.input["acceptedContinuity"].is_null() {return Ok(None);}
+        let mut prior=self.request_domain_snapshot(&old_request)?;
+        let mut current=self.request_domain_snapshot(request)?;
+        for pointer in ["/input/acceptedContinuity","/input/plan/acceptedContinuity"] {
+            if let Some(value)=prior.pointer_mut(pointer){*value=Value::Null;}
+            if let Some(value)=current.pointer_mut(pointer){*value=Value::Null;}
+        }
+        if prior!=current {return Ok(None);}
+        let Some(stopped)=self.stopped_transport_retry_proof(&old_request)? else{return Ok(None);};
+        let first=request.input["sourceRows"].as_array().and_then(|rows|rows.first()).and_then(|row|row.pointer("/range/start")).and_then(Value::as_u64);
+        let tail_refs=tail["unit"]["sourceRefs"].as_array();
+        let batch=s(tail,"executionBatchId");
+        if batch.is_empty() || batch==s(&request.input["executionBatch"],"id") || first.is_none() || tail_refs.is_none_or(Vec::is_empty) {return Ok(None);}
+        let mut statement=connection.prepare(
+            "SELECT j.snapshot,w.result,w.request_hash,j.id FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.stage='storyboardCreate' AND w.state='accepted' AND j.state='completed' AND json_extract(j.receipt,'$.validation')='accepted' AND json_extract(j.snapshot,'$.input.executionBatch.id')=?2 AND json_extract(j.snapshot,'$.input.episodeId')=?3"
+        ).map_err(|e|e.to_string())?;
+        let rows=statement.query_map(params![run,batch,s(&request.input,"episodeId")],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).map_err(|e|e.to_string())?;
+        for row in rows {
+            let (snapshot,result,hash,job)=row.map_err(|e|e.to_string())?;
+            let saved:Value=serde_json::from_str(&snapshot).map_err(|e|e.to_string())?;
+            let saved_request:TextRequest=serde_json::from_value(saved.clone()).map_err(|e|e.to_string())?;
+            let accepted:Value=serde_json::from_str(&result).map_err(|e|e.to_string())?;
+            if crate::pipeline::digest(&snapshot)!=hash || accepted["units"].as_array().and_then(|units|units.last())!=Some(&tail["unit"])
+                || saved["input"]["sourceRows"].as_array().is_none_or(|rows|rows.iter().any(|row|row.pointer("/range/end").and_then(Value::as_u64).is_none_or(|end|end>first.unwrap())))
+                || self.managed_accepted_value(&saved_request,&saved)?.as_ref()!=Some(&accepted) {continue;}
+            return Ok(Some(json!({"version":"accepted-author-chain-change/v1","reason":"recovered-predecessor","priorRequestHash":old_hash,"currentDomainRequestSha256":crate::pipeline::digest(&self.request_domain_snapshot(request)?.to_string()),"stoppedAuthorProof":stopped,"acceptedPredecessorJobId":job,"acceptedPredecessorHash":hash,"acceptedTailSha256":crate::pipeline::digest(&tail.to_string()),"episodeId":request.input["episodeId"],"executionBatchId":request.input["executionBatch"]["id"]})));
+        }
+        Ok(None)
     }
 
     /// A removed application-managed binary is a transport change, not permission
@@ -7542,6 +7654,9 @@ fn restore_optional_fields(value: &mut Value, schema: &Value) {
 }
 fn step_key(request: &TextRequest) -> String {
     let key = base_step_key(request);
+    if request.stage=="storyboardPlan" && request.input["planRepair"]["version"]=="rejected-plan-repair/v1" {
+        return format!("{key}:plan-repair:{}",crate::pipeline::digest(&request.input["planRepair"].to_string()));
+    }
     if request.input["textTransportRetry"]["version"] == "stopped-text-transport-retry/v1" {
         return format!("{key}:transport-retry:{}", crate::pipeline::digest(&request.input["textTransportRetry"].to_string()));
     }
@@ -7831,6 +7946,49 @@ mod managed_installation_resume_tests {
         assert_eq!(strict_schema(&old.schema),strict_schema(&new.schema));
         assert_eq!(store.job(&job).unwrap(),before);
         println!("{{\"actualStoppedTaskProof\":true,\"identicalModelInputs\":true,\"originalEvidencePreserved\":true,\"modelExecutions\":0}}");
+    }
+
+    #[tokio::test]
+    #[ignore="Explicit independent copies of real failures; zero model executions"]
+    async fn actual_planner_group_and_predecessor_recovery_are_bound_without_execution() {
+        let base=PathBuf::from(std::env::var("DIRECTOR_RECOVERY_REGRESSIONS_ROOT").expect("private copies required")).canonicalize().unwrap();
+        let allowed=PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("reports/desktop-real-e2e-20261005").canonicalize().unwrap();
+        assert_eq!(base,allowed,"private evidence root only");
+        for case in ["aa","fish","heart"] {
+            let root=base.join(format!("recovery-regression-{case}-20261007")).canonicalize().unwrap();
+            assert!(root.starts_with(&base));
+            let store=Store::open(root).unwrap();
+            let (run,parent):(String,String)=store.conn().unwrap().query_row("SELECT id,snapshot FROM jobs WHERE kind='workflow' AND entity_id='storyboard.run' ORDER BY rowid DESC LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+            let parent:Value=serde_json::from_str(&parent).unwrap();
+            let executor=SavedTextExecutor{store:store.clone(),settings:parent["input"]["settings"].clone(),workflow_id:Some(run.clone())};
+            let before:i64=store.conn().unwrap().query_row("SELECT count(*) FROM jobs",[],|r|r.get(0)).unwrap();
+            if case=="fish" {
+                let snapshot:String=store.conn().unwrap().query_row("SELECT j.snapshot FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.state='failed' AND w.stage='storyboardCreate' AND j.result IS NULL ORDER BY w.rowid DESC LIMIT 1",[&run],|r|r.get(0)).unwrap();
+                let mut request:TextRequest=serde_json::from_str(&snapshot).unwrap();
+                let (saved,result):(String,String)=store.conn().unwrap().query_row("SELECT j.snapshot,w.result FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.state='accepted' AND w.stage='storyboardCreate' ORDER BY w.rowid DESC LIMIT 1",[&run],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+                let saved:Value=serde_json::from_str(&saved).unwrap(); let result:Value=serde_json::from_str(&result).unwrap();
+                let unit=result["units"].as_array().unwrap().last().unwrap();
+                let tail=json!({"version":"accepted-tail-v1","executionBatchId":saved["input"]["executionBatch"]["id"],"unit":unit,"sourceRefs":unit["sourceRefs"],"boundaryBefore":request.input["plan"]["events"][0]["boundaryBefore"],"evidenceRole":"ACCEPTED_CREATIVE_STATE_ONLY"});
+                request.input["acceptedContinuity"]=tail.clone(); request.input["plan"]["acceptedContinuity"]=tail;
+                let proof=executor.recovered_predecessor_revision(&request).unwrap().expect("real recovered predecessor must branch stopped dependent request");
+                assert_eq!(proof["reason"],"recovered-predecessor");
+                for field in ["sourceRows","settings","assets"] {let mut drift=request.clone();drift.input[field]=json!("unrelated change");assert!(executor.recovered_predecessor_revision(&drift).unwrap().is_none(),"unrelated domain drift must hold");}
+                let mut drift=request.clone();drift.input["plan"]["dependencyExits"]=json!({"forged":"exit"});assert!(executor.recovered_predecessor_revision(&drift).unwrap().is_none());
+            }else {
+                let reason=if case=="aa"{"主创适用范围修订越出问题单元及原文/幻想关联组；不扩大重做范围"}else{"真实跨场景不能声明 continuous"};
+                let (job,snapshot,raw):(String,String,String)=store.conn().unwrap().query_row("SELECT j.id,j.snapshot,j.result FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.state='rejected' AND j.error=?2 ORDER BY w.rowid DESC LIMIT 1",params![run,reason],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+                let request:TextRequest=serde_json::from_str(&snapshot).unwrap();
+                let frozen=executor.request_snapshot(&request).unwrap();let hash=crate::pipeline::digest(&frozen.to_string());
+                let preserved=store.job(&job).unwrap();let raw:Value=serde_json::from_str(&raw).unwrap();
+                if case=="aa" {assert!(executor.scope_group_validator_replay(&request,&frozen,&hash).unwrap().is_some());}else{
+                    assert!(executor.execute(request.clone()).await.unwrap()==raw,"real original planning response replays verbatim");
+                    executor.reject(&request,&raw,reason).await.unwrap();
+                }
+                assert!(store.job(&job).unwrap()==preserved,"original evidence must remain unchanged");
+            }
+            assert_eq!(before,store.conn().unwrap().query_row("SELECT count(*) FROM jobs",[],|r|r.get::<_,i64>(0)).unwrap(),"zero new text/media jobs in proof");
+        }
+        println!("{{\"actualPlannerReplay\":true,\"actualScopeGroupReplay\":true,\"actualPredecessorBinding\":true,\"modelExecutions\":0}}");
     }
 
     #[test]

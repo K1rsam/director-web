@@ -271,6 +271,17 @@ fn restore_fantasy_schema(schema: &mut Value) {
 
 pub(super) fn prepare_request(mut request: TextRequest) -> Result<TextRequest, String> {
     let carrier = uses_carrier_profile(&request.input)?;
+    let planner_repair=if let Some(proof)=request.input.get("planRepair") {
+        if request.stage!="storyboardPlan" || request.skill!="episode-emotion-planner"
+            || proof["version"]!="rejected-plan-repair/v1" || proof["maximumAttempts"]!=2
+            || proof["attempt"].as_u64().is_none_or(|attempt|!(1..=2).contains(&attempt))
+            || proof["previousPlanSha256"]!=digest(&request.input["previousPlan"].to_string())
+            || !["sourceSha256","originDomainRequestSha256","originalPlanSha256","previousRequestSha256"].iter().all(|key|proof[*key].as_str().is_some_and(|hash|hash.len()==64 && hash.bytes().all(|byte|byte.is_ascii_hexdigit())))
+            || !request.input["validationIssues"].as_array().is_some_and(|items|!items.is_empty() && items.iter().all(|issue|issue["code"]=="PLAN_EVENT_BOUNDARY")) {
+            return Err("规划定向修订缺少冻结原稿、准确问题或有界次数；未调用模型".into());
+        }
+        true
+    }else{false};
     let author_repair = if let Some(proof) = request.input.get("authorRepair") {
         if proof["version"] != AUTHOR_SCOPE_REPAIR_PROFILE
             || request.stage != "storyboardFinish"
@@ -410,6 +421,12 @@ pub(super) fn prepare_request(mut request: TextRequest) -> Result<TextRequest, S
         runtime_contract["carrierProfile"] = json!(CARRIER_PROFILE);
         runtime_contract["content"] = json!(content);
         runtime_contract["sha256"] = json!(digest(text(&runtime_contract, "content")));
+    }
+    if planner_repair {
+        let content=format!("{}\n\n本次是原情绪统筹岗位的定向规划修复。previousPlan为完整未采用原回包，validationIssues由程序校验给出。保留正确的情绪、事件、来源归属、入口事实、选择及初排；只修复明确问题及其必要关联。真实集场以sourceRows和episode为准，continuous只适用于同一真实场景；跨场的时空或事件边界由本岗依据原文判断，程序不代写剧情。交完整规划并再次经过覆盖、顺序、身份及场景校验。不得重抄原文或改写源事实。最多两次定向修订，同样问题不循环。",text(&runtime_contract,"content"));
+        runtime_contract["planRepairProfile"]=json!("rejected-plan-repair/v1");
+        runtime_contract["content"]=json!(content);
+        runtime_contract["sha256"]=json!(digest(text(&runtime_contract,"content")));
     }
     if author_repair {
         let content = format!(
