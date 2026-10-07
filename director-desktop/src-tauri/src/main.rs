@@ -115,8 +115,10 @@ fn startup_verification_report(
     report["developmentServerAtFinish"] = serde_json::json!(development_server_at_finish);
     report["standalone"] = serde_json::json!(standalone);
     report["platform"] = serde_json::json!(std::env::consts::OS);
-    let unvirtualized = !director_core::windows_runtime::is_packaged()?;
+    let default_home = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let unvirtualized = director_core::windows_runtime::verify_shared_directory(&default_home).is_ok();
     report["unvirtualizedRuntime"] = serde_json::json!(unvirtualized);
+    report["sharedProjectRegistry"] = serde_json::json!(unvirtualized);
     if !unvirtualized {
         report["ok"] = serde_json::json!(false);
         report["error"] = serde_json::json!("Desktop startup still inherited a packaged host filesystem");
@@ -358,6 +360,7 @@ fn main() {
         .manage(verification)
         .setup(move |app| {
             let home = match &setup_verification { Some(v) => v.home.clone(), None => app.path().app_data_dir()? };
+            director_core::windows_runtime::verify_shared_directory(&home).map_err(std::io::Error::other)?;
             if setup_verification.is_none() {
                 director_core::project_library::recover_virtualized(&home).map_err(std::io::Error::other)?;
             }

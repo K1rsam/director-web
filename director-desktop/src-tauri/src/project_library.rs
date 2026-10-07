@@ -157,9 +157,7 @@ pub fn recover(home: &Path, legacy_registries: &[PathBuf]) -> Result<Value> {
 pub fn recover_virtualized(home: &Path) -> Result<Value> {
     #[cfg(windows)]
     {
-        if crate::windows_runtime::is_packaged()? {
-            return Err("项目目录接续必须在共享桌面环境执行，不能在宿主隔离目录写入".into());
-        }
+        crate::windows_runtime::verify_shared_directory(home)?;
         let roaming = home.parent().ok_or("缺少项目根目录")?;
         if !roaming
             .file_name()
