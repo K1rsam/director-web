@@ -2768,7 +2768,7 @@ fn build_asset(
         // source-backed alias declaration or a replacement identity key.
         asset.name = name.clone();
         asset.kind = kind.clone();
-        if kind != "CH" {
+        if !matches!(kind.as_str(), "CH" | "BEAST") {
             asset.metadata.remove("role");
         }
     }
@@ -2793,7 +2793,10 @@ fn build_asset(
     }
     asset.metadata.extend(metadata(
         wire.preparation.as_ref(),
-        wire.role.as_ref(),
+        // Narrative importance and image-template classification are separate:
+        // a non-human individual can be the protagonist without becoming CH.
+        // Empty/non-applicable roles are transport noise, not user decisions.
+        wire.role.as_ref().filter(|role| matches!(kind.as_str(), "CH" | "BEAST") && !role.trim().is_empty()),
         wire.relation_note.as_ref(),
         None,
     )?);
@@ -2804,8 +2807,8 @@ fn build_asset(
     if let Some(episodes) = &wire.episodes {
         update_usage(&mut asset.metadata, episodes, batch, patch);
     }
-    if wire.role.is_some() && kind != "CH" {
-        return Err("角色定位只属于基础人物，不广播至群像或异兽".into());
+    if !matches!(kind.as_str(), "CH" | "BEAST") {
+        asset.metadata.remove("role");
     }
     let base_changed = old.is_none()
         || patch && kind != "CH" && wire.name.is_some()
@@ -6733,6 +6736,54 @@ mod tests {
             next.assets[0].variants[0].metadata["preparation"]["mode"],
             "REFERENCE"
         );
+    }
+
+    #[test]
+    fn catalogue_narrative_role_is_independent_of_human_image_template() {
+        let source = source(1);
+        let scope = source.episodes.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+        let batch = plan_batches(&source, &scope).unwrap().remove(0);
+        let prior = empty_foundation(&source);
+        let input = input_for("F2", &source, &batch, &prior, &json!({}), 0, 1, false, &[]);
+        for kind in ["CH", "BEAST", "GROUP", "LOC", "PROP"] {
+            for role in ["主角", "", "  "] {
+                let mut raw = empty_catalogue(&source, &batch);
+                raw["assets"] = json!([{"name":"测试对象", "type":kind, "episodes":scope,
+                    "sceneRefs":source.scenes.iter().map(|s|json!([s.episode_id,s.id])).collect::<Vec<_>>(),
+                    "role":role,"preparation":{"mode":"REFERENCE"}}]);
+                let next = apply_catalogue(&raw, &source, &batch, &input, &prior, None, &HashSet::new()).unwrap();
+                assert_eq!(next.assets[0].kind, kind);
+                let expected = if matches!(kind, "CH" | "BEAST") && !role.trim().is_empty() { Some(json!(role)) } else { None };
+                assert_eq!(next.assets[0].metadata.get("role"), expected.as_ref());
+                assert!(!flatten_foundation_assets(&next).is_empty());
+                if matches!(kind, "CH" | "BEAST") {
+                    raw["assets"][0]["role"] = json!("invalid-role");
+                    assert!(apply_catalogue(&raw, &source, &batch, &input, &prior, None, &HashSet::new()).is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "explicit readonly DB/workflow/text job via DIRECTOR_ROLE_REAL_DB, DIRECTOR_ROLE_WORKFLOW, DIRECTOR_ROLE_TEXT; no CLI or project writes"]
+    fn saved_actual_nonhuman_protagonist_catalogue_revalidates_without_generation() {
+        let env = |key| std::env::var(key).expect(key);
+        let connection = rusqlite::Connection::open_with_flags(env("DIRECTOR_ROLE_REAL_DB"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let workflow = env("DIRECTOR_ROLE_WORKFLOW");
+        let job = env("DIRECTOR_ROLE_TEXT");
+        let parent: String = connection.query_row("SELECT snapshot FROM jobs WHERE id=?1 AND kind='workflow'", [&workflow], |r| r.get(0)).unwrap();
+        let (snapshot, raw): (String, String) = connection.query_row("SELECT j.snapshot,j.result FROM jobs j JOIN workflow_steps w ON w.text_job_id=j.id WHERE j.id=?1 AND w.workflow_id=?2 AND w.stage='foundation:F2'", rusqlite::params![job,workflow], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+        let parent: Value = serde_json::from_str(&parent).unwrap();
+        let source: LockedSource = serde_json::from_value(parent["input"]["source"].clone()).unwrap();
+        let snapshot: Value = serde_json::from_str(&snapshot).unwrap();
+        let raw: Value = serde_json::from_str(&raw).unwrap();
+        let input = &snapshot["input"];
+        let scope: Vec<String> = serde_json::from_value(input["scope"].clone()).unwrap();
+        let batch = Batch { pieces: whole_rows(&source, &scope), scope, fragment: None };
+        let next = apply_catalogue(&raw, &source, &batch, input, &empty_foundation(&source), None, &HashSet::new()).unwrap();
+        assert_eq!(next.assets.len(), raw["assets"].as_array().unwrap().len());
+        assert!(next.assets.iter().any(|a| a.kind == "BEAST" && a.metadata.get("role") == Some(&json!("主角"))));
+        println!("Saved catalogue accepted: {} assets, {} stage-two rows, zero model calls", next.assets.len(), flatten_foundation_assets(&next).len());
     }
 
     fn two_episode_catalogue() -> (LockedSource, FoundationProposal) {
