@@ -2926,7 +2926,11 @@ fn build_asset(
             let vid = existing
                 .map(|v| v.id.clone())
                 .unwrap_or_else(|| format!("{id}_V_{}", &digest(&name)[..16]));
-            if !seen.insert(vid.clone()) || (vid == bid && !patch) {
+            // The registry exposes the base as an existing keyed appearance.
+            // F2 may describe its uses alongside the other appearances; that
+            // updates the same record, rather than creating a duplicate child.
+            if !seen.insert(vid.clone())
+                || (vid == bid && !patch && !old.is_some_and(|a| a.variants.iter().any(|v| v.id == bid))) {
                 return Err("子形象重复或再次声明基础形象".into());
             }
             if vid == bid && !patch && name != existing.unwrap().name {
@@ -2987,7 +2991,7 @@ fn build_asset(
                     batch,
                     patch,
                 )?;
-                if patch && batch.fragment.is_none() {
+                if (patch || vid == bid) && batch.fragment.is_none() {
                     variant
                         .scope
                         .scenes
@@ -3036,7 +3040,7 @@ fn build_asset(
             )?);
             mark_scope(&mut variant.metadata, source);
             if let Some(episodes) = &v.episodes {
-                update_usage(&mut variant.metadata, episodes, batch, patch);
+                update_usage(&mut variant.metadata, episodes, batch, patch || vid == bid && batch.fragment.is_none());
             }
             if existing.is_none() && v.preparation.is_none() {
                 variant
@@ -3241,8 +3245,15 @@ fn apply_catalogue(
     let mut candidate = empty_foundation(source);
     let mut staged = prior.clone();
     let mut seen = HashSet::new();
+    let mut explicit_base_scopes = HashSet::new();
     for (ordinal, wire) in wire.assets.iter().enumerate() {
         let asset = build_asset(source, batch, wire, &staged, &allowed, false, ordinal)?;
+        let bid = base_id(&asset)?;
+        if wire.variants.as_ref().is_some_and(|variants| {
+            variants.iter().any(|v| v.key.as_deref() == Some(bid.as_str()))
+        }) {
+            explicit_base_scopes.insert(bid);
+        }
         if !seen.insert(asset.id.clone()) {
             return Err("本批资产身份重复".into());
         }
@@ -3280,6 +3291,13 @@ fn apply_catalogue(
             for v in asset.variants {
                 if let Some(prior) = target.variants.iter_mut().find(|p| p.id == v.id) {
                     prior.metadata = v.metadata;
+                    // build_asset already retains uses outside this batch (and
+                    // earlier fragments). Do not union stale in-batch base uses
+                    // back in after the model explicitly supplied its scope.
+                    if explicit_base_scopes.contains(&v.id) {
+                        prior.scope = v.scope;
+                        prior.applicability = prior.scope.scenes.clone();
+                    }
                 }
             }
         }
@@ -6765,6 +6783,34 @@ mod tests {
     }
 
     #[test]
+    fn f2_existing_base_is_updated_once_with_its_own_scope() {
+        let (source, prior) = two_episode_catalogue();
+        let all = source.episodes.iter().map(|e|e.id.clone()).collect::<Vec<_>>();
+        let batch = plan_batches(&source, &all).unwrap().remove(0);
+        let input = input_for("F2", &source, &batch, &prior, &json!({}), 0, 1, false, &[]);
+        let base = &prior.assets[0].variants[0];
+        let first = &source.scenes[0];
+        let mut raw = empty_catalogue(&source, &batch);
+        raw["assets"] = json!([{"key":prior.assets[0].id,"name":"小王｜白衣","type":"CH","episodes":all,
+            "sceneRefs":source.scenes.iter().map(|s|json!([s.episode_id,s.id])).collect::<Vec<_>>(),"preparation":{"mode":"REFERENCE"},
+            "variants":[{"key":base.id,"name":base.name,"episodes":[first.episode_id],"sceneRefs":[[first.episode_id,first.id]],"preparation":{"mode":"REFERENCE"}}]}]);
+        let next = apply_catalogue(&raw,&source,&batch,&input,&prior,None,&HashSet::new()).unwrap();
+        let retained = &next.assets[0].variants[0];
+        assert_eq!(next.assets[0].variants.len(), prior.assets[0].variants.len());
+        assert_eq!(retained.id, base.id);
+        assert_eq!(retained.name, base.name);
+        assert_eq!(retained.scope.scenes.len(), 1);
+        assert_eq!(retained.scope.scenes[0].episode_id, first.episode_id);
+        assert_eq!(retained.metadata["usageEpisodes"], json!([first.episode_id]));
+        raw["assets"][0]["variants"][0]["name"] = json!("隐式改名");
+        assert!(apply_catalogue(&raw,&source,&batch,&input,&prior,None,&HashSet::new()).unwrap_err().contains("隐式改名"));
+        raw["assets"][0]["variants"][0]["name"] = json!(base.name);
+        let duplicate = raw["assets"][0]["variants"][0].clone();
+        raw["assets"][0]["variants"].as_array_mut().unwrap().push(duplicate);
+        assert!(apply_catalogue(&raw,&source,&batch,&input,&prior,None,&HashSet::new()).unwrap_err().contains("子形象重复"));
+    }
+
+    #[test]
     #[ignore = "explicit readonly DB/workflow/text job via DIRECTOR_ROLE_REAL_DB, DIRECTOR_ROLE_WORKFLOW, DIRECTOR_ROLE_TEXT; no CLI or project writes"]
     fn saved_actual_nonhuman_protagonist_catalogue_revalidates_without_generation() {
         let env = |key| std::env::var(key).expect(key);
@@ -6780,8 +6826,9 @@ mod tests {
         let input = &snapshot["input"];
         let scope: Vec<String> = serde_json::from_value(input["scope"].clone()).unwrap();
         let batch = Batch { pieces: whole_rows(&source, &scope), scope, fragment: None };
-        let next = apply_catalogue(&raw, &source, &batch, input, &empty_foundation(&source), None, &HashSet::new()).unwrap();
-        assert_eq!(next.assets.len(), raw["assets"].as_array().unwrap().len());
+        let prior = existing_foundation(&source, &parent["input"]).unwrap();
+        let next = apply_catalogue(&raw, &source, &batch, input, &prior, None, &HashSet::new()).unwrap();
+        assert!(next.assets.len() >= raw["assets"].as_array().unwrap().len());
         assert!(next.assets.iter().any(|a| a.kind == "BEAST" && a.metadata.get("role") == Some(&json!("主角"))));
         println!("Saved catalogue accepted: {} assets, {} stage-two rows, zero model calls", next.assets.len(), flatten_foundation_assets(&next).len());
     }

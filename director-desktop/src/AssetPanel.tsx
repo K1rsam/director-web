@@ -6,6 +6,7 @@ import { assetImages, assetImageSelection, generationChoices, imageBatchBlocked,
 import { adoptedImage, Badge, Button, Empty, Icon, JsonDetails, jobActive, kindName, MediaPreview, messageOf, Modal, providerId, providerList, providerName } from './components';
 import type { Asset, JsonObject, Media, Model, Mutation, Workspace } from './types';
 import { AssetDeleteDialog, AssetEditDialog, DeletedAssetsDialog } from './AssetLifecycleDialogs';
+import { foundationCoverage } from './foundationCoverage';
 import { assetMatchesEpisode, deletedAssetsFrom } from './assetManagement';
 
 function ImageCostSummary({ workspace, ids, provider, model, oneClick = false }: { workspace: Workspace; ids: string[]; provider: string; model: Model | string | undefined; oneClick?: boolean }) {
@@ -35,6 +36,7 @@ export function AssetPanel({ workspace, writable, mutate, inspect, onNotice, onE
   const [adding, setAdding] = useState(false), [assetName, setAssetName] = useState(''), [assetKind, setAssetKind] = useState('character'), [batch, setBatch] = useState(false), [selection, setSelection] = useState<string[]>([]);
   const [fullAsset, setFullAsset] = useState<Asset | null>(null), [detailError, setDetailError] = useState(''), [detailRetry, setDetailRetry] = useState(0);
   const [editing, setEditing] = useState<Asset | null>(null), [deleting, setDeleting] = useState<Asset | null>(null), [showDeleted, setShowDeleted] = useState(false);
+  const coverage = foundationCoverage(workspace);
   const deletedAssets = deletedAssetsFrom(workspace.deletedAssets);
   useEffect(() => { if (!workspace.assets.some(asset => asset.id === selected)) setSelected(workspace.assets[0]?.id || ''); }, [workspace.assets, selected]);
   useEffect(() => { setSelection(current => current.filter(id => workspace.assets.some(asset => asset.id === id))); }, [workspace.assets]);
@@ -66,6 +68,7 @@ export function AssetPanel({ workspace, writable, mutate, inspect, onNotice, onE
   async function add(event: FormEvent) { event.preventDefault(); const newAsset: Asset = { id: crypto.randomUUID(), variantId: 'variant-' + crypto.randomUUID(), name: assetName.trim(), kind: assetKind, prompt: '', version: 1, sourceRefs: [], applicability: { episodes: [], scenes: [] } }; const next = await mutate('assets.save', { asset: newAsset }, '资产已创建，请补充来源与设计。'); if (next) { setAdding(false); setAssetName(''); setSelected(newAsset.id); } }
   const toggle = (id: string) => setSelection(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id]);
   return <div className="asset-workspace"><div className="stage-intro"><div><h2>制作形象图片，保留每次历史</h2><p>{workspace.assets.length} 项资产 · {workspace.assets.filter(item => adoptedImage(workspace, item)).length} 项已有当前图片</p></div><div className="actions"><Button icon="plus" disabled={!writable} onClick={() => setAdding(true)}>新增资产</Button><Button icon="spark" disabled={!writable || !workspace.assets.length || designRunning} onClick={() => void mutate('images.design', {}, '资产提示词设计已启动，完成后保留每项结果。')}>一键设计提示词</Button><Button disabled={!writable || !workspace.assets.length} onClick={() => { setBatch(!batch); setSelection(filtered.filter(needsImage).map(item => item.id)); }}>{batch ? '退出批量' : '批量选择'}</Button><Button variant="primary" icon="spark" disabled={!writable || !productionIds.length || designRunning || blockedProduction || dirty || !choices.valid || !accountReady || requireTrialReview && !workspace.settings.trialApproved && productionIds.length > 3} onClick={() => void produce()}>{batch ? '一键制作所选' : '一键制作当前资产'}</Button></div></div>
+    {coverage.total > 0 && !coverage.complete && <p className="production-inline-warning">{coverage.summary} · {coverage.stale ? '原文已更新，当前资产可能来自旧版。' : coverage.count ? `当前目录仅覆盖已整理的 ${coverage.coveredLabel}。` : '当前目录尚未覆盖剧本。'}请到第一阶段整理全剧制作基础，补全资产目录。</p>}
     <ImageDesignProgress workspace={workspace} onTasks={onTasks}/>
     <ImageCostSummary workspace={workspace} ids={productionIds} provider={provider} model={selectedCapability} oneClick/>
     {requireTrialReview && <div className="trial-banner"><span>{workspace.settings.trialApproved ? '画风试稿已确认，可以批量出图。' : '先生成少量图片，确认画风后再批量出图。'}</span><div className="actions"><Button icon="check" disabled={!writable || !!workspace.settings.trialApproved || !workspace.assets.some(item => assetImages(workspace, item).images.length > 0)} onClick={() => void mutate('settings.save', { settings: { trialApproved: true } }, '画风已由你确认，可进行批量生成。')}>{workspace.settings.trialApproved ? '已确认画风' : '确认试稿画风'}</Button></div></div>}

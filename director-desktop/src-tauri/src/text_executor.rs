@@ -609,6 +609,7 @@ const CLI_POLICY_VERSION: &str = "codex-isolated/v1";
 const FOUNDATION_CONTEXT_REJECTION: &str = "分集资料引用跨入未声明的别集";
 const FOUNDATION_VARIANT_LABEL_REJECTION: &str = "已登记形象的名称/来源关系被静默改写";
 const FOUNDATION_ROLE_REJECTION: &str = "角色定位只属于基础人物，不广播至群像或异兽";
+const FOUNDATION_BASE_REJECTION: &str = "子形象重复或再次声明基础形象";
 const FOUNDATION_LEGACY_F2_REJECTION: &str =
     "本次修改缺少实际提供且不重复的原文证据；不能借旧引用补足";
 const FOUNDATION_LEGACY_F2_SCOPE_REJECTION: &str = "形象本批适用场缺少本场锁定来源或越出提供范围";
@@ -1356,12 +1357,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn narrative_role_rejection_replays_exact_saved_reply_without_cli() {
+    async fn corrected_catalogue_rejections_replay_exact_saved_reply_without_cli() {
+        for rejection in [FOUNDATION_ROLE_REJECTION, FOUNDATION_BASE_REJECTION] {
         let (_directory, executor, request, job, _, raw) = preparation_replay_fixture();
         let snapshot = executor.request_snapshot(&request).unwrap();
-        executor.store.update_job(&job, "rejected", &json!({"result":raw,"error":FOUNDATION_ROLE_REJECTION,"receipt":{"validation":"rejected","contract":"desktop-runner/v1"}})).unwrap();
+        executor.store.update_job(&job, "rejected", &json!({"result":raw,"error":rejection,"receipt":{"validation":"rejected","contract":"desktop-runner/v1"}})).unwrap();
         executor.store.checkpoint(executor.workflow_id.as_deref().unwrap(), &step_key(&request), &request.stage,
-            &crate::pipeline::digest(&snapshot.to_string()), "rejected", Some(&job), Some(&raw), Some(FOUNDATION_ROLE_REJECTION)).unwrap();
+            &crate::pipeline::digest(&snapshot.to_string()), "rejected", Some(&job), Some(&raw), Some(rejection)).unwrap();
         let count = executor.store.jobs().unwrap().len();
         assert_eq!(executor.execute(request.clone()).await.unwrap(), raw);
         assert_eq!(executor.store.job(&job).unwrap()["status"], "rejected");
@@ -1374,6 +1376,7 @@ mod tests {
         let stored: String = executor.store.conn().unwrap().query_row("SELECT result FROM jobs WHERE id=?1", [&job], |r| r.get(0)).unwrap();
         assert_eq!(serde_json::from_str::<Value>(&stored).unwrap(), raw);
         assert_eq!(executor.store.jobs().unwrap().len(), count);
+        }
     }
 
     fn preparation_replay_fixture() -> (
@@ -6694,7 +6697,7 @@ impl SavedTextExecutor {
         };
         let found: Option<(String,String,String)> = self.store.conn()?.query_row(
             "SELECT j.id,j.result,j.error FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id JOIN jobs parent ON parent.id=w.workflow_id WHERE w.workflow_id=?1 AND w.node_key=?2 AND w.stage=?7 AND w.request_hash=?3 AND w.state='rejected' AND w.error IN (?4,?6) AND parent.kind='workflow' AND parent.entity_id='foundation.run' AND j.kind='text' AND j.provider='codex' AND j.state='rejected' AND j.error=w.error AND j.snapshot=?5 AND j.result IS NOT NULL AND j.result=w.result AND json_extract(j.receipt,'$.validation')='rejected' AND json_extract(j.receipt,'$.contract')='desktop-runner/v1'",
-            params![run,step_key(request),hash,if legacy {FOUNDATION_CONTEXT_REJECTION} else {FOUNDATION_ROLE_REJECTION},snapshot.to_string(),if legacy {FOUNDATION_VARIANT_LABEL_REJECTION} else {FOUNDATION_ROLE_REJECTION},request.stage],
+            params![run,step_key(request),hash,if legacy {FOUNDATION_CONTEXT_REJECTION} else {FOUNDATION_ROLE_REJECTION},snapshot.to_string(),if legacy {FOUNDATION_VARIANT_LABEL_REJECTION} else if request.stage == "foundation:F2" {FOUNDATION_BASE_REJECTION} else {FOUNDATION_ROLE_REJECTION},request.stage],
             |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
         ).optional().map_err(|error|error.to_string())?;
         found
