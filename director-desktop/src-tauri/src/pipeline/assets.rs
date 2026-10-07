@@ -112,6 +112,15 @@ fn direct_asset_dependency(assets: &[Value], asset: &Value) -> Result<Option<Str
         return dependency_asset(assets, &id).map(|a| Some(text(a, "id").to_owned()));
     }
 
+    // A current catalogue's explicit null declares an independent appearance.
+    // Only legacy rows that omitted the field may inherit the registered base.
+    // Otherwise an early life form can silently inherit a later registered base.
+    if asset.get("sourceVariantId") == Some(&Value::Null)
+        && asset.pointer("/preparation/mode").and_then(Value::as_str) == Some("REFERENCE")
+    {
+        return Ok(None);
+    }
+
     let identity = explicit_asset_identity(asset);
     if asset.pointer("/preparation/mode").and_then(Value::as_str) != Some("REFERENCE")
         || identity.is_empty()
@@ -1330,6 +1339,17 @@ mod tests {
             .unwrap(),
             Some("李:base".into())
         );
+    }
+
+    #[test]
+    fn explicitly_parentless_reference_is_not_rebased_to_a_later_registered_form() {
+        let assets = vec![
+            json!({"id":"later","baseAssetId":"subject","variantId":"subject:base","isBase":true}),
+            json!({"id":"initial","baseAssetId":"subject","variantId":"subject_V_initial","sourceVariantId":null,"preparation":{"mode":"REFERENCE"}}),
+            json!({"id":"next","baseAssetId":"subject","variantId":"next","sourceVariantId":"subject_V_initial","preparation":{"mode":"DERIVE"}}),
+        ];
+        assert_eq!(resolve_asset_dependency(&assets, &assets[1]).unwrap(), None);
+        assert_eq!(resolve_asset_dependency(&assets, &assets[2]).unwrap(), Some("initial".into()));
     }
 
     #[test]

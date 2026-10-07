@@ -14,10 +14,15 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
     time::{Duration, Instant},
 };
+
+// Bound short-lived local CLI/process and file I/O work, not outstanding cloud tasks.
+const IMAGE_SUBMIT_WORKERS: usize = 8;
+const IMAGE_QUERY_WORKERS: usize = 8;
+const IMAGE_DOWNLOAD_WORKERS: usize = 4;
 
 fn image_stage_completion_state(output: &Value) -> &'static str {
     if output["blocked"]
@@ -53,6 +58,7 @@ pub struct Engine {
     // One shared channel slot alternates generation with original-ID recovery.
     // Restart defaults to recovery first; no durable submission state is changed.
     media_query_next: Mutex<HashMap<String, bool>>,
+    image_wake: (Mutex<bool>, Condvar),
     registry_mutex: Mutex<()>,
     // Serializes registry lifecycle changes with synchronous dispatch and worker reservations.
     lifecycle_mutex: Mutex<()>,
@@ -294,6 +300,7 @@ impl Engine {
             channels,
             active: Mutex::new(HashSet::new()),
             media_query_next: Mutex::new(HashMap::new()),
+            image_wake: (Mutex::new(false), Condvar::new()),
             registry_mutex: Mutex::new(()),
             lifecycle_mutex: Mutex::new(()),
             dreamina_sessions: Arc::new(DreaminaSessions::default()),
@@ -1337,7 +1344,7 @@ impl Engine {
         if self.stop.load(Ordering::SeqCst) {
             return Err("客户端正在退出".into());
         }
-        if let Some(key) = keys.iter().find(|key| active.contains(*key)) {
+        if let Some(key) = keys.iter().find(|key| worker_key_conflicts(&active, key)) {
             let message = if let Some(provider) = key.strip_prefix("channel:") {
                 let name = match provider {
                     "dreamina" => "即梦",
@@ -1406,7 +1413,11 @@ impl Engine {
         std::thread::spawn(move || {
             while !engine.stop.load(Ordering::SeqCst) {
                 let _ = engine.tick();
-                std::thread::sleep(Duration::from_secs(5));
+                let (pending, signal) = &engine.image_wake;
+                let guard = pending.lock().unwrap_or_else(|e| e.into_inner());
+                let (mut guard, _) = signal.wait_timeout_while(guard, Duration::from_secs(5), |wake| !*wake)
+                    .unwrap_or_else(|e| e.into_inner());
+                *guard = false;
             }
         });
     }
@@ -1476,6 +1487,12 @@ impl Engine {
                 ]
                 .contains(&state)
                 {
+                    continue;
+                }
+                // Image operations own independent, bounded local worker lanes.
+                // A cloud task waiting to finish consumes no local worker slot.
+                if s(&j, "kind") == "image" && provider == "dreamina" {
+                    self.schedule_image_operation(&store, &j)?;
                     continue;
                 }
                 if j["nextAttemptAt"].as_i64().unwrap_or(0) > chrono::Utc::now().timestamp()
@@ -1581,6 +1598,78 @@ impl Engine {
                 // the other class. Existing due/backoff checks remain above.
             }
         }
+        Ok(())
+    }
+    fn wake_images(&self) {
+        let (pending, signal) = &self.image_wake;
+        if let Ok(mut pending) = pending.lock() {
+            *pending = true;
+            signal.notify_one();
+        }
+    }
+    fn image_preflight_failed(store: &Store, key: &str, error: &ProviderError) -> Result<()> {
+        let job = store.job(key)?;
+        let attempts = job["queryAttempts"].as_u64().unwrap_or(0);
+        if !error.auth_required && error.code != "CLIENT_CLOSING"
+            && s(&job, "providerTaskId").is_empty()
+            && ["queued", "ready"].contains(&s(&job, "status")) && attempts < 2 {
+            // Only a read-only preflight failed: generation has not been entered.
+            // Two durable, delayed retries; unknown/accepted submissions never enter here.
+            store.event(key, "account_preflight_retry", &json!({"code":error.code,"attempt":attempts+1,"generationCalled":false}))?;
+            return store.update_job(key, s(&job, "status"), &json!({"error":error.message,"queryAttempts":attempts+1,"nextAttemptAt":chrono::Utc::now().timestamp()+10*(attempts as i64+1)}));
+        }
+        Self::account_preflight_failed(store, key, error)
+    }
+    fn schedule_image_operation(self: &Arc<Self>, store: &Store, job: &Value) -> Result<()> {
+        let state = s(job, "status");
+        if job["nextAttemptAt"].as_i64().unwrap_or(0) > chrono::Utc::now().timestamp() {
+            return Ok(());
+        }
+        let known = !s(job, "providerTaskId").is_empty();
+        let (lane, slots) = if !known && ["queued", "ready"].contains(&state) {
+            if job["snapshot"]["autoSubmit"].as_bool() != Some(true) { return Ok(()); }
+            ("submit", IMAGE_SUBMIT_WORKERS)
+        } else if known && state == "succeeded" {
+            ("download", IMAGE_DOWNLOAD_WORKERS)
+        } else if known {
+            ("query", IMAGE_QUERY_WORKERS)
+        } else { return Ok(()); };
+        let key = s(job, "id").to_owned();
+        let provider = s(job, "provider");
+        let (config, fallback) = self.config(store, provider)?;
+        let mut reservation = None;
+        for slot in 0..slots {
+            let keys = project_worker_keys(store, vec![format!("image:{provider}:{lane}:{slot}"), format!("job:{key}")])?;
+            if let Ok(guard) = self.acquire_keys(keys) { reservation = Some(guard); break; }
+        }
+        let Some(guard) = reservation else { return Ok(()); };
+        let engine = self.clone();
+        let store = store.clone();
+        let expected_state = state.to_owned();
+        std::thread::spawn(move || {
+            let _guard = guard; // Completion wakes the scheduler after all DB writes and unlocks.
+            let work = || -> Result<()> {
+                let current = store.job(&key)?;
+                if s(&current, "status") != expected_state { return Ok(()); }
+                let identity = if engine.live_accounts {
+                    engine.dreamina_sessions.image_execution_identity(&config)
+                } else { Ok(fallback.clone()) };
+                let account = match identity {
+                    Ok(account) => account,
+                    Err(error) => { Self::image_preflight_failed(&store, &key, &error)?; return Ok(()); }
+                };
+                match lane {
+                    "submit" => tasks::run_generation(&store, &key, &config, &account, engine.channels.as_ref()),
+                    "query" => tasks::resume_job(&store, &key, &config, &account, engine.channels.as_ref(), false),
+                    _ => tasks::download_saved_result(&store, &key, &config, &account, engine.channels.as_ref()),
+                }
+            };
+            if let Err(error) = work() {
+                let _ = store.event(&key, "local_error", &json!({"message":error}));
+                // Bound unexpected local failures instead of waking a tight retry loop.
+                let _ = store.conn().and_then(|c| c.execute("UPDATE jobs SET next_attempt_at=?1 WHERE id=?2",rusqlite::params![chrono::Utc::now().timestamp()+10,key]).map(|_|()).map_err(|e|e.to_string()));
+            }
+        });
         Ok(())
     }
     fn refresh_due_dreamina(self: &Arc<Self>, store: &Store) -> Result<()> {
@@ -1961,7 +2050,7 @@ impl Engine {
                     return Err("客户端正在退出，未排入新的准备任务".into());
                 }
                 let key = "channel:dreamina".to_owned();
-                if active.contains(&key) {
+                if worker_key_conflicts(&active, &key) {
                     None
                 } else {
                     active.insert(key.clone());
@@ -2218,9 +2307,11 @@ impl Engine {
         )
     }
     fn queue_images(&self, store: &Store, r: &Value) -> Result<Value> {
-        self.queue_images_with_account_check(store, r, |config, account| {
+        let result = self.queue_images_with_account_check(store, r, |config, account| {
             self.checked_account(config, account)
-        })
+        });
+        self.wake_images();
+        result
     }
     fn queue_images_with_account_check(
         &self,
@@ -2283,11 +2374,14 @@ impl Engine {
         if review && !approved && r["trial"].as_bool() != Some(true) {
             return Err("请先生成少量试稿并确认画风，再启动批量生成".into());
         }
-        let selected_count = assets
-            .iter()
-            .filter(|a| independent_image(a))
-            .filter(|a| selected.map(|l| l.contains(&a["id"])).unwrap_or(true))
-            .count();
+        let (order, closure_errors) = image_closure(store, &assets, selected);
+        let mut selected_count = 0;
+        for asset in assets.iter().filter(|a| order.contains(&s(a, "id").to_owned())) {
+            if selected.map(|ids| ids.contains(&asset["id"])).unwrap_or(true)
+                || store.adopted(s(asset, "id"), s(asset, "variantId"))?.is_none() {
+                selected_count += 1;
+            }
+        }
         if review && !approved && selected_count > 3 {
             return Err("未确认画风时试稿最多选择3个资产".into());
         }
@@ -2296,7 +2390,6 @@ impl Engine {
         let mut blocked = Vec::new();
         let mut queued = Vec::new();
         let mut reused = Vec::new();
-        let (order, closure_errors) = image_closure(store, &assets, selected);
         for issue in closure_errors {
             errors.push(format!("{}: {}", s(&issue, "assetId"), s(&issue, "reason")));
             blocked.push(issue);
@@ -2310,7 +2403,10 @@ impl Engine {
             .iter()
             .filter_map(|id| assets.iter().find(|a| s(a, "id") == id))
         {
-            if selected.map(|l| !l.contains(&a["id"])).unwrap_or(false) {
+            // Selecting a descendant also queues its missing ancestors. Existing
+            // ancestor images are reused unless that ancestor was explicitly selected.
+            if selected.map(|l| !l.contains(&a["id"])).unwrap_or(false)
+                && store.adopted(s(a, "id"), s(a, "variantId"))?.is_some() {
                 continue;
             }
             if !independent_image(a) {
@@ -2362,8 +2458,10 @@ impl Engine {
                         continue;
                     }
                     let chain = image_reference_chain(&assets, source)?;
+                    let mut has_source = false;
                     for dependency in chain {
                         if let Some(job) = dependency_jobs.get(s(dependency, "id")) {
+                            has_source = true;
                             if !dependency_job_ids.contains(job) {
                                 dependency_job_ids.push(job.clone());
                             }
@@ -2372,8 +2470,12 @@ impl Engine {
                             .adopted(s(dependency, "id"), s(dependency, "variantId"))?
                             .is_some()
                         {
+                            has_source = true;
                             break;
                         }
+                    }
+                    if !has_source {
+                        return Err(format!("来源形象「{}」没有当前图片且未能排入生成队列；请查看该形象的失败原因", s(source, "name")));
                     }
                 }
                 if !dependency_job_ids.is_empty() {
@@ -2883,7 +2985,17 @@ impl Drop for ActiveGuard {
                 active.remove(key);
             }
         }
+        if self.keys.iter().any(|key| key.starts_with("image:")) {
+            self.engine.wake_images();
+        }
     }
+}
+// Account mutation and legacy exclusive operations still exclude all image
+// workers. Different image lanes can run concurrently; a job can have one owner.
+fn worker_key_conflicts(active: &HashSet<String>, key: &str) -> bool {
+    active.contains(key)
+        || key.strip_prefix("channel:").is_some_and(|provider| active.iter().any(|k| k.starts_with(&format!("image:{provider}:"))))
+        || key.strip_prefix("image:").and_then(|rest| rest.split(':').next()).is_some_and(|provider| active.contains(&format!("channel:{provider}")))
 }
 fn is_active_generation(state: &str) -> bool {
     [
@@ -3362,6 +3474,8 @@ fn image_closure(
     let mut order = Vec::new();
     let mut errors = Vec::new();
     for key in selected {
+        let completed_before = done.clone();
+        let order_before = order.len();
         if let Err(e) = visit(
             &key,
             store,
@@ -3370,6 +3484,10 @@ fn image_closure(
             &mut done,
             &mut order,
         ) {
+            // An invalid selected branch must not leak its partial ancestors
+            // into billable work; ancestors of other valid selections remain.
+            done = completed_before;
+            order.truncate(order_before);
             errors.push(json!({"assetId":key,"reason":e}));
         }
     }
@@ -5291,6 +5409,10 @@ mod account_tests {
 #[cfg(test)]
 #[path = "engine_repair_tests.rs"]
 mod repair_tests;
+
+#[cfg(test)]
+#[path = "image_scheduler_tests.rs"]
+mod image_scheduler_tests;
 
 #[cfg(test)]
 #[path = "project_lifecycle_tests.rs"]

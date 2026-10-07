@@ -45,6 +45,10 @@ metadata:
 
 ## V2 传输规则
 
+同一资产的制作来源沿**直接父形象**逐级继承：基础 A → 西装 A → 西装受伤 A，受伤版引用西装版；多次进化引用该次进化前的形态，不把所有后继形态都指回最初基础。依据原文服装、形态与连续性决定，不能根据名称相似或目录顺序猜父级。独立准备的根形象用 REFERENCE、不填 fromKey；需要继承父图的新外观用 DERIVE 明确来源。
+
+同一个返回包内新建多个形象时，可给 `variants` 项填非空且本资产内唯一的 `localKey`（如 `suit`、`suit_injured`），在另一项 `preparation.fromKey` 精确引用它。可前向引用，不要求数组顺序；别名只在当前资产、当前包有效，不能等于任何稳定资产/形象 key，也不能占用 eN/sN/rN/aN/vN 运输短键，不得跨资产引用。Rust 先分配全部稳定 key 再解析直接父级，持久化只保留稳定 key；既有形象仍用 registry key。没有其它直接父形象、确实从当前基础派生时可省略 fromKey 沿用基础默认规则，不虚造 key。自引用、循环、重复或未知别名无效，不增加模型岗位或生成轮次。
+
 沿用现有对象时填写已有 `key`；新对象省略 `key`，由程序生成稳定身份键。不要输出旧格式的 `parent_name`、`scene_refs`，也不猜变体键。基础资产的本批使用写 `episodes`，必要状态写在 `variants` 的 `episodes`；它们都只写实际适用集。实际使用的资产/变体以 `sceneRefs:[{episode,sceneKey}]` 指向输入中的场；无法定位就写 `[]`，不猜场景键。
 
 `preparation` 只表示素材处理：`REFERENCE` 独立准备、`DERIVE` 填真实素材来源、`INLINE` 保留引用但无需独立制图、`AUDIO` 独立声源、`UNRESOLVED` 是确实影响制作而原文无法决定的缺口。剧情关联写 `relationNote`，不是 `fromKey`。人物基础资产可写 `role`；子形象和群像不重复角色定位。

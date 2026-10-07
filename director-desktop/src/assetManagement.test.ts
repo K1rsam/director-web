@@ -84,3 +84,69 @@ test('只有 SCENES 存储范围的导入资产仍显示原集场，打开编辑
   assert.deepEqual(values.episodeIds, ['episode-2']); assert.deepEqual(values.sceneIds, ['scene-3']);
   const saved = assetEditPayload(asset, values, [], scenes); assert.equal((saved.scope as { kind: string }).kind, 'SCENES');
 });
+
+test('仅 sourceVariantId 的编辑先按资产行身份解析，不猜显示名称', () => {
+  const child = { ...asset, sourceVariantId: 'direct-row' };
+  const exact: Asset = { id: 'direct-row', name: '不同显示名', baseAssetId: 'another-subject', variantId: 'actual-parent-variant' };
+  const sameVariant: Asset = { id: 'other-row', name: child.name, baseAssetId: child.baseAssetId, variantId: 'direct-row' };
+  const values = initialAssetEdit(child, [child, exact, sameVariant]);
+  assert.equal(values.sourceAssetId, exact.id); assert.equal(values.sourceError, undefined);
+  const saved = assetEditPayload(child, values, [child, exact, sameVariant], scenes);
+  assert.equal(saved.sourceAssetId, exact.id); assert.equal(saved.sourceVariantId, exact.variantId);
+});
+
+test('直接父形象优先同主体 variantId，只有跨主体唯一时才可回显', () => {
+  const child = { ...asset, sourceVariantId: 'clothes' };
+  const parent: Asset = { id: 'clothes-row', name: '换装形象', baseAssetId: child.baseAssetId, variantId: 'clothes' };
+  const unrelated: Asset = { id: 'other-clothes', name: child.name, baseAssetId: 'other-subject', variantId: 'clothes' };
+  assert.equal(initialAssetEdit(child, [child, parent, unrelated]).sourceAssetId, parent.id);
+  assert.equal(initialAssetEdit(child, [child, unrelated]).sourceAssetId, unrelated.id);
+});
+
+test('多层衍生编辑保留直接父形象，不回退到基础形象；显式 sourceAssetId 优先', () => {
+  const base: Asset = { id: 'base-row', name: '基础形象', baseAssetId: asset.baseAssetId, variantId: 'base' };
+  const clothes: Asset = { id: 'clothes-row', name: '换装形象', baseAssetId: asset.baseAssetId, variantId: 'clothes', sourceAssetId: base.id };
+  const injury = { ...asset, sourceVariantId: clothes.variantId };
+  const catalogue = [base, clothes, injury];
+  const values = initialAssetEdit(injury, catalogue);
+  assert.equal(values.sourceAssetId, clothes.id);
+  assert.equal(assetEditPayload(injury, values, catalogue, scenes).sourceAssetId, clothes.id);
+  const explicit = { ...injury, sourceAssetId: clothes.id, sourceVariantId: base.variantId };
+  const explicitValues = initialAssetEdit(explicit, catalogue);
+  assert.equal(explicitValues.sourceAssetId, clothes.id);
+  assert.equal(assetEditPayload(explicit, explicitValues, catalogue, scenes).sourceVariantId, clothes.variantId);
+});
+
+test('父形象缺失或歧义保留非空错误项，禁止误保存独立；用户手动清空明确生效', () => {
+  const child = { ...asset, sourceVariantId: 'clothes' };
+  const parent: Asset = { id: 'parent-1', name: '相同名字', baseAssetId: child.baseAssetId, variantId: 'clothes' };
+  for (const catalogue of [[], [parent, { ...parent, id: 'parent-2' }], [{ ...parent, baseAssetId: 'other-1' }, { ...parent, id: 'parent-2', baseAssetId: 'other-2' }]]) {
+    const values = initialAssetEdit(child, catalogue);
+    assert.equal(values.sourceAssetId, 'clothes'); assert.ok(values.sourceError);
+    assert.throws(() => assetEditPayload(child, values, catalogue, scenes), /直接父形象/);
+    const cleared = assetEditPayload(child, { ...values, sourceAssetId: '' }, catalogue, scenes);
+    assert.equal(cleared.sourceAssetId, null); assert.equal(cleared.sourceVariantId, null);
+    assert.equal(child.sourceVariantId, 'clothes');
+  }
+});
+
+test('未载入目录不静默清除 variant-only 父形象；显式缺失父资产不回退其他 variant', () => {
+  const child = { ...asset, sourceVariantId: 'clothes' };
+  const unloaded = initialAssetEdit(child);
+  assert.equal(unloaded.sourceAssetId, 'clothes'); assert.ok(unloaded.sourceError);
+  assert.throws(() => assetEditPayload(child, unloaded, [], scenes), /尚未载入/);
+  const unrelated: Asset = { id: 'valid-row', name: '同名', variantId: 'clothes' };
+  const explicit = { ...child, sourceAssetId: 'missing-row' };
+  const values = initialAssetEdit(explicit, [unrelated]);
+  assert.equal(values.sourceAssetId, 'missing-row'); assert.ok(values.sourceError);
+  const fixed = assetEditPayload(explicit, { ...values, sourceAssetId: unrelated.id }, [unrelated], scenes);
+  assert.equal(fixed.sourceAssetId, unrelated.id); assert.equal(fixed.sourceVariantId, unrelated.variantId);
+});
+
+test('明确父资产已删除、自身引用或身份重复均回显错误，不另猜父形象', () => {
+  const child = { ...asset, sourceAssetId: 'parent' };
+  const parent: Asset = { id: 'parent', name: '基础', variantId: 'base' };
+  assert.ok(initialAssetEdit(child, [{ ...parent, deletedAt: '2026-10-07' }]).sourceError);
+  assert.ok(initialAssetEdit(child, [parent, parent]).sourceError);
+  assert.ok(initialAssetEdit({ ...asset, sourceAssetId: asset.id }, [asset]).sourceError);
+});
