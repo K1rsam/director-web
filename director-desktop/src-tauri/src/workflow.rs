@@ -271,6 +271,45 @@ fn author_scope_attempt_resolution(
         })
 }
 
+/// Reuse the same durable repair proof for author-cache recovery as for the
+/// progress projection. The rejected author stays rejected; only the original
+/// editor's source-bound, adopted draft can supply a recovered predecessor.
+pub(crate) fn accepted_author_repair_predecessor(
+    store: &Store,
+    run: &str,
+    node: &str,
+    tail: &Value,
+) -> Result<bool> {
+    let c = store.conn()?;
+    let Some(resolver) = progress_step(&c, run, node)? else { return Ok(false); };
+    let input = &resolver.request.input;
+    let draft = &resolver.result["materializedDraft"];
+    if input["executionBatch"]["version"] != "author-domain-repair/v1"
+        || input["executionBatch"]["originExecutionBatchId"] != tail["executionBatchId"]
+        || draft["units"].as_array().and_then(|units| units.last()) != Some(&tail["unit"])
+    { return Ok(false); }
+    let source: Option<String> = c.query_row(
+        "SELECT json_extract(snapshot,'$.input.source') FROM jobs WHERE id=?1 AND kind='workflow' AND entity_id='storyboard.run'",
+        [run], |r| r.get(0),
+    ).optional().map_err(|e| e.to_string())?.flatten();
+    let Some(source) = source.and_then(|v| serde_json::from_str::<Value>(&v).ok()) else { return Ok(false); };
+    if source["sha256"].as_str().is_none_or(|sha| sha.len() != 64)
+        || source["text"].as_str().is_none_or(|text| crate::pipeline::digest(text) != s(&source,"sha256"))
+    { return Ok(false); }
+    let mut query = c.prepare(
+        "SELECT w.node_key FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.state='rejected' AND json_extract(j.snapshot,'$.input.episodeId')=?2 AND ((w.stage='storyboardCreate' AND json_extract(j.snapshot,'$.input.executionBatch.id')=?3) OR (w.stage='storyboardFinish' AND json_extract(j.snapshot,'$.input.authorRepair.originDomainRequestSha256')=?4))",
+    ).map_err(|e| e.to_string())?;
+    let keys = query.query_map(params![run,progress_episode(&resolver),s(tail,"executionBatchId"),s(&input["authorRepair"],"originDomainRequestSha256")],|r|r.get::<_,String>(0))
+        .map_err(|e|e.to_string())?.collect::<std::result::Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+    let mut origins = Vec::new();
+    for key in keys {
+        if let Some(origin) = progress_step(&c, run, &key)? { origins.push(origin); }
+    }
+    Ok(origins.iter().any(|origin| author_scope_resolution(origin, &resolver, &source)
+        && (input["authorRepair"]["attempt"] == 1
+            || origins.iter().any(|earlier| author_scope_attempt_resolution(earlier, &resolver, &source, &origins)))))
+}
+
 fn continuity_resolution(
     origin: &ProgressStep,
     resolver: &ProgressStep,

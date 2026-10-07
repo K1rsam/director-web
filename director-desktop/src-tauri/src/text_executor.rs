@@ -6844,7 +6844,18 @@ impl SavedTextExecutor {
             }
         }
         if !bound { return Ok(None); }
-        Ok(Some(json!({"version":"accepted-author-chain-change/v1","sourceSha256":repair["sourceSha256"],"episodeId":request.input["episodeId"],"executionBatchId":request.input["executionBatch"]["id"],"repairProofSha256":crate::pipeline::digest(&repair.to_string()),"priorRequestHash":old_hash,"currentDomainRequestSha256":crate::pipeline::digest(&self.request_domain_snapshot(request)?.to_string())})))
+        let revision=json!({"version":"accepted-author-chain-change/v1","sourceSha256":repair["sourceSha256"],"episodeId":request.input["episodeId"],"executionBatchId":request.input["executionBatch"]["id"],"repairProofSha256":crate::pipeline::digest(&repair.to_string()),"priorRequestHash":old_hash,"currentDomainRequestSha256":crate::pipeline::digest(&self.request_domain_snapshot(request)?.to_string())});
+        // Existing branches retain their exact checkpoint and repair budget.
+        // Before the first branch, an already adopted author can replay its
+        // original request; adding a revision would otherwise hide its cache.
+        if self.accepted_author_with_recovered_predecessor(request)?.is_some() {
+            let mut selected=request.clone();selected.input["authorChainRevision"]=revision.clone();
+            let Some(root)=crate::text_cli::managed_codex_root() else { return Ok(None); };
+            if self.managed_saved_snapshot_at(&selected,&self.request_domain_snapshot(&selected)?,&root)?.is_none() {
+                return Ok(None);
+            }
+        }
+        Ok(Some(revision))
     }
 
     /// An already accepted author is immutable. If its formerly missing
@@ -6875,17 +6886,21 @@ impl SavedTextExecutor {
         let first=request.input["sourceRows"].as_array().and_then(|rows|rows.first()).and_then(|row|row.pointer("/range/start")).and_then(Value::as_u64);
         let batch=s(tail,"executionBatchId");
         if first.is_none() || batch.is_empty() || batch==s(&request.input["executionBatch"],"id"){return Ok(None);}
-        let mut q=c.prepare("SELECT j.snapshot,w.result,w.request_hash FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.stage='storyboardCreate' AND w.state='accepted' AND j.state='completed' AND json_extract(j.receipt,'$.validation')='accepted' AND json_extract(j.snapshot,'$.input.executionBatch.id')=?2 AND json_extract(j.snapshot,'$.input.episodeId')=?3").map_err(|e|e.to_string())?;
-        let rows=q.query_map(params![run,batch,s(&request.input,"episodeId")],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).map_err(|e|e.to_string())?;
+        let mut q=c.prepare("SELECT j.snapshot,w.result,w.request_hash,w.node_key FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.state='accepted' AND j.state='completed' AND json_extract(j.receipt,'$.validation')='accepted' AND json_extract(j.snapshot,'$.input.episodeId')=?3 AND ((w.stage='storyboardCreate' AND json_extract(j.snapshot,'$.input.executionBatch.id')=?2) OR (w.stage='storyboardFinish' AND json_extract(j.snapshot,'$.input.executionBatch.originExecutionBatchId')=?2 AND json_extract(j.snapshot,'$.input.authorRepair.version')='rejected-author-scope-repair/v1'))").map_err(|e|e.to_string())?;
+        let rows=q.query_map(params![run,batch,s(&request.input,"episodeId")],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).map_err(|e|e.to_string())?;
         for row in rows {
-            let (snapshot,result,hash)=row.map_err(|e|e.to_string())?;
+            let (snapshot,result,hash,node)=row.map_err(|e|e.to_string())?;
             let saved:Value=serde_json::from_str(&snapshot).map_err(|e|e.to_string())?;
             let predecessor:TextRequest=serde_json::from_value(saved.clone()).map_err(|e|e.to_string())?;
             let accepted:Value=serde_json::from_str(&result).map_err(|e|e.to_string())?;
+            let adopted = if predecessor.stage == "storyboardCreate" { &accepted } else { &accepted["materializedDraft"] };
             if crate::pipeline::digest(&snapshot)==hash
-                && accepted["units"].as_array().and_then(|units|units.last())==Some(&tail["unit"])
+                && adopted["units"].as_array().and_then(|units|units.last())==Some(&tail["unit"])
                 && saved["input"]["sourceRows"].as_array().is_some_and(|rows|!rows.is_empty() && rows.iter().all(|row|row.pointer("/range/end").and_then(Value::as_u64).is_some_and(|end|end<=first.unwrap())))
-                && self.managed_accepted_value(&predecessor,&saved)?.as_ref()==Some(&accepted){return Ok(Some(original));}
+                && self.managed_accepted_value(&predecessor,&saved)?.as_ref()==Some(&accepted)
+                && (predecessor.stage == "storyboardCreate"
+                    || crate::workflow::accepted_author_repair_predecessor(&self.store,run,&node,tail)?)
+            {return Ok(Some(original));}
         }
         Ok(None)
     }
@@ -7985,6 +8000,51 @@ mod managed_installation_resume_tests {
         executor.store.conn().unwrap().execute("UPDATE jobs SET state='received' WHERE id=?1",[prior_job]).unwrap();
         assert!(executor.accepted_author_with_recovered_predecessor(&current).unwrap().is_none());
         assert_eq!(executor.store.job(&original_job).unwrap(),before,"no rewrite of accepted job/raw/receipt");
+    }
+
+    #[tokio::test]
+    #[ignore = "Explicit consistent private database copy; zero CLI/provider executions"]
+    async fn actual_adopted_author_replays_after_editor_predecessor_repair_without_reauthoring() {
+        let root=PathBuf::from(std::env::var("DIRECTOR_EDITOR_PREDECESSOR_ROOT").expect("private copy required")).canonicalize().unwrap();
+        let allowed=PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("reports/desktop-real-e2e-20261005").canonicalize().unwrap();
+        assert!(root.starts_with(&allowed) && root.file_name().unwrap().to_string_lossy().starts_with("boundary-regression-editor-"));
+        let store=Store::open(root).unwrap();
+        let c=store.conn().unwrap();
+        let (run,parent):(String,String)=c.query_row("SELECT id,snapshot FROM jobs WHERE kind='workflow' AND entity_id='storyboard.run' ORDER BY rowid DESC LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        let parent:Value=serde_json::from_str(&parent).unwrap();
+        let executor=SavedTextExecutor{store:store.clone(),settings:parent["input"]["settings"].clone(),workflow_id:Some(run.clone())};
+        let author:String=c.query_row("SELECT snapshot FROM jobs WHERE id='a08869bc-5ff2-4939-be2c-0589b97a7a40'",[],|r|r.get(0)).unwrap();
+        let original:TextRequest=serde_json::from_str(&author).unwrap();
+        let (node,result):(String,String)=c.query_row("SELECT w.node_key,w.result FROM workflow_steps w WHERE w.text_job_id='f93226c3-075f-42cc-86ab-5beb4fe8436c' AND w.workflow_id=?1 AND w.state='accepted'",[&run],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        let result:Value=serde_json::from_str(&result).unwrap();
+        let draft=&result["materializedDraft"];
+        let unit=draft["units"].as_array().unwrap().last().unwrap();
+        let mut current=original.clone();
+        current.input["acceptedContinuity"]=json!({"version":"accepted-tail-v1","executionBatchId":"package-02-B01","unit":unit,"sourceRefs":unit["sourceRefs"],"boundaryBefore":current.input["plan"]["events"][0]["boundaryBefore"],"evidenceRole":"ACCEPTED_CREATIVE_STATE_ONLY"});
+        current.input["plan"]["acceptedContinuity"]=current.input["acceptedContinuity"].clone();
+        assert!(crate::workflow::accepted_author_repair_predecessor(&store,&run,&node,&current.input["acceptedContinuity"]).unwrap(),"real editor repair must bind original rejected raw and adopted source");
+        let before:i64=c.query_row("SELECT count(*) FROM jobs",[],|r|r.get(0)).unwrap();
+        let frozen=store.job("a08869bc-5ff2-4939-be2c-0589b97a7a40").unwrap();
+        let existing=executor.saved_author_chain_revision(&current,&draft["authorRepairProvenance"]).unwrap().expect("an existing exact branch keeps its original checkpoint");
+        let mut selected=current.clone();selected.input["authorChainRevision"]=existing;
+        assert!(executor.managed_accepted_value(&selected,&executor.request_snapshot(&selected).unwrap()).unwrap().is_some());
+        // Isolated copy only: simulate the point before the obsolete client
+        // allocated this redundant branch. No production evidence is touched.
+        c.execute("DELETE FROM workflow_steps WHERE workflow_id=?1 AND text_job_id='511288c1-83d1-470d-b0c4-f8fdce71b4c4'",[&run]).unwrap();
+        assert!(executor.saved_author_chain_revision(&current,&draft["authorRepairProvenance"]).unwrap().is_none(),"no new dependency fork for an already adopted author");
+        let replay=executor.prepare_transport_request(current.clone()).await.unwrap();
+        assert_eq!(serde_json::to_value(&replay).unwrap(),serde_json::to_value(&original).unwrap());
+        for path in ["/model","/input/sourceRows/0/text","/input/assets","/input/plan/dependencyExits","/input/acceptedContinuity/unit/id","/input/acceptedContinuity/executionBatchId"] {
+            let mut changed=serde_json::to_value(&current).unwrap();
+            let Some(value)=changed.pointer_mut(path) else {continue;};
+            *value=json!("unrelated-change");
+            assert!(executor.accepted_author_with_recovered_predecessor(&serde_json::from_value(changed).unwrap()).unwrap().is_none(),"{path}");
+        }
+        let mut forged=current.input["acceptedContinuity"].clone();forged["unit"]["id"]=json!("unbound");
+        assert!(!crate::workflow::accepted_author_repair_predecessor(&store,&run,&node,&forged).unwrap());
+        assert_eq!(before,c.query_row("SELECT count(*) FROM jobs",[],|r|r.get::<_,i64>(0)).unwrap());
+        assert_eq!(store.job("a08869bc-5ff2-4939-be2c-0589b97a7a40").unwrap(),frozen);
+        println!("{{\"actualEditorPredecessorBound\":true,\"adoptedAuthorVerbatimReplay\":true,\"noDependencyFork\":true,\"originalEvidenceUnchanged\":true,\"modelExecutions\":0}}");
     }
 
     fn save_quota_failure(executor: &SavedTextExecutor, request: &TextRequest, job: &str, snapshot: &Value) {
