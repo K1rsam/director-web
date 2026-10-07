@@ -4953,6 +4953,9 @@ pub(crate) fn spawn_cli_child(
 #[async_trait::async_trait]
 impl TextExecutor for SavedTextExecutor {
     async fn prepare_transport_request(&self, mut request: TextRequest) -> Result<TextRequest> {
+        if let Some(original)=self.accepted_author_with_recovered_predecessor(&request)? {
+            return Ok(original);
+        }
         if request.input.get("textTransportRetry").is_some() {
             self.validate_transport_retry(&request)?;
             return Ok(request);
@@ -4995,6 +4998,31 @@ impl TextExecutor for SavedTextExecutor {
                 .event(run, "storyboard_continuity_updated", evidence)?;
         }
         Ok(())
+    }
+    async fn visual_fact_packet_identities(&self, source_sha:&str, packet_hash:&str)->Result<Option<Vec<Value>>> {
+        let c=self.store.conn()?;
+        let mut q=c.prepare("SELECT id,snapshot,receipt FROM jobs WHERE kind='text' AND provider=?1 AND state='completed' AND json_extract(snapshot,'$.stage')='assetVisualFacts' AND json_extract(snapshot,'$.skill')='asset-visual-facts-extractor' AND json_extract(snapshot,'$.input.sourceSha256')=?2 AND json_extract(snapshot,'$.input.coveredPacketRef')=?3 AND json_extract(snapshot,'$.input.visualFactRepair') IS NULL AND json_extract(receipt,'$.validation')='accepted' AND json_extract(receipt,'$.contract')='desktop-runner/v1'").map_err(|e|e.to_string())?;
+        let rows=q.query_map(params![s(&self.settings,"textProvider"),source_sha,packet_hash],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).map_err(|e|e.to_string())?;
+        let mut identities=None;
+        for row in rows {
+            let (job,snapshot,receipt)=row.map_err(|e|e.to_string())?;
+            let saved:Value=serde_json::from_str(&snapshot).map_err(|e|e.to_string())?;
+            let request:TextRequest=serde_json::from_value(saved.clone()).map_err(|e|e.to_string())?;
+            let receipt:Value=serde_json::from_str(&receipt).map_err(|e|e.to_string())?;
+            let hash=crate::pipeline::digest(&snapshot);
+            let mut domain=saved.clone();domain.as_object_mut().ok_or("A15原身份快照无效")?.remove("executorIdentity");
+            let event:Option<String>=c.query_row("SELECT data FROM events WHERE job_id=?1 AND type='text_received_raw' ORDER BY id DESC LIMIT 1",[job],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+            let event:Value=event.as_deref().map(serde_json::from_str).transpose().map_err(|e|e.to_string())?.unwrap_or(Value::Null);
+            if snapshot!=saved.to_string() || domain!=self.request_domain_snapshot(&request)?
+                || request.rule_snapshot!=crate::pipeline::snapshot("asset-visual-facts-extractor",&[])?
+                || saved["executorIdentity"]["provider"]!=s(&self.settings,"textProvider")
+                || event["requestHash"]!=hash || event["value"].is_null()
+                || receipt.get("acceptedRequestHash").is_some_and(|value|value!=&json!(hash)) {return Err("A15原身份目录的快照、规则或接收绑定变化；原证据保留".into());}
+            let found=request.input["identities"].as_array().ok_or("A15原身份目录缺失")?.clone();
+            if identities.as_ref().is_some_and(|old|old!=&found){return Err("A15原身份目录回执冲突；原证据保留".into());}
+            identities=Some(found);
+        }
+        Ok(identities)
     }
     async fn author_chain_revision(&self, request: &TextRequest, repair: &Value) -> Result<Option<Value>> {
         self.saved_author_chain_revision(request, repair)
@@ -6816,6 +6844,49 @@ impl SavedTextExecutor {
         Ok(Some(json!({"version":"accepted-author-chain-change/v1","sourceSha256":repair["sourceSha256"],"episodeId":request.input["episodeId"],"executionBatchId":request.input["executionBatch"]["id"],"repairProofSha256":crate::pipeline::digest(&repair.to_string()),"priorRequestHash":old_hash,"currentDomainRequestSha256":crate::pipeline::digest(&self.request_domain_snapshot(request)?.to_string())})))
     }
 
+    /// An already accepted author is immutable. If its formerly missing
+    /// predecessor is now adopted, replay that exact original author request.
+    /// The pipeline retains the current predecessor for the related editor;
+    /// it must never re-author completed content merely to repair a UI resume.
+    fn accepted_author_with_recovered_predecessor(&self, request:&TextRequest)->Result<Option<TextRequest>> {
+        if request.stage!="storyboardCreate" || request.skill!="unit-performance-director" || request.input.get("textTransportRetry").is_some(){return Ok(None);}
+        let tail=&request.input["acceptedContinuity"];
+        if tail["version"]!="accepted-tail-v1" || tail["evidenceRole"]!="ACCEPTED_CREATIVE_STATE_ONLY" || tail["sourceRefs"]!=tail["unit"]["sourceRefs"] || tail["unit"].is_null(){return Ok(None);}
+        let Some(run)=self.workflow_id.as_deref() else{return Ok(None);};
+        let c=self.store.conn()?;
+        let old:Option<(String,String)>=c.query_row("SELECT j.snapshot,w.request_hash FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.node_key=?2 AND w.state='accepted' AND j.state='completed' AND j.kind='text' AND j.provider='codex'",params![run,step_key(request)],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|e.to_string())?;
+        let Some((snapshot,hash))=old else{return Ok(None);};
+        if crate::pipeline::digest(&snapshot)!=hash{return Ok(None);}
+        let original:TextRequest=serde_json::from_str(&snapshot).map_err(|e|e.to_string())?;
+        if !original.input["acceptedContinuity"].is_null() || !original.input["plan"]["acceptedContinuity"].is_null(){return Ok(None);}
+        let mut old_domain=self.request_domain_snapshot(&original)?;
+        let mut current=self.request_domain_snapshot(request)?;
+        if old_domain==current{return Ok(None);}
+        for path in ["/input/acceptedContinuity","/input/plan/acceptedContinuity"]{
+            if let Some(value)=old_domain.pointer_mut(path){*value=Value::Null;}
+            if let Some(value)=current.pointer_mut(path){*value=Value::Null;}
+        }
+        if old_domain!=current{return Ok(None);}
+        let saved:Value=serde_json::from_str(&snapshot).map_err(|e|e.to_string())?;
+        if self.managed_accepted_value(&original,&saved)?.is_none(){return Ok(None);}
+        let first=request.input["sourceRows"].as_array().and_then(|rows|rows.first()).and_then(|row|row.pointer("/range/start")).and_then(Value::as_u64);
+        let batch=s(tail,"executionBatchId");
+        if first.is_none() || batch.is_empty() || batch==s(&request.input["executionBatch"],"id"){return Ok(None);}
+        let mut q=c.prepare("SELECT j.snapshot,w.result,w.request_hash FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.stage='storyboardCreate' AND w.state='accepted' AND j.state='completed' AND json_extract(j.receipt,'$.validation')='accepted' AND json_extract(j.snapshot,'$.input.executionBatch.id')=?2 AND json_extract(j.snapshot,'$.input.episodeId')=?3").map_err(|e|e.to_string())?;
+        let rows=q.query_map(params![run,batch,s(&request.input,"episodeId")],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).map_err(|e|e.to_string())?;
+        for row in rows {
+            let (snapshot,result,hash)=row.map_err(|e|e.to_string())?;
+            let saved:Value=serde_json::from_str(&snapshot).map_err(|e|e.to_string())?;
+            let predecessor:TextRequest=serde_json::from_value(saved.clone()).map_err(|e|e.to_string())?;
+            let accepted:Value=serde_json::from_str(&result).map_err(|e|e.to_string())?;
+            if crate::pipeline::digest(&snapshot)==hash
+                && accepted["units"].as_array().and_then(|units|units.last())==Some(&tail["unit"])
+                && saved["input"]["sourceRows"].as_array().is_some_and(|rows|!rows.is_empty() && rows.iter().all(|row|row.pointer("/range/end").and_then(Value::as_u64).is_some_and(|end|end<=first.unwrap())))
+                && self.managed_accepted_value(&predecessor,&saved)?.as_ref()==Some(&accepted){return Ok(Some(original));}
+        }
+        Ok(None)
+    }
+
     /// A previously unavailable predecessor may now have a fully adopted tail.
     /// Fork only a proven stopped/no-result author, only for that bound tail,
     /// and only when every non-continuity byte of the old domain is identical.
@@ -7880,6 +7951,39 @@ mod managed_installation_resume_tests {
         fixture
     }
 
+    #[tokio::test]
+    async fn adopted_author_replay_requires_an_exact_newly_available_predecessor() {
+        let (_dir,executor,mut original,_,_,_)=fixture("completed",true);
+        original.stage="storyboardCreate".into();original.skill="unit-performance-director".into();
+        original.input=json!({"episodeId":"fixture-episode","executionBatch":{"id":"second"},"sourceRows":[{"id":"second-row","text":"乙。","range":{"start":2,"end":4}}],"acceptedContinuity":null,"plan":{"acceptedContinuity":null}});
+        let mut predecessor=original.clone();
+        predecessor.input["executionBatch"]["id"]=json!("first");predecessor.input["sourceRows"]=json!([{"id":"first-row","text":"甲。","range":{"start":0,"end":2}}]);
+        let tail=json!({"id":"first-unit","sourceRefs":["first-row"]});
+        let prior=json!({"units":[tail]});let draft=json!({"units":[{"id":"second-unit","sourceRefs":["second-row"]}]});
+        let save=|request:&TextRequest,raw:&Value|{
+            let mut snapshot=executor.request_domain_snapshot(request).unwrap();snapshot["executorIdentity"]=json!({"provider":"codex","executable":s(&executor.settings,"textCliExecutable")});
+            let hash=crate::pipeline::digest(&snapshot.to_string());
+            let job=executor.store.add_job("text","offline-author","codex","local",&snapshot,"completed").unwrap();
+            executor.store.update_job(&job,"completed",&json!({"result":raw,"receipt":{"contract":"desktop-runner/v1","validation":"accepted"}})).unwrap();
+            executor.store.event(&job,"text_received_raw",&json!({"requestHash":hash,"value":raw})).unwrap();
+            executor.store.checkpoint(executor.workflow_id.as_deref().unwrap(),&step_key(request),&request.stage,&hash,"accepted",Some(&job),Some(raw),None).unwrap();job
+        };
+        let prior_job=save(&predecessor,&prior);let original_job=save(&original,&draft);
+        let before=executor.store.job(&original_job).unwrap();
+        let mut current=original.clone();
+        current.input["acceptedContinuity"]=json!({"version":"accepted-tail-v1","executionBatchId":"first","unit":tail,"sourceRefs":tail["sourceRefs"],"evidenceRole":"ACCEPTED_CREATIVE_STATE_ONLY"});
+        current.input["plan"]["acceptedContinuity"]=current.input["acceptedContinuity"].clone();
+        let prepared=executor.prepare_transport_request(current.clone()).await.unwrap();
+        assert_eq!(serde_json::to_value(&prepared).unwrap(),serde_json::to_value(&original).unwrap());
+        for path in ["/model","/reasoning","/input/sourceRows/0/text","/input/acceptedContinuity/unit/id","/input/acceptedContinuity/executionBatchId"] {
+            let mut changed=serde_json::to_value(&current).unwrap();*changed.pointer_mut(path).unwrap()=json!("changed");
+            assert!(executor.accepted_author_with_recovered_predecessor(&serde_json::from_value(changed).unwrap()).unwrap().is_none(),"{path}");
+        }
+        executor.store.conn().unwrap().execute("UPDATE jobs SET state='received' WHERE id=?1",[prior_job]).unwrap();
+        assert!(executor.accepted_author_with_recovered_predecessor(&current).unwrap().is_none());
+        assert_eq!(executor.store.job(&original_job).unwrap(),before,"no rewrite of accepted job/raw/receipt");
+    }
+
     fn save_quota_failure(executor: &SavedTextExecutor, request: &TextRequest, job: &str, snapshot: &Value) {
         let message="You’ve hit your usage limit. Try again later.";
         let error=format!("Codex执行失败: {message}");
@@ -8043,6 +8147,92 @@ mod managed_installation_resume_tests {
         assert!(executor.execute(resumed).await.unwrap_err().contains("TEXT_TRANSPORT_RETRY_EXHAUSTED"));
         assert_eq!(executor.store.job(&job).unwrap()["status"],"failed");
         assert_eq!(executor.store.conn().unwrap().query_row("SELECT count(*) FROM jobs WHERE kind='text'",[],|r|r.get::<_,u64>(0)).unwrap(),2);
+    }
+
+    #[tokio::test]
+    #[ignore = "Explicit private adopted boundary snapshot; zero model/provider calls"]
+    async fn actual_recovered_author_boundary_diagnostic_never_executes_cli() {
+        let root=PathBuf::from(std::env::var("DIRECTOR_BOUNDARY_REGRESSION_ROOT").expect("private copy required")).canonicalize().unwrap();
+        let allowed=PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("reports/desktop-real-e2e-20261005").canonicalize().unwrap();
+        assert!(root.starts_with(&allowed) && root.file_name().unwrap().to_string_lossy().starts_with("boundary-regression-fish-"));
+        let store=Store::open(root).unwrap();
+        let (run,parent):(String,String)=store.conn().unwrap().query_row("SELECT id,snapshot FROM jobs WHERE kind='workflow' AND entity_id='storyboard.run' ORDER BY rowid DESC LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        let parent:Value=serde_json::from_str(&parent).unwrap();
+        let saved=SavedTextExecutor{store:store.clone(),settings:parent["input"]["settings"].clone(),workflow_id:Some(run.clone())};
+        struct Readonly {saved:SavedTextExecutor,diffs:std::sync::Mutex<Vec<Value>>, reused:std::sync::Mutex<usize>}
+        fn diff(a:&Value,b:&Value,path:&str,out:&mut Vec<String>){
+            if a==b || out.len()>=60{return;}
+            match(a,b){
+                (Value::Object(a),Value::Object(b))=>{let keys:std::collections::BTreeSet<_>=a.keys().chain(b.keys()).collect();for k in keys{diff(a.get(k).unwrap_or(&Value::Null),b.get(k).unwrap_or(&Value::Null),&format!("{path}/{k}"),out);}},
+                (Value::Array(a),Value::Array(b)) if a.len()==b.len()=>{for(i,(a,b))in a.iter().zip(b).enumerate(){diff(a,b,&format!("{path}/{i}"),out);}},
+                _=>out.push(path.into())
+            }
+        }
+        #[async_trait::async_trait]
+        impl TextExecutor for Readonly {
+            async fn prepare_transport_request(&self,r:TextRequest)->Result<TextRequest>{
+                let c=self.saved.store.conn()?;
+                let old:Option<String>=c.query_row("SELECT j.snapshot FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.node_key=?2",params![self.saved.workflow_id,step_key(&r)],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
+                if let Some(old)=old {let mut old:Value=serde_json::from_str(&old).map_err(|e|e.to_string())?;old.as_object_mut().unwrap().remove("executorIdentity");let current=self.saved.request_domain_snapshot(&r)?;if old!=current{let mut paths=Vec::new();diff(&old,&current,"",&mut paths);self.diffs.lock().unwrap().push(json!({"stage":r.stage,"batch":r.input["executionBatch"]["id"],"paths":paths}));}}
+                let prepared=self.saved.prepare_transport_request(r.clone()).await?;
+                if serde_json::to_value(&prepared).unwrap()!=serde_json::to_value(&r).unwrap()
+                    && prepared.input.get("textTransportRetry").is_none() {
+                    assert!(self.saved.accepted_author_with_recovered_predecessor(&r)?.is_some());
+                    *self.reused.lock().unwrap()+=1;
+                    for path in ["/input/sourceRows/0/text","/input/episodeId","/model","/reasoning","/ruleSnapshot/primary/sha256","/input/acceptedContinuity/unit/id"] {
+                        let mut changed=serde_json::to_value(&r).unwrap();
+                        if let Some(value)=changed.pointer_mut(path){*value=json!("changed");let changed:TextRequest=serde_json::from_value(changed).unwrap();assert!(self.saved.accepted_author_with_recovered_predecessor(&changed)?.is_none(),"{path}");}
+                    }
+                }
+                Ok(prepared)
+            }
+            fn input_transport_characters(&self,r:&TextRequest)->Result<usize>{self.saved.input_transport_characters(r)}
+            async fn author_chain_revision(&self,r:&TextRequest,p:&Value)->Result<Option<Value>>{self.saved.author_chain_revision(r,p).await}
+            async fn execute(&self,r:TextRequest)->Result<Value>{
+                let c=self.saved.store.conn()?;
+                let row:Option<(String,String)>=c.query_row("SELECT j.snapshot,j.result FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 AND w.node_key=?2 AND w.state='accepted' AND j.state='completed'",params![self.saved.workflow_id,step_key(&r)],|row|Ok((row.get(0)?,row.get(1)?))).optional().map_err(|e|e.to_string())?;
+                let Some((old,raw))=row else{return Err("READONLY_NO_NEW_EXECUTION".into());};
+                let mut domain:Value=serde_json::from_str(&old).map_err(|e|e.to_string())?;domain.as_object_mut().unwrap().remove("executorIdentity");
+                let current=self.saved.request_domain_snapshot(&r)?;
+                if domain!=current {let mut paths=Vec::new();diff(&domain,&current,"",&mut paths);self.diffs.lock().unwrap().push(json!({"stage":r.stage,"batch":r.input["executionBatch"]["id"],"paths":paths}));return Err("READONLY_BOUNDARY_MISMATCH".into());}
+                let snapshot=self.saved.request_snapshot(&r)?;
+                if self.saved.managed_accepted_value(&r,&snapshot)?.is_none(){return Err("READONLY_UNBOUND_ACCEPTANCE".into());}
+                serde_json::from_str(&raw).map_err(|e|e.to_string())
+            }
+        }
+        let executor=Readonly{saved,diffs:Default::default(),reused:Default::default()};
+        let count:i64=store.conn().unwrap().query_row("SELECT count(*) FROM jobs",[],|r|r.get(0)).unwrap();
+        let mut input=parent["input"].clone();
+        let history={let c=store.conn().unwrap();let mut q=c.prepare("SELECT w.stage,w.state,json_extract(j.snapshot,'$.input.episodeId'),json_extract(j.snapshot,'$.input.finishMode'),json_extract(j.snapshot,'$.input.executionBatch.version'),json_extract(w.result,'$.schemaVersion'),w.request_hash FROM workflow_steps w LEFT JOIN jobs j ON j.id=w.text_job_id WHERE w.workflow_id=?1 ORDER BY w.rowid").unwrap();q.query_map([&run],|r|Ok(json!({"stage":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"episodeId":r.get::<_,Option<String>>(2)?,"finishMode":r.get::<_,Option<String>>(3)?,"executionBatchVersion":r.get::<_,Option<String>>(4)?,"outputSchemaVersion":r.get::<_,Option<String>>(5)?,"requestHash":r.get::<_,String>(6)?}))).unwrap().collect::<std::result::Result<Vec<_>,_>>().unwrap()};
+        input["storyboardHistory"]=json!(history);
+        input["decisions"]=store.job(&run).unwrap()["prepared"]["decisions"].clone();
+        let output=crate::pipeline::run_storyboard(&input,&executor,s(&parent["input"]["settings"],"textModel"),s(&parent["input"]["settings"],"reasoning")).await.unwrap();
+        println!("readonly_boundary_diffs={}",json!(executor.diffs.lock().unwrap().clone()));
+        println!("readonly_boundary_status={}",output["status"]);
+        println!("readonly_boundary_errors={}",json!(output["blocked"].as_array().unwrap().iter().map(|b|&b["reason"]).take(6).collect::<Vec<_>>()));
+        assert_eq!(*executor.reused.lock().unwrap(),1,"only the formerly missing predecessor may reuse its original adopted author");
+        assert!(output["blocked"].as_array().unwrap().iter().all(|b|!s(b,"reason").contains("CODEX_FROZEN_NODE_MISMATCH")));
+        assert_eq!(store.conn().unwrap().query_row("SELECT count(*) FROM jobs",[],|r|r.get::<_,i64>(0)).unwrap(),count);
+    }
+
+    #[tokio::test]
+    #[ignore = "Explicit private legacy A15 receipt; zero model/provider calls"]
+    async fn actual_legacy_visual_packet_recovers_only_its_bound_identity_selection() {
+        let root=PathBuf::from(std::env::var("DIRECTOR_VISUAL_SELECTION_REGRESSION_ROOT").expect("private copy required")).canonicalize().unwrap();
+        let allowed=PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("reports/desktop-real-e2e-20261005").canonicalize().unwrap();
+        assert!(root.starts_with(&allowed) && root.file_name().unwrap().to_string_lossy().starts_with("boundary-regression-heart-"));
+        let store=Store::open(root).unwrap();
+        let foundation=store.foundation().unwrap();
+        let cache=&foundation["visualFactBatches"][0];
+        assert!(cache.get("identityCards").is_none());
+        let (snapshot,job):(String,String)=store.conn().unwrap().query_row("SELECT snapshot,id FROM jobs WHERE kind='text' AND state='completed' AND json_extract(snapshot,'$.stage')='assetVisualFacts' AND json_extract(snapshot,'$.input.coveredPacketRef')=?1",[s(cache,"inputFingerprint")],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        let snapshot:Value=serde_json::from_str(&snapshot).unwrap();
+        let executor=SavedTextExecutor{store:store.clone(),settings:json!({"textProvider":"codex"}),workflow_id:None};
+        let found=executor.visual_fact_packet_identities(s(cache,"sourceSha256"),s(cache,"inputFingerprint")).await.unwrap().unwrap();
+        assert_eq!(json!(found),snapshot["input"]["identities"]);
+        assert_eq!(found.len(),1);
+        let c=store.conn().unwrap();c.execute("UPDATE events SET data=json_set(data,'$.requestHash','changed') WHERE job_id=?1 AND type='text_received_raw'",[job]).unwrap();
+        assert!(executor.visual_fact_packet_identities(s(cache,"sourceSha256"),s(cache,"inputFingerprint")).await.is_err());
     }
 
     #[tokio::test]

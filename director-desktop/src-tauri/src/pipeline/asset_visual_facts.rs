@@ -1707,7 +1707,7 @@ pub async fn run_asset_visual_facts(
             .into_iter()
             .flatten()
             .find(|cache| text(cache, "inputFingerprint") == packet_hash);
-        let superset = caches
+        let mut supersets:Vec<_> = caches
             .into_iter()
             .flatten()
             .filter(|cache| {
@@ -1720,12 +1720,27 @@ pub async fn run_asset_visual_facts(
                 };
                 row_ids.len() >= ids.len() && ordered_subset(&ids, &row_ids)
             })
-            .min_by_key(|cache| {
+            .collect();
+        supersets.sort_by_key(|cache| {
                 cache["rowIds"]
                     .as_array()
                     .map(Vec::len)
                     .unwrap_or(usize::MAX)
             });
+        let mut superset=None;
+        for candidate in supersets {
+            // A matching reading range is not a matching asset selection. A
+            // proven packet for different subjects must not block new assets.
+            let previous=if let Some(cards)=candidate.get("identityCards").or_else(||candidate.pointer("/repairProvenance/identityCards")).and_then(Value::as_array){Some(cards.clone())}else{executor.visual_fact_packet_identities(&source.sha256,text(candidate,"inputFingerprint")).await?};
+            if let Some(previous)=previous {
+                if let Ok(rebuilt)=registry_identity_subset(input,registry,&previous) {
+                    if rebuilt==previous
+                        && validate_cached_packet(candidate,&source,&rebuilt,&ids,&current_rule_sha).is_ok()
+                        && !identity_selection_is_covered(&identities,&rebuilt) {continue;}
+                }
+            }
+            superset=Some(candidate);break;
+        }
         if let Some(cache) = exact.or(superset) {
             let mut adopted = cache.clone();
             let mut continuation_error = None;
@@ -1753,10 +1768,8 @@ pub async fn run_asset_visual_facts(
                 validation = Ok(());
             }
             if validation.is_err() {
-                if let Some(previous) = cache
-                    .pointer("/repairProvenance/identityCards")
-                    .and_then(Value::as_array)
-                {
+                let previous=if let Some(cards)=cache.get("identityCards").or_else(||cache.pointer("/repairProvenance/identityCards")).and_then(Value::as_array){Some(cards.clone())}else{executor.visual_fact_packet_identities(&source.sha256,text(cache,"inputFingerprint")).await?};
+                if let Some(previous) = previous.as_ref() {
                     if let Ok(rebuilt) = registry_identity_subset(input, registry, previous) {
                         if rebuilt == *previous
                             && identity_selection_is_covered(&identities, &rebuilt)
@@ -1859,7 +1872,7 @@ pub async fn run_asset_visual_facts(
             Ok(result) => {
                 let found = result["facts"].as_array().unwrap();
                 facts.extend(found.iter().cloned());
-                receipts.push(json!({"schemaVersion":"asset-visual-facts-cache/v1","status":"accepted","sourceSha256":source.sha256,"inputFingerprint":packet_hash,"ruleSha256":rule_snapshot("asset-visual-facts-extractor")?["sha256"],"rowIds":ids,"facts":found,"batchIndex":index,"referenceEncoding":WIRE_PROFILE,"coveredPacketRef":packet_hash}));
+                receipts.push(json!({"schemaVersion":"asset-visual-facts-cache/v1","status":"accepted","sourceSha256":source.sha256,"inputFingerprint":packet_hash,"ruleSha256":rule_snapshot("asset-visual-facts-extractor")?["sha256"],"rowIds":ids,"identityCards":identities,"facts":found,"batchIndex":index,"referenceEncoding":WIRE_PROFILE,"coveredPacketRef":packet_hash}));
             }
             Err(reason) if reason == VISUAL_FACT_UNBOUND_ERROR && rejected_raw.is_some() => {
                 let original = rejected_raw.unwrap();
@@ -2449,6 +2462,35 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(replay["blocked"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn changing_selected_subjects_in_the_same_episode_extracts_only_the_new_packet() {
+        let mut input=episode_subset_basis();
+        let mut registry=input["assets"].as_array().unwrap().clone();
+        registry[1]["sourceRefs"]=registry[0]["sourceRefs"].clone();
+        registry[1]["applicability"]=registry[0]["applicability"].clone();
+        input["assetRegistry"]=json!(registry);
+        input["assets"]=json!([registry[0]]);
+        let first_executor=Extractor::new("valid");
+        let first=run_asset_visual_facts(&input,&first_executor,"gpt-6.1-sol","medium").await.unwrap();
+        input["foundation"]["facts"]=first["facts"].clone();
+        input["foundation"]["visualFactBatches"]=first["visualFactBatches"].clone();
+        let original=input["foundation"]["visualFactBatches"].clone();
+        input["assets"]=json!([registry[1]]);
+        let next_executor=Extractor::new("valid");
+        let next=run_asset_visual_facts(&input,&next_executor,"gpt-6.1-sol","medium").await.unwrap();
+        assert!(next["blocked"].as_array().unwrap().is_empty());
+        assert_eq!(next_executor.calls.lock().unwrap().len(),1);
+        assert_eq!(next["visualFactBatches"][0]["rowIds"],original[0]["rowIds"]);
+        assert_ne!(next["visualFactBatches"][0]["inputFingerprint"],original[0]["inputFingerprint"]);
+        assert_eq!(next["visualFactBatches"][0]["identityCards"][0]["assetId"],"B");
+        assert_eq!(input["foundation"]["visualFactBatches"],original);
+        // A same-selection corrupted cache remains a hard failure, not a retry.
+        input["foundation"]["visualFactBatches"]=next["visualFactBatches"].clone();
+        input["foundation"]["visualFactBatches"][0]["inputFingerprint"]=json!("corrupt");
+        let held=run_asset_visual_facts(&input,&Never,"gpt-6.1-sol","medium").await.unwrap();
+        assert!(!held["blocked"].as_array().unwrap().is_empty());
     }
 
     #[test]

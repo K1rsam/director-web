@@ -68,6 +68,11 @@ pub trait TextExecutor: Send + Sync {
     ) -> Result<Option<Value>, String> {
         Ok(None)
     }
+    /// Recover the original identity selection of a legacy accepted A15 packet.
+    /// Read-only evidence; the domain must still rebuild its hash and facts.
+    async fn visual_fact_packet_identities(&self, _source_sha: &str, _packet_hash: &str) -> Result<Option<Vec<Value>>, String> {
+        Ok(None)
+    }
     async fn accept(&self, _request: &TextRequest, _value: &Value) -> Result<(), String> {
         Ok(())
     }
