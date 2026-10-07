@@ -6621,11 +6621,17 @@ impl SavedTextExecutor {
         let key = step_key(request);
         let c = self.store.conn()?;
         let row: Option<(String, String)> = c.query_row(
-            "SELECT j.id,j.error FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id JOIN jobs parent ON parent.id=w.workflow_id WHERE w.workflow_id=?1 AND w.node_key=?2 AND w.request_hash=?3 AND w.stage=?4 AND w.state='failed' AND j.kind='text' AND j.provider='codex' AND j.state='failed' AND j.snapshot=?5 AND j.error=w.error AND j.error=?6 AND j.result IS NULL AND w.result IS NULL AND (j.receipt IS NULL OR j.receipt IN ('','null','{}')) AND parent.kind='workflow' AND parent.entity_id IN ('foundation.run','storyboard.run') AND NOT EXISTS(SELECT 1 FROM events e WHERE e.job_id=j.id AND (e.type='text_received_raw' OR (e.type='codex_event' AND json_extract(e.data,'$.type')='turn.completed')))",
-            params![run,key,hash,request.stage,snapshot.to_string(),"文本任务完整运行超时；保留已有事件与结果，不自动重跑"],
+            "SELECT j.id,j.error FROM workflow_steps w JOIN jobs j ON j.id=w.text_job_id JOIN jobs parent ON parent.id=w.workflow_id WHERE w.workflow_id=?1 AND w.node_key=?2 AND w.request_hash=?3 AND w.stage=?4 AND w.state='failed' AND j.kind='text' AND j.provider='codex' AND j.state='failed' AND j.snapshot=?5 AND j.error=w.error AND j.error IS NOT NULL AND j.result IS NULL AND w.result IS NULL AND (j.receipt IS NULL OR j.receipt IN ('','null','{}')) AND parent.kind='workflow' AND parent.entity_id IN ('foundation.run','storyboard.run') AND NOT EXISTS(SELECT 1 FROM events e WHERE e.job_id=j.id AND (e.type='text_received_raw' OR (e.type='codex_event' AND json_extract(e.data,'$.type')='turn.completed')))",
+            params![run,key,hash,request.stage,snapshot.to_string()],
             |row| Ok((row.get(0)?,row.get(1)?)),
         ).optional().map_err(|e|e.to_string())?;
         let Some((job, error)) = row else { return Ok(None); };
+        let quota_message=error.strip_prefix("Codex执行失败: ").filter(|message|
+            message.starts_with("You’ve hit your usage limit.")||message.starts_with("You've hit your usage limit."));
+        let quota_event=if let Some(message)=quota_message {
+            c.query_row("SELECT id,data FROM events WHERE job_id=?1 AND type='codex_event' AND json_extract(data,'$.type')='turn.failed' AND json_extract(data,'$.error.message')=?2 ORDER BY id DESC LIMIT 1",params![job,message],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?))).optional().map_err(|e|e.to_string())?
+        }else{None};
+        if error!="文本任务完整运行超时；保留已有事件与结果，不自动重跑" && quota_event.is_none() {return Ok(None);}
         let heartbeat: Option<(i64, String)> = c.query_row(
             "SELECT id,data FROM events WHERE job_id=?1 AND type='codex_heartbeat' ORDER BY id DESC LIMIT 1", [&job],
             |row| Ok((row.get(0)?,row.get(1)?)),
@@ -6639,7 +6645,9 @@ impl SavedTextExecutor {
             || self.store.root.join("text-runs").join(&job).join("result.json").try_exists().map_err(|e|e.to_string())? {
             return Ok(None);
         }
-        Ok(Some(json!({"version":"stopped-text-transport-retry/v1","workflowId":run,"originNodeKey":key,"originRequestHash":hash,"originJobId":job,"failureSha256":crate::pipeline::digest(&error),"stoppedHeartbeatId":event_id,"stoppedHeartbeatSha256":crate::pipeline::digest(&text),"attempt":1,"maximumAttempts":1})))
+        let mut proof=json!({"version":"stopped-text-transport-retry/v1","workflowId":run,"originNodeKey":key,"originRequestHash":hash,"originJobId":job,"failureSha256":crate::pipeline::digest(&error),"stoppedHeartbeatId":event_id,"stoppedHeartbeatSha256":crate::pipeline::digest(&text),"attempt":1,"maximumAttempts":1});
+        if let Some((id,text))=quota_event {proof["quotaRejection"]=json!({"eventId":id,"eventSha256":crate::pipeline::digest(&text),"failureKind":"USAGE_LIMIT"});}
+        Ok(Some(proof))
     }
 
     fn validate_transport_retry(&self, request: &TextRequest) -> Result<()> {
@@ -7712,6 +7720,23 @@ mod managed_installation_resume_tests {
         executor.store.checkpoint(executor.workflow_id.as_deref().unwrap(),&step_key(request),&request.stage,&crate::pipeline::digest(&snapshot.to_string()),"failed",Some(job),None,Some(error)).unwrap();
         executor.store.event(job,"codex_heartbeat",&json!({"format":"codex-runtime-heartbeat/v1","phase":"failed","processAlive":false,"pid":42,"stdinBytes":100,"stdinTotalBytes":100,"resultBytes":0})).unwrap();
         fixture
+    }
+
+    #[tokio::test]
+    async fn quota_recovery_requires_bound_server_rejection_and_no_received_output() {
+        for mutation in ["valid","no_event","different_event","received","other_error"] {
+            let (_dir,executor,request,job,snapshot,_)=stopped_text_fixture();
+            let message="You’ve hit your usage limit. Try again at 5:10 AM.";
+            let error=if mutation=="other_error"{"Codex执行失败: authentication failed".to_string()}else{format!("Codex执行失败: {message}")};
+            executor.store.update_job(&job,"failed",&json!({"error":error})).unwrap();
+            executor.store.checkpoint(executor.workflow_id.as_deref().unwrap(),&step_key(&request),&request.stage,&crate::pipeline::digest(&snapshot.to_string()),"failed",Some(&job),None,Some(&error)).unwrap();
+            if mutation!="no_event" {executor.store.event(&job,"codex_event",&json!({"type":"turn.failed","error":{"message":if mutation=="different_event"{"different rejection"}else{message}}})).unwrap();}
+            if mutation=="received" {executor.store.event(&job,"text_received_raw",&json!({"value":{"alreadyReceived":true}})).unwrap();}
+            let before=executor.store.job(&job).unwrap();
+            let prepared=executor.prepare_transport_request(request).await.unwrap();
+            assert_eq!(prepared.input["textTransportRetry"]["quotaRejection"]["failureKind"]=="USAGE_LIMIT",mutation=="valid","{mutation}");
+            assert!(executor.store.job(&job).unwrap()==before,"original failure was changed");
+        }
     }
 
     #[tokio::test]
