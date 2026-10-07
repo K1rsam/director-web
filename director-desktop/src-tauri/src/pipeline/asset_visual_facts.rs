@@ -735,6 +735,30 @@ fn registry_identity_subset(
     Ok(identities)
 }
 
+/// Early receipts retained the transport identities with short episode/scene
+/// references. Recompile their exact packet before comparing to registry IDs;
+/// short references are never accepted as domain identities on their own.
+fn cached_identity_subset(
+    input: &Value,
+    registry: &[Value],
+    previous: &[Value],
+    source: &LockedSource,
+    cache: &Value,
+) -> Result<Vec<Value>, String> {
+    let rebuilt = registry_identity_subset(input, registry, previous)?;
+    if rebuilt == previous {
+        return Ok(rebuilt);
+    }
+    let rows = cached_rows(source, cache)?;
+    let wire = PacketWire::compile(source, &rebuilt, &rows);
+    if wire.packet_hash == text(cache, "inputFingerprint")
+        && wire.input["identities"] == json!(previous)
+    {
+        return Ok(rebuilt);
+    }
+    Err("旧视觉包身份无法按原锁定资料完整还原".into())
+}
+
 fn identity_selection_is_covered(selected: &[Value], packet: &[Value]) -> bool {
     selected.iter().all(|identity| {
         let Some(original) = packet
@@ -1733,9 +1757,8 @@ pub async fn run_asset_visual_facts(
             // proven packet for different subjects must not block new assets.
             let previous=if let Some(cards)=candidate.get("identityCards").or_else(||candidate.pointer("/repairProvenance/identityCards")).and_then(Value::as_array){Some(cards.clone())}else{executor.visual_fact_packet_identities(&source.sha256,text(candidate,"inputFingerprint")).await?};
             if let Some(previous)=previous {
-                if let Ok(rebuilt)=registry_identity_subset(input,registry,&previous) {
-                    if rebuilt==previous
-                        && validate_cached_packet(candidate,&source,&rebuilt,&ids,&current_rule_sha).is_ok()
+                if let Ok(rebuilt)=cached_identity_subset(input,registry,&previous,&source,candidate) {
+                    if validate_cached_packet(candidate,&source,&rebuilt,&ids,&current_rule_sha).is_ok()
                         && !identity_selection_is_covered(&identities,&rebuilt) {continue;}
                 }
             }
@@ -1770,9 +1793,8 @@ pub async fn run_asset_visual_facts(
             if validation.is_err() {
                 let previous=if let Some(cards)=cache.get("identityCards").or_else(||cache.pointer("/repairProvenance/identityCards")).and_then(Value::as_array){Some(cards.clone())}else{executor.visual_fact_packet_identities(&source.sha256,text(cache,"inputFingerprint")).await?};
                 if let Some(previous) = previous.as_ref() {
-                    if let Ok(rebuilt) = registry_identity_subset(input, registry, previous) {
-                        if rebuilt == *previous
-                            && identity_selection_is_covered(&identities, &rebuilt)
+                    if let Ok(rebuilt) = cached_identity_subset(input, registry, previous, &source, cache) {
+                        if identity_selection_is_covered(&identities, &rebuilt)
                             && validate_cached_packet(
                                 cache,
                                 &source,
@@ -2491,6 +2513,58 @@ mod tests {
         input["foundation"]["visualFactBatches"][0]["inputFingerprint"]=json!("corrupt");
         let held=run_asset_visual_facts(&input,&Never,"gpt-6.1-sol","medium").await.unwrap();
         assert!(!held["blocked"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn legacy_compact_identity_requires_exact_source_packet_and_registry() {
+        let input = episode_subset_basis();
+        let source: LockedSource = serde_json::from_value(input["source"].clone()).unwrap();
+        let registry = input["assets"].as_array().unwrap();
+        let identities = identity_cards(&input, registry);
+        let rows: Vec<_> = source.rows.iter().collect();
+        let wire = PacketWire::compile(&source, &identities, &rows);
+        let previous = wire.input["identities"].as_array().unwrap();
+        assert_ne!(*previous, identities);
+        let cache = json!({"inputFingerprint":wire.packet_hash,"rowIds":wire.row_ids});
+        assert_eq!(cached_identity_subset(&input,registry,previous,&source,&cache).unwrap(),identities);
+        for field in ["hash","alias","registry"] {
+            let mut altered_cache=cache.clone(); let mut altered=previous.clone(); let mut changed=registry.clone();
+            match field {
+                "hash"=>altered_cache["inputFingerprint"]=json!("wrong"),
+                "alias"=>altered[0]["versions"][0]["applicability"]["episodes"][0]=json!("e999"),
+                _=>changed[0]["name"]=json!("changed name"),
+            }
+            assert!(cached_identity_subset(&input,&changed,&altered,&source,&altered_cache).is_err(),"{field}");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "Explicit private current A15 packet; no CLI or production writes"]
+    async fn actual_legacy_compact_packet_selects_new_subjects_without_cli() {
+        use crate::{store::Store,text_executor::SavedTextExecutor};
+        let root=std::path::PathBuf::from(std::env::var("DIRECTOR_VISUAL_SELECTION_REGRESSION_ROOT").expect("private copy required")).canonicalize().unwrap();
+        let allowed=std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("reports/desktop-real-e2e-20261005").canonicalize().unwrap();
+        assert!(root.starts_with(&allowed)&&root.file_name().unwrap().to_string_lossy().starts_with("boundary-regression-heart-"));
+        let store=Store::open(root).unwrap();
+        let workflow=store.job("01a8bcc6-94f0-42f4-a4c3-c208de0d764d").unwrap();
+        let all=store.values("assets").unwrap();
+        let wanted=workflow["snapshot"]["request"]["assetIds"].as_array().unwrap();
+        let selected:Vec<_>=all.iter().filter(|a|wanted.contains(&a["id"])).cloned().collect();
+        assert_eq!(selected.len(),16);
+        let input=json!({"source":store.source().unwrap(),"foundation":store.foundation().unwrap(),"assets":selected,"assetRegistry":all,"selection":{"assetIds":wanted}});
+        struct NoCli { saved:SavedTextExecutor,calls:Mutex<Vec<TextRequest>> }
+        #[async_trait]
+        impl TextExecutor for NoCli {
+            async fn visual_fact_packet_identities(&self,source:&str,packet:&str)->Result<Option<Vec<Value>>,String>{self.saved.visual_fact_packet_identities(source,packet).await}
+            async fn execute(&self,request:TextRequest)->Result<Value,String>{self.calls.lock().unwrap().push(request);Err("NO_CLI_DIAGNOSTIC_NEW_PACKET".into())}
+        }
+        let executor=NoCli{saved:SavedTextExecutor{store:store.clone(),settings:json!({"textProvider":"codex"}),workflow_id:None},calls:Mutex::new(Vec::new())};
+        let count:i64=store.conn().unwrap().query_row("SELECT count(*) FROM jobs",[],|r|r.get(0)).unwrap();
+        let output=run_asset_visual_facts(&input,&executor,"gpt-6.1-sol","medium").await.unwrap();
+        assert!(!executor.calls.lock().unwrap().is_empty(),"old packet must not block new subjects: {}",output["blocked"]);
+        assert!(output["blocked"].as_array().unwrap().iter().all(|b|!text(b,"reason").contains("旧缓存无效")));
+        assert_eq!(store.conn().unwrap().query_row("SELECT count(*) FROM jobs",[],|r|r.get::<_,i64>(0)).unwrap(),count);
+        println!("{{\"legacyAliasesRecompiled\":true,\"newSubjectsNotBlocked\":true,\"modelExecutions\":0,\"productionWrites\":0}}");
     }
 
     #[test]
