@@ -1266,18 +1266,33 @@ fn login_material(body: &Value) -> ProviderResult<Value> {
 }
 
 pub(super) fn begin_login(config: &ProviderConfig) -> ProviderResult<Value> {
-    match account(config) {
+    begin_login_with(
+        || account(config),
+        |fresh| execute(config, &[if fresh { "relogin" } else { "login" }.into(), "--headless".into()], false),
+    )
+}
+
+fn begin_login_with(
+    mut read_account: impl FnMut() -> ProviderResult<Value>,
+    mut start_login: impl FnMut(bool) -> ProviderResult<CliOutput>,
+) -> ProviderResult<Value> {
+    let fresh = match read_account() {
         Ok(value) if value.get("ready").and_then(Value::as_bool) == Some(true) => return Ok(value),
+        // The official CLI may retain a locally valid token while user_credit
+        // returns its explicit anonymous envelope. Ordinary login then only
+        // says "Already logged in". A user-requested OAuth flow needs a fresh
+        // challenge here; unknown identities and transport errors stay intact.
+        Ok(value) if value["status"] == "logged_out" => true,
         Ok(_) => {
             return Err(ProviderError::new(
                 "CLI_AUTH_IDENTITY",
                 "现有登录缺少可验证身份；请先刷新或由用户明确退出后重新登录。",
             ))
         }
-        Err(error) if error.auth_required => {}
+        Err(error) if error.auth_required => false,
         Err(error) => return Err(error),
-    }
-    let output = execute(config, &["login".into(), "--headless".into()], false)?;
+    };
+    let output = start_login(fresh)?;
     if !output.success {
         return Err(output_error(&output, false));
     }
@@ -1286,7 +1301,7 @@ pub(super) fn begin_login(config: &ProviderConfig) -> ProviderResult<Value> {
         && task_object(&body).get("deviceCode").is_none()
     {
         // Login can reuse an existing session; only user_credit proves which account it is.
-        return account(config);
+        return read_account();
     }
     login_material(&body)
 }
@@ -1342,7 +1357,9 @@ pub(super) fn check_login(config: &ProviderConfig, device_code: &str) -> Provide
             "login".into(),
             "checklogin".into(),
             format!("--device_code={device_code}"),
-            "--poll=0".into(),
+            // Use the short bounded poll verified with the installed CLI;
+            // return control to the desktop between authorization checks.
+            "--poll=1".into(),
         ],
         false,
     )?;
@@ -4310,6 +4327,65 @@ mod tests {
         assert_eq!(real["status"], "authenticated");
         assert_eq!(real["ready"], true);
         assert_eq!(account_snapshot(&json!({"total_credit":0}))["status"], "unknown");
+    }
+    #[test]
+    fn explicit_anonymous_login_requests_fresh_oauth_without_generation() {
+        let mut account_reads = 0;
+        let mut login_starts = 0;
+        let result = begin_login_with(
+            || {
+                account_reads += 1;
+                Ok(account_snapshot(&json!({"user_id":0,"user_name":"","total_credit":0})))
+            },
+            |fresh| {
+                assert!(fresh, "anonymous account must not reuse a stale local token");
+                login_starts += 1;
+                Ok(auth_output(true, json!({"device_code":"memory-only","verification_uri":"https://example.test/oauth","user_code":"ABCD","expires_in":600,"access_token":"must-not-escape"}), ""))
+            },
+        ).unwrap();
+        assert_eq!(account_reads, 1);
+        assert_eq!(login_starts, 1);
+        assert_eq!(result["device_code"], "memory-only");
+        assert_eq!(result["verification_uri"], "https://example.test/oauth");
+        assert!(!result.to_string().contains("must-not-escape"));
+    }
+    #[test]
+    fn login_preserves_known_accounts_and_unknown_or_network_failures() {
+        let known = begin_login_with(
+            || Ok(account_snapshot(&json!({"user_id":123,"total_credit":0}))),
+            |_| panic!("existing account must not start OAuth"),
+        ).unwrap();
+        assert_eq!(known["ready"], true);
+        assert_eq!(known["credits"]["total"], 0.);
+        let unknown = begin_login_with(
+            || Ok(account_snapshot(&json!({"total_credit":0}))),
+            |_| panic!("ambiguous identity must not start OAuth or clear credentials"),
+        ).unwrap_err();
+        assert_eq!(unknown.code, "CLI_AUTH_IDENTITY");
+        let network = begin_login_with(
+            || Err(ProviderError::new("CLI_NETWORK", "offline transport failure")),
+            |_| panic!("transport failure must not start OAuth"),
+        ).unwrap_err();
+        assert_eq!(network.code, "CLI_NETWORK");
+    }
+    #[test]
+    fn login_without_challenge_rechecks_identity_instead_of_trusting_exit_success() {
+        let mut reads = 0;
+        let result = begin_login_with(
+            || {
+                reads += 1;
+                Ok(account_snapshot(&if reads == 1 {
+                    json!({"user_id":0,"user_name":"","total_credit":0})
+                } else {
+                    json!({"user_id":123,"total_credit":10})
+                }))
+            },
+            |_| Ok(auth_output(true, json!({"access_token":"must-not-escape"}), "")),
+        ).unwrap();
+        assert_eq!(reads, 2);
+        assert_eq!(result["ready"], true);
+        assert_eq!(result["credits"]["total"], 10.);
+        assert!(!result.to_string().contains("must-not-escape"));
     }
     #[test]
     fn oauth_material_is_strictly_allowlisted() {

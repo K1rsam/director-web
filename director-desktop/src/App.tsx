@@ -48,6 +48,13 @@ export default function App() {
     try { const list = await request<ProjectSummary[]>({ action: 'projects.list' }); if (sequence === projectListSequence.current) setProjects(list); } catch (reason) { if (desktop && sequence === projectListSequence.current) setError(messageOf(reason)); } finally { if (sequence === projectListSequence.current) setLoading(false); }
   }, []);
   useEffect(() => { void listProjects(); }, [listProjects]);
+  useEffect(() => {
+    if (page !== 'projects') return;
+    const refreshLibrary = () => { if (!document.hidden && !busyRef.current) void listProjects(); };
+    window.addEventListener('focus', refreshLibrary);
+    document.addEventListener('visibilitychange', refreshLibrary);
+    return () => { window.removeEventListener('focus', refreshLibrary); document.removeEventListener('visibilitychange', refreshLibrary); };
+  }, [page, listProjects]);
 
   const loadProject = useCallback(async (project: ProjectSummary, target: Page = 'foundation') => {
     if (project.archivedAt || busyRef.current && !['projects.create', 'project.import'].includes(busyRef.current)) return;
@@ -126,7 +133,7 @@ export default function App() {
   const selectedStage = stages.find(stage => stage.id === page), activeJobs = workspace?.jobs.filter(jobActive).length || 0;
   const pageTitle = selectedStage?.title || ({ projects: '所有项目', jobs: '任务记录', settings: '渠道与执行设置' } as Partial<Record<Page, string>>)[page];
   const missingCatalogKeys = new Set(workspace ? missingCatalogs(workspace).map(item => item.key) : []), catalogNotices = catalogStates.filter(item => missingCatalogKeys.has(item.key) && item.status !== 'ready');
-  function navigate(target: Page) { setPage(target); setMobileNav(false); setError(''); setNotice(''); }
+  function navigate(target: Page) { setPage(target); setMobileNav(false); setError(''); setNotice(''); if (target === 'projects') void listProjects(); }
 
   return <div className="app-shell">
     <aside className={`sidebar ${mobileNav ? 'open' : ''}`}>
