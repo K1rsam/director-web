@@ -2561,6 +2561,14 @@ impl Engine {
             // or accepted checkpoints. Current requests still load current rules.
             store.event(id, "foundation_transport_rule_migration", &audit)?;
         }
+        if s(request, "action") == "workflows.resume" {
+            store.event(id, "text_workflow_resume_requested", &json!({
+                "version":"text-workflow-resume/v1",
+                "snapshotSha256":pipeline::digest(&snapshot.to_string()),
+                "previousStatus":job["status"],
+                "maximumQuotaAttempts":1
+            }))?;
+        }
         self.execute_production(store, id, snapshot)
     }
     fn execute_production(

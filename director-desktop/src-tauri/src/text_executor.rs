@@ -6669,17 +6669,60 @@ impl SavedTextExecutor {
     }
 
     fn stopped_transport_retry_proof(&self, request: &TextRequest) -> Result<Option<Value>> {
+        Ok(self.transport_retry_proofs(request)?.last().cloned())
+    }
+
+    fn transport_retry_proofs(&self, request: &TextRequest) -> Result<Vec<Value>> {
         if request.input.get("textTransportRetry").is_some()
             || s(&self.settings, "textProvider") != "codex"
             || crate::text_cli::configured_managed_path(&self.settings).is_none()
             || !matches!(request.stage.as_str(), "foundation:F2" | "foundation:Q1" | "storyboardPlan" | "storyboardCreate" | "storyboardFinish")
             || is_bounded_finisher_repair(request) || is_carrier_repair(request) {
-            return Ok(None);
+            return Ok(Vec::new());
         }
-        let Some(run) = self.workflow_id.as_deref() else { return Ok(None); };
+        let Some(run) = self.workflow_id.as_deref() else { return Ok(Vec::new()); };
         // This also proves the original full request, parent settings, native
         // identity and canonical hash. Source/rule/schema drift fails closed.
         let snapshot = self.request_snapshot(request)?;
+        let Some(first) = self.stopped_transport_attempt_proof(request, &snapshot)? else {
+            return Ok(Vec::new());
+        };
+        let mut proofs = vec![first];
+        // Follow saved attempts only. A further quota retry needs a distinct
+        // explicit resume after the server rejection and process shutdown.
+        // Timeouts, unknown results and domain rejections keep the once-only cap.
+        for _ in 0..256 {
+            let mut prior = request.clone();
+            prior.input["textTransportRetry"] = proofs.last().unwrap().clone();
+            let mut prior_snapshot = snapshot.clone();
+            prior_snapshot["input"]["textTransportRetry"] = prior.input["textTransportRetry"].clone();
+            let Some(mut next) = self.stopped_transport_attempt_proof(&prior, &prior_snapshot)? else { break; };
+            if next["quotaRejection"]["failureKind"] != "USAGE_LIMIT" { break; }
+            let c = self.store.conn()?;
+            let stopped_at = next["stoppedHeartbeatId"].as_i64().unwrap_or(i64::MAX)
+                .max(next["quotaRejection"]["eventId"].as_i64().unwrap_or(i64::MAX));
+            let resume: Option<(i64, String, String)> = c.query_row(
+                "SELECT e.id,e.data,parent.snapshot FROM events e JOIN jobs parent ON parent.id=e.job_id WHERE e.job_id=?1 AND e.type='text_workflow_resume_requested' AND e.id>?2 ORDER BY e.id ASC LIMIT 1",
+                params![run,stopped_at], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+            ).optional().map_err(|e|e.to_string())?;
+            let Some((resume_id, text, parent)) = resume else { break; };
+            let resume: Value = serde_json::from_str(&text).map_err(|e|e.to_string())?;
+            if resume_id <= next["stoppedHeartbeatId"].as_i64().unwrap_or(i64::MAX)
+                || resume_id <= next["quotaRejection"]["eventId"].as_i64().unwrap_or(i64::MAX)
+                || resume["version"] != "text-workflow-resume/v1"
+                || resume["snapshotSha256"] != crate::pipeline::digest(&parent)
+                || !matches!(s(&resume,"previousStatus"), "failed" | "interrupted" | "waiting_decision" | "partially_blocked" | "blocked") {
+                break;
+            }
+            next["quotaResume"] = json!({"eventId":resume_id,"eventSha256":crate::pipeline::digest(&text),"maximumAttempts":1});
+            next["priorFailures"] = json!(proofs.iter().map(|proof|json!({"nodeKey":proof["originNodeKey"],"requestHash":proof["originRequestHash"],"jobId":proof["originJobId"]})).collect::<Vec<_>>());
+            proofs.push(next);
+        }
+        Ok(proofs)
+    }
+
+    fn stopped_transport_attempt_proof(&self, request: &TextRequest, snapshot: &Value) -> Result<Option<Value>> {
+        let Some(run) = self.workflow_id.as_deref() else { return Ok(None); };
         let hash = crate::pipeline::digest(&snapshot.to_string());
         let key = step_key(request);
         let c = self.store.conn()?;
@@ -6717,7 +6760,7 @@ impl SavedTextExecutor {
         let Some(provided) = request.input.get("textTransportRetry") else { return Ok(()); };
         let mut base = request.clone();
         base.input.as_object_mut().ok_or("文本输入不是对象")?.remove("textTransportRetry");
-        if self.stopped_transport_retry_proof(&base)?.as_ref() != Some(provided) {
+        if !self.transport_retry_proofs(&base)?.iter().any(|proof|proof == provided) {
             return Err("TEXT_TRANSPORT_RETRY_UNBOUND：未证明原文本任务已退出且没有收到结果；原任务和预算保留，未重发".into());
         }
         Ok(())
@@ -7837,6 +7880,84 @@ mod managed_installation_resume_tests {
         fixture
     }
 
+    fn save_quota_failure(executor: &SavedTextExecutor, request: &TextRequest, job: &str, snapshot: &Value) {
+        let message="You’ve hit your usage limit. Try again later.";
+        let error=format!("Codex执行失败: {message}");
+        executor.store.update_job(job,"failed",&json!({"error":error})).unwrap();
+        executor.store.checkpoint(executor.workflow_id.as_deref().unwrap(),&step_key(request),&request.stage,&crate::pipeline::digest(&snapshot.to_string()),"failed",Some(job),None,Some(&error)).unwrap();
+        executor.store.event(job,"codex_event",&json!({"type":"turn.failed","error":{"message":message}})).unwrap();
+        executor.store.event(job,"codex_heartbeat",&json!({"format":"codex-runtime-heartbeat/v1","phase":"failed","processAlive":false,"pid":42,"stdinBytes":100,"stdinTotalBytes":100,"resultBytes":0})).unwrap();
+    }
+
+    fn save_explicit_text_resume(executor: &SavedTextExecutor) {
+        let run=executor.workflow_id.as_deref().unwrap();
+        let snapshot=executor.store.job(run).unwrap()["snapshot"].clone();
+        executor.store.event(run,"text_workflow_resume_requested",&json!({"version":"text-workflow-resume/v1","snapshotSha256":crate::pipeline::digest(&snapshot.to_string()),"previousStatus":"partially_blocked","maximumQuotaAttempts":1})).unwrap();
+    }
+
+    #[tokio::test]
+    async fn repeated_quota_rejections_allow_one_attempt_per_explicit_resume_and_reuse_accepted_output() {
+        let (_dir,executor,request,origin,frozen,raw)=stopped_text_fixture();
+        save_quota_failure(&executor,&request,&origin,&frozen);
+        let first=executor.prepare_transport_request(request.clone()).await.unwrap();
+        let mut first_snapshot=frozen.clone(); first_snapshot["input"]["textTransportRetry"]=first.input["textTransportRetry"].clone();
+        let first_job=executor.store.add_job("text","quota rejected retry","codex","local",&first_snapshot,"failed").unwrap();
+        save_quota_failure(&executor,&first,&first_job,&first_snapshot);
+        let held=executor.prepare_transport_request(request.clone()).await.unwrap();
+        assert_eq!(step_key(&held),step_key(&first),"quota alone cannot authorize another execution");
+        save_explicit_text_resume(&executor);
+        let resumed=executor.prepare_transport_request(request.clone()).await.unwrap();
+        assert_ne!(step_key(&resumed),step_key(&held));
+        assert_eq!(resumed.input["textTransportRetry"]["originJobId"],first_job);
+        assert_eq!(cli_prompt(&request,&request.input),cli_prompt(&resumed,&resumed.input));
+        let mut resumed_snapshot=frozen.clone();resumed_snapshot["input"]["textTransportRetry"]=resumed.input["textTransportRetry"].clone();
+        let resumed_job=executor.store.add_job("text","quota rejected after resume","codex","local",&resumed_snapshot,"failed").unwrap();
+        save_quota_failure(&executor,&resumed,&resumed_job,&resumed_snapshot);
+        let held=executor.prepare_transport_request(request.clone()).await.unwrap();
+        assert_eq!(step_key(&held),step_key(&resumed));
+        assert!(executor.check_managed_node_resume_boundary(&held).unwrap_err().contains("TEXT_TRANSPORT_RETRY_EXHAUSTED"));
+        save_explicit_text_resume(&executor);
+        let next=executor.prepare_transport_request(request.clone()).await.unwrap();
+        assert_ne!(step_key(&next),step_key(&resumed));
+        let mut next_snapshot=frozen.clone();next_snapshot["input"]["textTransportRetry"]=next.input["textTransportRetry"].clone();
+        let next_job=executor.store.add_job("text","accepted after quota restore","codex","local",&next_snapshot,"completed").unwrap();
+        let hash=crate::pipeline::digest(&next_snapshot.to_string());
+        executor.store.update_job(&next_job,"completed",&json!({"result":raw,"receipt":{"validation":"accepted","contract":"desktop-runner/v1"}})).unwrap();
+        executor.store.event(&next_job,"text_received_raw",&json!({"requestHash":hash,"value":raw})).unwrap();
+        executor.store.checkpoint(executor.workflow_id.as_deref().unwrap(),&step_key(&next),&next.stage,&hash,"accepted",Some(&next_job),Some(&raw),None).unwrap();
+        save_explicit_text_resume(&executor);
+        let cached=executor.prepare_transport_request(request).await.unwrap();
+        assert_eq!(step_key(&cached),step_key(&next),"a later resume must reuse accepted quota recovery");
+        assert_eq!(executor.execute(cached).await.unwrap(),raw,"zero CLI execution for accepted output");
+        let progress=executor.store.workflow_progress().unwrap();
+        for key in [step_key(&first),step_key(&resumed)] {
+            let node=progress[0]["nodes"].as_array().unwrap().iter().find(|node|node["id"]==key).unwrap();
+            assert_eq!(node["status"],"failed");assert_eq!(node["resolution"]["kind"],"text-transport-recovered");
+        }
+        assert_eq!(executor.store.conn().unwrap().query_row("SELECT count(*) FROM jobs WHERE kind='text'",[],|r|r.get::<_,u64>(0)).unwrap(),4);
+    }
+
+    #[tokio::test]
+    async fn explicit_quota_resume_does_not_retry_timeout_received_output_or_forged_resume() {
+        for mutation in ["timeout","received","forged"] {
+            let (_dir,executor,request,origin,frozen,raw)=stopped_text_fixture();
+            save_quota_failure(&executor,&request,&origin,&frozen);
+            let first=executor.prepare_transport_request(request.clone()).await.unwrap();
+            let mut snapshot=frozen.clone(); snapshot["input"]["textTransportRetry"]=first.input["textTransportRetry"].clone();
+            let job=executor.store.add_job("text","held quota retry","codex","local",&snapshot,"failed").unwrap();
+            save_quota_failure(&executor,&first,&job,&snapshot);
+            if mutation=="timeout" {
+                let error="文本任务完整运行超时；保留已有事件与结果，不自动重跑";
+                executor.store.update_job(&job,"failed",&json!({"error":error})).unwrap();
+                executor.store.checkpoint(executor.workflow_id.as_deref().unwrap(),&step_key(&first),&first.stage,&crate::pipeline::digest(&snapshot.to_string()),"failed",Some(&job),None,Some(error)).unwrap();
+            }
+            if mutation=="received" {executor.store.event(&job,"text_received_raw",&json!({"value":raw})).unwrap();}
+            save_explicit_text_resume(&executor);
+            if mutation=="forged" {executor.store.conn().unwrap().execute("UPDATE events SET data=json_set(data,'$.snapshotSha256','wrong') WHERE type='text_workflow_resume_requested'",[]).unwrap();}
+            assert_eq!(step_key(&executor.prepare_transport_request(request).await.unwrap()),step_key(&first),"{mutation}");
+        }
+    }
+
     #[tokio::test]
     async fn quota_recovery_requires_bound_server_rejection_and_no_received_output() {
         for mutation in ["valid","no_event","different_event","received","other_error"] {
@@ -7922,6 +8043,36 @@ mod managed_installation_resume_tests {
         assert!(executor.execute(resumed).await.unwrap_err().contains("TEXT_TRANSPORT_RETRY_EXHAUSTED"));
         assert_eq!(executor.store.job(&job).unwrap()["status"],"failed");
         assert_eq!(executor.store.conn().unwrap().query_row("SELECT count(*) FROM jobs WHERE kind='text'",[],|r|r.get::<_,u64>(0)).unwrap(),2);
+    }
+
+    #[tokio::test]
+    #[ignore = "Explicit private stopped-task snapshot; never opens production or executes CLI"]
+    async fn actual_repeated_quota_resume_preserves_inputs_and_executes_no_cli() {
+        let root=PathBuf::from(std::env::var("DIRECTOR_QUOTA_REGRESSION_ROOT").expect("private copy required")).canonicalize().unwrap();
+        let allowed=PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("reports/desktop-real-e2e-20261005").canonicalize().unwrap();
+        assert!(root.starts_with(&allowed) && root.file_name().unwrap().to_string_lossy().starts_with("quota-regression-fish-"));
+        let store=Store::open(root).unwrap();
+        let original="90861d89-b273-4f3b-9241-996db740293f";
+        let retry_job="6d73df45-b7d8-4e4b-a5cd-75dd1e833a58";
+        let (run,snapshot,parent):(String,String,String)=store.conn().unwrap().query_row("SELECT w.workflow_id,j.snapshot,parent.snapshot FROM jobs j JOIN workflow_steps w ON w.text_job_id=j.id JOIN jobs parent ON parent.id=w.workflow_id WHERE j.id=?1 AND j.state='failed' AND w.state='failed'",[original],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+        let parent:Value=serde_json::from_str(&parent).unwrap();
+        let request:TextRequest=serde_json::from_str(&snapshot).unwrap();
+        let executor=SavedTextExecutor{store:store.clone(),settings:parent["input"]["settings"].clone(),workflow_id:Some(run)};
+        let before=store.job(original).unwrap();let retry_before=store.job(retry_job).unwrap();
+        let count:i64=store.conn().unwrap().query_row("SELECT count(*) FROM jobs",[],|r|r.get(0)).unwrap();
+        let held=executor.prepare_transport_request(request.clone()).await.unwrap();
+        assert!(executor.check_managed_node_resume_boundary(&held).unwrap_err().contains("TEXT_TRANSPORT_RETRY_EXHAUSTED"));
+        save_explicit_text_resume(&executor);
+        let resumed=executor.prepare_transport_request(request.clone()).await.unwrap();
+        assert_eq!(resumed.input["textTransportRetry"]["originJobId"],retry_job);
+        assert!(executor.check_managed_node_resume_boundary(&resumed).is_ok());
+        let old=crate::pipeline::compile_storyboard_dispatch_transport(&request).unwrap().unwrap();
+        let new=crate::pipeline::compile_storyboard_dispatch_transport(&resumed).unwrap().unwrap();
+        assert_eq!(cli_prompt(&request,&old.input),cli_prompt(&resumed,&new.input));
+        assert_eq!(strict_schema(&old.schema),strict_schema(&new.schema));
+        assert_eq!(store.job(original).unwrap(),before);assert_eq!(store.job(retry_job).unwrap(),retry_before);
+        assert_eq!(store.conn().unwrap().query_row("SELECT count(*) FROM jobs",[],|r|r.get::<_,i64>(0)).unwrap(),count);
+        println!("{{\"realDoubleQuotaFailure\":true,\"explicitResumeAccepted\":true,\"modelInputsUnchanged\":true,\"modelExecutions\":0,\"productionWrites\":0}}");
     }
 
     #[tokio::test]

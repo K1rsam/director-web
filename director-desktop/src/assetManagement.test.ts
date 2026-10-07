@@ -1,12 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assetDeletionReady, assetEditPayload, assetScopeProblems, deletedAssetsFrom, initialAssetEdit, toggleAssetScope } from './assetManagement.ts';
+import { assetDeletionReady, assetEditPayload, assetMatchesEpisode, assetScopeProblems, deletedAssetsFrom, initialAssetEdit, toggleAssetScope } from './assetManagement.ts';
 import type { Asset, SourceRef } from './types.ts';
 import type { AssetUsage } from './assetManagement.ts';
 
 const sourceRefs: SourceRef[] = ['row-1', { start: 4, end: 12, sourceVersion: 3, speaker: '苏远' }];
 const asset: Asset = { id: 'test-asset', name: '林夏', kind: 'CH', baseAssetId: 'permanent-base', variantId: 'permanent-variant', version: 7, prompt: '图片提示词', sourceRefs, adoptedMediaId: 'image-1', candidates: ['image-old'], applicability: { episodeIds: ['episode-1'], sceneIds: ['scene-1'] } };
 const scenes = [{ id: 'scene-1', episodeId: 'episode-1', title: '校园' }, { id: 'scene-2', episodeId: 'episode-1', title: '家中' }, { id: 'scene-3', episodeId: 'episode-2', title: '操场' }];
+
+test('图片目录按真实集场筛选，场景限定与集数限定取交集，不把未知范围当全剧通用', () => {
+  const source = { episodes: [{ id: 'episode-1' }, { id: 'episode-2' }], scenes };
+  assert.equal(assetMatchesEpisode(asset, 'episode-1', source), true);
+  assert.equal(assetMatchesEpisode(asset, 'episode-2', source), false);
+  const global = { ...asset, applicability: {} };
+  assert.equal(assetMatchesEpisode(global, 'episode-2', source), true);
+  assert.equal(assetMatchesEpisode(global, 'unknown', source), false);
+  assert.equal(assetMatchesEpisode({ ...global, applicability: { scenes: ['scene-3'] } }, 'episode-1', source), false);
+  assert.equal(assetMatchesEpisode({ ...global, applicability: { episodes: ['episode-1'], scenes: ['scene-3'] } }, 'episode-1', source), false);
+  assert.equal(assetMatchesEpisode({ ...global, scope: { kind: 'SCENES', scenes: [{ episodeId: 'episode-2', sceneId: 'scene-3' }] } }, 'episode-2', source), true);
+  assert.equal(assetMatchesEpisode({ ...global, scope: { kind: 'SCENES', scenes: [{ episodeId: 'episode-1', sceneId: 'scene-3' }] } }, 'episode-1', source), false);
+  assert.equal(assetMatchesEpisode({ ...global, scope: { kind: 'UNRESOLVED' } }, 'episode-1', source), false);
+  assert.equal(assetMatchesEpisode({ ...global, scope: { kind: 'UNRESOLVED' } }, 'all', source), true);
+});
 
 test('编辑名称分类范围保留固定绑定身份、当前图、历史图和结构化原文引用', () => {
   const values = initialAssetEdit(asset);

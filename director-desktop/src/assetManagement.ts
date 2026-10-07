@@ -36,6 +36,20 @@ export function initialAssetEdit(asset: Asset): AssetEditValues {
   };
 }
 
+/** Library filtering narrows the visible list; Rust still validates bindings. */
+export function assetMatchesEpisode(asset: Asset, episodeId: string, source?: Source | null): boolean {
+  if (episodeId === 'all') return true;
+  if (!source?.episodes?.some(episode => episode.id === episodeId)) return false;
+  const episodes = asset.applicability?.episodes || asset.applicability?.episodeIds || [];
+  const sceneIds = asset.applicability?.scenes || asset.applicability?.sceneIds || [];
+  if (episodes.length && !episodes.includes(episodeId)) return false;
+  if (sceneIds.length && !source.scenes?.some(scene => scene.episodeId === episodeId && sceneIds.includes(scene.id))) return false;
+  const scope = asset.scope && typeof asset.scope === 'object' ? asset.scope as { kind?: string; scenes?: { episodeId?: string; sceneId?: string }[] } : undefined;
+  if (scope?.kind === 'UNRESOLVED') return false;
+  if (scope?.kind === 'SCENES') return !!scope.scenes?.some(place => place.episodeId === episodeId && source.scenes?.some(scene => scene.id === place.sceneId && scene.episodeId === episodeId));
+  return true;
+}
+
 /** Editing labels and scope must never change the permanent binding identity. */
 export function assetScopeProblems(values: AssetEditValues, scenes: Source['scenes'] = []): string[] {
   const problems: string[] = [];

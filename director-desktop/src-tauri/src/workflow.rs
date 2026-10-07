@@ -367,6 +367,11 @@ fn project_transport_resolutions(store:&Store,c:&Connection,run:&str,nodes:&mut[
         if let Some(origin)=nodes.iter_mut().find(|node|node["status"]=="failed" && node["id"]==proof["originNodeKey"] && node["requestHash"]==proof["originRequestHash"]) {
             origin["resolution"]=json!({"version":"workflow-step-resolution/v1","kind":"text-transport-recovered","workflowId":run,"originNodeId":origin["id"],"originRequestHash":origin["requestHash"],"resolverNodeId":resolver.node,"resolverRequestHash":resolver.hash,"verified":true});
         }
+        for prior in proof["priorFailures"].as_array().into_iter().flatten() {
+            if let Some(origin)=nodes.iter_mut().find(|node|node["status"]=="failed" && node["id"]==prior["nodeKey"] && node["requestHash"]==prior["requestHash"]) {
+                origin["resolution"]=json!({"version":"workflow-step-resolution/v1","kind":"text-transport-recovered","workflowId":run,"originNodeId":origin["id"],"originRequestHash":origin["requestHash"],"resolverNodeId":resolver.node,"resolverRequestHash":resolver.hash,"verified":true});
+            }
+        }
     }
     Ok(())
 }
