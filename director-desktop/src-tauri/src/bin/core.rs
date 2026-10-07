@@ -6,7 +6,17 @@ use std::{
 };
 fn main() {
     let mut args = std::env::args().skip(1);
-    let home = PathBuf::from(args.next().unwrap_or_else(|| ".local".into()));
+    let first = args.next().unwrap_or_else(|| ".local".into());
+    if first == "--recover-project-library" {
+        let result = args.next().ok_or_else(|| "缺少项目库绝对路径".to_owned()).and_then(|path| {
+            let home = PathBuf::from(path);
+            if !home.is_absolute() { return Err("项目库路径必须为绝对路径".into()); }
+            director_core::project_library::recover_virtualized(&home)
+        });
+        match result { Ok(value) => println!("{value}"), Err(error) => { eprintln!("{error}"); std::process::exit(1); } }
+        return;
+    }
+    let home = PathBuf::from(first);
     let result = (|| {
         let engine = Engine::new(home)?;
         let mut body = String::new();

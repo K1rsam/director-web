@@ -115,6 +115,12 @@ fn startup_verification_report(
     report["developmentServerAtFinish"] = serde_json::json!(development_server_at_finish);
     report["standalone"] = serde_json::json!(standalone);
     report["platform"] = serde_json::json!(std::env::consts::OS);
+    let unvirtualized = !director_core::windows_runtime::is_packaged()?;
+    report["unvirtualizedRuntime"] = serde_json::json!(unvirtualized);
+    if !unvirtualized {
+        report["ok"] = serde_json::json!(false);
+        report["error"] = serde_json::json!("Desktop startup still inherited a packaged host filesystem");
+    }
     report["home"] = serde_json::json!(v.home);
     let success = report["ok"] == true;
     director_core::store::atomic_json(&v.output, &report)?;
@@ -327,6 +333,9 @@ async fn desktop_request(
     result
 }
 fn main() {
+    if director_core::windows_runtime::ensure_unvirtualized().expect("无法切换到共享桌面项目环境") {
+        return;
+    }
     let args: Vec<_> = std::env::args_os().collect();
     let verification = args.iter().position(|a| a == "--verify-startup").map(|i| {
         let output = std::path::PathBuf::from(
@@ -349,6 +358,9 @@ fn main() {
         .manage(verification)
         .setup(move |app| {
             let home = match &setup_verification { Some(v) => v.home.clone(), None => app.path().app_data_dir()? };
+            if setup_verification.is_none() {
+                director_core::project_library::recover_virtualized(&home).map_err(std::io::Error::other)?;
+            }
             // Diagnostic projects have no channel account configured. Disable live-account
             // lookup so automatic Stage 4 preflight fails locally without touching a user session.
             let engine = if setup_verification.is_some() {

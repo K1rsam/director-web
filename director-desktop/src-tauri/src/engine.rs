@@ -323,6 +323,7 @@ impl Engine {
     }
     fn register(&self, store: &Store) -> Result<()> {
         let _guard = self.registry_mutex.lock().map_err(|e| e.to_string())?;
+        let _file_lease = crate::project_library::lock(&self.home)?;
         let mut list = self.registry()?;
         let rows = list.as_array_mut().ok_or("项目索引损坏")?;
         let mut p = store.project()?;
@@ -385,6 +386,7 @@ impl Engine {
             .as_u64()
             .ok_or("缺少项目当前版本，请刷新后再操作")?;
         let _registry = self.registry_mutex.lock().map_err(|e| e.to_string())?;
+        let _file_lease = crate::project_library::lock(&self.home)?;
         let mut registry = self.registry()?;
         let rows = registry.as_array_mut().ok_or("项目索引损坏")?;
         let index = rows
