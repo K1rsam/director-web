@@ -1558,6 +1558,53 @@ async fn continue_cached_production_choice(
     Ok(Some(updated))
 }
 
+/// Recover only the source binding dropped by the old typed persistence step.
+/// The original adopted packet must still verify against current source, rules
+/// and asset identities, and every other fact field must match exactly.
+async fn restore_persisted_fact_source_bindings(
+    input: &Value,
+    source: &LockedSource,
+    registry: &[Value],
+    executor: &dyn TextExecutor,
+    facts: &mut [Value],
+) -> Result<(), String> {
+    if input.pointer("/foundation/sourceSha256") != Some(&json!(source.sha256))
+        || !facts.iter().any(|fact| fact.get("sourceSha256").is_none()) {
+        return Ok(());
+    }
+    let rule = rule_snapshot("asset-visual-facts-extractor")?["sha256"]
+        .as_str().ok_or("视觉事实规则缺少SHA")?.to_owned();
+    for cache in input.pointer("/foundation/visualFactBatches")
+        .and_then(Value::as_array).into_iter().flatten() {
+        let previous = if let Some(cards) = cache.get("identityCards")
+            .or_else(|| cache.pointer("/repairProvenance/identityCards")).and_then(Value::as_array) {
+            Some(cards.clone())
+        } else {
+            executor.visual_fact_packet_identities(&source.sha256, text(cache, "inputFingerprint")).await?
+        };
+        let Some(previous) = previous else { continue; };
+        let Ok(identities) = cached_identity_subset(input, registry, &previous, source, cache) else { continue; };
+        let Ok(rows) = cached_rows(source, cache) else { continue; };
+        let ids: Vec<_> = rows.iter().map(|row| row.id.clone()).collect();
+        let Ok(bound) = validate_cached_packet(cache, source, &identities, &ids, &rule) else { continue; };
+        for fact in facts.iter_mut().filter(|fact| fact.get("sourceSha256").is_none()) {
+            let mut persisted = fact.clone();
+            if let Some(object) = persisted.as_object_mut() { object.remove("quotes"); }
+            if bound.iter().any(|original| {
+                let mut candidate = original.clone();
+                if let Some(object) = candidate.as_object_mut() {
+                    object.remove("quotes");
+                    object.remove("sourceSha256");
+                }
+                candidate == persisted
+            }) {
+                fact["sourceSha256"] = json!(source.sha256);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub async fn run_asset_visual_facts(
     input: &Value,
     executor: &dyn TextExecutor,
@@ -1579,6 +1626,7 @@ pub async fn run_asset_visual_facts(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    restore_persisted_fact_source_bindings(input, &source, registry, executor, &mut facts).await?;
     let mut blocked = Vec::new();
     let mut missing = Vec::new();
     for asset in assets {
@@ -2393,6 +2441,93 @@ mod tests {
         let source = prepare_source("第一集\n场景：门口\n△小王和小李黑发出现。\n").unwrap();
         let row = source.rows[2].id.clone();
         json!({"source":source,"assets":[{"id":"王:base","baseAssetId":"王","variantId":"base","name":"王","sourceRefs":[row],"prompt":"旧历史不应发给提取岗"},{"id":"李:base","baseAssetId":"李","variantId":"base","name":"李","sourceRefs":[row]}],"foundation":{"sourceSha256":source.sha256,"facts":[]}})
+    }
+
+    #[tokio::test]
+    async fn asset_fact_source_binding_survives_publish_round_trip_and_rejects_foreign_sha() {
+        let input = basis();
+        let output = run_asset_visual_facts(&input, &Extractor::new("valid"), "offline", "medium").await.unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(directory.path().to_path_buf()).unwrap();
+        store.create("offline facts round trip", "fixture").unwrap();
+        let source = store.save_source(input["source"].clone()).unwrap();
+        let mut published = output.clone();
+        published["assets"] = json!([]);
+        store.publish_asset_design(source["version"].as_i64().unwrap(), 0, &published).unwrap();
+        let saved = store.foundation().unwrap();
+        for (actual, expected) in saved["facts"].as_array().unwrap().iter().zip(output["facts"].as_array().unwrap()) {
+            assert_eq!(actual["sourceSha256"], expected["sourceSha256"]);
+            let mut actual = actual.clone();
+            actual.as_object_mut().unwrap().remove("quotes");
+            assert_eq!(actual, *expected);
+        }
+        let version = saved["version"].as_i64().unwrap();
+        published["facts"][0]["sourceSha256"] = json!("foreign-source");
+        assert!(store.publish_asset_design(source["version"].as_i64().unwrap(), version, &published).unwrap_err().contains("源摘要"));
+        assert_eq!(store.foundation().unwrap(), saved);
+    }
+
+    #[tokio::test]
+    async fn persisted_fact_source_binding_restores_only_exact_validated_cache_facts() {
+        let mut input = basis();
+        let output = run_asset_visual_facts(&input, &Extractor::new("valid"), "offline", "medium").await.unwrap();
+        input["foundation"]["facts"] = output["facts"].clone();
+        input["foundation"]["visualFactBatches"] = output["visualFactBatches"].clone();
+        let source: LockedSource = serde_json::from_value(input["source"].clone()).unwrap();
+        for change in ["none", "missingCache", "rule", "packet", "cacheSource", "factValue", "foundationSource", "explicitWrongSha"] {
+            let mut current = input.clone();
+            let mut facts = output["facts"].as_array().unwrap().clone();
+            for fact in &mut facts { fact.as_object_mut().unwrap().remove("sourceSha256"); }
+            match change {
+                "none" => {}
+                "missingCache" => current["foundation"]["visualFactBatches"] = json!([]),
+                "rule" => current["foundation"]["visualFactBatches"][0]["ruleSha256"] = json!("changed"),
+                "packet" => current["foundation"]["visualFactBatches"][0]["inputFingerprint"] = json!("changed"),
+                "cacheSource" => current["foundation"]["visualFactBatches"][0]["sourceSha256"] = json!("changed"),
+                "factValue" => facts[0]["value"] = json!("changed"),
+                "foundationSource" => current["foundation"]["sourceSha256"] = json!("changed"),
+                "explicitWrongSha" => facts[0]["sourceSha256"] = json!("changed"),
+                _ => unreachable!(),
+            }
+            let before = facts.clone();
+            restore_persisted_fact_source_bindings(&current, &source, current["assets"].as_array().unwrap(), &Never, &mut facts).await.unwrap();
+            if change == "none" { assert_eq!(facts, *output["facts"].as_array().unwrap()); }
+            else { assert_eq!(facts, before, "{change}: cannot invent an old source binding"); }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DIRECTOR_ASSET_PROMPT_SNAPSHOT_ROOT; reads the provided incident snapshot with SQLite read-only flags, no CLI"]
+    async fn actual_15_asset_design_packages_restore_persisted_fact_source_bindings_without_cli() {
+        let root = std::path::PathBuf::from(std::env::var_os("DIRECTOR_ASSET_PROMPT_SNAPSHOT_ROOT").expect("incident snapshot required"));
+        let conn = rusqlite::Connection::open_with_flags(root.join("project.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let source: Value = serde_json::from_str(&conn.query_row("SELECT data FROM sources ORDER BY version DESC LIMIT 1", [], |r| r.get::<_,String>(0)).unwrap()).unwrap();
+        let foundation: Value = serde_json::from_str(&conn.query_row("SELECT data FROM foundations ORDER BY version DESC LIMIT 1", [], |r| r.get::<_,String>(0)).unwrap()).unwrap();
+        let mut q = conn.prepare("SELECT data FROM assets ORDER BY id").unwrap();
+        let assets: Vec<Value> = q.query_map([], |r|r.get::<_,String>(0)).unwrap().map(|r|serde_json::from_str(&r.unwrap()).unwrap()).collect();
+        drop(q);
+        let input = json!({"source":source,"foundation":foundation,"assets":assets});
+        let source: LockedSource = serde_json::from_value(input["source"].clone()).unwrap();
+        validate_source(&source).unwrap();
+        let mut restored = input["foundation"]["facts"].as_array().unwrap().clone();
+        restore_persisted_fact_source_bindings(&input, &source, &assets, &Never, &mut restored).await.unwrap();
+        let mut q = conn.prepare("SELECT snapshot FROM jobs WHERE kind='text' AND json_extract(snapshot,'$.stage')='assetDesign' AND json_extract(snapshot,'$.executorIdentity.version') IS NULL").unwrap();
+        let snapshots: Vec<Value> = q.query_map([], |r|r.get::<_,String>(0)).unwrap().map(|r|serde_json::from_str(&r.unwrap()).unwrap()).collect();
+        assert_eq!(snapshots.len(), 23);
+        let mut affected = 0;
+        let mut checked = 0;
+        for snapshot in snapshots {
+            let old = snapshot["input"]["facts"].as_array().unwrap();
+            if !old.is_empty() { affected += 1; }
+            for fact in old {
+                let mut actual = restored.iter().find(|current|current["id"]==fact["id"]).unwrap().clone();
+                actual.as_object_mut().unwrap().remove("quotes");
+                assert_eq!(actual, *fact, "only the original validated source binding may be restored");
+                checked += 1;
+            }
+        }
+        assert_eq!((affected, checked), (15,36));
+        eprintln!("15 asset-design packages / 36 original facts matched after proven source binding restoration; zero CLI executions and database writes");
     }
     fn episode_subset_basis() -> Value {
         let source = prepare_source(

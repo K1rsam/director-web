@@ -5232,6 +5232,7 @@ impl TextExecutor for SavedTextExecutor {
             }
             if crate::text_cli::managed_codex_root()
                 .is_some_and(|root| crate::text_cli::managed_codex_path_at(&path, &root))
+                || (self.workflow_id.is_none() && request.stage == "assetDesign")
             {
                 snapshot["executorIdentity"] = inspected_cli_identity(&inspected)?;
                 hash = crate::pipeline::digest(&snapshot.to_string());
@@ -7251,6 +7252,9 @@ impl SavedTextExecutor {
         }
         value["executorIdentity"] = if s(&self.settings, "textProvider") == "api" {
             json!({"provider":"api","endpoint":s(&self.settings,"textEndpoint").trim_end_matches('/')})
+        } else if self.workflow_id.is_none() && request.stage == "assetDesign"
+            && s(&self.settings, "textCliVersion").starts_with("codex-cli ") {
+            json!({"provider":"codex","executable":executable(&self.settings)?.to_string_lossy(),"version":s(&self.settings,"textCliVersion")})
         } else {
             json!({"provider":"codex","executable":executable(&self.settings)?.to_string_lossy()})
         };
@@ -7265,11 +7269,42 @@ impl SavedTextExecutor {
         };
         object.remove("executorIdentity");
         body == *domain
-            && identity.as_object().is_some_and(|object| object.len() == 3)
             && identity["provider"] == "codex"
-            && identity["version"] == s(&self.settings, "textCliVersion")
-            && crate::text_cli::verified_native_path(Path::new(s(identity, "executable")))
-                .is_ok_and(|original| original == native)
+            && ((identity.as_object().is_some_and(|object| object.len() == 3)
+                && identity["version"] == s(&self.settings, "textCliVersion")
+                && crate::text_cli::verified_native_path(Path::new(s(identity, "executable")))
+                    .is_ok_and(|original| original == native))
+                || self.legacy_asset_identity_evidence(saved).ok().flatten().is_some())
+    }
+
+    /// Older npm-native requests omitted the inspected version. Recover only
+    /// through their unique, finished batch's frozen identity and source. Never
+    /// rewrite the original request/hash or infer its version from today's CLI.
+    fn legacy_asset_identity_evidence(&self, saved: &Value) -> Result<Option<Value>> {
+        if self.workflow_id.is_some() || saved["stage"] != "assetDesign"
+            || saved["skill"] != "asset-art-director"
+            || !saved["executorIdentity"].as_object().is_some_and(|o| o.len() == 2 && !o.contains_key("version"))
+            || saved["executorIdentity"]["provider"] != "codex" {
+            return Ok(None);
+        }
+        let conn = self.store.conn()?;
+        let mut query = conn.prepare("SELECT DISTINCT p.id,p.snapshot,p.result FROM jobs p JOIN jobs child ON child.kind='text' AND child.provider='codex' AND child.snapshot=?1 JOIN sources source ON source.version=json_extract(p.snapshot,'$.sourceVersion') WHERE p.kind='workflow' AND p.state='partially_blocked' AND json_extract(p.snapshot,'$.stage')='images.design' AND child.created_at>=p.created_at AND child.created_at<=p.updated_at AND source.sha256=?2 AND json_extract(p.result,'$.sourceSha256')=?2 AND EXISTS(SELECT 1 FROM json_each(p.result,'$.blocked') b WHERE json_extract(b.value,'$.assetId')=?3 AND json_extract(b.value,'$.variantId')=?4 AND json_extract(b.value,'$.reason') LIKE 'CODEX_STANDALONE_ATTEMPT_UNRESOLVED%')").map_err(|e|e.to_string())?;
+        let rows = query.query_map(params![saved.to_string(),s(&saved["input"],"sourceSha256"),s(&saved["input"]["asset"],"id"),s(&saved["input"]["asset"],"variantId")], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).map_err(|e|e.to_string())?.collect::<std::result::Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+        if rows.len()!=1 { return Ok(None); }
+        let (parent,snapshot,result)=&rows[0];
+        let batch: Value=serde_json::from_str(snapshot).map_err(|e|e.to_string())?;
+        let settings=&batch["settings"];
+        // Reading an old response executes neither CLI. Bind to the original
+        // batch, so automatic selection of a newer installation cannot block it.
+        let native=crate::text_cli::verified_native_path(Path::new(s(&saved["executorIdentity"],"executable")))?;
+        if settings["textProvider"]!="codex"
+            || !s(settings,"textCliVersion").starts_with("codex-cli ")
+            || settings["textModel"]!=saved["model"] || settings["reasoning"]!=saved["reasoning"]
+            || !crate::text_cli::verified_native_path(Path::new(s(settings,"textCliExecutable"))).is_ok_and(|p|p==native)
+            || !crate::text_cli::verified_native_path(&executable(settings)?).is_ok_and(|p|p==native) {
+            return Ok(None);
+        }
+        Ok(Some(json!({"policy":"asset-npm-identity-recovery/v1","workflowId":parent,"workflowSnapshotSha256":crate::pipeline::digest(snapshot),"workflowResultSha256":crate::pipeline::digest(result),"frozenCliVersion":settings["textCliVersion"],"originalIdentityUnchanged":true})))
     }
 
     /// Only an unresolved standalone asset design can use this recovery path.
@@ -7356,6 +7391,7 @@ impl SavedTextExecutor {
         value: &Value,
         reason: Option<&str>,
     ) -> Result<()> {
+        let identity_evidence = self.legacy_asset_identity_evidence(snapshot)?;
         let mut conn = self.store.conn()?;
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -7377,7 +7413,7 @@ impl SavedTextExecutor {
         if count != 1 {
             return Err("资产设计原接收任务CAS失败，原证据保留，未采用或重发".into());
         }
-        tx.execute("INSERT INTO events(job_id,type,data,created_at) VALUES(?1,'asset_design_received_validation',?2,?3)",params![job,json!({"requestHash":hash,"previousState":state,"previousError":error,"validation":if reason.is_some(){"rejected"}else{"accepted"},"newModelCalls":0,"originalRawSha256":crate::pipeline::digest(&raw.to_string()),"originalEvidencePreserved":true}).to_string(),timestamp]).map_err(|e|e.to_string())?;
+        tx.execute("INSERT INTO events(job_id,type,data,created_at) VALUES(?1,'asset_design_received_validation',?2,?3)",params![job,json!({"requestHash":hash,"previousState":state,"previousError":error,"validation":if reason.is_some(){"rejected"}else{"accepted"},"newModelCalls":0,"originalRawSha256":crate::pipeline::digest(&raw.to_string()),"originalEvidencePreserved":true,"identityRecovery":identity_evidence}).to_string(),timestamp]).map_err(|e|e.to_string())?;
         tx.execute("INSERT INTO metadata(key,value) VALUES('changed_at',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[timestamp]).map_err(|e|e.to_string())?;
         tx.commit().map_err(|e| e.to_string())
     }
@@ -7449,7 +7485,7 @@ impl SavedTextExecutor {
             let native = crate::text_cli::verified_native_path(&executable(&self.settings)?)?;
             let domain = self.request_domain_snapshot(request)?;
             let c = self.store.conn()?;
-            let mut query = c.prepare("SELECT snapshot FROM jobs WHERE kind='text' AND provider='codex' AND state IN ('received','interrupted','completed','rejected') AND json_extract(snapshot,'$.stage')=?1 AND json_extract(snapshot,'$.executorIdentity.version')=?2 ORDER BY created_at DESC,rowid DESC").map_err(|error|error.to_string())?;
+            let mut query = c.prepare("SELECT snapshot FROM jobs WHERE kind='text' AND provider='codex' AND state IN ('received','interrupted','completed','rejected') AND json_extract(snapshot,'$.stage')=?1 AND (json_extract(snapshot,'$.executorIdentity.version')=?2 OR (?1='assetDesign' AND json_extract(snapshot,'$.executorIdentity.version') IS NULL)) ORDER BY created_at DESC,rowid DESC").map_err(|error|error.to_string())?;
             let records = query
                 .query_map(
                     params![request.stage, s(&self.settings, "textCliVersion")],
@@ -9118,6 +9154,188 @@ mod standalone_asset_callback_tests {
                 .any(|entry| entry.unwrap().file_name() != job.as_str()),
             "no second run or native process result"
         );
+    }
+
+    fn npm_received_fixture(legacy: bool) -> (
+        tempfile::TempDir, SavedTextExecutor, TextRequest, String, Value, Value,
+    ) {
+        let (directory, mut executor, request, job, _, raw) = fixture();
+        let native = native_fixture(directory.path(), "npm/node_modules/@openai/codex/vendor/bin/codex.exe");
+        executor.settings["codexPath"] = json!(native);
+        executor.settings["textCliExecutable"] = json!(native);
+        executor.settings["textModel"] = json!(request.model);
+        executor.settings["reasoning"] = json!(request.reasoning);
+        let mut snapshot = executor.request_snapshot(&request).unwrap();
+        assert_eq!(snapshot["executorIdentity"].as_object().unwrap().len(), 3);
+        assert_eq!(snapshot["executorIdentity"]["version"], executor.settings["textCliVersion"]);
+        if legacy {
+            snapshot["executorIdentity"].as_object_mut().unwrap().remove("version");
+        }
+        let conn = executor.store.conn().unwrap();
+        conn.execute("UPDATE jobs SET snapshot=?1,created_at='2026-10-07T11:25:00+00:00' WHERE id=?2", params![snapshot.to_string(),job]).unwrap();
+        conn.execute("UPDATE events SET data=?1 WHERE job_id=?2 AND type='text_received_raw'", params![json!({"requestHash":crate::pipeline::digest(&snapshot.to_string()),"value":raw}).to_string(),job]).unwrap();
+        drop(conn);
+        (directory, executor, request, job, snapshot, raw)
+    }
+
+    fn legacy_parent(executor: &SavedTextExecutor, request: &TextRequest) -> String {
+        let snapshot = json!({"stage":"images.design","sourceVersion":1,"settings":executor.settings});
+        let parent = executor.store.add_job("workflow", "images.design:", "local", "local", &snapshot, "partially_blocked").unwrap();
+        let result = json!({"sourceSha256":request.input["sourceSha256"],"blocked":[{"assetId":request.input["asset"]["id"],"variantId":request.input["asset"]["variantId"],"reason":"CODEX_STANDALONE_ATTEMPT_UNRESOLVED: historical npm identity omission"}]});
+        let conn = executor.store.conn().unwrap();
+        conn.execute("INSERT OR IGNORE INTO sources(version,text,sha256,data,created_at) VALUES(1,'offline',?1,'{}','2026-10-07T11:00:00+00:00')", [s(&request.input,"sourceSha256")]).unwrap();
+        conn.execute("UPDATE jobs SET result=?1,created_at='2026-10-07T11:24:00+00:00',updated_at='2026-10-07T11:29:00+00:00' WHERE id=?2", params![result.to_string(),parent]).unwrap();
+        parent
+    }
+
+    #[tokio::test]
+    async fn npm_native_request_snapshot_received_callbacks_accept_and_reject_without_execution() {
+        for reject in [false, true] {
+            let (_directory, executor, request, job, snapshot, raw) = npm_received_fixture(false);
+            let before = evidence(&executor, &job);
+            assert_eq!(executor.result_snapshot(&request).unwrap(), snapshot);
+            let mut normalized = raw.clone();
+            normalized["sourceSha256"] = request.input["sourceSha256"].clone();
+            if reject {
+                executor.reject(&request, &raw, "offline domain rejection").await.unwrap();
+            } else {
+                executor.accept(&request, &normalized).await.unwrap();
+            }
+            let after = evidence(&executor, &job);
+            assert_eq!(after["fields"][0], before["fields"][0]);
+            assert_eq!(after["fields"][1], if reject { "rejected" } else { "completed" });
+            assert_eq!(after["event"], before["event"]);
+            assert_eq!(after["rawFileSha256"], before["rawFileSha256"]);
+            assert_eq!(after["jobs"], 1);
+            if !reject {
+                assert_eq!(executor.execute(request.clone()).await.unwrap(), raw);
+                executor.accept(&request, &normalized).await.unwrap();
+                assert_eq!(evidence(&executor, &job), after);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_npm_received_uses_unique_parent_proof_and_preserves_original_hash_on_replay() {
+        let (_directory, executor, request, job, snapshot, raw) = npm_received_fixture(true);
+        let parent = legacy_parent(&executor, &request);
+        let before = evidence(&executor, &job);
+        assert!(snapshot["executorIdentity"].get("version").is_none());
+        assert_eq!(executor.result_snapshot(&request).unwrap(), snapshot);
+        assert_eq!(executor.execute(request.clone()).await.unwrap(), raw);
+        let mut normalized = raw.clone();
+        normalized["sourceSha256"] = request.input["sourceSha256"].clone();
+        executor.accept(&request, &normalized).await.unwrap();
+        let accepted = evidence(&executor, &job);
+        assert_eq!(accepted["fields"][0], before["fields"][0]);
+        assert_eq!(accepted["fields"][1], "completed");
+        assert_eq!(accepted["event"], before["event"]);
+        assert_eq!(accepted["rawFileSha256"], before["rawFileSha256"]);
+        assert_eq!(accepted["jobs"], 1);
+        let audit: String = executor.store.conn().unwrap().query_row("SELECT data FROM events WHERE job_id=?1 AND type='asset_design_received_validation' ORDER BY id DESC LIMIT 1", [&job], |r|r.get(0)).unwrap();
+        let audit: Value = serde_json::from_str(&audit).unwrap();
+        assert_eq!(audit["requestHash"], crate::pipeline::digest(&snapshot.to_string()));
+        assert_eq!(audit["identityRecovery"]["workflowId"], parent);
+        assert_eq!(audit["identityRecovery"]["frozenCliVersion"], executor.settings["textCliVersion"]);
+        assert_eq!(audit["identityRecovery"]["originalIdentityUnchanged"], true);
+        assert_eq!(audit["newModelCalls"], 0);
+        assert_eq!(executor.execute(request.clone()).await.unwrap(), raw);
+        executor.accept(&request, &normalized).await.unwrap();
+        assert_eq!(evidence(&executor, &job), accepted);
+    }
+
+    #[tokio::test]
+    async fn legacy_npm_received_missing_or_changed_parent_evidence_is_held_without_execution() {
+        for change in ["missing", "duplicate", "version", "path", "codexPath", "provider", "model", "reasoning", "sourceVersion", "sourceSha", "resultSourceSha", "assetId", "variantId", "reason", "state", "timeWindow"] {
+            let (directory, executor, request, job, _snapshot, raw) = npm_received_fixture(true);
+            let parent = legacy_parent(&executor, &request);
+            if change == "duplicate" { legacy_parent(&executor, &request); }
+            let conn = executor.store.conn().unwrap();
+            match change {
+                "missing" => { conn.execute("DELETE FROM jobs WHERE id=?1", [&parent]).unwrap(); }
+                "duplicate" => {}
+                "version" => { conn.execute("UPDATE jobs SET snapshot=json_set(snapshot,'$.settings.textCliVersion','unknown') WHERE id=?1", [&parent]).unwrap(); }
+                "path" | "codexPath" => {
+                    let other = native_fixture(directory.path(), "foreign/codex.exe");
+                    let path = if change == "path" { "$.settings.textCliExecutable" } else { "$.settings.codexPath" };
+                    conn.execute("UPDATE jobs SET snapshot=json_set(snapshot,?1,?2) WHERE id=?3", params![path,other.to_string_lossy(),parent]).unwrap();
+                }
+                "provider" => { conn.execute("UPDATE jobs SET snapshot=json_set(snapshot,'$.settings.textProvider','api') WHERE id=?1", [&parent]).unwrap(); }
+                "model" => { conn.execute("UPDATE jobs SET snapshot=json_set(snapshot,'$.settings.textModel','foreign') WHERE id=?1", [&parent]).unwrap(); }
+                "reasoning" => { conn.execute("UPDATE jobs SET snapshot=json_set(snapshot,'$.settings.reasoning','high') WHERE id=?1", [&parent]).unwrap(); }
+                "sourceVersion" => { conn.execute("UPDATE jobs SET snapshot=json_set(snapshot,'$.sourceVersion',2) WHERE id=?1", [&parent]).unwrap(); }
+                "sourceSha" => { conn.execute("UPDATE sources SET sha256='foreign' WHERE version=1", []).unwrap(); }
+                "resultSourceSha" => { conn.execute("UPDATE jobs SET result=json_set(result,'$.sourceSha256','foreign') WHERE id=?1", [&parent]).unwrap(); }
+                "assetId" => { conn.execute("UPDATE jobs SET result=json_set(result,'$.blocked[0].assetId','foreign') WHERE id=?1", [&parent]).unwrap(); }
+                "variantId" => { conn.execute("UPDATE jobs SET result=json_set(result,'$.blocked[0].variantId','foreign') WHERE id=?1", [&parent]).unwrap(); }
+                "reason" => { conn.execute("UPDATE jobs SET result=json_set(result,'$.blocked[0].reason','foreign') WHERE id=?1", [&parent]).unwrap(); }
+                "state" => { conn.execute("UPDATE jobs SET state='completed' WHERE id=?1", [&parent]).unwrap(); }
+                "timeWindow" => { conn.execute("UPDATE jobs SET updated_at='2026-10-07T11:24:01+00:00' WHERE id=?1", [&parent]).unwrap(); }
+                _ => unreachable!(),
+            }
+            drop(conn);
+            let before = evidence(&executor, &job);
+            let error = executor.execute(request.clone()).await.unwrap_err();
+            assert!(error.contains("CODEX_STANDALONE_ATTEMPT_UNRESOLVED"), "{change}: {error}");
+            assert!(executor.accept(&request, &raw).await.is_err(), "{change}");
+            assert!(executor.reject(&request, &raw, "offline rejection").await.is_err(), "{change}");
+            assert_eq!(evidence(&executor, &job), before, "{change}: original evidence must remain unchanged");
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_npm_recovery_survives_automatic_cli_upgrade_without_executing_either_cli() {
+        let (directory, mut executor, request, job, snapshot, raw) = npm_received_fixture(true);
+        legacy_parent(&executor, &request);
+        let original = PathBuf::from(s(&executor.settings, "codexPath"));
+        let newer = native_fixture(directory.path(), "new-managed/codex.exe");
+        executor.settings["codexPath"] = json!(newer);
+        executor.settings["textCliExecutable"] = json!(newer);
+        executor.settings["textCliVersion"] = json!("codex-cli 0.162.0-alpha.2");
+        assert_eq!(executor.result_snapshot(&request).unwrap(), snapshot);
+        assert_eq!(executor.execute(request.clone()).await.unwrap(), raw);
+        executor.accept(&request, &raw).await.unwrap();
+        assert_eq!(evidence(&executor, &job)["fields"][1], "completed");
+        assert_eq!(executor.execute(request.clone()).await.unwrap(), raw);
+        executor.accept(&request, &raw).await.unwrap();
+        assert!(!original.with_extension("executed").exists());
+        assert!(!newer.with_extension("executed").exists());
+    }
+
+    #[test]
+    #[ignore = "requires DIRECTOR_ASSET_PROMPT_SNAPSHOT_ROOT containing a consistent offline SQLite snapshot; never executes a CLI"]
+    fn actual_npm_received_design_snapshot_qualifies_all_23_original_packages_without_execution() {
+        let source_root = PathBuf::from(std::env::var_os("DIRECTOR_ASSET_PROMPT_SNAPSHOT_ROOT").expect("snapshot root required"));
+        let source_db = source_root.join("project.sqlite");
+        assert!(!source_root.join("project.sqlite-wal").exists(), "provide a checkpointed offline snapshot, not a live project");
+        let original = std::fs::read(&source_db).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("project.sqlite"), &original).unwrap();
+        let store = Store { root: directory.path().to_path_buf() };
+        let conn = store.conn().unwrap();
+        let parent_settings: String = conn.query_row("SELECT json_extract(snapshot,'$.settings') FROM jobs WHERE kind='workflow' AND json_extract(snapshot,'$.stage')='images.design' AND state='partially_blocked' ORDER BY created_at ASC LIMIT 1", [], |r|r.get(0)).unwrap();
+        let mut query = conn.prepare("SELECT id,snapshot,result FROM jobs WHERE kind='text' AND provider='codex' AND state='received' AND json_extract(snapshot,'$.stage')='assetDesign' ORDER BY id").unwrap();
+        let rows = query.query_map([], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).unwrap().collect::<std::result::Result<Vec<_>,_>>().unwrap();
+        drop(query);
+        drop(conn);
+        assert_eq!(rows.len(), 23, "this regression targets the captured 23-package incident");
+        let executor = SavedTextExecutor { store, settings: serde_json::from_str(&parent_settings).unwrap(), workflow_id: None };
+        for (job, snapshot, raw) in rows {
+            let saved: Value = serde_json::from_str(&snapshot).unwrap();
+            let request: TextRequest = serde_json::from_value(saved.clone()).unwrap();
+            let proof = executor.legacy_asset_identity_evidence(&saved).unwrap().expect("original batch identity evidence required");
+            assert_eq!(proof["policy"], "asset-npm-identity-recovery/v1");
+            let (matched_job, matched_raw, hash) = executor.standalone_asset_received(&request).unwrap().expect("received package must qualify");
+            assert_eq!(matched_job, job);
+            assert_eq!(matched_raw, serde_json::from_str::<Value>(&raw).unwrap());
+            assert_eq!(hash, crate::pipeline::digest(&snapshot));
+            assert_eq!(executor.result_snapshot(&request).unwrap(), saved);
+        }
+        let conn = executor.store.conn().unwrap();
+        let counts: (i64,i64) = conn.query_row("SELECT COUNT(*),SUM(CASE WHEN state='received' AND receipt IS NULL THEN 1 ELSE 0 END) FROM jobs WHERE kind='text' AND json_extract(snapshot,'$.stage')='assetDesign'", [], |r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(counts, (23,23), "qualification must not adopt, reject, create or execute a task");
+        assert_eq!(std::fs::read(source_db).unwrap(), original, "input snapshot is read only");
+        eprintln!("23 original npm asset-design packages qualified; zero CLI executions, zero acceptances, input snapshot unchanged");
     }
 
     #[tokio::test]

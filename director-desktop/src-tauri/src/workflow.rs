@@ -798,6 +798,10 @@ impl Store {
         if let Some(facts) = output["facts"].as_array() {
             let mut safe = vec![];
             for fact in facts {
+                let source_binding = fact.get("sourceSha256").cloned();
+                if source_binding.as_ref().is_some_and(|sha| sha != &json!(source.sha256)) {
+                    return Err("视觉事实源摘要与当前锁定原文不一致".into());
+                }
                 let mut fact: crate::pipeline::FoundationFact =
                     serde_json::from_value(fact.clone()).map_err(|e| e.to_string())?;
                 if fact.source_refs.is_empty() {
@@ -817,7 +821,11 @@ impl Store {
                     .collect::<std::result::Result<Vec<_>, _>>()?
                     .into_iter()
                     .collect();
-                safe.push(json!(fact));
+                let mut saved = json!(fact);
+                if let Some(sha) = source_binding {
+                    saved["sourceSha256"] = sha;
+                }
+                safe.push(saved);
             }
             foundation["facts"] = json!(safe);
         }
