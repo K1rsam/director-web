@@ -1133,6 +1133,7 @@ impl Engine {
                                 open_authorization(s(&account["authorization"], "verificationUrl"))
                             {
                                 store.event("", "operation_error", &json!({"message":error}))?;
+                                return Err(error);
                             }
                         }
                         account
@@ -3089,12 +3090,7 @@ fn open_authorization(value: &str) -> Result<()> {
     let url = authorization_url(value)?;
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
-        std::process::Command::new("explorer.exe")
-            .arg(url)
-            .creation_flags(0x08000000)
-            .spawn()
-            .map_err(|_| "无法自动打开即梦授权页，请使用设置中的打开授权页按钮。".to_string())?;
+        open_authorization_windows(&url)?;
     }
     #[cfg(target_os = "macos")]
     {
@@ -3111,6 +3107,58 @@ fn open_authorization(value: &str) -> Result<()> {
             .map_err(|_| "无法打开即梦授权页".to_string())?;
     }
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn shell_open_result(result: isize) -> Result<()> {
+    // ShellExecute returns an HINSTANCE-shaped status, not a process handle.
+    if result > 32 {
+        Ok(())
+    } else {
+        Err(format!("无法调用默认浏览器（Windows 错误 {result}）。请复制授权链接到浏览器打开。"))
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+#[test]
+fn authorization_browser_errors_never_claim_a_page_opened() {
+    for code in [0, 2, 3, 5, 8, 26, 27, 28, 29, 30, 31, 32] {
+        let error = shell_open_result(code).unwrap_err();
+        assert!(error.contains("复制授权链接"));
+    }
+    assert!(shell_open_result(33).is_ok());
+    for target in ["C:/Users/Public/Documents", "file:///C:/Users", "https://evil.test/", "https://jimeng.jianying.com/?device_code=secret"] {
+        assert!(open_authorization(target).is_err());
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_authorization_windows(url: &str) -> Result<()> {
+    // A URL is the shell target, never an Explorer argument or shell command.
+    // A dedicated STA thread also works when invoked from a Tokio/MTA worker.
+    let url: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+    std::thread::spawn(move || {
+        use std::{ffi::c_void, ptr};
+        #[link(name = "shell32")]
+        unsafe extern "system" {
+            fn ShellExecuteW(window: *mut c_void, operation: *const u16, file: *const u16, parameters: *const u16, directory: *const u16, show: i32) -> *mut c_void;
+        }
+        #[link(name = "ole32")]
+        unsafe extern "system" {
+            fn CoInitializeEx(reserved: *mut c_void, flags: u32) -> i32;
+            fn CoUninitialize();
+        }
+        let verb: Vec<u16> = "open".encode_utf16().chain(Some(0)).collect();
+        // COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE.
+        let initialized = unsafe { CoInitializeEx(ptr::null_mut(), 0x2 | 0x4) };
+        if initialized < 0 {
+            return Err("无法初始化默认浏览器调用，请复制授权链接到浏览器打开。".into());
+        }
+        // Both strings remain alive and nul terminated for the synchronous call.
+        let result = unsafe { ShellExecuteW(ptr::null_mut(), verb.as_ptr(), url.as_ptr(), ptr::null(), ptr::null(), 1) } as isize;
+        unsafe { CoUninitialize(); }
+        shell_open_result(result)
+    }).join().map_err(|_| "默认浏览器调用中断，请复制授权链接到浏览器打开。".to_string())?
 }
 fn import_user_media(store: &Store, request: &Value, path: &Path) -> Result<Value> {
     if s(request, "kind") == "image" {

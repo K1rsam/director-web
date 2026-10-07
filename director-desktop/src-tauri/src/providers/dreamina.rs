@@ -1276,23 +1276,12 @@ fn begin_login_with(
     mut read_account: impl FnMut() -> ProviderResult<Value>,
     mut start_login: impl FnMut(bool) -> ProviderResult<CliOutput>,
 ) -> ProviderResult<Value> {
-    let fresh = match read_account() {
-        Ok(value) if value.get("ready").and_then(Value::as_bool) == Some(true) => return Ok(value),
-        // The official CLI may retain a locally valid token while user_credit
-        // returns its explicit anonymous envelope. Ordinary login then only
-        // says "Already logged in". A user-requested OAuth flow needs a fresh
-        // challenge here; unknown identities and transport errors stay intact.
-        Ok(value) if value["status"] == "logged_out" => true,
-        Ok(_) => {
-            return Err(ProviderError::new(
-                "CLI_AUTH_IDENTITY",
-                "现有登录缺少可验证身份；请先刷新或由用户明确退出后重新登录。",
-            ))
-        }
-        Err(error) if error.auth_required => false,
-        Err(error) => return Err(error),
-    };
-    let output = start_login(fresh)?;
+    // This entry point is reached only by an explicit OAuth button click.
+    // Like SHUO's relogin action, request a fresh official challenge directly:
+    // a failed user_credit probe or a stale locally-valid token must not block
+    // the very action the user needs to repair their connection. Startup and
+    // queue polling use account(), never this credential-changing command.
+    let output = start_login(true)?;
     if !output.success {
         return Err(output_error(&output, false));
     }
@@ -1301,7 +1290,14 @@ fn begin_login_with(
         && task_object(&body).get("deviceCode").is_none()
     {
         // Login can reuse an existing session; only user_credit proves which account it is.
-        return read_account();
+        let account = read_account()?;
+        if account["ready"] == true && account["identityVerified"] == true {
+            return Ok(account);
+        }
+        return Err(ProviderError::new(
+            "CLI_AUTH_CHALLENGE_MISSING",
+            "即梦 CLI 未返回有效授权链接，请点击 OAuth 登录重试。",
+        ));
     }
     login_material(&body)
 }
@@ -4343,30 +4339,22 @@ mod tests {
                 Ok(auth_output(true, json!({"device_code":"memory-only","verification_uri":"https://example.test/oauth","user_code":"ABCD","expires_in":600,"access_token":"must-not-escape"}), ""))
             },
         ).unwrap();
-        assert_eq!(account_reads, 1);
+        assert_eq!(account_reads, 0);
         assert_eq!(login_starts, 1);
         assert_eq!(result["device_code"], "memory-only");
         assert_eq!(result["verification_uri"], "https://example.test/oauth");
         assert!(!result.to_string().contains("must-not-escape"));
     }
     #[test]
-    fn login_preserves_known_accounts_and_unknown_or_network_failures() {
-        let known = begin_login_with(
-            || Ok(account_snapshot(&json!({"user_id":123,"total_credit":0}))),
-            |_| panic!("existing account must not start OAuth"),
+    fn explicit_oauth_is_independent_of_stale_or_unreachable_account_status() {
+        let result = begin_login_with(
+            || panic!("explicit OAuth must not depend on an account preflight"),
+            |fresh| {
+                assert!(fresh);
+                Ok(auth_output(true, json!({"device_code":"new-challenge","verification_uri":"https://jimeng.jianying.com/ai-tool/cli-auth"}), ""))
+            },
         ).unwrap();
-        assert_eq!(known["ready"], true);
-        assert_eq!(known["credits"]["total"], 0.);
-        let unknown = begin_login_with(
-            || Ok(account_snapshot(&json!({"total_credit":0}))),
-            |_| panic!("ambiguous identity must not start OAuth or clear credentials"),
-        ).unwrap_err();
-        assert_eq!(unknown.code, "CLI_AUTH_IDENTITY");
-        let network = begin_login_with(
-            || Err(ProviderError::new("CLI_NETWORK", "offline transport failure")),
-            |_| panic!("transport failure must not start OAuth"),
-        ).unwrap_err();
-        assert_eq!(network.code, "CLI_NETWORK");
+        assert_eq!(result["device_code"], "new-challenge");
     }
     #[test]
     fn login_without_challenge_rechecks_identity_instead_of_trusting_exit_success() {
@@ -4374,18 +4362,19 @@ mod tests {
         let result = begin_login_with(
             || {
                 reads += 1;
-                Ok(account_snapshot(&if reads == 1 {
-                    json!({"user_id":0,"user_name":"","total_credit":0})
-                } else {
-                    json!({"user_id":123,"total_credit":10})
-                }))
+                Ok(account_snapshot(&json!({"user_id":123,"total_credit":10})))
             },
             |_| Ok(auth_output(true, json!({"access_token":"must-not-escape"}), "")),
         ).unwrap();
-        assert_eq!(reads, 2);
+        assert_eq!(reads, 1);
         assert_eq!(result["ready"], true);
         assert_eq!(result["credits"]["total"], 10.);
         assert!(!result.to_string().contains("must-not-escape"));
+        let error = begin_login_with(
+            || Ok(account_snapshot(&json!({"user_id":0,"total_credit":0}))),
+            |_| Ok(auth_output(true, json!({}), "cached token reused")),
+        ).unwrap_err();
+        assert_eq!(error.code, "CLI_AUTH_CHALLENGE_MISSING");
     }
     #[test]
     fn oauth_material_is_strictly_allowlisted() {

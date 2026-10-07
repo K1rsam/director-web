@@ -17,6 +17,7 @@ struct Flow {
     expires: Instant,
     next_poll: Instant,
     interval: Duration,
+    transient_failures: u8,
 }
 struct Entry {
     public: Value,
@@ -264,12 +265,20 @@ impl DreaminaSessions {
                     expires: Instant::now() + Duration::from_secs(seconds),
                     next_poll: Instant::now() + Duration::from_secs(interval),
                     interval: Duration::from_secs(interval),
+                    transient_failures: 0,
                 }),
             },
         );
         Ok(value)
     }
     pub fn poll_or_refresh(&self, config: &ProviderConfig) -> Result<Value> {
+        self.poll_or_refresh_with(config, providers::dreamina_check_login)
+    }
+    fn poll_or_refresh_with(
+        &self,
+        config: &ProviderConfig,
+        check: impl FnOnce(&ProviderConfig, &str) -> ProviderResult<Value>,
+    ) -> Result<Value> {
         let flow = {
             let entries = self.entries.lock().map_err(|e| e.to_string())?;
             entries
@@ -290,7 +299,7 @@ impl DreaminaSessions {
         if Instant::now() < next_poll {
             return self.snapshot(config);
         }
-        let outcome = providers::dreamina_check_login(config, &code);
+        let outcome = check(config, &code);
         let mut entries = self.entries.lock().map_err(|e| e.to_string())?;
         let Some(entry) = entries.get_mut(&config_key(config)) else {
             return Ok(unknown());
@@ -302,6 +311,7 @@ impl DreaminaSessions {
         match outcome {
             Ok(account) if s(&account, "status") == "pending" => {
                 if let Some(f) = &mut entry.flow {
+                    f.transient_failures = 0;
                     if account["slowDown"] == true {
                         f.interval += Duration::from_secs(5);
                     }
@@ -315,6 +325,18 @@ impl DreaminaSessions {
                 entry.flow = None;
             }
             Err(error) => {
+                // Preserve the official challenge through brief transport failures.
+                // Bound retries so an unavailable CLI never waits indefinitely.
+                if !error.auth_required && matches!(error.code.as_str(), "CLI_NETWORK" | "CLI_TIMEOUT" | "CLI_QUERY_FAILED") {
+                    if let Some(f) = &mut entry.flow {
+                        f.transient_failures += 1;
+                        if f.transient_failures < 3 {
+                            f.next_poll = Instant::now() + f.interval;
+                            entry.public["message"] = json!("连接暂时中断，正在重新检查授权结果。");
+                            return Ok(entry.public.clone());
+                        }
+                    }
+                }
                 entry.public = unknown();
                 entry.public["status"] = json!(if error.auth_required {
                     "logged_out"
@@ -341,6 +363,43 @@ impl DreaminaSessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn oauth_transport_retry_is_bounded_and_keeps_the_original_challenge() {
+        let sessions = DreaminaSessions::default();
+        let c: ProviderConfig = serde_json::from_value(json!({"kind":"dreamina","cliPath":"C:/offline/never-run.exe"})).unwrap();
+        let response = json!({"device_code":"private-challenge","verification_uri":"https://jimeng.jianying.com/ai-tool/cli-auth","expires_in":600,"interval":3});
+        sessions.install_flow(&c, &response).unwrap();
+        let due = || {
+            sessions.entries.lock().unwrap().get_mut(&config_key(&c)).unwrap().flow.as_mut().unwrap().next_poll = Instant::now();
+        };
+        for attempt in 1..=3 {
+            due();
+            let value = sessions.poll_or_refresh_with(&c, |_, code| {
+                assert_eq!(code, "private-challenge");
+                Err(ProviderError::new("CLI_NETWORK", "网络连接暂时失败"))
+            }).unwrap();
+            assert_eq!(value["status"], if attempt < 3 { "authorizing" } else { "error" });
+            assert!(!value.to_string().contains("private-challenge"));
+        }
+        assert!(sessions.entries.lock().unwrap().get(&config_key(&c)).unwrap().flow.is_none());
+        // A fresh user retry can recover. A successful pending response resets
+        // consecutive transport failures; verified completion replaces the flow.
+        sessions.install_flow(&c, &response).unwrap();
+        for _ in 0..3 {
+            due();
+            assert_eq!(sessions.poll_or_refresh_with(&c, |_, _| Err(ProviderError::new("CLI_TIMEOUT", "timeout"))).unwrap()["status"], "authorizing");
+            due();
+            sessions.poll_or_refresh_with(&c, |_, _| Ok(json!({"status":"pending"}))).unwrap();
+        }
+        due();
+        let completed = sessions.poll_or_refresh_with(&c, |_, _| Ok(json!({"status":"authenticated","ready":true,"identityVerified":true,"accountKey":"verified","credits":{"total":14414}}))).unwrap();
+        assert_eq!(completed["credits"]["total"], 14414);
+        assert!(sessions.entries.lock().unwrap().get(&config_key(&c)).unwrap().flow.is_none());
+        sessions.install_flow(&c, &response).unwrap();
+        due();
+        assert_eq!(sessions.poll_or_refresh_with(&c, |_, _| Err(ProviderError::new("CLI_AUTH_DENIED", "授权被拒绝"))).unwrap()["status"], "error");
+        assert!(sessions.entries.lock().unwrap().get(&config_key(&c)).unwrap().flow.is_none());
+    }
     #[test]
     fn known_logout_pauses_shared_queue_checks_until_refresh_without_trusting_cached_identity() {
         let sessions = DreaminaSessions::default();
@@ -425,6 +484,7 @@ mod tests {
                     expires: Instant::now() + Duration::from_secs(20),
                     next_poll: Instant::now() + Duration::from_secs(20),
                     interval: Duration::from_secs(5),
+                    transient_failures: 0,
                 }),
             },
         );

@@ -184,7 +184,11 @@ const STARTUP_PROBE: &str = r#"
     settingsButton.click();
     for (let attempt=0; attempt<100 && !document.querySelector('.dreamina-account-card'); attempt++) await new Promise(resolve=>setTimeout(resolve,50));
     const accountCard=document.querySelector('.dreamina-account-card');
-    if (!accountCard || !accountCard.textContent.includes('即梦账户与积分') || !accountCard.textContent.includes('OAuth 连接即梦')) throw new Error('OAuth account panel did not render');
+    if (!accountCard || !accountCard.textContent.includes('登录状态') || !accountCard.textContent.includes('账户额度')) throw new Error('OAuth account panel did not render');
+    const oauthButton = [...accountCard.querySelectorAll('button')].find(button=>button.textContent==='OAuth 登录');
+    if (!oauthButton || oauthButton.disabled) throw new Error('OAuth entry must remain enabled when no verified account is available');
+    if (!accountCard.textContent.includes('登录后显示') || accountCard.textContent.includes('总额度 0')) throw new Error('Unknown credit was displayed as a zero balance');
+    if (!document.querySelector('.dreamina-advanced') || document.querySelector('.dreamina-advanced').open) throw new Error('Advanced CLI configuration must be collapsed by default');
     const cliCard=document.querySelector('.text-execution-settings');
     if (!cliCard || !cliCard.textContent.includes('文本执行 · 阶段 1 / 2 / 3') || !cliCard.textContent.includes('检查 CLI 与账户')) throw new Error('Text CLI connection settings did not render');
     // Reversible mutations in the isolated diagnostic project exercise the real
