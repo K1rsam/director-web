@@ -129,6 +129,25 @@ impl DreaminaSessions {
     pub fn fresh_identity(&self, config: &ProviderConfig) -> ProviderResult<String> {
         self.fresh_identity_with(config, providers::dreamina_account)
     }
+    /// A shared known logout pauses the queue without one identical CLI call
+    /// per item. Explicit UI refresh/OAuth and the normal refresh interval are
+    /// still responsible for obtaining a new authenticated account identity.
+    pub fn execution_identity(&self, config: &ProviderConfig) -> ProviderResult<String> {
+        self.execution_identity_with(config, providers::dreamina_account)
+    }
+    fn execution_identity_with(
+        &self,
+        config: &ProviderConfig,
+        account: impl FnOnce(&ProviderConfig) -> ProviderResult<Value>,
+    ) -> ProviderResult<String> {
+        let public = self.snapshot(config).map_err(|_| ProviderError::new("LOCAL_ACCOUNT_STATE", "即梦本地账户状态无法读取。"))?;
+        if public["status"] == "logged_out" && !self.due(config).map_err(|_| ProviderError::new("LOCAL_ACCOUNT_STATE", "即梦本地账户状态无法读取。"))? {
+            let mut error = ProviderError::auth();
+            error.message = s(&public, "message").to_owned();
+            return Err(error);
+        }
+        self.fresh_identity_with(config, account)
+    }
     fn fresh_identity_with(
         &self,
         config: &ProviderConfig,
@@ -322,6 +341,20 @@ impl DreaminaSessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn known_logout_pauses_shared_queue_checks_until_refresh_without_trusting_cached_identity() {
+        let sessions = DreaminaSessions::default();
+        let config: ProviderConfig = serde_json::from_value(json!({"kind":"dreamina","cliPath":"C:/offline/never-run.exe"})).unwrap();
+        sessions.seed_for_test(&config,json!({"status":"logged_out","ready":false,"message":"请重新登录"})).unwrap();
+        for _ in 0..16 {
+            let error = sessions.execution_identity_with(&config, |_| panic!("known logout must not start one CLI process per queued image")).unwrap_err();
+            assert!(error.auth_required);
+        }
+        // Explicit refresh can install a verified session, but every execution
+        // still checks the live identity rather than trusting a cached key.
+        sessions.seed_for_test(&config,json!({"status":"authenticated","ready":true,"identityVerified":true,"accountKey":"old-account"})).unwrap();
+        assert_eq!(sessions.execution_identity_with(&config, |_| Ok(json!({"status":"authenticated","ready":true,"identityVerified":true,"accountKey":"new-account"}))).unwrap(),"new-account");
+    }
     #[test]
     fn fresh_identity_keeps_transient_provider_errors_typed_without_claiming_logout() {
         let sessions = DreaminaSessions::default();

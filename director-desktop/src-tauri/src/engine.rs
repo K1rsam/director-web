@@ -540,7 +540,7 @@ impl Engine {
     }
     fn checked_account(&self, config: &ProviderConfig, fallback: &str) -> ProviderResult<String> {
         if self.live_accounts && config.kind == "dreamina" {
-            self.dreamina_sessions.fresh_identity(config)
+            self.dreamina_sessions.execution_identity(config)
         } else {
             Ok(fallback.to_owned())
         }
@@ -2078,6 +2078,9 @@ impl Engine {
         {
             return Err("当前参数与保存的准备设置不一致，请先重新准备并核对素材".into());
         }
+        let source_projection = if !submit {
+            store.rebind_verified_source_projection(ids,&json!({"minDuration":capability.min_duration,"maxDuration":capability.max_duration,"imageLimit":capability.images,"allowedDurations":capability.allowed_durations}))?
+        } else { Value::Null };
         let jobs = store.job_summaries()?;
         let mut queued = Vec::new();
         let mut blocked = Vec::new();
@@ -2206,6 +2209,7 @@ impl Engine {
         preflight["model"] = json!(model);
         preflight["ratio"] = json!(ratio);
         preflight["resolution"] = json!(resolution);
+        preflight["sourceProjection"] = source_projection;
         Ok(
             json!({"queuedCount":queued.len()-reused,"reusedCount":reused,"blockedCount":blocked.len(),"queued":queued,"blocked":blocked,"preflight":preflight}),
         )

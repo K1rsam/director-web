@@ -310,6 +310,7 @@ pub(super) fn prepare_request(mut request: TextRequest) -> Result<TextRequest, S
                     issues.is_empty()
                         || issues.iter().any(|issue| {
                             issue["code"] != "ASSET_SCENE_SCOPE"
+                                && issue["code"] != "SHOT_DURATION"
                                 && !source_coordinate_issue(issue)
                                 && !(proof["attempt"] == 2
                                     && issue["code"] == "UNIT_SCENE_COORDINATE")
@@ -351,6 +352,7 @@ pub(super) fn prepare_request(mut request: TextRequest) -> Result<TextRequest, S
                     issues.is_empty()
                         || issues.iter().any(|issue| {
                             issue["code"] != "ASSET_SCENE_SCOPE"
+                                && issue["code"] != "SHOT_DURATION"
                                 && !(proof["attempt"] == 2
                                     && issue["code"] == "UNIT_SCENE_COORDINATE")
                         })
@@ -461,6 +463,13 @@ pub(super) fn prepare_request(mut request: TextRequest) -> Result<TextRequest, S
         );
         runtime_contract["content"] = json!(content);
         runtime_contract["sha256"] = json!(digest(text(&runtime_contract, "content")));
+    }
+    if (author_repair || finish_repair)
+        && request.input["validationIssues"].as_array().is_some_and(|issues|issues.iter().any(|issue|issue["code"]=="SHOT_DURATION"))
+    {
+        let content=format!("{}\n\nSHOT_DURATION：本次候选含零秒无对白镜。原镜头、来源和原话均完整保留，仅由原整编重新组织该镜与必要关联镜的动作、声画共时和切点；可将瞬时演法写进合法镜内或依真实动作重新估时，不自动填空凑秒、不删除源内容、不裁声窗。交差量作品，所有镜长须为正数并再过完整领域验收；相同问题无进展即停止修订。",text(&runtime_contract,"content"));
+        runtime_contract["content"]=json!(content);
+        runtime_contract["sha256"]=json!(digest(text(&runtime_contract,"content")));
     }
     if author_repair
         && request.input["validationIssues"]

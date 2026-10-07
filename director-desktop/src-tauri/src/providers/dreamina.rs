@@ -1185,11 +1185,18 @@ fn account_snapshot(body: &Value) -> Value {
             })
             .filter(|x| x.is_finite() && *x >= 0.)
     };
+    // The official CLI returns this explicit anonymous account envelope after
+    // logout. An absent ID alone remains unknown; a real account with zero
+    // credits is still authenticated.
+    let logged_out = identity.is_none()
+        && matches!(data.get("user_id"), Some(Value::Number(id)) if id.as_u64() == Some(0))
+        && data.get("user_name").and_then(Value::as_str) == Some("")
+        && credit(data.get("total_credit")) == Some(0.);
     let mut result = json!({
-        "status":if identity.is_some(){"authenticated"}else{"unknown"},
+        "status":if identity.is_some(){"authenticated"}else if logged_out{"logged_out"}else{"unknown"},
         "ready":identity.is_some(),
         "identityVerified":identity.is_some(),
-        "message":if identity.is_some(){"即梦已登录，账户身份与积分已核对。"}else{"CLI 返回了积分信息，但没有可验证的账户身份；暂不能提交或恢复生成。"},
+        "message":if identity.is_some(){"即梦已登录，账户身份与积分已核对。"}else if logged_out{"即梦 CLI 尚未登录或授权已失效；请到渠道与设置完成官方 OAuth 登录，队列已暂停。"}else{"CLI 返回了积分信息，但没有可验证的账户身份；暂不能提交或恢复生成。"},
         "checkedAt":now(),
         "credits":{"total":credit(data.get("total_credit")),"member":credit(data.get("vip_credit")),"gift":credit(data.get("gift_credit")),"purchase":credit(data.get("purchase_credit"))}
     });
@@ -4292,6 +4299,17 @@ mod tests {
             assert_eq!(snapshot["identityVerified"], false);
             assert!(snapshot.get("accountKey").is_none());
         }
+    }
+    #[test]
+    fn official_anonymous_account_is_logged_out_without_mistaking_zero_credit_accounts() {
+        let anonymous = account_snapshot(&json!({"data":{"user_id":0,"user_name":"","total_credit":0,"vip_level":""}}));
+        assert_eq!(anonymous["status"], "logged_out");
+        assert_eq!(anonymous["ready"], false);
+        assert!(anonymous.get("accountKey").is_none());
+        let real = account_snapshot(&json!({"user_id":123,"user_name":"","total_credit":0}));
+        assert_eq!(real["status"], "authenticated");
+        assert_eq!(real["ready"], true);
+        assert_eq!(account_snapshot(&json!({"total_credit":0}))["status"], "unknown");
     }
     #[test]
     fn oauth_material_is_strictly_allowlisted() {

@@ -1112,6 +1112,7 @@ fn validate_storyboard_scope_with_issues(
         expected_refs,
         scope_issues,
         false,
+        false,
     )
 }
 
@@ -1126,6 +1127,7 @@ fn validate_storyboard_repair_scope(
     expected_refs: Option<&[String]>,
     mut scope_issues: Option<&mut Vec<Value>>,
     defer_scene_coordinate: bool,
+    defer_zero_duration: bool,
 ) -> Result<(), String> {
     validate_source(source)?;
     let (min, max, image_limit) = capabilities(&json!({"capabilities":caps}))?;
@@ -1328,16 +1330,22 @@ fn validate_storyboard_repair_scope(
             return Err("单元镜表不能为空".into());
         }
         let mut duration = 0.0;
-        for shot in shots {
+        for (shot_index, shot) in shots.iter().enumerate() {
             let id = text(shot, "id");
             if id.is_empty() || !shot_ids.insert(id) {
                 return Err("镜号空或重复".into());
             }
-            let seconds = shot
-                .get("duration")
-                .and_then(Value::as_f64)
-                .filter(|s| s.is_finite() && *s > 0.0)
-                .ok_or("镜长须为正数")?;
+            let seconds = match shot.get("duration").and_then(Value::as_f64) {
+                Some(seconds) if seconds.is_finite() && seconds > 0.0 => seconds,
+                Some(0.0) if defer_zero_duration && shot["dialogueParts"].as_array().is_some_and(Vec::is_empty) => {
+                    let issues=scope_issues.as_deref_mut().ok_or(crate::text_executor::AUTHOR_SHOT_DURATION_REJECTION)?;
+                    issues.push(json!({"code":"SHOT_DURATION","unitId":uid,"coordinate":format!("{uid}.shots[{shot_index}].duration"),"shotId":id,"originalDuration":0,"sourceRefs":shot["sourceRefs"],"problem":crate::text_executor::AUTHOR_SHOT_DURATION_REJECTION}));
+                    // Only a rejected candidate can carry this issue. Do not
+                    // invent seconds or alter the original shot/voice windows.
+                    0.0
+                }
+                _ => return Err(crate::text_executor::AUTHOR_SHOT_DURATION_REJECTION.into()),
+            };
             duration += seconds;
             for field in ["camera", "picture", "lighting", "sound", "transition"] {
                 if text(shot, field).trim().is_empty() {
@@ -2363,7 +2371,7 @@ pub async fn run_storyboard(
                         Ok(draft)=>{executor.accept(&request,&response).await?;Ok(draft)},
                         Err(reason)=>{
                             executor.reject(&request,&original_response,&reason).await?;
-                            if !creative_enabled || reason!=crate::text_executor::AUTHOR_ASSET_SCOPE_REJECTION {return Err(reason);}
+                            if !creative_enabled || ![crate::text_executor::AUTHOR_ASSET_SCOPE_REJECTION,crate::text_executor::AUTHOR_SHOT_DURATION_REJECTION].contains(&reason.as_str()) {return Err(reason);}
                             // The editor can reintroduce a reference rejected in
                             // an author. The original coordinator routes either
                             // unadopted role back to the same bounded editor.
@@ -2373,7 +2381,11 @@ pub async fn run_storyboard(
                             prefix_ids_preserving(&mut candidate,&new_prefix,&preserved_units,&preserved_shots)?;
                             original::pack_event_units(&mut candidate,&plan,caps["maxDuration"].as_f64().unwrap())?;
                             let validation_caps=carrier_validation_caps(&candidate,caps,true);
-                            let (candidate,issues)=author_scope_candidate(&source,&candidate,&current_assets,&validation_caps,&scope_refs,style,&format!("{}:",episode.id),&plan,&finish_candidates,true)?;
+                            let (candidate,issues)=if reason==crate::text_executor::AUTHOR_SHOT_DURATION_REJECTION {
+                                author_duration_candidate(&source,&candidate,&current_assets,&validation_caps,&scope_refs,style,&format!("{}:",episode.id),&plan,&finish_candidates)?
+                            } else {
+                                author_scope_candidate(&source,&candidate,&current_assets,&validation_caps,&scope_refs,style,&format!("{}:",episode.id),&plan,&finish_candidates,true)?
+                            };
                             if issues.is_empty(){return Err("整编原拒绝没有可证实的适用范围问题；原回包保留，不重新整编".into());}
                             let mut batch=first.batch.clone();
                             batch.id=text(&request.input["executionBatch"],"id").to_string();
@@ -2798,6 +2810,9 @@ fn author_validation_candidate(
     selected: &[Value],
     reason: &str,
 ) -> Result<(Value, Vec<Value>), String> {
+    if reason == crate::text_executor::AUTHOR_SHOT_DURATION_REJECTION {
+        return author_duration_candidate(source,raw,assets,caps,refs,style,prefix,plan,selected);
+    }
     if reason == crate::text_executor::AUTHOR_ASSET_SCOPE_REJECTION {
         return author_scope_candidate(
             source, raw, assets, caps, refs, style, prefix, plan, selected, true,
@@ -2989,6 +3004,7 @@ fn scope_repair_candidate(
         Some(refs),
         Some(&mut issues),
         defer_scene_coordinate,
+        false,
     )?;
     validate_event_bindings_for_repair(&draft, plan, Some(&issues))?;
     validate_fantasy_profile(&draft, selected, creative_enabled)?;
@@ -2998,14 +3014,31 @@ fn scope_repair_candidate(
     Ok((draft, issues))
 }
 
+fn author_duration_candidate(source:&LockedSource,raw:&Value,assets:&[Value],caps:&Value,refs:&[String],style:&str,prefix:&str,plan:&Value,selected:&[Value]) -> Result<(Value,Vec<Value>),String> {
+    if raw["schemaVersion"]!="storyboard-draft/v2" {return Err("镜长修订缺少原话区间协议；未调用模型".into());}
+    let mut draft=raw.clone();
+    materialize_dialogue(source,&mut draft,false)?;
+    materialize_asset_references(&mut draft,assets)?;
+    prefix_ids(&mut draft,prefix)?;
+    add_delivery_fields(&mut draft,style)?;
+    let mut issues=Vec::new();
+    validate_storyboard_repair_scope(source,&draft,assets,caps,Some(refs),Some(&mut issues),false,true)?;
+    if !issues.iter().any(|issue|issue["code"]=="SHOT_DURATION") {return Err("原镜长拒绝没有可定位的零秒无对白镜；未扩大修订".into());}
+    validate_event_bindings(&draft,plan)?;
+    validate_fantasy_profile(&draft,selected,true)?;
+    materialize_unit_coverage(source,&mut draft)?;
+    creative::add_delivery(&mut draft,source,style,assets,true)?;
+    Ok((draft,issues))
+}
+
 fn author_scope_problem_signature(issues: &[Value]) -> String {
     let mut keys: Vec<_> = issues.iter().map(|issue| {
         let mut refs:Vec<_>=issue["sourceRefs"].as_array().into_iter().flatten().cloned().collect();
         refs.sort_by_key(Value::to_string);refs.dedup();
         let mut identity=json!({"code":issue["code"],"assetId":issue["assetId"],"variantId":issue["variantId"],"episodeId":issue["episodeId"],"sceneId":issue["sceneId"],"sourceRefs":refs});
         if issue["code"]=="UNIT_SCENE_COORDINATE" {identity["expectedSceneId"]=issue["expectedSceneId"].clone();}
-        if ["DIALOGUE_SOURCE_INTERVAL","DIALOGUE_SOURCE_COVERAGE","UNIT_SOURCE_COVERAGE","ASSET_SOURCE_SCOPE"].contains(&text(issue,"code")) {
-            for field in ["coordinate","lineId","quoteStart","quoteEnd","allowedSpokenRanges","requiredSourceRefs"] {identity[field]=issue[field].clone();}
+        if ["DIALOGUE_SOURCE_INTERVAL","DIALOGUE_SOURCE_COVERAGE","UNIT_SOURCE_COVERAGE","ASSET_SOURCE_SCOPE","SHOT_DURATION"].contains(&text(issue,"code")) {
+            for field in ["coordinate","lineId","quoteStart","quoteEnd","allowedSpokenRanges","requiredSourceRefs","shotId","originalDuration"] {identity[field]=issue[field].clone();}
         }
         identity.to_string()
     }).collect::<HashSet<_>>().into_iter().collect();
@@ -3144,6 +3177,7 @@ async fn repair_author_scope(
             "DIALOGUE_SOURCE_COVERAGE",
             "UNIT_SOURCE_COVERAGE",
             "ASSET_SOURCE_SCOPE",
+            "SHOT_DURATION",
         ]
         .contains(&text(issue, "code"))
     });
@@ -5058,7 +5092,11 @@ mod production_contract_tests {
                     } else if self.author_source_error.is_some() {
                         "SOURCE_FIX"
                     } else if request.input["finishRepair"].is_object() {
-                        self.finish_scope_response.unwrap()
+                        match self.finish_scope_response.unwrap() {
+                            "TIMING_FIX" => "SOURCE_FIX",
+                            "TIMING_NO_PROGRESS" => "NO_PROGRESS",
+                            mode => mode,
+                        }
                     } else {
                         self.author_scope_response.unwrap()
                     };
@@ -5223,7 +5261,15 @@ mod production_contract_tests {
                 if self.finish_scope_response.is_some() {
                     let old = &request.input["previousDraft"]["units"][0];
                     let mut next = old.clone();
-                    next["assetRefs"]=json!(request.input["assets"].as_array().unwrap().iter().take(2).enumerate().map(|(index,asset)|json!({"assetId":asset["id"],"variantId":asset["variantId"],"order":index+1,"use":"character","sourceRefs":old["sourceRefs"]})).collect::<Vec<_>>());
+                    if matches!(self.finish_scope_response,Some("TIMING_FIX"|"TIMING_NO_PROGRESS")) {
+                        let mut silent=next["shots"][0].clone();
+                        silent["id"]=json!("finish-zero-duration");
+                        silent["duration"]=json!(0);
+                        silent["dialogueParts"]=json!([]);
+                        next["shots"].as_array_mut().unwrap().push(silent);
+                    } else {
+                        next["assetRefs"]=json!(request.input["assets"].as_array().unwrap().iter().take(2).enumerate().map(|(index,asset)|json!({"assetId":asset["id"],"variantId":asset["variantId"],"order":index+1,"use":"character","sourceRefs":old["sourceRefs"]})).collect::<Vec<_>>());
+                    }
                     retained.retain(|id| id != &old["id"]);
                     return Ok(
                         json!({"schemaVersion":"storyboard-delta/v2","baseDraftHash":request.input["baseDraftHash"],"retainedUnitIds":retained,"replacements":[{"replaces":[old["id"]],"units":[next],"fantasyRealization":[]}],"revisionNotes":[],"unresolved":[]}),
@@ -5323,6 +5369,13 @@ mod production_contract_tests {
                         "PARTIAL_DIALOGUE" => {
                             let part=&mut draft["units"][0]["shots"][0]["dialogueParts"][0];
                             part["quoteEnd"]=json!(part["quoteStart"].as_u64().unwrap()+1);
+                        }
+                        "ZERO_DURATION" => {
+                            let mut silent=draft["units"][0]["shots"][0].clone();
+                            silent["id"]=json!("zero-duration-silent-shot");
+                            silent["duration"]=json!(0);
+                            silent["dialogueParts"]=json!([]);
+                            draft["units"][0]["shots"].as_array_mut().unwrap().push(silent);
                         }
                         _ => panic!("unknown source-error fixture"),
                     }
@@ -5463,7 +5516,7 @@ mod production_contract_tests {
     #[tokio::test]
     async fn original_editor_repairs_source_coordinates_without_reauthoring_or_adopting_rejected_raw(
     ) {
-        for mode in ["DIALOGUE", "COVERAGE", "ASSET_SOURCE", "MISSING_DIALOGUE", "PARTIAL_DIALOGUE"] {
+        for mode in ["DIALOGUE", "COVERAGE", "ASSET_SOURCE", "MISSING_DIALOGUE", "PARTIAL_DIALOGUE", "ZERO_DURATION"] {
             let source = prepare_source(
                 "第一集\n场景：门口\n甲：（低声）原话😀完整保留。\n甲：下一句完整保留。\n",
             )
@@ -5510,7 +5563,7 @@ mod production_contract_tests {
             assert!(repair.rule_snapshot["runtimeContract"]["content"]
                 .as_str()
                 .unwrap()
-                .contains("括号演法不发声"));
+                .contains(if mode=="ZERO_DURATION" {"SHOT_DURATION"}else{"括号演法不发声"}));
             let rejected = exec.rejected_values.lock().await.clone();
             let original = rejected
                 .iter()
@@ -5550,7 +5603,7 @@ mod production_contract_tests {
 
     #[tokio::test]
     async fn unchanged_source_coordinate_repair_stops_once_and_resume_does_not_reset_budget() {
-        for mode in ["DIALOGUE", "COVERAGE", "ASSET_SOURCE", "MISSING_DIALOGUE", "PARTIAL_DIALOGUE"] {
+        for mode in ["DIALOGUE", "COVERAGE", "ASSET_SOURCE", "MISSING_DIALOGUE", "PARTIAL_DIALOGUE", "ZERO_DURATION"] {
             let source = prepare_source(
                 "第一集\n场景：门口\n甲：（低声）原话😀完整保留。\n甲：下一句完整保留。\n",
             )
@@ -5595,9 +5648,10 @@ mod production_contract_tests {
 
     #[tokio::test]
     async fn ordinary_finisher_scope_repair_preserves_its_rejected_raw_and_reuses_all_paid_steps() {
+        for mode in ["FIX","TIMING_FIX"] {
         let (source, request) = author_scope_input(1);
         let exec = Recorded {
-            finish_scope_response: Some("FIX"),
+            finish_scope_response: Some(mode),
             ..Default::default()
         };
         let output = run_storyboard(&request, &exec, "offline", "medium")
@@ -5666,6 +5720,7 @@ mod production_contract_tests {
             output["units"]
         );
         assert_eq!(exec.calls.lock().await.len(),before,"resume must replay the original rejected Finish and the accepted repair, without new model calls");
+        }
     }
 
     #[tokio::test]
@@ -5673,6 +5728,7 @@ mod production_contract_tests {
     ) {
         for (mode, maximum) in [
             ("NO_PROGRESS", 1),
+            ("TIMING_NO_PROGRESS", 1),
             ("LIMIT", 2),
             ("BAD_QUOTE", 1),
             ("PARTIAL", 2),
@@ -6088,6 +6144,7 @@ mod production_contract_tests {
                 Some(&refs),
                 Some(&mut issues),
                 true,
+                false,
             )
             .unwrap();
             validate_event_bindings_for_repair(&draft, &request.input["plan"], Some(&issues))
@@ -9448,6 +9505,49 @@ mod production_contract_tests {
             assert_eq!(output["blocked"][0]["code"], "REVISION_PROVENANCE_INVALID");
             assert!(exec.calls.lock().await.is_empty());
         }
+    }
+
+    #[test]
+    #[ignore = "explicit read-only actual desktop timing fixture; zero model/provider calls"]
+    fn actual_zero_duration_author_has_a_source_bound_original_editor_repair() {
+        let path=std::env::var("DIRECTOR_TIMING_READONLY_DB").expect("explicit DB path");
+        let c=rusqlite::Connection::open_with_flags(path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        c.execute_batch("PRAGMA query_only=ON;BEGIN").unwrap();
+        let (snapshot,raw,event,parent):(String,String,String,String)=c.query_row("SELECT j.snapshot,j.result,e.data,p.snapshot FROM jobs j JOIN workflow_steps w ON w.text_job_id=j.id JOIN jobs p ON p.id=w.workflow_id JOIN events e ON e.id=(SELECT MAX(x.id) FROM events x WHERE x.job_id=j.id AND x.type='text_received_raw') WHERE j.id='27458cb4-05c2-47d0-8ea3-d7fe89b0f83d' AND w.workflow_id='36b872ee-72d4-4a60-8bc0-15625a6fe318' AND j.kind='text' AND j.state='rejected' AND w.state='rejected' AND w.error=j.error AND w.result=j.result AND j.error=?1",[crate::text_executor::AUTHOR_SHOT_DURATION_REJECTION],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+        let request:TextRequest=serde_json::from_str(&snapshot).unwrap();
+        let raw:Value=serde_json::from_str(&raw).unwrap();
+        let event:Value=serde_json::from_str(&event).unwrap();
+        assert_eq!(event["requestHash"],digest(&snapshot));assert_eq!(event["value"],raw);
+        let parent:Value=serde_json::from_str(&parent).unwrap();
+        let source:LockedSource=serde_json::from_value(parent["input"]["source"].clone()).unwrap();
+        let assets=episode_assets(parent["input"]["assets"].as_array().unwrap(),text(&request.input,"episodeId"));
+        let refs=strings(&request.input["executionBatch"],"sourceRefs").unwrap();
+        let prefix=format!("{}:{}:",text(&request.input,"episodeId"),text(&request.input["executionBatch"],"id"));
+        let (candidate,issues)=author_duration_candidate(&source,&raw,&assets,&request.input["capabilities"],&refs,"3D国漫",&prefix,&request.input["plan"],request.input["selectedFantasy"].as_array().unwrap()).unwrap();
+        assert_eq!(issues.iter().filter(|x|x["code"]=="SHOT_DURATION").count(),1);
+        assert!(validate_storyboard_scope(&source,&candidate,&assets,&request.input["capabilities"],Some(&refs)).is_err());
+        assert_eq!(candidate["units"][0]["shots"][2]["duration"],0);
+        assert_eq!(candidate["units"][0]["shots"][2]["picture"],raw["units"][0]["shots"][2]["picture"]);
+        c.execute_batch("COMMIT").unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit read-only actual source projection comparison; no adoption or model calls"]
+    fn actual_old_episode_units_are_checked_against_current_source_projection() {
+        let path=std::env::var("DIRECTOR_TIMING_READONLY_DB").expect("explicit DB path");
+        let c=rusqlite::Connection::open_with_flags(path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        c.execute_batch("PRAGMA query_only=ON;BEGIN").unwrap();
+        let source:LockedSource=serde_json::from_str(&c.query_row("SELECT data FROM sources ORDER BY version DESC LIMIT 1",[],|r|r.get::<_,String>(0)).unwrap()).unwrap();
+        let assets:Vec<Value>=c.prepare("SELECT data FROM assets WHERE COALESCE(json_extract(data,'$.deletedAt'),'')=''").unwrap().query_map([],|r|r.get::<_,String>(0)).unwrap().map(|r|serde_json::from_str(&r.unwrap()).unwrap()).collect();
+        let all:Vec<Value>=c.prepare("SELECT data FROM units WHERE COALESCE(json_extract(data,'$.retired'),0)<>1 ORDER BY rowid").unwrap().query_map([],|r|r.get::<_,String>(0)).unwrap().map(|r|serde_json::from_str(&r.unwrap()).unwrap()).collect();
+        let run:Value=serde_json::from_str(&c.query_row("SELECT snapshot FROM jobs WHERE id='36b872ee-72d4-4a60-8bc0-15625a6fe318'",[],|r|r.get::<_,String>(0)).unwrap()).unwrap();
+        for episode in source.episodes.iter().take(3) {
+            let units:Vec<Value>=all.iter().filter(|u|u["episodeId"]==episode.id).cloned().collect();
+            assert_eq!(units.len(),8);
+            let draft=json!({"schemaVersion":"storyboard-draft/v2","units":units});
+            validate_storyboard(&source,&draft,&assets,&run["input"]["capabilities"]).unwrap_or_else(|error|panic!("episode {}: {error}",episode.number));
+        }
+        c.execute_batch("COMMIT").unwrap();
     }
 
     #[test]

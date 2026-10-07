@@ -4506,6 +4506,7 @@ pub(crate) const AUTHOR_DIALOGUE_INTERVAL_REJECTION: &str =
 pub(crate) const AUTHOR_SOURCE_COVERAGE_REJECTION: &str =
     "单元须依源顺序完整覆盖制作正文；跨单元同句仅允许连续原片段且全句恰好一次";
 pub(crate) const AUTHOR_ASSET_SOURCE_REJECTION: &str = "单元资产引用越出本单元来源";
+pub(crate) const AUTHOR_SHOT_DURATION_REJECTION: &str = "镜长须为正数";
 
 pub(crate) fn author_missing_dialogue(reason: &str) -> Option<&str> {
     let id = reason.strip_prefix("对白 ")?.strip_suffix(" 未完整出现一次")?;
@@ -4518,6 +4519,7 @@ pub(crate) fn author_repairable_rejection(reason: &str) -> bool {
         AUTHOR_DIALOGUE_INTERVAL_REJECTION,
         AUTHOR_SOURCE_COVERAGE_REJECTION,
         AUTHOR_ASSET_SOURCE_REJECTION,
+        AUTHOR_SHOT_DURATION_REJECTION,
     ]
     .contains(&reason) || author_missing_dialogue(reason).is_some()
 }
@@ -6029,7 +6031,8 @@ impl SavedTextExecutor {
             AUTHOR_ASSET_SCOPE_REJECTION,
             AUTHOR_DIALOGUE_INTERVAL_REJECTION,
             AUTHOR_SOURCE_COVERAGE_REJECTION,
-            AUTHOR_ASSET_SOURCE_REJECTION
+            AUTHOR_ASSET_SOURCE_REJECTION,
+            AUTHOR_SHOT_DURATION_REJECTION
         ].into_iter().map(str::to_string).collect::<Vec<_>>();
         // Enumerate only this immutable request's own source dialogue IDs.
         // Do not accept a wildcard error or another episode's missing line.
