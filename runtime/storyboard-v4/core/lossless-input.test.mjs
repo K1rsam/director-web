@@ -54,7 +54,7 @@ test('execution batches retain the full parent overview and predecessor while re
  assert.equal(rules.inputProjectionVersion,'lossless-input-v1');
  const projection=snapshot=>{
   const manifest=buildExecutionBatches({...payload,packageId:'p1',rulesSnapshot:snapshot,generation:'test-only-generation'}),batch=manifest.batches[1];
-  return {version:manifest.version,generation:manifest.generation,manifestHash:manifest.hash,id:batch.id,packageId:'p1',index:batch.index,total:manifest.batches.length,batch,predecessor:{batchId:manifest.batches[0].id,candidateId:'existing-paid-candidate',draftHash:'existing-draft-hash',unit:{id:'prior-u1',scene:'房间',lighting:'窗边冷光',unitDirection:'本段独有的停顿与回望',shots:[{picture:'拇指停在木纹裂口，视线随后抬起。',dialogueParts:[]}]}}};
+  return {version:manifest.version,generation:manifest.generation,manifestHash:manifest.hash,id:batch.id,packageId:'p1',index:batch.index,total:manifest.batches.length,batch,...(manifest.opportunityBasis?{opportunityBasis:manifest.opportunityBasis}:{}),predecessor:{batchId:manifest.batches[0].id,candidateId:'existing-paid-candidate',draftHash:'existing-draft-hash',unit:{id:'prior-u1',scene:'房间',lighting:'窗边冷光',unitDirection:'本段独有的停顿与回望',shots:[{picture:'拇指停在木纹裂口，视线随后抬起。',dialogueParts:[]}]}}};
  };
  const old=buildRequest({...payload,rulesSnapshot:frozenRules(),executionBatch:projection(frozenRules())});
  const current=buildRequest({...payload,rulesSnapshot:rules,executionBatch:projection(rules)}),input=inputOf(current),expected=inputOf(old);

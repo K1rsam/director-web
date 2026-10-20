@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { readSeriesExpressionPreferences, seriesExpressionBrief, type SeriesExpressionPreferences } from './series-expression';
+import { readSystemPresentation, projectSystemPresentation, type SystemPresentation } from './system-presentation';
 
 export const SERIES_DIRECTION_VERSION = "DIRECTOR_SERIES_DIRECTION_V1";
 export const SERIES_BRIEF_MAX_CHARACTERS = 600;
@@ -20,6 +22,8 @@ export type SeriesDirectionContent = {
   expressionRules: string[];
   avoidances: string[];
   episodeFlexibility: string | null;
+  expressionPreferences?: SeriesExpressionPreferences;
+  systemPresentation?: SystemPresentation;
 };
 export type SeriesSourceContext = {
   projectId: string;
@@ -88,7 +92,7 @@ function readSource(source: SeriesSourceContext): SeriesSourceContext {
 function manifestHash(source: SeriesSourceContext) {
   return digest({ projectId: source.projectId, sourceVersion: source.sourceVersion, episodeIds: [...source.episodeIds].sort(), evidenceIds: [...source.evidenceIds].sort() });
 }
-function readContent(content: SeriesDirectionContent): SeriesDirectionContent {
+function readContent(content: SeriesDirectionContent, source: SeriesSourceContext): SeriesDirectionContent {
   if (!content || typeof content !== "object") fail("DIRECTION_TEXT");
   const optional = (text: unknown, size: number) => text === null ? null : line(text, size);
   return {
@@ -101,6 +105,8 @@ function readContent(content: SeriesDirectionContent): SeriesDirectionContent {
     expressionRules: list(content.expressionRules, 3, 70, "DIRECTION_TEXT"),
     avoidances: list(content.avoidances, 3, 50, "DIRECTION_TEXT"),
     episodeFlexibility: optional(content.episodeFlexibility, 100),
+    ...(Object.hasOwn(content, 'expressionPreferences') ? { expressionPreferences: readSeriesExpressionPreferences(content.expressionPreferences) } : {}),
+    ...(Object.hasOwn(content, 'systemPresentation') ? { systemPresentation: readSystemPresentation(content.systemPresentation, source.evidenceIds) } : {}),
   };
 }
 function readKnowledge(items: SeriesKnowledgeItem[], source: SeriesSourceContext): SeriesKnowledgeItem[] {
@@ -130,7 +136,7 @@ function payload(input: SeriesDirectionInput, source: SeriesSourceContext): Omit
     schemaVersion: SERIES_DIRECTION_VERSION,
     id: line(input.id, 200, "DIRECTION_SOURCE"), projectId: source.projectId,
     revision: input.revision, sourceVersion: source.sourceVersion, sourceManifestHash: manifestHash(source),
-    reviewedEpisodeIds: [...reviewedEpisodeIds].sort(), evidenceRefs: [...evidenceRefs].sort(), content: readContent(input.content),
+    reviewedEpisodeIds: [...reviewedEpisodeIds].sort(), evidenceRefs: [...evidenceRefs].sort(), content: readContent(input.content, source),
     ...(input.knowledgeIndex === undefined ? {} : { knowledgeIndex: readKnowledge(input.knowledgeIndex, source), knowledgeEpisodeOrder: [...source.episodeIds] }),
   };
 }
@@ -157,6 +163,7 @@ function brief(card: SeriesDirectionCard): string {
     c.expressionRules.length ? `表现：${c.expressionRules.join("；")}` : "",
     c.avoidances.length ? `避免：${c.avoidances.join("；")}` : "",
     `单集弹性：${c.episodeFlexibility}`,
+    c.expressionPreferences ? seriesExpressionBrief(c.expressionPreferences) : '',
     "原文事实、台词与揭示时点优先；局部情绪不改全剧定位。",
   ].filter(Boolean);
   const text = lines.join("\n");
@@ -195,7 +202,7 @@ export function reviseSeriesDirection(previous: SeriesDirectionCard, next: Serie
 }
 
 /** All episodes receive the same brief; there is deliberately no local-tone mutation API. */
-export function projectSeriesDirection(card: SeriesDirectionCard, sourceContext: SeriesSourceContext, episodeId: string, approval: DirectionApproval | null) {
+export function projectSeriesDirection(card: SeriesDirectionCard, sourceContext: SeriesSourceContext, episodeId: string, approval: DirectionApproval | null, scope: 'EPISODE' | 'PROJECT' = 'EPISODE') {
   const source = readSource(sourceContext);
   assertCard(card, source);
   if (card.status !== "CONFIRMED" || !card.confirmation) fail("DIRECTION_UNCONFIRMED");
@@ -207,5 +214,7 @@ export function projectSeriesDirection(card: SeriesDirectionCard, sourceContext:
   const seriesKnowledge = (card.knowledgeIndex ?? []).filter(item => item.source.episodeId !== null && source.episodeIds.indexOf(item.source.episodeId) <= position)
     .map(item => ({ ...item, timing: item.source.episodeId === episodeId ? 'CURRENT_EPISODE_EVENT' as const : 'PRIOR_EVIDENCE' as const }));
   return freeze({ schemaVersion: SERIES_DIRECTION_VERSION, id: card.id, revision: card.revision, sourceVersion: card.sourceVersion, cardHash: card.hash, brief: brief(card), seriesKnowledge,
+    ...(card.content.systemPresentation ? { systemPresentation: { ...projectSystemPresentation(card.content.systemPresentation, source.episodeIds, scope === 'PROJECT' ? undefined : episodeId),
+      decision: { id: card.id, revision: card.revision, sourceVersion: card.sourceVersion, cardHash: card.hash } } } : {}),
     seriesKnowledgePolicy: '关系、揭示与变化是带来源的检索证据，不是每集摘要；当集事件只从原文引用位置起成立，历史证据不等于状态永久持续；角色主张不等于客观事实。未定揭示时点的作者资料不投递为当前事实。' });
 }

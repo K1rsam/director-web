@@ -1,5 +1,6 @@
 import {fail} from './shared.mjs';
 import {resolveSourceRef} from './source.mjs';
+import {validVisualSubjects,mergeVisualSubjects} from './visual-subjects.mjs';
 
 export const UNIT_PACKING_POLICY='event-first-v1';
 const has=x=>typeof x==='string'&&!!x.trim();
@@ -81,7 +82,7 @@ export function packEventUnits(draft,{plan,settings,unitPackingPolicy,stage='fin
   else if(['new_event','time_space_jump','episode_start'].includes(next.boundaryBefore?.kind))reason='explicit_boundary';
   else if(!boundaryOK(next.boundaryBefore,['continuous','capacity']))reason='unconfirmed_boundary';
   else if(!has(prior.scene)||prior.scene!==next.scene)reason='scene_changed_or_unconfirmed';
-  else if(!Number.isFinite(seconds(prior))||!Number.isFinite(seconds(next))||[prior,next].some(u=>!u.intent||!Array.isArray(u.intent.retain)||!['props','participants'].every(k=>Array.isArray(u[k]))||!['lighting','initialState','exitState'].every(k=>has(u[k]))))reason='invalid_unit';
+  else if(!Number.isFinite(seconds(prior))||!Number.isFinite(seconds(next))||[prior,next].some(u=>!u.intent||!Array.isArray(u.intent.retain)||!['props','participants'].every(k=>Array.isArray(u[k]))||!['lighting','initialState','exitState'].every(k=>has(u[k]))||Object.hasOwn(u,'visualSubjects')&&!validVisualSubjects(u.visualSubjects)))reason='invalid_unit';
   else if([prior,next].some(u=>u.shots.some(s=>!Array.isArray(s.sourceRefs)||s.sourceRefs.some(r=>!event.sourceRefs.includes(r)))))reason='event_source_mismatch';
   else if(seconds(prior)+seconds(next)>cap+1e-6)reason='capacity_exceeded';
   if(reason){changes.push({coordinate:next?.id||'unit',field:'unitBoundary',action:'retain',reason,detail:reasons[reason]});packed.push(next);continue;}
@@ -95,7 +96,7 @@ export function packEventUnits(draft,{plan,settings,unitPackingPolicy,stage='fin
   const initialState=[parts[0].initialState,...parts.slice(1).map(s=>`【${s.shotIds[0]}起承接】${s.initialState}`)].join('\n');
   const directed=parts.filter(s=>has(s.unitDirection));
   const unitDirection=directed.length===parts.length&&unique(directed.map(s=>s.unitDirection)).length===1?directed[0].unitDirection:directed.map(s=>`【${s.shotIds[0]}—${s.shotIds.at(-1)}】${s.unitDirection}`).join('\n');
-  packed[packed.length-1]={...prior,title:unique(parts.map(s=>s.title)).join(' / '),...(directed.length?{unitDirection}:{}),intent:combine(parts.map(s=>s.intent),['subject','change','landing']),props:unique(parts.flatMap(s=>s.props)),participants:unique(parts.flatMap(s=>s.participants)),lighting,initialState,exitState:next.exitState,shots:[...prior.shots,...next.shots],segments:parts};
+  packed[packed.length-1]={...prior,title:unique(parts.map(s=>s.title)).join(' / '),...(directed.length?{unitDirection}:{}),intent:combine(parts.map(s=>s.intent),['subject','change','landing']),props:unique(parts.flatMap(s=>s.props)),participants:unique(parts.flatMap(s=>s.participants)),...([prior,next].some(u=>Object.hasOwn(u,'visualSubjects'))?{visualSubjects:mergeVisualSubjects([prior,next])}:{}),lighting,initialState,exitState:next.exitState,shots:[...prior.shots,...next.shots],segments:parts};
   for(const f of Array.isArray(draft.fantasyRealization)?draft.fantasyRealization:[])if(Array.isArray(f?.unitIds))f.unitIds=unique(f.unitIds.map(id=>id===next.id?prior.id:id));
   changes.push({coordinate:prior.id,field:'units',action:'merge',from,to:prior.id,eventId:prior.eventId,seconds:Number((seconds(prior)+seconds(next)).toFixed(3)),reason:'continuous_event_within_capacity',detail:'同一连续事件在所选容量内合并；画面、声画、镜长及台词未改，仅必要的内部单元转场用语另记归一；原分段头保存在segments'});
  }

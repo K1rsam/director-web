@@ -1,5 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {createEngine} from './storyboard-v4/core/pipeline.mjs';
+import {createStore} from './storyboard-v4/core/store.mjs';
 import {makeBoundaryContext, validateProductionFeedback, reconcileBoundary, selectBoundaryForRequest, dependencyScope, selectedActualTail, productionFeedbackSchema} from './episode-boundary.mjs';
 
 const seed={schema:'EPISODE_BOUNDARY_SEED_V1',sourceVersion:'source-1',fromEpisode:1,toEpisode:2,adjacentEpisode:true,
@@ -86,4 +91,60 @@ test('locked choices are checked without an actual tail and cannot disappear fro
  assert.equal(reconcileBoundary({context:preliminary,feedback:feedback([state('甲')])}).status,'CONSTRAINT_CONFLICT');
  const current=makeBoundaryContext({seed,selected,actual:{...actual,states:[state('甲')]},agreements:[state('乙')]});
  assert.equal(reconcileBoundary({context:current,feedback:feedback([])}).status,'CONSTRAINT_CONFLICT');
+});
+
+test('new current-source entry facts need not have been restated by the predecessor',()=>{
+ const context=makeBoundaryContext({seed,selected,actual});
+ const current={key:'character:hostage/location',value:'仍在囚室，尚未获救',authority:'SOURCE',sourceRefs:['current-action']};
+ const source={sourceRows:[{id:'current-action',kind:'action',text:'水从通风口渗入囚室，在人质掌心写字。'}],contextRows:[],dialogue:[]};
+ const receipt=feedback([state('乙'),current]),before=structuredClone({context,receipt,source});
+ const stale=reconcileBoundary({context,feedback:receipt});
+ const check=reconcileBoundary({context,feedback:receipt,source,previousCheck:stale});
+ assert.equal(check.status,'MATCHED');
+ assert.deepEqual(check.currentSourceKeys,[current.key]);
+ assert.deepEqual(context.actual.states,[state('乙')],'do not fabricate a missing predecessor state');
+ assert.deepEqual({context,receipt,source},before);
+ assert.equal(reconcileBoundary({context,feedback:receipt,source,previousCheck:check}),check);
+
+ for(const variant of [
+  {...current,authority:'DESIGN'},
+  {...current,sourceRefs:[]},
+  {...current,sourceRefs:['previous-action']},
+  {...current,sourceRefs:['current-action','previous-action']},
+  {...current,sourceRefs:['spoken']},
+ ])assert.equal(reconcileBoundary({context,feedback:feedback([variant]),source}).status,'UNRESOLVED');
+ for(const row of [
+  {id:'current-action',kind:'dialogue'},
+  {id:'current-action',kind:'guidance'},
+  {id:'current-action',kind:'action',evidenceRole:'guidance'},
+  {id:'current-action'},
+ ])assert.equal(reconcileBoundary({context,feedback:receipt,source:{...source,sourceRows:[row]}}).status,'UNRESOLVED');
+ assert.equal(reconcileBoundary({context,feedback:receipt,source:{...source,dialogue:[{sourceIds:['current-action']}]}}).status,'UNRESOLVED');
+ const contradictory=makeBoundaryContext({seed,selected,actual:{...actual,states:[state('乙'),{...current,value:'已救出'}]}});
+ assert.equal(reconcileBoundary({context:contradictory,feedback:receipt,source}).status,'CONSTRAINT_CONFLICT');
+ const locked=makeBoundaryContext({seed,selected,actual,agreements:[{...current,value:'已救出',authority:'DESIGN'}]});
+ assert.equal(reconcileBoundary({context:locked,feedback:receipt,source}).status,'CONSTRAINT_CONFLICT');
+ assert.equal(reconcileBoundary({context:makeBoundaryContext({seed,selected}),feedback:receipt,source}).status,'PRELIMINARY');
+});
+
+test('free boundary revalidation of a completed draft appends provenance without repurchasing or rewriting it',async()=>{
+ const directory=await mkdtemp(path.join(tmpdir(),'boundary-current-source-'));
+ try{
+  const context=makeBoundaryContext({seed,selected,actual});
+  const receipt=feedback([state('乙'),{key:'new/location',value:'仍在囚室',authority:'SOURCE',sourceRefs:['s1']}]);
+  const source={sourceRows:[{id:'s1',text:'水渗入囚室，在人质掌心写字。',kind:'action'}],contextRows:[],dialogue:[],entryFacts:[]};
+  const plan={workPackages:[{id:'p1',sourceRefs:['s1'],contextRefs:[],entryFactIds:[],dependsOn:[]}],productionFeedback:receipt};
+  const oldCheck=reconcileBoundary({context,feedback:receipt});delete oldCheck.checkVersion;
+  const document={id:'completed',source,plan,adopted:[],candidates:[{id:'paid',attemptId:'paid',stage:'plan',packageIds:[],status:'adopted',raw:'original-paid-raw',output:plan,productionFeedback:receipt}],operations:[{attemptId:'paid',stage:'plan',status:'completed',fingerprint:'original-paid-hash'}],rulesSnapshot:{},status:'text_ready_for_review',assembly:{draft:{units:[]}},web:{budget:{maxTokens:1000}},production:{boundary:context,materials:[],boundaryCheck:oldCheck,checkHistory:[{...oldCheck,at:'2026-10-01T00:00:00Z'}]}};
+  const store=createStore(directory);await store.create(document.id,document);
+  let calls=0;const engine=createEngine({directory,modelRunner:async()=>{calls++;throw Error('free revalidation must not dispatch');}});
+  const after=await engine.refreshProduction(document.id,{boundary:context,materials:[]});
+  assert.equal(after.production.boundaryCheck.status,'MATCHED');
+  assert.equal(after.production.checkHistory.length,2);
+  assert.deepEqual(after.production.checkHistory.at(-1).currentSourceKeys,['new/location']);
+  assert.equal(calls,0);
+  for(const key of ['source','plan','adopted','candidates','operations','rulesSnapshot','status','assembly','web'])assert.deepEqual(after[key],document[key],key);
+  const again=await engine.refreshProduction(document.id,{boundary:context,materials:[]});
+  assert.equal(again.production.checkHistory.length,2,'identical refresh must not append or dispatch repeatedly');
+ }finally{await rm(directory,{recursive:true,force:true});}
 });

@@ -50,13 +50,17 @@ test('new production requests shorten opaque coordinates and boundary records wi
  assert.equal(legacy.modelCoordinates,undefined,'frozen v1 keeps original model IDs');
 });
 
-test('unknown boundary fields and literal short-coordinate collisions fall back without dropping data',()=>{
+test('unknown boundary fields remain complete and literal markers cannot become references in either version',()=>{
  const payload=fixture();payload.productionSnapshot.episodeBoundary.seed.previousSource.nodes[0].unknown='重要扩展信息';
  let request=buildRequest(payload);assert.deepEqual(expand(request),expand(buildRequest({...payload,productionSnapshot:{...payload.productionSnapshot,transportVersion:'production-text-reuse-v1'}})));
  assert.ok(!inputOf(request).episodeBoundary.seed.previousSource.nodes.$boundaryNodes);
- payload.source.context.literal='R0001';request=buildRequest(payload);
+ payload.source.context.literal='R0001';
+ request=buildRequest({...payload,rulesSnapshot:{...payload.rulesSnapshot,modelCoordinateVersion:'model-coordinates-v1'}});
  assert.equal(request.modelCoordinates,undefined,'literal transport names must never become references');
  assert.equal(inputOf(request).source.context.literal,'R0001');
+ request=buildRequest(payload);assert.equal(inputOf(request).source.context.literal,'R0001');
+ assert.equal(Object.hasOwn(request.modelCoordinates.aliases,'R0001'),false,'v2 reserves every existing spelling instead of changing the literal');
+ assert.deepEqual(expand(request),expand(buildRequest({...payload,productionSnapshot:{...payload.productionSnapshot,transportVersion:'production-text-reuse-v1'}})));
 });
 
 test('SOURCE feedback schema excludes dialogue and guidance at generation time, not only after payment',()=>{
@@ -188,8 +192,9 @@ test('long package and batch prefixes stay canonical for newly created unit and 
  assert.ok(result.coordinates);assert.equal(result.input.plan.workPackages[0].id,id);assert.equal(result.input.executionBatch.id,batch);assert.equal(result.input.plan.provisionalUnits[0].packageId,id);
 });
 
-test('unaddressable raw repair JSON keeps one canonical namespace instead of guessing short IDs',()=>{
+test('frozen V2 unaddressable raw repair JSON keeps one canonical namespace instead of guessing short IDs',()=>{
  const payload=fixture(),raw=JSON.stringify({units:[{id:'existing-unit',shots:[{sourceRefs:[payload.source.sourceRows[0].id],picture:'已付费正文完整保留。'}]}]});
+ payload.rulesSnapshot.modelCoordinateVersion='model-coordinates-collision-v2';
  payload.previousDraft={rawText:raw};
  let request=buildRequest(payload);assert.equal(request.modelCoordinates,undefined,'raw-only paid repair falls back to canonical coordinates');
  assert.equal(inputOf(request).source.sourceRows[0].id,payload.source.sourceRows[0].id);assert.equal(inputOf(request).previousDraft.rawText,raw);

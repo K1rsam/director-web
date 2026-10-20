@@ -1,0 +1,57 @@
+{
+  "text": "甲：别让雨声盖住我。\n导演处理：雨声压低，保留现场对白。\n",
+  "package": {
+    "schemaVersion": "DIRECTOR_STANDARD_SCRIPT_SLICE_V1",
+    "assemblerVersion": "standard-script-compiler-v1",
+    "binding": {
+      "sourceId": "episode-41",
+      "sourceVersion": "src:483bc0de4bd859485550ca97530a472949d66f29644bf805a2a197cb392f915d",
+      "indexerVersion": "physical-lines-v1",
+      "sourceIndexDigest": "7cf3cf2e24993ff05b19e35182e8f853d0e683d8db0438a687dcfcd92fb317c0",
+      "planDigest": "f851ee675a7afd9466c22e1ab5f9aa9e5246e0b0b53c77075dbf7e829204574b"
+    },
+    "script": {"entries": [{
+      "id": "line-1", "target": "BODY", "kind": "DIALOGUE",
+      "sourceUnitIds": ["src:483bc0de4bd859485550ca97530a472949d66f29644bf805a2a197cb392f915d:u1"],
+      "text": "别让雨声盖住我。",
+      "textAssembly": {"parts": [{"kind": "SOURCE_SLICE", "unitId": "src:483bc0de4bd859485550ca97530a472949d66f29644bf805a2a197cb392f915d:u1", "start": 2, "end": 10}]},
+      "layout": [
+        {"kind": "SOURCE_SLICE", "unitId": "src:483bc0de4bd859485550ca97530a472949d66f29644bf805a2a197cb392f915d:u1", "start": 1, "end": 2},
+        {"kind": "SOURCE_SEPARATOR", "unitId": "src:483bc0de4bd859485550ca97530a472949d66f29644bf805a2a197cb392f915d:u1", "start": 10, "end": 11}
+      ],
+      "speaker": {"text": "甲", "parts": [{"kind": "SOURCE_SLICE", "unitId": "src:483bc0de4bd859485550ca97530a472949d66f29644bf805a2a197cb392f915d:u1", "start": 0, "end": 1}]},
+      "channel": "SPEECH", "channelSource": null, "cue": null
+    }]},
+    "annotations": [{
+      "id": "line-2", "target": "ANNOTATION", "kind": "CREATIVE_GUIDANCE",
+      "sourceUnitIds": ["src:483bc0de4bd859485550ca97530a472949d66f29644bf805a2a197cb392f915d:u2"],
+      "text": "导演处理：雨声压低，保留现场对白。",
+      "textAssembly": {"parts": [{"kind": "SOURCE_SLICE", "unitId": "src:483bc0de4bd859485550ca97530a472949d66f29644bf805a2a197cb392f915d:u2", "start": 11, "end": 28}]},
+      "layout": [{"kind": "SOURCE_SEPARATOR", "unitId": "src:483bc0de4bd859485550ca97530a472949d66f29644bf805a2a197cb392f915d:u2", "start": 28, "end": 29}]
+    }],
+    "exclusions": [],
+    "evidence": [
+      {"id": "src:483bc0de4bd859485550ca97530a472949d66f29644bf805a2a197cb392f915d:u1", "start": 0, "end": 11, "text": "甲：别让雨声盖住我。\n", "sourceVersion": "src:483bc0de4bd859485550ca97530a472949d66f29644bf805a2a197cb392f915d", "offsetUnit": "UTF16"},
+      {"id": "src:483bc0de4bd859485550ca97530a472949d66f29644bf805a2a197cb392f915d:u2", "start": 11, "end": 29, "text": "导演处理：雨声压低，保留现场对白。\n", "sourceVersion": "src:483bc0de4bd859485550ca97530a472949d66f29644bf805a2a197cb392f915d", "offsetUnit": "UTF16"}
+    ],
+    "fidelity": {
+      "assignments": [
+        {"unitId": "src:483bc0de4bd859485550ca97530a472949d66f29644bf805a2a197cb392f915d:u1", "target": "BODY", "targetId": "line-1", "fieldPath": "script.entries[0]"},
+        {"unitId": "src:483bc0de4bd859485550ca97530a472949d66f29644bf805a2a197cb392f915d:u2", "target": "ANNOTATION", "targetId": "line-2", "fieldPath": "annotations[0]"}
+      ],
+      "receipt": {
+        "schemaVersion": "STANDARD_SCRIPT_MECHANICAL_RECEIPT_V1", "status": "MECHANICALLY_VERIFIED",
+        "sourceId": "episode-41", "sourceVersion": "src:483bc0de4bd859485550ca97530a472949d66f29644bf805a2a197cb392f915d",
+        "indexerVersion": "physical-lines-v1", "sourceIndexDigest": "7cf3cf2e24993ff05b19e35182e8f853d0e683d8db0438a687dcfcd92fb317c0",
+        "planDigest": "f851ee675a7afd9466c22e1ab5f9aa9e5246e0b0b53c77075dbf7e829204574b",
+        "packageDigest": "4d4f5a2ffcd5c967fc4605f7543a7cdea90fa65796123ef3897fdc50fc2d14ba",
+        "readingTextDigest": "21224f9be09eeeea05c780dedce0faa1491fcd389f7473acf6431513a6e38921",
+        "assemblerVersion": "standard-script-compiler-v1",
+        "checks": {"unitCoverage": "VERIFIED", "sourceOrder": "VERIFIED", "sourceSlices": "VERIFIED", "fieldBoundaries": "VERIFIED", "exclusionShape": "VERIFIED", "noTextPatches": "VERIFIED"},
+        "semantic": "NOT_RUN", "acceptedForDispatch": false
+      }
+    },
+    "readiness": {"mechanical": "VERIFIED", "semantic": "NOT_RUN", "acceptedForDispatch": false, "blockers": ["SEMANTIC_REVIEW_NOT_RUN", "PRODUCTION_INTEGRATION_NOT_IMPLEMENTED"]},
+    "packageId": "standard:4d4f5a2ffcd5c967fc4605f7543a7cdea90fa65796123ef3897fdc50fc2d14ba"
+  }
+}

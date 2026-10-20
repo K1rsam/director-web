@@ -1,0 +1,28 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {createCoordinator} from './storyboard-v4/coordinator.mjs';
+import {createStore} from './storyboard-v4/core/store.mjs';
+import {tailFixture} from './storyboard-v4/core/author-call-group-test-fixtures.mjs';
+import {createRuntimeMaintenance} from './production-maintenance-control.mjs';
+const bridge=await import('./production-maintenance-host.mjs').catch(e=>e.code==='ERR_MODULE_NOT_FOUND'?{}:Promise.reject(e));
+test('maintenance bridge lets the original response finish, drains settlement and retires without a second model request',async t=>{
+ const root=await mkdtemp(path.join(tmpdir(),'maintenance-bridge-')),dataRoot=path.join(root,'runs'),workflowDirectory=path.join(root,'flows'),budgetDirectory=path.join(root,'budgets'),f=tailFixture();
+ let release,entered,calls=0;const gate=new Promise(r=>release=r),arrival=new Promise(r=>entered=r);
+ const c=createCoordinator({dataRoot,modelRunner:async()=>{calls++;entered();await gate;return {output:f.plan,raw:JSON.stringify(f.plan),requestOutcome:'RESPONDED',usage:{totalTokens:1}};}});
+ t.after(async()=>{release();await c.shutdown();await rm(root,{recursive:true,force:true});});
+ assert.equal(typeof bridge.performMaintenanceDrain,'function','缺少本机受控排空桥接');
+ const run=await c.create({source:f.source,settings:f.settings,binding:{projectId:'p',episodeId:'e',sourceVersion:'s',episodeNumber:1,productionChain:{id:'flow'},productionBudget:{id:'budget',directory:budgetDirectory}}});
+ await c.start(run.id,{mode:'next'});await arrival;
+ const flows=createStore(workflowDirectory),budgets=createStore(budgetDirectory);
+ await flows.create('flow',{id:'flow',schema:'PRODUCTION_WORKFLOW_V1',projectId:'p',revision:1,sourceVersion:'s',selectedRuns:{1:run.id},budgetId:'budget',paused:false,status:'READY',activeAction:null,parallel:{enabled:true,authorizedAt:'auth',authorizedBy:'u'}});
+ await budgets.create('budget',{id:'budget',projectIds:['p'],maxCalls:900,maxTokens:67500000,paused:false,attempts:[]});
+ const maintenance=createRuntimeMaintenance({dataRoot,workflowDirectory,budgetDirectory});
+ await maintenance.begin({workflowId:'flow',expectedAuthorization:'auth',expectedRevision:1,targetPid:process.pid,codeIdentity:'code'});
+ let finished=false;const drain=bridge.performMaintenanceDrain({maintenance,service:c,dataRoot,workflowDirectory}).then(()=>finished=true);
+ await new Promise(r=>setTimeout(r,10));assert.equal(finished,false);assert.equal(calls,1);release();await drain;
+ assert.equal((await maintenance.current()).phase,'RETIRED');
+ assert.equal((await c.read(run.id)).operations[0].status,'completed');assert.equal(calls,1);
+});

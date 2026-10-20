@@ -1,6 +1,8 @@
 // New requests opt in. Frozen paid requests retain their original input contract.
 export const PRODUCTION_SUPPLY_VERSION='production-supply-v1';
 import {knownFact,knownHistorical} from './storyboard-v4/core/production-context-projection.mjs';
+import {EPISODE_EVIDENCE_VERSION,EPISODE_HISTORY_POLICY_VERSION,selectEpisodeEvidence} from './episode-evidence.mjs';
+import {STANDARD_EPISODE_PROTOCOL} from './storyboard-v4/core/standard-source.mjs';
 const record=x=>x&&typeof x==='object'&&!Array.isArray(x);
 const groups=['current','background','backgroundCandidates','historicalStates','historicalEvidenceCandidates','unlinkedBackground','sourceFactIndex'];
 const factRefs=f=>[...(typeof f.contextRef==='string'?[f.contextRef]:[]),...(Array.isArray(f.contextRefs)?f.contextRefs:[])];
@@ -11,7 +13,7 @@ export function sourceRange(source,row){
 const overlaps=(a,b)=>a.start<b.end&&b.start<a.end;
 /** Planner reads relevant episode evidence once. Authors consume its explicit evidence
  * selections, state/release evidence, global direction and their own scene, not its whole library. */
-export function scopeProductionSource(source,{fullSource=source,stage='plan',plan=null}={}){
+export function scopeProductionSource(source,{fullSource=source,stage='plan',plan=null,episodeEvidenceVersion=null,historyPolicy=null}={}){
  const next=structuredClone(source),context=next.context;
  if(!record(context)||context.independentFragment)return next;
  const episode=Number(/^episode-(\d+)$/.exec(fullSource.standardPackage?.binding?.sourceId??'')?.[1]??context.episodeNumber);
@@ -41,31 +43,43 @@ export function scopeProductionSource(source,{fullSource=source,stage='plan',pla
  const origins=[...next.sourceRows,...next.contextRows.filter(row=>selected.has(row.id))].flatMap(row=>row.provenance?.origin?[row.provenance.origin]:[]);
  const read=f=>factRefs(f).some(ref=>selected.has(ref))||origins.some(origin=>origin.domain===f.evidence.domain&&origin.episode===f.evidence.episode&&origin.sectionKey===f.evidence.sectionKey&&overlaps(origin,f.evidence));
  const keepHistorical=f=>read(f)||['STATE','IDENTITY','RELATION'].includes(f.kind)&&matches(f);
- const history=facts.historicalEvidenceCandidates||[],kept=new Set(history.filter(keepHistorical).map(f=>f.id));
+ const history=facts.historicalEvidenceCandidates||[];
+ const episodeSelection=episodeEvidenceVersion===EPISODE_EVIDENCE_VERSION&&Number.isSafeInteger(episode)
+  ?selectEpisodeEvidence(history,{scope:[episode],relevant:matches,requestedEvidence:history.filter(read).map(f=>f.evidence),historyPolicy}):null;
+ const focused=historyPolicy===EPISODE_HISTORY_POLICY_VERSION&&Boolean(episodeSelection);
+ const kept=new Set(history.filter(f=>episodeSelection&&f.evidence.domain==='EPISODE'
+  ?episodeSelection.kept.has(f.id):keepHistorical(f)).map(f=>f.id));
  // Keep release/counterclaim neighbours and their anchor links intact; no latest-state collapse.
  let previousSize;
  do{
   previousSize=kept.size;
-  for(const f of history)if(kept.has(f.id)||f.retrieval.mode==='SOURCE_NEIGHBOUR'&&f.retrieval.anchorFactIds.some(id=>kept.has(id))){kept.add(f.id);for(const id of f.retrieval.anchorFactIds)kept.add(id);}
+  if(!focused)for(const f of history)if(kept.has(f.id)||(!episodeSelection&&f.retrieval.mode==='SOURCE_NEIGHBOUR'&&f.retrieval.anchorFactIds.some(id=>kept.has(id)))){kept.add(f.id);for(const id of f.retrieval.anchorFactIds)kept.add(id);}
  }while(kept.size!==previousSize);
  const allRefs=new Set(groups.flatMap(k=>(facts[k]||[]).flatMap(factRefs)));
  for(const group of groups){
   if(!Array.isArray(facts[group]))continue;
   facts[group]=facts[group].filter(f=>{
    if(f.contextUse?.kind==='EPISODE_OUTLINE'&&Number.isSafeInteger(episode)&&f.contextUse.episode!==episode)return false;
+   if(group==='historicalEvidenceCandidates'&&episodeSelection)return kept.has(f.id)&&(!Number.isSafeInteger(f.evidence.episode)||f.evidence.episode<episode);
    if(stage==='plan')return true;
    if(['current','sourceFactIndex'].includes(group))return !currentRanges.length||f.evidence.domain!=='EPISODE'||f.evidence.episode!==episode||currentRanges.some(range=>overlaps(range,f.evidence))||read(f);
    if(group==='historicalEvidenceCandidates')return kept.has(f.id);
    if(group==='historicalStates')return keepHistorical(f);
    return f.applicability==='GLOBAL'||matches(f)||read(f);
   });
+  // New request-local retrieval edges must not close over the old broad recall
+  // graph and reintroduce every omitted sentence. Source IDs/claims stay intact.
+  if(focused&&group==='historicalEvidenceCandidates')facts[group]=facts[group].map(f=>({...f,retrieval:episodeSelection.anchors.has(f.id)
+   ?{mode:'SUBJECT_MENTION',anchorFactIds:[f.id]}:{mode:'SOURCE_NEIGHBOUR',anchorFactIds:episodeSelection.neighbours.get(f.id)}}));
   for(const f of facts[group])for(const ref of factRefs(f))selected.add(ref);
  }
  const historyOrigins=[...(facts.historicalStates||[]),...(facts.historicalEvidenceCandidates||[])].map(f=>f.evidence);
+ // Canonical standard annotations are required by source proof, independent of historical retrieval.
+ const standardNotes=new Set(next.sourceProtocol===STANDARD_EPISODE_PROTOCOL?(next.standardPackage?.annotations||[]).map(note=>`${next.key}:${note.id}`):[]);
  next.contextRows=next.contextRows.filter(row=>{
-  if(selected.has(row.id))return true;
+  if(selected.has(row.id)||standardNotes.has(row.id))return true;
   if(allRefs.has(row.id))return false;
-  if(stage==='plan')return true;
+  if(stage==='plan'&&!episodeSelection)return true;
   const currentRange=sourceRange(fullSource,row);
   if(currentRange&&row.evidenceRole==='guidance'&&context.scenes?.every(s=>s.sourceRange))return context.scenes.some(s=>overlaps(currentRange,s.sourceRange));
   const origin=row.provenance?.origin;

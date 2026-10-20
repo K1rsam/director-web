@@ -1,0 +1,53 @@
+.panel { height: auto; margin-top: 20px; }
+.panel::after { display: none; }
+.panel:hover { transform: none; }
+.panel > div:first-child { display: block; height: auto; min-height: 0; padding: 20px; }
+.heading, .candidateHeading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.heading p, .note, .activity { margin: 8px 0 0; color: #665f79; font-size: .8125rem; line-height: 1.7; }
+.optional { margin-left: 6px; color: #80748d; font-size: .75rem; font-weight: 400; }
+.scope { display: grid; gap: 16px; margin-top: 16px; }
+.scope fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
+.scope legend { margin-bottom: 9px; color: #615571; font-size: .8125rem; }
+.events { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px 18px; }
+.events label, .units label { display: flex; align-items: flex-start; gap: 7px; color: #544a68; font-size: .8125rem; line-height: 1.7; }
+.events label > span { min-width: 0; }
+.events input, .units input { flex: none; width: 15px; height: 15px; min-height: 0; padding: 0; accent-color: #7b66a0; margin-top: 5px; }
+.events label:has(input:disabled) { opacity: .6; }
+.eventRange { display: grid; gap: 3px; margin-top: 4px; }
+.scopeMeta, .anchor, .units small { color: #776c86; font-size: .75rem; font-weight: 400; overflow-wrap: anywhere; }
+.units { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 10px 20px; }
+.units label > span { min-width: 0; }
+.units .anchor { display: block; }
+.units small { display: block; }
+.selection { margin: 0; color: #615571; font-size: .8125rem; line-height: 1.7; }
+.scope > button { justify-self: start; }
+.direction { margin: 12px 0 0; color: #856443; font-size: .8125rem; line-height: 1.7; }
+.workOrder { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.workOrder label { display: grid; gap: 7px; min-width: 0; color: #615571; font-size: .8125rem; }
+.workOrder textarea { width: 100%; min-width: 0; min-height: 84px; resize: vertical; border: 1px solid #a697c238; border-radius: 10px; padding: 10px 12px; background: #ece9f37a; color: #393149; font: inherit; font-weight: 400; line-height: 1.7; }
+.workOrder textarea:focus-visible { outline: 2px solid #7b66a0; outline-offset: 2px; }
+.recordedScope { margin-bottom: 12px; }
+.recordedScope > div { margin-top: 10px; color: #544a68; font-size: .8125rem; }
+.decisions { margin: 10px 0 0; padding-left: 20px; color: #615571; font-size: .8125rem; line-height: 1.7; }
+.decisions li + li { margin-top: 10px; }
+.decisions p { margin: 3px 0 0; }
+.candidate { margin-top: 18px; padding-top: 16px; border-top: 1px solid #a697c22c; }
+.candidateHeading { margin-bottom: 12px; color: #504761; font-size: .8125rem; }
+.candidateHeading span { color: #776c86; }
+.candidate summary { color: #625074; cursor: pointer; font-size: .8125rem; }
+.preview { max-height: 480px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; margin: 12px 0; border-radius: 12px; background: #ece9f37a; color: #393149; font: inherit; font-size: .875rem; line-height: 1.8; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.errors { color: #856443; font-size: .8125rem; line-height: 1.7; }
+.adoptionGroups { min-width: 0; padding: 14px; margin: 16px 0; border: 1px solid #b6a8cb40; border-radius: 16px; background: linear-gradient(130deg, #ffffff4a, #e9e1f432); box-shadow: inset 0 1px 1px #ffffff80, 0 4px 14px #5f4d7910; }
+.adoptionGroups legend { color: #625074; padding: 0 6px; font-size: .8125rem; }
+.adoptionGroups label { display: flex; align-items: flex-start; gap: 10px; margin-top: 14px; color: #544a68; font-size: .8125rem; }
+.adoptionGroups input { width: 16px; height: 16px; min-height: 0; flex: none; margin-top: 3px; accent-color: #7b66a0; }
+.adoptionGroups label > span { min-width: 0; }
+.adoptionGroups small { display: block; margin-top: 4px; color: #776c86; overflow-wrap: anywhere; line-height: 1.6; }
+@media (max-width: 600px) {
+  .panel > div:first-child { padding: 15px; }
+  .heading { flex-direction: column; gap: 8px; }
+  .workOrder { grid-template-columns: 1fr; }
+  .scope > button { width: 100%; }
+  .preview { padding: 12px; }
+}

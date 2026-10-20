@@ -1,8 +1,10 @@
-import {mkdir,readFile,open,rename,rm,unlink} from 'node:fs/promises';
+import {mkdir,readFile,open,rename,rm,unlink,lstat} from 'node:fs/promises';
 import path from 'node:path';
 import {hostname} from 'node:os';
 import {randomUUID} from 'node:crypto';
 import {fail} from './shared.mjs';
+import {readHostBootTime} from '../host-boot.mjs';
+import {acquireRuntimeLease} from '../runtime-lease.mjs';
 
 const valid=id=>typeof id==='string'&&/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(id);
 const copy=value=>{
@@ -18,7 +20,7 @@ function enqueue(key,action){
   return current;
 }
 
-export function createStore(directory,{trackRevision=false}={}){
+export function createStore(directory,{trackRevision=false,hostBootTime=readHostBootTime}={}){
   const base=path.resolve(directory), files=path.join(base,'documents');
   const filename=id=>{if(!valid(id))fail('INVALID_ID','Invalid document id');return path.join(files,`${id}.json`);};
   const lockfile=id=>path.join(files,`${id}.lock`);
@@ -72,14 +74,31 @@ export function createStore(directory,{trackRevision=false}={}){
     async recoverStaleLock(id){
       const lock=lockfile(id);
       return enqueue(filename(id),async()=>{
-        let owner;try{owner=JSON.parse(await readFile(lock,'utf8'));}catch(error){if(error.code==='ENOENT')return {recovered:false,reason:'NO_LOCK'};fail('UNKNOWN_LOCK','Lock owner cannot be verified');}
-        if(!Number.isSafeInteger(owner.pid)||owner.pid<=0||typeof owner.token!=='string'||!owner.token||owner.host!==hostname())fail('UNKNOWN_LOCK','Lock owner cannot be verified on this host');
-        try{process.kill(owner.pid,0);fail('BUSY','Lock owner is alive');}catch(error){if(error.code!=='ESRCH')throw error;}
+        try{await lstat(lock);}catch(error){if(error.code==='ENOENT')return {recovered:false,reason:'NO_LOCK'};throw error;}
+        const lease=await acquireRuntimeLease(path.join(base,'lock-recovery',id));
+        try{
+        lease.assertHeld();
+        let owner,stat;try{stat=await lstat(lock);if(!stat.isFile()||stat.isSymbolicLink())fail('UNKNOWN_LOCK','Lock must be a regular file');owner=JSON.parse(await readFile(lock,'utf8'));}catch(error){if(error.code==='ENOENT')return {recovered:false,reason:'NO_LOCK'};fail('UNKNOWN_LOCK','Lock owner cannot be verified');}
+        lease.assertHeld();
+        if(!owner||!Number.isSafeInteger(owner.pid)||owner.pid<=0||typeof owner.token!=='string'||!owner.token||owner.host!==hostname())fail('UNKNOWN_LOCK','Lock owner cannot be verified on this host');
+        let alive=true;try{process.kill(owner.pid,0);}catch(error){if(error.code!=='ESRCH')throw error;alive=false;}
+        let boot=null;
+        if(alive){
+          boot=await hostBootTime();
+          lease.assertHeld();
+          // A PID can belong to an unrelated process after reboot. All native file
+          // times must predate this boot; unsupported or ambiguous evidence stays closed.
+          if(!Number.isFinite(boot)||boot<=0||boot>Date.now()||![stat.birthtimeMs,stat.mtimeMs,stat.ctimeMs].every(n=>Number.isFinite(n)&&n>0&&n<boot))fail('BUSY','Lock owner is alive or its prior boot cannot be proved');
+        }
         const current=await readFile(lock,'utf8');
-        if(current!==JSON.stringify(owner))fail('BUSY','Lock changed during recovery');
+        const latest=await lstat(lock);
+        lease.assertHeld();
+        if(current!==JSON.stringify(owner)||!latest.isFile()||latest.isSymbolicLink()||['dev','ino','size','birthtimeMs','mtimeMs','ctimeMs'].some(k=>latest[k]!==stat[k]))fail('BUSY','Lock changed during recovery');
         const archived=path.join(files,`${id}.stale-${randomUUID()}.lock`);
+        lease.assertHeld();
         await rename(lock,archived);
-        return {recovered:true,archived};
+        return {recovered:true,archived,reason:alive?'PREVIOUS_BOOT':'DEAD_PID',...(alive?{hostBootTimeMs:boot}:{} )};
+        }finally{await lease.release();}
       });
     }
   };

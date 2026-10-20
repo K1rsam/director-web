@@ -6,10 +6,17 @@ import {tmpdir} from 'node:os';
 import {createCoordinator} from './coordinator.mjs';
 import {tailFixture,tailDraft} from './core/author-call-group-test-fixtures.mjs';
 import {DELTA_VERSION} from './core/delta.mjs';
+import {createStore} from './core/store.mjs';
 
 const binding={projectId:'synthetic-admission',episodeId:'episode-1',sourceVersion:'source-v1'};
 const production=()=>({version:'production-feedback-v1',boundary:null,materials:[],outgoingAgreements:[]});
 const agreement={key:'PR01/receiver',value:'乙',authority:'DESIGN',sourceRefs:[]};
+// Admission fixtures predate complete-result receipts; keep their saved production contract explicit.
+function legacyCoordinator(options){
+ const c=createCoordinator(options),create=c.create.bind(c);
+ c.create=async input=>{const run=await create(input);await createStore(options.dataRoot).update(run.id,d=>{d.rulesSnapshot.productionFeedbackResultVersion='production-feedback-result-v1';return d;});return c.read(run.id);};
+ return c;
+}
 function singlePackageFixture(){
  const f=tailFixture();
  f.source.sourceRows=f.source.sourceRows.slice(-1);
@@ -31,7 +38,7 @@ function response(request,fixture){
 
 test('author admission is not called by planning or finishing',async()=>{
  const directory=await mkdtemp(path.join(tmpdir(),'author-admission-stages-')),f=singlePackageFixture(),events=[];
- const c=createCoordinator({dataRoot:directory,beforeAuthorAdmission:async(received,run)=>{
+ const c=legacyCoordinator({dataRoot:directory,beforeAuthorAdmission:async(received,run)=>{
   assert.deepEqual(received,binding);assert.ok(run.plan);assert.equal(run.operations.at(-1).stage,'plan');events.push('admission');
  },modelRunner:async request=>{events.push(request.stage);return response(request,f);}});
  try{
@@ -45,7 +52,7 @@ test('admission seals then reloads production before freezing the author request
  const directory=await mkdtemp(path.join(tmpdir(),'author-admission-order-')),f=singlePackageFixture(),events=[];
  let current=production(),entered,release;
  const enteredHook=new Promise(resolve=>entered=resolve),hold=new Promise(resolve=>release=resolve);
- const c=createCoordinator({dataRoot:directory,loadProductionContext:async()=>{events.push(current.outgoingAgreements.length?'reload-sealed':'reload-empty');return current;},
+ const c=legacyCoordinator({dataRoot:directory,loadProductionContext:async()=>{events.push(current.outgoingAgreements.length?'reload-sealed':'reload-empty');return current;},
   beforeAuthorAdmission:async()=>{events.push('admission-enter');entered();await hold;current={...current,outgoingAgreements:[agreement]};events.push('admission-sealed');},
   modelRunner:async(request,options)=>{
    events.push(`model-${request.stage}`);
@@ -73,7 +80,7 @@ test('admission seals then reloads production before freezing the author request
 
 test('admission errors fail before an attempt exists and cannot become unknown model usage',async()=>{
  const directory=await mkdtemp(path.join(tmpdir(),'author-admission-error-')),f=singlePackageFixture(),calls=[];
- const c=createCoordinator({dataRoot:directory,beforeAuthorAdmission:async()=>{throw Object.assign(new Error('共同制作约定尚不能封存'),{code:'AUTHOR_ADMISSION_REJECTED',requestOutcome:'UNKNOWN'});},
+ const c=legacyCoordinator({dataRoot:directory,beforeAuthorAdmission:async()=>{throw Object.assign(new Error('共同制作约定尚不能封存'),{code:'AUTHOR_ADMISSION_REJECTED',requestOutcome:'UNKNOWN'});},
   modelRunner:async request=>{calls.push(request.stage);return response(request,f);}});
  try{
   const run=await c.create({...f,binding,production:production()});await c.start(run.id);const stopped=await c.wait(run.id);

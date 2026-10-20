@@ -1,4 +1,5 @@
 import { actionableFoundationIssues } from './foundation-decision-wait';
+import {isTransientDatabaseReadError} from './production-read-guard';
 import { snapshotFoundationPendingProgress, foundationPendingProgress } from './foundation-pending-progress';
 import { decisionSceneKeys, decisionAssetKeys } from './foundation-decision-targets';
 import {projectDecisionChanges} from './foundation-decision-patch';
@@ -77,6 +78,7 @@ function programContinuationBlocker(dispatch: ReturnType<typeof planFoundationIs
 const DELIVERY_RECEIVERS = { F1: 'SOURCE_BOUNDARY_ACCEPT_V1', F2: 'LIGHT_CATALOG_ACCEPT_V1', Q1: 'LIGHT_EDITOR_ACCEPT_V2' };
 const LEGACY_DELIVERY_RECEIVERS = { F1: 'SOURCE_BOUNDARY_ACCEPT_V1', F2: 'LIGHT_CATALOG_ACCEPT_V1', Q1: 'LIGHT_EDITOR_ACCEPT_V1' };
 const paidFailureReason = '同一输入的已付费响应仍未满足接收契约，已停止重复请求；格式修复最多一次，继续或重建任务不会重置。已有资料保留，接收问题由工作流处理。';
+class SavedResponsesExhausted extends Error {}
 const repairBudgetReason = '当前原文与已定条件的累计自动修正额度已用完，已保存内容保留；继续或重建任务不会重置。只有明确的新来源、决定或接收契约变化才会开启对应的新工作额度。';
 const unknownRetryReason = '上次请求结果未知；请明确确认可能重复计费后再重发未完成部分。';
 const sortedFacts = (values: unknown) => Array.isArray(values) ? values.map(value => stableFacts(value)).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))) : [];
@@ -394,13 +396,14 @@ async function hasUnknown(db: Db, projectId: string, task: FoundationDeliveryTas
 function currentRegistryComplete(document:FoundationDocument,assets:readonly {id:string;parentId:string|null;metadata:string|null}[]) {
  if(!document.f2)return false;
  const entries=document.f2.assets.flatMap(asset=>[{key:asset.key,parentKey:null},...asset.variants.map(variant=>({key:variant.key,parentKey:asset.key}))]);
+ const records=assets.map(row=>({row,meta:foundationJson(row.metadata)}));
  return entries.every(entry=>{
-  const matching=assets.filter(asset=>{const meta=foundationJson(asset.metadata);return meta.foundationKey===entry.key||meta.foundationVariantKey===entry.key;});
+  const matching=records.filter(({meta})=>meta.foundationKey===entry.key||meta.foundationVariantKey===entry.key);
   if(matching.length!==1)return false;
-  const row=matching[0],meta=foundationJson(row.metadata),foundation=isRecord(meta.foundation)?meta.foundation:{};
+  const {row,meta}=matching[0],foundation=isRecord(meta.foundation)?meta.foundation:{};
   if(meta.foundationCurrent!==true||foundation.documentRevision!==document.revision||foundation.sourceVersion!==document.sourceVersion||foundation.sourceContextVersion!==document.sourceContextVersion)return false;
   if(entry.parentKey===null)return !row.parentId&&meta.foundationKey===entry.key&&meta.foundationVariantKey===undefined;
-  const parent=assets.find(asset=>foundationJson(asset.metadata).foundationKey===entry.parentKey);
+  const parent=records.find(({meta})=>meta.foundationKey===entry.parentKey)?.row;
   return !!parent&&row.parentId===parent.id&&meta.foundationVariantKey===entry.key&&meta.foundationKey===undefined&&meta.foundationParentKey===entry.parentKey;
  });
 }
@@ -448,7 +451,7 @@ export async function getFoundationDeliveryState(projectId: string, db: Db = pri
   let scenes: LightScene[] = [];
   if (document.workflow === 'LIGHT_STAGE1_V1' || !document.f2) {
     try { scenes = await loadLightScenes(projectId, db); if (document.f2) issues.push(...collectLightSceneIssues(document.f2, scenes)); }
-    catch { issues.push({ severity: 'MAJOR', owner: 'PROGRAM', coordinate: 'source.scenes', problem: '场次原文定位需要由固定解析器刷新，已有结果仍保留。', sourceRefs: [] }); }
+    catch (error) { if(isTransientDatabaseReadError(error))throw error; issues.push({ severity: 'MAJOR', owner: 'PROGRAM', coordinate: 'source.scenes', problem: '场次原文定位需要由固定解析器刷新，已有结果仍保留。', sourceRefs: [] }); }
   }
   for (const section of input.sourceContext.unresolved) issues.push({ severity: 'MAJOR', owner: 'PROGRAM', coordinate: `source.${section.key}`, problem: '这段原文尚未归属，保留待确认；未计为已整理完整原文。', sourceRefs: [] });
   const needsAssetRefresh = document.workflow !== 'LIGHT_STAGE1_V1' || !!document.f2 && document.f2.format !== PRODUCTION_CATALOG_FORMAT;
@@ -620,7 +623,7 @@ async function knownAssets(db: Db, projectId: string, document: FoundationDocume
 
 export function buildDeliveryInput(stage: 'F2' | 'Q1', phase: DeliveryPhase, input: Inputs, doc: FoundationDocument, scope: number[], suggestions: FoundationChoiceView[], decisions: FoundationChoiceView[], identities: F2Asset[], scenes: LightScene[], targets?: LocalRepairTargets, requiredChoices: FoundationChoiceView[] = []) {
   const boundaryContext = buildLightBoundaryContext(input.sourceIndex, doc.f2, scenes, scope);
-  const selectedFacts = selectFoundationFacts(cachedFoundationFacts(input.sourceIndex, input.sourceContext, doc.f2, {standard: true, resolutions: input.scriptResolutions}), input.sourceIndex, scope);
+  const selectedFacts = selectFoundationFacts(cachedFoundationFacts(input.sourceIndex, input.sourceContext, doc.f2, {standard: true, resolutions: input.scriptResolutions}), input.sourceIndex, scope, {historyMode: 'episode'});
   const { sourceFactIndex: _sourceFactIndex, ...modelFacts } = selectedFacts;
   const sourceReviewCandidates=selectSourceReviewCandidates(input.sourceReviewCandidates??[],scope,input.sourceIndex.episodes.filter(e=>scope.includes(e.number)).map(e=>e.content).join('\n'));
   const scriptStructure = scriptStructureTable(input.sourceIndex, doc.f2, scope, input.scriptResolutions);
@@ -728,7 +731,7 @@ function guardLocalEdit(edit: ProductionOptimization, phase: DeliveryPhase, targ
   if (targets.todoIds && edit.resolvedUnresolved?.some(id => !targets.todoIds!.includes(id))) bad('resolvedUnresolved');
 }
 
-export async function executeFoundationDelivery(projectId: string, taskId: string, options: { db?: PrismaClient; stageRunner?: FoundationStageRunner; workerToken?: string } = {}) {
+export async function executeFoundationDelivery(projectId: string, taskId: string, options: { db?: PrismaClient; stageRunner?: FoundationStageRunner; workerToken?: string; savedResponsesOnly?: boolean } = {}) {
   const db = options.db ?? prisma;
   let task = await readTask(db, projectId);
   if (!task || task.id !== taskId || task.status !== 'QUEUED' || (options.workerToken !== undefined && options.workerToken !== task.workerToken)) throw new Error('资料任务已执行或状态已变化，未重复调用。');
@@ -782,6 +785,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
             return {plan:replay.output,runId:recheckId};
           } catch { await checkSource(); }
         }
+        if (options.savedResponsesOnly) throw new SavedResponsesExhausted();
         const paid = formatGuardAttempts(evidence.filter(entry => entry.receiver === receiverVersion), task), resumeFrom = [...paid].reverse().find(attempt => attempt.requestOutcome === 'RESPONDED' && attempt.response);
         if (resumeFrom && (paid.some(attempt => attempt.kind === 'FORMAT_REPAIR') || !hasSafeDeliveryFormatRepair(resumeFrom, 'F1'))) throw new Error(paidFailureReason);
         const callBudget = await currentRepairBudget(evidence.filter(entry => entry.receiver === receiverVersion));
@@ -795,6 +799,7 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
           const result = await runFoundationDeliveryCall({ stage: 'F1', prompt, context: { projectId, provider: task!.provider, role: { ...stage, skill: '', systemPrompt, code: 'F1' }, sessionMode: 'ephemeral', runId: run.id, batchToken: taskId, sourceVersion: request.sourceVersion, inputVersion: request.sourceVersion, chunkIndex: 1, scope: [] },
             runner: options.stageRunner, validate, checkCurrent: checkSource, onAttempt: async attempt => { if (attempt.requestOutcome === 'NOT_SENT') assertFoundationRequestBudget(attempt.systemPrompt, attempt.taskPrompt); attempts[attempt.sequence - 1] = attempt; await persist(); },
             resumeFrom, beforeRequest: async attempt => {
+              if (options.savedResponsesOnly) throw new SavedResponsesExhausted();
               await checkSource(); const matching = await matchingEvidence();
               if (outstandingUnknown(matching, task).length) throw new Error(unknownRetryReason);
               const previous = formatGuardAttempts(matching.filter(entry => entry.receiver === receiverVersion), task);
@@ -950,12 +955,14 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
           return { output: replay.output, runId: entry.run.id, suggestions, decisions, ...sideResult(entry.run.id, structuredCallInput(saved.taskPrompt) ?? {}) };
         } catch { await checkCurrent(); /* Invalid paid content remains bounded evidence, including across tasks. */ }
       }
+      if (options.savedResponsesOnly) throw new SavedResponsesExhausted();
       const currentEvidence = evidence.filter(entry => entry.receiver === receiverVersion), paid = formatGuardAttempts(currentEvidence, task);
       const resumeFrom = [...paid].reverse().find(attempt => attempt.requestOutcome === 'RESPONDED' && attempt.response);
       if (resumeFrom && (paid.some(attempt => attempt.kind === 'FORMAT_REPAIR') || !hasSafeDeliveryFormatRepair(resumeFrom, stage,repairPlan))) throw new Error(paidFailureReason);
       const callBudget = await currentRepairBudget(currentEvidence);
       if (resumeFrom && callBudget.used >= task!.maxRepairCalls) throw new Error(repairBudgetReason);
       const beforeRequest = async (attempt: DeliveryAttempt) => {
+        if (options.savedResponsesOnly) throw new SavedResponsesExhausted();
         await checkCurrent();
         const matching = await matchingEvidence();
         if (outstandingUnknown(matching, task).length) throw new Error(unknownRetryReason);
@@ -1177,12 +1184,16 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
           || [...currentPending.suggestions, ...currentPending.decisions].some(choice => remainingChoiceScope(doc, choice, currentPending.decisions.includes(choice) ? 'decisionCoverage' : 'suggestionCoverage', all).some(n => pendingScope.includes(n)));
         if (!stillPending) break;
         const identities = await knownAssets(db, projectId, doc);
+        const repairRequest = (scope: number[], targets: LocalRepairTargets) => ({
+          ...buildDeliveryInput('Q1', 'REPAIR', input, doc, scope, currentPending.suggestions, currentPending.decisions, identities, scenes, targets, choices.pending.filter(choice => doc.requiredDecisionIds.includes(choice.id))),
+          humanChoiceRegistry: selectRequestChoices(choices.registry, scope)
+        });
         // A saved task owns its scope array: consuming the local queue must not
         // mutate the previous JSON used by storeTask's compare-and-swap.
-        const localScope = job.todoIds?.length ? [...pendingScope] : planFoundationRequestScope(pendingScope, scope => input.systemPrompts.Q1.length + buildLightFoundationPrompt('Q1', buildDeliveryInput('Q1', 'REPAIR', input, doc, scope, pending.suggestions, pending.decisions, identities, scenes, { ...job, episodes: scope }, choices.pending.filter(choice => doc.requiredDecisionIds.includes(choice.id)))).length);
+        const localScope = job.todoIds?.length ? [...pendingScope] : planFoundationRequestScope(pendingScope, scope => input.systemPrompts.Q1.length + buildLightFoundationPrompt('Q1', repairRequest(scope, { ...job, episodes: scope })).length);
         const targets = { ...job, episodes: localScope, todoIds: job.todoIds?.filter(id => doc.editorialTodos.some(todo => todo.id === id && unresolvedEpisodeScope(todo).every(n => localScope.includes(n)))) };
         if (job.todoIds?.length) {
-          try { assertFoundationRequestBudget(input.systemPrompts.Q1, buildLightFoundationPrompt('Q1', { ...buildDeliveryInput('Q1', 'REPAIR', input, doc, localScope, currentPending.suggestions, currentPending.decisions, identities, scenes, targets, choices.pending.filter(choice => doc.requiredDecisionIds.includes(choice.id))), humanChoiceRegistry: selectRequestChoices(choices.registry, localScope) })); }
+          try { assertFoundationRequestBudget(input.systemPrompts.Q1, buildLightFoundationPrompt('Q1', repairRequest(localScope, targets))); }
           catch (error) { await update({ repairHalt: { fingerprint: repairFingerprint(input, doc, scenes), reason: '局部待办须完整校验，其范围超过当前处理容量，已暂停且未发起新请求。技术诊断：' + errorText(error) } }); break repairRounds; }
         }
         const previousPending = pendingWork(), before = snapshotFoundationPendingProgress({doc,scenes,index:input.sourceIndex,...previousPending});
@@ -1222,11 +1233,23 @@ export async function executeFoundationDelivery(projectId: string, taskId: strin
     const current = await readTask(db, projectId);
     if (current?.id === taskId && current.status === 'RUNNING' && current.workerToken === task.workerToken) {
       const unknown = error instanceof DeliveryCallError && error.outcome === 'UNKNOWN' || await hasUnknown(db, projectId, current);
-      task = current; await update({ status: unknown ? 'INTERRUPTED' : 'PARTIAL', workerPid: null, error: errorText(error), unknownOutcome: unknown,
+      const exhausted = error instanceof SavedResponsesExhausted;
+      task = current; await update({ status: unknown ? 'INTERRUPTED' : 'PARTIAL', workerPid: null, error: exhausted ? null : errorText(error), unknownOutcome: unknown,
         ...await deliveryCounts(db, projectId, taskId), repairBudgetUsed: (await currentRepairBudget()).used, message: unknown ? '连接中断，请求结果尚未确认；已保存资料可读，未自动重发。' : '处理暂时中断，已有资料已保存；技术诊断已保留，恢复前不会自动重发。' });
+      if (exhausted && !unknown) await update({ message: '已核验并恢复可用的保存结果；下一步尚无可用回包，未发起新请求。后续正常制作可沿原任务继续。' });
     }
   }
   return readTask(db, projectId);
+}
+
+/** Product recovery entry: current CAS/source/unknown gates, no worker launch or model dispatch. */
+export async function recoverSavedFoundationDelivery(projectId: string, expectedState: string, db: PrismaClient = prisma) {
+  if (!expectedState) throw new Error('资料任务状态已变化，请刷新后继续。');
+  const state = await getFoundationDeliveryState(projectId, db);
+  if (!state.task || !['PARTIAL', 'INTERRUPTED'].includes(state.task.status) || state.task.unknownOutcome || state.busy || state.action === 'UNKNOWN_CONFIRM') throw new Error('当前任务不允许免费恢复；运行中、未知或用户停止的任务不自动续启。');
+  const task = await queueFoundationDelivery(projectId, { expectedState }, db);
+  await executeFoundationDelivery(projectId, task.id, { db, workerToken: task.workerToken!, savedResponsesOnly: true });
+  return getFoundationDeliveryState(projectId, db);
 }
 
 export async function stopFoundationDelivery(projectId: string, taskId: string, db: PrismaClient = prisma) {

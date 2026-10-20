@@ -1,12 +1,17 @@
 import {digest,fail} from './shared.mjs';
 import {resolveSelection} from './selection.mjs';
+import {OPPORTUNITY_COVERAGE_VERSION,opportunityInputBasis} from './opportunity-coverage.mjs';
 
-export const EXECUTION_PROJECTION_VERSION='execution-batches-v1';
+export const EXECUTION_PROJECTION_VERSION='execution-batches-v2';
+const supported=['execution-batches-v1',EXECUTION_PROJECTION_VERSION];
 const intersects=(a,b)=>a.some(id=>b.has(id));
-export const executionBaseHash=({source,plan,choice,settings,rulesSnapshot,voiceReference=null})=>digest({source,plan,choice,settings,rulesSnapshot,voiceReference});
+export const executionBaseHash=({source,plan,choice,settings,rulesSnapshot,voiceReference=null},basis)=>digest({source,plan:basis?opportunityInputBasis(plan,choice,basis,OPPORTUNITY_COVERAGE_VERSION).plan:plan,choice,settings,rulesSnapshot,voiceReference});
 
 // Execution targets are not creative limits: indivisible spans may exceed either target.
 export function buildExecutionBatches(input){
+ const version=input.rulesSnapshot?.opportunityCoverageVersion===OPPORTUNITY_COVERAGE_VERSION?EXECUTION_PROJECTION_VERSION:'execution-batches-v1';
+ const frozen=version===EXECUTION_PROJECTION_VERSION?opportunityInputBasis(input.plan,input.choice,input.opportunityBasis,OPPORTUNITY_COVERAGE_VERSION):null;
+ if(frozen)input={...input,plan:frozen.plan};
  const {source,plan,choice,packageId}=input,owner=plan.workPackages.find(w=>w.id===packageId);
  if(!owner)fail('PACKAGE','执行批次缺少原工作包');
  const owned=new Set(owner.sourceRefs),refs=source.sourceRows.filter(r=>owned.has(r.id)).map(r=>r.id),rank=new Map(refs.map((id,i)=>[id,i]));
@@ -27,14 +32,14 @@ export function buildExecutionBatches(input){
  }
  if(chunk)chunks.push(chunk);
  const batches=chunks.map((item,index)=>({id:`${packageId}-B${String(index+1).padStart(2,'0')}`,packageId,index,...(owner.eventId?{eventId:owner.eventId}:{}),...item,selectedFantasyIds:candidates.filter(c=>intersects(c.anchorRefs,new Set(item.sourceRefs))).map(c=>c.id),exceedsSoftTarget:item.provisionalUnitIds.length>5||item.estimatedSeconds>150}));
- const manifest={version:EXECUTION_PROJECTION_VERSION,generation:input.generation??null,packageId,baseHash:executionBaseHash(input),batches};
+ const manifest={version,generation:input.generation??null,packageId,baseHash:executionBaseHash(input),batches,...(frozen?{opportunityBasis:frozen.basis}:{})};
  return {...manifest,hash:digest(manifest),accepted:{}};
 }
 
 export function validateExecutionProjection(input,projection){
- if(projection?.version!==EXECUTION_PROJECTION_VERSION)fail('EXECUTION_VERSION','未知执行批次版本');
- const manifest=buildExecutionBatches({...input,packageId:projection.packageId,generation:projection.generation}),batch=manifest.batches.find(b=>b.id===projection.id);
- if(!batch||projection.manifestHash!==manifest.hash||digest(projection.batch)!==digest(batch))fail('EXECUTION_STALE','执行批次与原资料、计划或选择不一致');
+ if(!supported.includes(projection?.version)||projection.version===EXECUTION_PROJECTION_VERSION&&!projection.opportunityBasis)fail('EXECUTION_VERSION','未知执行批次版本或缺失冻结依据');
+ const manifest=buildExecutionBatches({...input,packageId:projection.packageId,generation:projection.generation,...(projection.version===EXECUTION_PROJECTION_VERSION?{opportunityBasis:projection.opportunityBasis}:{})}),batch=manifest.batches.find(b=>b.id===projection.id);
+ if(manifest.version!==projection.version||!batch||projection.manifestHash!==manifest.hash||digest(projection.batch)!==digest(batch))fail('EXECUTION_STALE','执行批次与原资料、计划或选择不一致');
  return batch;
 }
 
@@ -51,19 +56,19 @@ export function hasExecutionDrafts(d){
 }
 
 export function executionProjection(d,manifest,batch){
- if(manifest.version!==EXECUTION_PROJECTION_VERSION||manifest.baseHash!==executionBaseHash(d))fail('EXECUTION_STALE','已保存执行批次的原资料、计划或选择已变化，请保留现稿');
+ if(!supported.includes(manifest.version)||manifest.version===EXECUTION_PROJECTION_VERSION&&!manifest.opportunityBasis||manifest.baseHash!==executionBaseHash(d,manifest.opportunityBasis))fail('EXECUTION_STALE','已保存执行批次的原资料、计划或选择已变化，请保留现稿');
  let predecessor=null;
  if(batch.index){
   const previous=manifest.batches[batch.index-1],candidateId=manifest.accepted[previous.id],candidate=d.candidates.find(c=>c.id===candidateId);
   if(!candidate?.draft?.units?.length)fail('DEPENDENCY_NOT_READY','前一执行批次尚无完整已采用稿');
   predecessor={batchId:previous.id,candidateId,draftHash:digest(candidate.draft),unit:structuredClone(candidate.draft.units.at(-1))};
  }
- return {version:EXECUTION_PROJECTION_VERSION,generation:manifest.generation,manifestHash:manifest.hash,id:batch.id,packageId:manifest.packageId,index:batch.index,total:manifest.batches.length,batch:structuredClone(batch),predecessor};
+ return {version:manifest.version,generation:manifest.generation,manifestHash:manifest.hash,id:batch.id,packageId:manifest.packageId,index:batch.index,total:manifest.batches.length,batch:structuredClone(batch),predecessor,...(manifest.opportunityBasis?{opportunityBasis:structuredClone(manifest.opportunityBasis)}:{})};
 }
 
 export function savedExecutionProjection(d,op){
  if(!op.executionProjectionVersion)return null;
- if(op.executionProjectionVersion!==EXECUTION_PROJECTION_VERSION)fail('EXECUTION_VERSION','未知已付执行批次版本');
+ if(!supported.includes(op.executionProjectionVersion))fail('EXECUTION_VERSION','未知已付执行批次版本');
  const manifest=d.executionBatches?.[op.packageIds[0]],batch=manifest?.batches.find(b=>b.id===op.executionBatchId);
  if(!batch||manifest.hash!==op.executionManifestHash)fail('EXECUTION_STALE','原执行批次已归档或变更，不能替换当前稿');
  const current=executionProjection(d,manifest,batch);

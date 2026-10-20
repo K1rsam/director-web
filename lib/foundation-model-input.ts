@@ -122,8 +122,53 @@ function compactHistoricalRowRuns(table: { format: string; columns: string[]; ro
   return JSON.stringify(compact).length < JSON.stringify(table).length ? compact : table;
 }
 
+/** Nonperiodic histories also repeat metadata. Factor it without selecting or summarizing evidence. */
+function compactHistoricalProfiles(value: unknown): unknown {
+  if (!record(value) || value.format !== 'HISTORICAL_EVIDENCE_TABLE_V2'
+    || !Object.keys(value).every(key => ['format', 'columns', 'shared', 'dictionaries', 'idDerivation', 'evidenceShared',
+      'evidenceColumns', 'retrievalColumns', 'interpretation', 'rows'].includes(key))
+    || !Array.isArray(value.columns) || !value.columns.every(key => typeof key === 'string')
+    || new Set(value.columns).size !== value.columns.length || !Array.isArray(value.rows)
+    || !record(value.dictionaries) || typeof value.interpretation !== 'string' || !jsonValue(value)) return value;
+  const columns = value.columns as string[], dictionaries = value.dictionaries;
+  const core = ['statement', 'evidence', 'retrieval'];
+  if (!core.every(key => columns.includes(key)) || columns.includes('profile')
+    || !columns.every(key => ['subjects', 'kind', ...core, 'claim', 'applicability', 'validity', 'candidateUse', 'currentApplicability'].includes(key))
+    || !Object.entries(dictionaries).every(([key, entries]) => columns.includes(key) && Array.isArray(entries))) return value;
+  const rows = value.rows as unknown[][];
+  if (!rows.every(row => Array.isArray(row) && row.length === columns.length
+    && Object.entries(dictionaries).every(([key, entries]) => {
+      const position = row[columns.indexOf(key)];
+      return Number.isSafeInteger(position) && Number(position) >= 0 && Number(position) < (entries as unknown[]).length;
+    }))) return value;
+  const statementAt = columns.indexOf('statement'), evidenceAt = columns.indexOf('evidence'), retrievalAt = columns.indexOf('retrieval');
+  const statement = (row: unknown[]) => Array.isArray(dictionaries.statement)
+    ? dictionaries.statement[Number(row[statementAt])] : row[statementAt];
+  const deriveEnd = JSON.stringify(value.evidenceColumns) === JSON.stringify(['episode', 'start', 'end'])
+    && rows.every(row => {
+      const evidence = row[evidenceAt], text = statement(row);
+      return Array.isArray(evidence) && evidence.length === 3 && evidence.every(n => Number.isSafeInteger(n) && Number(n) >= 0)
+        && typeof text === 'string' && Number(evidence[2]) - Number(evidence[1]) === text.length;
+    });
+  const profileColumns = columns.filter(key => !core.includes(key)), profiles: unknown[][] = [];
+  const positions = new Map<string, number>();
+  const projectedRows = rows.map(row => {
+    const profile = profileColumns.map(key => row[columns.indexOf(key)]), key = JSON.stringify(profile);
+    if (!positions.has(key)) { positions.set(key, profiles.length); profiles.push(profile); }
+    const evidence = row[evidenceAt];
+    return [positions.get(key), row[statementAt], deriveEnd ? (evidence as unknown[]).slice(0, 2) : evidence, row[retrievalAt]];
+  });
+  const compact = { ...value, format: 'HISTORICAL_EVIDENCE_TABLE_V4', columns: ['profile', ...core], profileColumns, profiles, rows: projectedRows,
+    ...(deriveEnd ? { evidenceColumns: ['episode', 'start'], evidenceEnd: 'START_PLUS_UTF16_STATEMENT_LENGTH' } : {}),
+    interpretation: value.interpretation + ' profile是profiles的零起始索引，该条profile按profileColumns补回本行字段，再按原dictionaries解码；不是合并人物、原句或事件。'
+      + (deriveEnd ? ' evidence仅省略已逐条验证的end：end=start+解码后statement的UTF16长度（emoji等占两个代码单元），原句及换行不改。' : '') };
+  return JSON.stringify(compact).length < JSON.stringify(value).length ? compact : value;
+}
+
 /** All historical evidence stays visible; only repeated wire keys/values and anchor IDs are factored out. */
 function compactFoundationHistoricalEvidence(value: unknown, sourceVersion?: unknown, sourceContextVersion?: unknown): unknown {
+  // Old saved V2 requests can benefit too; unknown formats/metadata are left untouched.
+  if (record(value)) return compactHistoricalProfiles(value);
   if (!Array.isArray(value) || value.length < 2 || !value.every(record) || !jsonValue(value)) return value;
   const fields = ['id', 'subjects', 'kind', 'statement', 'evidence', 'claim', 'applicability', 'validity', 'candidateUse', 'currentApplicability', 'retrieval'];
   const exactKeys = (row: RecordValue, keys: string[]) => Object.keys(row).length === keys.length && keys.every(key => Object.hasOwn(row, key));
@@ -198,7 +243,8 @@ function compactFoundationHistoricalEvidence(value: unknown, sourceVersion?: unk
       }
       return row[key];
     })) };
-  const compact = compactHistoricalRowRuns(derived);
+  const runs = compactHistoricalRowRuns(derived), profiles = compactHistoricalProfiles(derived);
+  const compact = JSON.stringify(profiles).length < JSON.stringify(runs).length ? profiles : runs;
   return JSON.stringify(compact).length < JSON.stringify(legacy).length ? compact : legacy;
 }
 
@@ -233,7 +279,7 @@ export function projectFoundationModelInput(input: unknown): unknown {
   const direction = input.seriesDirectionPreparation;
   const contextTexts = new Map<string, string>();
   if (derivedHistoryAllowed && record(direction) && direction.version === 'FOUNDATION_DIRECTION_READING_V1'
-    && ['COLLECT', 'FINAL'].includes(String(direction.mode)) && Object.keys(direction).every(key => ['version', 'mode', 'priorSignals', 'background'].includes(key))
+    && ['COLLECT', 'FINAL'].includes(String(direction.mode)) && Object.keys(direction).every(key => ['version', 'mode', 'priorSignals', 'background', 'systemSourceAnchors', 'priorSystemEvidence'].includes(key))
     && Array.isArray(direction.background) && direction.background.every(row => Array.isArray(row) && row.length === 2 && row.every(value => typeof value === 'string'))
     && new Set(direction.background.map(row => row[0])).size === direction.background.length) {
     for (const [key, text] of direction.background as Array<[string, string]>) contextTexts.set(key, text);

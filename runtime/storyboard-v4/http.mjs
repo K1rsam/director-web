@@ -1,7 +1,7 @@
 const error=(status,message,code='INPUT')=>Object.assign(new Error(message),{status,code});
 const object=x=>x&&typeof x==='object'&&!Array.isArray(x);
 const modes=['off','all','recommended','review'];
-const keys={create:['settings','notes','maxCalls','maxTokens'],start:['mode'],replan:[],pause:[],stop:[],acknowledge_cancel:['attemptId','acceptUnknownUsage'],choice:['mode','overrides','unitOverrides','expectedFingerprint','resetDrafts'],confirm:['selectedIds','expectedFingerprint','resetDrafts'],repair:['packageIds','notes'],recover:['attemptId'],recheck:['candidateId'],budget:['maxCalls','maxTokens']};
+const keys={create:['settings','notes','maxCalls','maxTokens'],start:['mode'],replan:[],pause:[],stop:[],acknowledge_cancel:['attemptId','acceptUnknownUsage'],choice:['mode','overrides','unitOverrides','expectedFingerprint','resetDrafts'],confirm:['selectedIds','expectedFingerprint','resetDrafts'],repair:['packageIds','notes'],recover:['attemptId'],recheck:['candidateId'],budget:['maxCalls','maxTokens'],refine:['eventIds','unitIds','reviewNotes','preserveNotes','expectedBaseHash'],accept_refinement:['candidateId','expectedBaseHash','groupIds','sourceResolution']};
 const safeId=x=>typeof x==='string'&&/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(x);
 const stringList=x=>Array.isArray(x)&&x.length<=500&&x.every(s=>typeof s==='string'&&s.length>0&&s.length<=150)&&new Set(x).size===x.length;
 export function assertEpisodeBinding(run,episode){if(run?.web?.binding?.episodeId!==episode.id||run.web.binding.projectId!==episode.projectId)throw error(404,'任务不存在','NOT_FOUND');}
@@ -28,6 +28,15 @@ export async function readCommand(request){
  }
  if(b.action==='start'&&!['next','all'].includes(b.mode))throw error(400,'执行方式无效');
  if(b.action==='repair'&&(!stringList(b.packageIds)||!b.packageIds.length||!b.notes?.trim()))throw error(400,'请选择返修范围并描述问题');
+ if(['refine','accept_refinement'].includes(b.action)&&!(/^[a-f0-9]{64}$/.test(b.expectedBaseHash||'')))throw error(400,'精修必须绑定完整基稿身份');
+ if(b.action==='refine'&&(!stringList(b.eventIds)||!b.eventIds.length))throw error(400,'请选择连续完整事件；范围上限由冻结规则校验');
+ if(b.action==='refine'){
+  if(b.unitIds!==undefined&&(!stringList(b.unitIds)||!b.unitIds.length))throw error(400,'请选择连续完整单元');
+  for(const k of ['reviewNotes','preserveNotes'])if(b[k]!==undefined&&(typeof b[k]!=='string'||b[k].length>1200||b[k].includes('\0')))throw error(400,'精修工作单须为1200字以内文本');
+ }
+ if(b.action==='accept_refinement'&&!safeId(b.candidateId))throw error(400,'请选择已保存的精修候选');
+ if(b.action==='accept_refinement'&&b.groupIds!==undefined&&(!stringList(b.groupIds)||!b.groupIds.length||b.groupIds.some(id=>!safeId(id))))throw error(400,'请选择完整修改组；组编号不能重复或无效');
+ if(b.sourceResolution!==undefined&&(!object(b.sourceResolution)||Object.keys(b.sourceResolution).some(k=>!['conflictHash','reason'].includes(k))||!(/^[a-f0-9]{64}$/.test(b.sourceResolution.conflictHash||''))||typeof b.sourceResolution.reason!=='string'||!b.sourceResolution.reason.trim()||b.sourceResolution.reason.length>1200||b.sourceResolution.reason.includes('\0')))throw error(400,'原文冲突核对须绑定当前证据并填写理由');
  if(b.action==='confirm'&&(!stringList(b.selectedIds)||typeof b.expectedFingerprint!=='string'||!b.expectedFingerprint))throw error(400,'确认范围或版本无效');
  if(b.mode!==undefined&&b.action==='choice'&&!modes.includes(b.mode))throw error(400,'幻想模式无效');
  if(b.expectedFingerprint!==undefined&&(typeof b.expectedFingerprint!=='string'||b.expectedFingerprint.length>100))throw error(400,'确认版本无效');

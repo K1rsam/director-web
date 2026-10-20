@@ -11,7 +11,7 @@ import { loadFoundationSourceContext } from './foundation-source';
 import { assertSourceVersion, buildNumberedSource, buildSourceIndex, FoundationContractError, type SourceIndex, type FoundationIssue } from './project-foundation-contracts';
 import { projectProductionCatalog, assertUnresolvedSourceScopes, type ProductionCatalog, type SceneFieldPatch, type Preparation, unresolvedOwner, unresolvedEpisodeScope } from './foundation-production-contracts';
 import type { FoundationDocument } from './foundation-document';
-import { knownScriptSpeakers, prepareEpisodeReception, type ScriptInputProtocol } from './standard-script-reception';
+import { knownScriptSpeakers, prepareEpisodeReception, type ScriptInputProtocol,type ScriptPerformanceOptions } from './standard-script-reception';
 import { buildEpisodeBoundarySeed, type EpisodeBoundarySeed } from './episode-boundary-seed';
 
 type Db = Prisma.TransactionClient;
@@ -108,7 +108,7 @@ export function buildLightBoundaryContext(index: SourceIndex, catalog: Productio
 
 type LightAssetIdentity = { key: string; baseKey: string; name: string; type: ProductionCatalog['assets'][number]['type']; kind: 'BASE' | 'VARIANT'; preparation?: Preparation };
 
-export async function buildLightEpisodePackets(projectId: string, document: FoundationDocument, db: Db, scope?: number[], input?: Awaited<ReturnType<typeof loadFoundationInputs>>, options: {protocol?: ScriptInputProtocol;inlinePerformance?:boolean} = {}) {
+export async function buildLightEpisodePackets(projectId: string, document: FoundationDocument, db: Db, scope?: number[], input?: Awaited<ReturnType<typeof loadFoundationInputs>>, options: {protocol?: ScriptInputProtocol; episodeEvidenceVersion?: 'episode-evidence-v1' | null}&ScriptPerformanceOptions = {}) {
   if (input && input.project.id !== projectId) throw new Error('交接输入不属于当前项目。');
   const [episodes, sourceContext] = input ? [input.project.episodes, input.sourceContext] : await Promise.all([db.episode.findMany({ where: { projectId }, orderBy: { number: 'asc' } }), loadFoundationSourceContext(projectId, db)]);
   if (scope?.some(number => !Number.isSafeInteger(number) || !episodes.some(episode => episode.number === number))) throw new Error('交接集号不存在。');
@@ -117,7 +117,7 @@ export async function buildLightEpisodePackets(projectId: string, document: Foun
   const legacy = options.protocol === 'legacy';
   const postColonCue = options.protocol !== 'standard-episode-v1';
   const syntax=options.protocol==='standard-episode-v1'?'legacy':'current';
-  const factStore = cachedFoundationFacts(index, sourceContext, document.f2, {standard: !legacy, resolutions: input?.scriptResolutions, postColonCue,syntax});
+  const factStore = cachedFoundationFacts(index, sourceContext, document.f2, {standard: !legacy, resolutions: input?.scriptResolutions, postColonCue,syntax,inlinePerformance:options.inlinePerformance,inlinePerformanceVersion:options.inlinePerformanceVersion});
   const choices = await loadFoundationChoices(db, projectId, index.version);
   if (document.editorialTodos.some(todo=>todo.applicationScope || todo.evidenceRefs?.length)) {
     const sceneRefs = await db.scriptScene.findMany({where:{episode:{projectId}},select:{sceneKey:true,episode:{select:{number:true}}}});
@@ -135,7 +135,7 @@ export async function buildLightEpisodePackets(projectId: string, document: Foun
     const previous = episodes.filter(other => other.number < episode.number).at(-1);
     const [currentScenes, previousScenes] = await Promise.all([readScenes(episode.number), previous ? readScenes(previous.number) : Promise.resolve({ scenes: [], gaps: [] })]);
     const boundaryScenes = [...previousScenes.scenes, ...currentScenes.scenes];
-    const episodeBoundary = buildEpisodeBoundarySeed(index, boundaryScenes, episode.number, { resolutions: input?.scriptResolutions, knownSpeakers: knownScriptSpeakers(document.f2), syntax });
+    const episodeBoundary = buildEpisodeBoundarySeed(index, boundaryScenes, episode.number, { resolutions: input?.scriptResolutions, knownSpeakers: knownScriptSpeakers(document.f2), syntax,inlinePerformance:options.inlinePerformance,inlinePerformanceVersion:options.inlinePerformanceVersion });
     episodeBoundary.unknowns.push(...previousScenes.gaps, ...currentScenes.gaps);
     const boundaryContext = buildLightBoundaryContext(index, document.f2, boundaryScenes, [episode.number], {legacy, episodeBoundary});
     if (boundaryContext) boundaryContext.gaps.push(...previousScenes.gaps);
@@ -160,9 +160,11 @@ export async function buildLightEpisodePackets(projectId: string, document: Foun
     };
     for (const key of currentKeys) visit(key);
     return { schema: 'LIGHT_EPISODE_SUPPLY_V2' as const, documentRevision: document.revision, sourceVersion: document.sourceVersion,
-      ...(!legacy ? prepareEpisodeReception(episode, document.f2, input?.scriptResolutions?.[episode.number], {postColonCue,syntax,inlinePerformance:options.inlinePerformance}) : {}),
+      ...(!legacy ? prepareEpisodeReception(episode, document.f2, input?.scriptResolutions?.[episode.number], {postColonCue,syntax,inlinePerformance:options.inlinePerformance,inlinePerformanceVersion:options.inlinePerformanceVersion}) : {}),
       episode: episode.number, title: episode.title, sourceText: episode.content,
-      sourceContextVersion: sourceContext.version, facts: selectFoundationFacts(factStore, index, [episode.number]),
+      ...(options.episodeEvidenceVersion ? {episodeEvidenceVersion: options.episodeEvidenceVersion,
+        historicalSourceDirectory: index.episodes.filter(e=>e.number<episode.number).map(e=>[e.number,e.title??'',e.content.length])} : {}),
+      sourceContextVersion: sourceContext.version, facts: selectFoundationFacts(factStore, index, [episode.number], {historyMode: options.episodeEvidenceVersion ? 'episode' : 'full'}),
       productionEligible: true, materialStatus: 'TEXT_ONLY' as const,
       scenes: currentScenes.scenes.map(scene => {
         const matches = (refs?: { episode: number; sceneKey: string }[]) => refs?.some(ref => ref.episode === episode.number && ref.sceneKey === scene.sceneKey);

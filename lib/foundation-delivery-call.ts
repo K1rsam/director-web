@@ -352,7 +352,9 @@ export async function runFoundationDeliveryCall<T>(input: {
         inputVersion: input.context.inputVersion, response: structuredClone(baseResponse), data: structuredClone(original), issues: structuredClone(originalIssues),
         paths: localPlan?.paths ?? originalIssues.map(issue => safeRepairPath(issue, original, input.stage)).filter((path): path is JsonPath => path !== null).map(path => path.join('.')), ...(localPlan ? { mode: 'LOCAL_OBJECT' as const, localPlan: structuredClone(localPlan) } : {}) };
       attempts.push(current);
-      if (index) assertFoundationRequestBudget(current.systemPrompt, current.taskPrompt);
+      // Preflight every dispatch, including injected/local executors. Replaying a
+      // saved paid response already returned above and never reserves another call.
+      assertFoundationRequestBudget(current.systemPrompt, current.taskPrompt);
       await persist();
       if (!input.runner && !input.context.projectId) throw new Error("缺少projectId，未发送基础资料请求。");
       await input.beforeRequest?.(structuredClone(current)); await check();

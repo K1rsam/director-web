@@ -463,6 +463,18 @@ export async function startFoundationDeliveryAction(formData: FormData) {
   redirect(`/projects/${encodeURIComponent(projectId)}${notice ? `?foundationNotice=${notice}` : ''}`);
 }
 
+/** Free saved-response acceptance is separate from the paid continuation action. */
+export async function recoverSavedFoundationDeliveryAction(formData: FormData) {
+  const projectId = String(formData.get('projectId') ?? '');
+  await requireProjectAccess(projectId);
+  const { recoverSavedFoundationDelivery } = await import('@/lib/foundation-delivery');
+  let notice = '';
+  try { await recoverSavedFoundationDelivery(projectId, String(formData.get('expectedState') ?? '')); }
+  catch (error) { notice = error instanceof Error && /状态已变化|正在处理中/.test(error.message) ? 'state-changed' : 'delivery-unavailable'; }
+  revalidatePath(`/projects/${projectId}`); revalidatePath('/');
+  redirect(`/projects/${encodeURIComponent(projectId)}${notice ? `?foundationNotice=${notice}` : ''}`);
+}
+
 export async function stopFoundationDeliveryAction(formData: FormData) {
   const projectId = String(formData.get('projectId') ?? '');
   await requireProjectAccess(projectId);

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
-import { startFoundationDeliveryAction, stopFoundationDeliveryAction, preprocessProjectAction } from "@/app/actions";
+import { startFoundationDeliveryAction, stopFoundationDeliveryAction, recoverSavedFoundationDeliveryAction, preprocessProjectAction } from "@/app/actions";
 import { WorkflowGlassRail, WorkflowGlassCard, workflowGlassStyles as glass, type WorkflowGlassState } from "@/app/ui/workflow-glass";
 import type { FoundationDeliveryState } from "@/lib/foundation-delivery-types";
 import styles from "./foundation-delivery.module.css";
@@ -235,6 +235,10 @@ export function FoundationWorkflowStatus({ projectId, state, sourceReady, sceneC
       {state.task ? <p>任务记录：{state.task.id} · 当前阶段：{state.task.phase}</p> : null}
     </details> : null}
     <div className={styles.operationLinks}>
+      {!state.busy && !state.complete && !unknown && !state.continuationBlocker && state.task && ['PARTIAL', 'INTERRUPTED'].includes(state.task.status) ? <form action={recoverSavedFoundationDeliveryAction}>
+        <input type="hidden" name="projectId" value={projectId} /><input type="hidden" name="expectedState" value={state.expectedState} />
+        <SubmitButton label="恢复已返回结果（零模型）" pendingLabel="正在本地核验…" />
+      </form> : null}
       <form action={preprocessProjectAction}><input type="hidden" name="projectId" value={projectId} /><button type="submit" className="quietButton" disabled={state.busy || unknown}>重新检查原文（零模型）</button></form>
       <a href="#foundation-history" className="quietButton">运行记录与用量</a>
       <span>{state.task ? `已记录 ${state.task.addedCalls} 次请求，其中修正 ${state.task.repairCalls} 次。` : "运行中可在右上角停止；已有结果保留。"}</span>

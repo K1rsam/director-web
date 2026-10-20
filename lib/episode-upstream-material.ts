@@ -5,6 +5,8 @@ import {createHash} from 'node:crypto';
 import {isProductionEpisodeNumber,readProductionScope} from './production-episodes';
 import {buildAssetProductionCards,episodeVisualFacts,type AssetProductionCard} from './asset-design-model-input';
 import {readScopedAssetMaterialCandidates,type AssetMaterialScope,type AssetCandidateDesign} from './asset-material-candidates';
+import type {ScriptPerformanceOptions} from './standard-script-reception';
+import {createInflightRead,retryDatabaseRead,upstreamReadKey} from './production-read-guard';
 
 export const EPISODE_UPSTREAM_VERSION='EPISODE_UPSTREAM_V1' as const;
 type BaseHandoff=Awaited<ReturnType<typeof readLightEpisodeFoundation>>;
@@ -27,23 +29,28 @@ export function attachEpisodeMaterials(base:BaseHandoff,direction:Direction,desi
  return {...base,packet,materialVersion:createHash('sha256').update(JSON.stringify(packet)).digest('hex')};
 }
 
-async function readHandoffSnapshot(projectId:string,episodeNumber:number,productionScope?:{workflowId:string;runId:string},options:{inlinePerformance?:boolean}={}) {
+type EvidenceOptions = ScriptPerformanceOptions & {episodeEvidenceVersion?: 'episode-evidence-v1' | null};
+async function readHandoffSnapshot(projectId:string,episodeNumber:number,productionScope?:{workflowId:string;runId:string},options:EvidenceOptions={}) {
  if(!isProductionEpisodeNumber(episodeNumber,await readProductionScope(projectId)))throw new Error('此来源尚未归入可制作正文，请先核对来源分区。');
  const base=await readLightEpisodeFoundation(projectId,episodeNumber,undefined,options);
  const {prisma}=await import('./prisma');
  const episode=await prisma.episode.findFirstOrThrow({where:{projectId,number:episodeNumber},select:{id:true}});
  const keys=[...base.packet.assets.flatMap(a=>[a.key!,...a.variants.map(v=>v.key!)]),...base.packet.materialDependencies.map(d=>d.key)];
- const [direction,designs]=await Promise.all([readSeriesDirectionProjection(projectId,episode.id),keys.length?readAssetDesignHandoff(projectId,keys):Promise.resolve([])]);
+ const workspace=productionScope?await(await import('./asset-prompt-service')).loadAssetPromptWorkspace(projectId):undefined;
+ const [direction,designs]=await Promise.all([readSeriesDirectionProjection(projectId,episode.id),keys.length?readAssetDesignHandoff(projectId,keys,workspace):Promise.resolve([])]);
  let material:Parameters<typeof attachEpisodeMaterials>[3];
- if(productionScope){const scope={...productionScope,episodeNumber,sourceVersion:base.packet.sourceVersion};const {loadAssetPromptWorkspace}=await import('./asset-prompt-service');material={scope,candidates:await readScopedAssetMaterialCandidates(projectId,scope,keys,await loadAssetPromptWorkspace(projectId))};}
+ if(productionScope){const scope={...productionScope,episodeNumber,sourceVersion:base.packet.sourceVersion};material={scope,candidates:await readScopedAssetMaterialCandidates(projectId,scope,keys,workspace!)};}
  return attachEpisodeMaterials(base,direction,designs,material);
 }
 
 /** Both assemblies are read-only; changing inputs require a refresh, never a mixed-version handoff. */
-export async function readProductionEpisodeHandoff(projectId:string,episodeNumber:number,productionScope?:{workflowId:string;runId:string},options:{inlinePerformance?:boolean}={}) {
- const before=await readHandoffSnapshot(projectId,episodeNumber,productionScope,options),after=await readHandoffSnapshot(projectId,episodeNumber,productionScope,options);
- if(before.materialVersion!==after.materialVersion)throw Object.assign(new Error('来源、全剧方向或采用设计在读取期间更新，请刷新后重试；未投递混合版本。'),{status:409,code:'UPSTREAM_CHANGED'});
- return after;
+const readHandoffInFlight=createInflightRead<Awaited<ReturnType<typeof readHandoffSnapshot>>>();
+export async function readProductionEpisodeHandoff(projectId:string,episodeNumber:number,productionScope?:{workflowId:string;runId:string},options:EvidenceOptions={}) {
+ return readHandoffInFlight(upstreamReadKey(projectId,episodeNumber,productionScope,options),()=>retryDatabaseRead(async()=>{
+  const before=await readHandoffSnapshot(projectId,episodeNumber,productionScope,options),after=await readHandoffSnapshot(projectId,episodeNumber,productionScope,options);
+  if(before.materialVersion!==after.materialVersion)throw Object.assign(new Error('来源、全剧方向或采用设计在读取期间更新，请刷新后重试；未投递混合版本。'),{status:409,code:'UPSTREAM_CHANGED'});
+  return after;
+ }));
 }
 
 /** UI-only read view of the same cards consumed by Stage 3; not a model input or sufficiency verdict. */

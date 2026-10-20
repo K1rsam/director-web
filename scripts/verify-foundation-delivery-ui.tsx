@@ -15,7 +15,7 @@ let actionCalls = 0;
 const noAction = async () => { actionCalls += 1; throw new Error("SSR must not submit"); };
 const actionPath = require.resolve("../app/actions");
 require.cache[actionPath] = { id: actionPath, filename: actionPath, loaded: true, exports: {
-  startFoundationDeliveryAction: noAction, stopFoundationDeliveryAction: noAction, preprocessProjectAction: noAction,
+  startFoundationDeliveryAction: noAction, stopFoundationDeliveryAction: noAction, recoverSavedFoundationDeliveryAction: noAction, preprocessProjectAction: noAction,
   confirmFoundationDeliveryChoiceAction: noAction, decidePresentationContractAction: noAction
 } } as NodeModule;
 const navigationPath = require.resolve("next/navigation");
@@ -51,6 +51,12 @@ const failures: string[] = [];
 let checks = 0;
 function check(name: string, test: () => void) { checks += 1; try { test(); } catch (error) { failures.push(`${name}: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`); } }
 const before = JSON.stringify(base);
+
+check("历史技术暂停提供零模型回包恢复，未知和用户停止不自动恢复", () => {
+  const status = (state: FoundationDeliveryState) => renderToStaticMarkup(createElement(FoundationWorkflowStatus, { projectId: "project-1", state, sourceReady: true, sceneCount: 3, remaining: [] }));
+  assert.match(status({...base,task:task({status:'PARTIAL',error:'旧接收器错误'})}),/恢复已返回结果（零模型）/);
+  for(const state of [{...base,busy:true,task:task()}, {...base,action:'UNKNOWN_CONFIRM' as const,task:task({status:'INTERRUPTED',unknownOutcome:true})}, {...base,task:task({status:'STOPPED'})}]) assert.doesNotMatch(status(state),/恢复已返回结果（零模型）/);
+});
 
 check("P4自动交接仅提供可选的分镜输入检查", () => {
   const html = renderToStaticMarkup(createElement(FoundationWorkflowStatus, { projectId: "project-1", state: base, sourceReady: true, sceneCount: 3, remaining: [] }));

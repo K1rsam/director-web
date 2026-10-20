@@ -1,0 +1,9 @@
+export const PRODUCTION_LIMIT_POLICY:'production-limits-20261015-v1';
+export const DEFAULT_EPISODE_BUDGET:Readonly<{maxCalls:8;maxTokens:600000}>;
+export const EPISODE_TOKEN_WARNING:500000;
+export type ProductionModelSelection={version:'production-model-selection-v1';model:'gpt-6.1-sol'|'gpt-6-sol'|'gpt-6-astra';reasoning:'low'|'medium'|'high'|'xhigh'|'max'|'ultra'};
+export const PRODUCTION_MODELS:ReadonlyArray<ProductionModelSelection['model']>;
+export const PRODUCTION_REASONING:ReadonlyArray<ProductionModelSelection['reasoning']>;
+export const DEFAULT_PRODUCTION_MODEL_SELECTION:Readonly<ProductionModelSelection>;
+export function productionModelSelection(value?:unknown):ProductionModelSelection;
+export function recommendedWorkflowBudget(episodeCount:number):{maxCalls:number;maxTokens:number};

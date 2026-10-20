@@ -3,21 +3,30 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SeriesDirectionContent } from "@/lib/series-direction";
 import type { SeriesDirectionWorkspace } from "@/lib/series-direction-service";
+import { SERIES_EXPRESSION_OPTIONS, readSeriesExpressionPreferences } from '@/lib/series-expression';
+import { readSystemPresentation, SYSTEM_PRESENTATION_MODES, type SystemPresentation } from '@/lib/system-presentation';
+import { SystemPresentationEditor } from './system-presentation-editor';
 import styles from "./series-direction-panel.module.css";
 
-type Fields = Record<keyof SeriesDirectionContent, string>;
-const empty: Fields = { settingTags: "", mechanismTags: "", arcTags: "", primaryTone: "", secondaryTones: "", audiencePromise: "", expressionRules: "", avoidances: "", episodeFlexibility: "" };
+type DirectionField = Exclude<keyof SeriesDirectionContent, 'expressionPreferences' | 'systemPresentation'>;
+type Fields = Record<DirectionField | 'emotion' | 'camera' | 'fantasy' | 'rationale', string>;
+const empty: Fields = { settingTags: "", mechanismTags: "", arcTags: "", primaryTone: "", secondaryTones: "", audiencePromise: "", expressionRules: "", avoidances: "", episodeFlexibility: "", emotion: '', camera: '', fantasy: '', rationale: '' };
 function fieldsFor(view: SeriesDirectionWorkspace): Fields {
   const content = view.draft?.content ?? view.current?.content;
-  return content ? Object.fromEntries(Object.entries(content).map(([key, value]) => [key, Array.isArray(value) ? value.join(["expressionRules", "avoidances"].includes(key) ? "\n" : "、") : value ?? ""])) as Fields : empty;
+  if (!content) return { ...empty };
+  const { expressionPreferences, systemPresentation: _systemPresentation, ...base } = content;
+  return { ...empty, ...Object.fromEntries(Object.entries(base).map(([key, value]) => [key, Array.isArray(value) ? value.join(["expressionRules", "avoidances"].includes(key) ? "\n" : "、") : value ?? ""])),
+    emotion: expressionPreferences?.emotion ?? '', camera: expressionPreferences?.camera ?? '', fantasy: expressionPreferences?.fantasy ?? '', rationale: expressionPreferences?.rationale ?? '' };
 }
-function contentFor(fields: Fields): SeriesDirectionContent {
+function contentFor(fields: Fields, systemPresentation?: SystemPresentation): SeriesDirectionContent {
   const tags = (value: string) => value.split(/[、,，]/).map(s => s.trim()).filter(Boolean);
   const lines = (value: string) => value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-  return { settingTags: tags(fields.settingTags), mechanismTags: tags(fields.mechanismTags), arcTags: tags(fields.arcTags), primaryTone: fields.primaryTone.trim() || null, secondaryTones: tags(fields.secondaryTones), audiencePromise: fields.audiencePromise.trim() || null, expressionRules: lines(fields.expressionRules), avoidances: lines(fields.avoidances), episodeFlexibility: fields.episodeFlexibility.trim() || null };
+  return { settingTags: tags(fields.settingTags), mechanismTags: tags(fields.mechanismTags), arcTags: tags(fields.arcTags), primaryTone: fields.primaryTone.trim() || null, secondaryTones: tags(fields.secondaryTones), audiencePromise: fields.audiencePromise.trim() || null, expressionRules: lines(fields.expressionRules), avoidances: lines(fields.avoidances), episodeFlexibility: fields.episodeFlexibility.trim() || null,
+    ...(fields.emotion || fields.camera || fields.fantasy || fields.rationale.trim() ? { expressionPreferences: readSeriesExpressionPreferences({ emotion: fields.emotion || null, camera: fields.camera || null, fantasy: fields.fantasy || null, rationale: fields.rationale.trim() || null }) } : {}),
+    ...(systemPresentation ? { systemPresentation: readSystemPresentation(systemPresentation) } : {}) };
 }
 function bindingFor(view: SeriesDirectionWorkspace) { return { stateToken: view.stateToken, sourceVersion: view.source.sourceVersion, draftHash: view.draft?.hash ?? null, currentHash: view.current?.hash ?? null }; }
-const fields: Array<{ key: keyof Fields; label: string; hint: string; rows?: number; maxLength: number }> = [
+const fields: Array<{ key: DirectionField; label: string; hint: string; rows?: number; maxLength: number }> = [
   { key: "settingTags", label: "背景标签", hint: "世界与时代 · 最多3项，用顿号分隔", maxLength: 74 },
   { key: "mechanismTags", label: "故事机制", hint: "如存在循环等机制才填写 · 无依据可留空", maxLength: 74 },
   { key: "arcTags", label: "主线标签", hint: "全剧持续推进的主线 · 不提前泄露角色认知", maxLength: 74 },
@@ -28,9 +37,15 @@ const fields: Array<{ key: keyof Fields; label: string; hint: string; rows?: num
   { key: "avoidances", label: "避免", hint: "最多3条，每行一条、每条50字以内", rows: 3, maxLength: 152 },
   { key: "episodeFlexibility", label: "单集弹性", hint: "允许哪些局部起伏，避免把每集拍成一样 · 100字以内", rows: 2, maxLength: 100 },
 ];
+const expressionFields = [
+  { key: 'emotion', label: '情绪强度', hint: '强度落到身体、反差和关系变化，不等于人人喊叫。' },
+  { key: 'camera', label: '镜头速度', hint: '快速有冲击：明确触发、快速行进与可读落点；必要停顿保留。' },
+  { key: 'fantasy', label: '额外幻想密度', hint: '丰富大胆不等于逐镜添加；幻想关闭与逐项取消仍优先。' },
+] as const;
 
 export function SeriesDirectionPanel({ projectId, initialWorkspace }: { projectId: string; initialWorkspace: SeriesDirectionWorkspace }) {
   const [view, setView] = useState(initialWorkspace), [values, setValues] = useState<Fields>(() => fieldsFor(initialWorkspace));
+  const [systemPresentation, setSystemPresentation] = useState<SystemPresentation | undefined>(() => (initialWorkspace.draft ?? initialWorkspace.current)?.content.systemPresentation);
   const [coverage, setCoverage] = useState(false), [dirty, setDirty] = useState(false), [conflict, setConflict] = useState(false);
   const [saving, setSaving] = useState(false), [generating, setGenerating] = useState(false), [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -42,7 +57,7 @@ export function SeriesDirectionPanel({ projectId, initialWorkspace }: { projectI
     const nextBinding = bindingFor(next), prior = binding.current;
     if (mode !== "progress") {
       binding.current = nextBinding; setConflict(false); setCoverage(false);
-      if (mode === "replace") { setValues(fieldsFor(next)); setDirty(false); dirtyRef.current = false; }
+      if (mode === "replace") { setValues(fieldsFor(next)); setSystemPresentation((next.draft ?? next.current)?.content.systemPresentation); setDirty(false); dirtyRef.current = false; }
     } else if (prior.sourceVersion === nextBinding.sourceVersion && prior.draftHash === nextBinding.draftHash && prior.currentHash === nextBinding.currentHash) binding.current = nextBinding;
     else { setConflict(true); setCoverage(false); }
   }, []);
@@ -84,8 +99,8 @@ export function SeriesDirectionPanel({ projectId, initialWorkspace }: { projectI
     let refreshAfter = false;
     setError(""); setMessage("");
     const base = { stateToken: binding.current.stateToken, sourceVersion: binding.current.sourceVersion };
-    const command = { ...base, action, ...(action === "save" ? { content: contentFor(values), coverageAcknowledged: coverage } : action === "confirm" ? { draftHash: view.draft?.hash, coverageAcknowledged: coverage } : isGeneration ? { costAcknowledged: true, ...(action === 'generate' ? { repeatAnalysisAcknowledged: true } : {}) } : action === "release-generation" ? { generationId: view.generation?.id, unknownOutcomeAcknowledged: true } : {}) };
     try {
+      const command = { ...base, action, ...(action === "save" ? { content: contentFor(values, systemPresentation), coverageAcknowledged: coverage } : action === "confirm" ? { draftHash: view.draft?.hash, coverageAcknowledged: coverage } : isGeneration ? { costAcknowledged: true, ...(action === 'generate' ? { repeatAnalysisAcknowledged: true } : {}) } : action === "release-generation" ? { generationId: view.generation?.id, unknownOutcomeAcknowledged: true } : {}) };
       const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(command) }); const body = await response.json();
       if (generation !== requestGeneration.current) { refreshAfter = isGeneration; return; }
       if (!response.ok) { if (["DIRECTION_CONFLICT", "DIRECTION_STALE"].includes(body.code)) setConflict(true); throw new Error(body.error || "操作未完成。"); }
@@ -97,6 +112,9 @@ export function SeriesDirectionPanel({ projectId, initialWorkspace }: { projectI
       setMessage(action === "save" ? "草稿已保存；当前采用卡没有变化。" : action === "confirm" ? "已采用这版方向，后续各集将读取同一短brief。" : action === "revoke" ? "已撤销当前采用，历史仍保留。" : action === "release-generation" ? "已结束本地等待；上游结果和费用仍需核对，没有自动重试。" : next.generation?.message || "候选状态已更新。");
     } catch (e) {
       if (generation !== requestGeneration.current) refreshAfter = isGeneration;
+      else if ((e as { code?: string })?.code === 'DIRECTION_EXPRESSION') setError('请检查表达选项和选择依据：依据须为140字以内的单行文字，不含制表符等控制字符；原输入仍保留。');
+      else if ((e as { code?: string })?.code === 'DIRECTION_SYSTEM_SOURCE_CONFLICT') setError('系统呈现与登记的源载体冲突；请沿原文或保留待核对，原输入仍保留。');
+      else if ((e as { code?: string })?.code?.startsWith('DIRECTION_SYSTEM_')) setError('请检查系统身份、逐字源锚、呈现方案及权限边界；各系统分别填写，原输入仍保留。');
       else setError(isGeneration ? `${e instanceof Error ? e.message : "请求中断。"} 请先刷新查看调用记录；不要直接重复生成，费用可能未知。` : e instanceof Error ? e.message : "操作未完成，原记录保留。");
     } finally {
       if (generation === requestGeneration.current) ++requestGeneration.current;
@@ -115,6 +133,7 @@ export function SeriesDirectionPanel({ projectId, initialWorkspace }: { projectI
     <header className={styles.header}><div><span className={styles.eyebrow}>全剧共享 · 各集保持弹性</span><h2 id="series-direction-title">全剧创作方向</h2><p>定位与表达边界由你定稿；草稿、AI候选与当前采用卡分开保留。</p></div><span className={styles.badge} data-status={view.status}>{currentLabel}</span></header>
     {view.status === "STALE" ? <p className={styles.warning}>全剧来源或制作背景已变化。旧卡仍在历史中，当前不会作为全剧方向投递。</p> : !view.current ? <p className={styles.note}>尚未确认全剧方向；不会根据首集或局部情绪生成默认定位。</p> : null}
     {view.brief ? <details className={styles.preview} open><summary>当前采用 · 各集收到的短brief <small>{Array.from(view.brief).length}/600字</small></summary><p>{view.brief}</p></details> : null}
+    {view.status === 'CONFIRMED' && view.current?.content.systemPresentation ? <details className={styles.preview}><summary>当前采用 · 系统呈现 v{view.current.revision}</summary>{view.current.content.systemPresentation.systems.map(system => <p key={system.id}>{system.identity}：{SYSTEM_PRESENTATION_MODES[system.mode]}{system.carrierNotes ? `；${system.carrierNotes}` : ''}。原声与可见/可听/接触、屏字边界随此版本保存；下方修改须重新保存确认。</p>)}</details> : null}
     {view.foundationPreparation ? <div className={styles.note} role="status"><p>{view.foundationPreparation.message}</p>
       {view.foundationPreparation.status === 'READING' ? <small>已核验完整读取 {view.foundationPreparation.coveredEpisodes}/{view.foundationPreparation.totalEpisodes} 集；这不是创作质量验收。</small> : null}
       {view.foundationPreparation.status === 'PENDING_STAGE1' ? <a href={`/projects/${encodeURIComponent(projectId)}`}>返回第一阶段整理资料</a> : null}
@@ -135,6 +154,22 @@ export function SeriesDirectionPanel({ projectId, initialWorkspace }: { projectI
     </div> : null}
     <details className={styles.editor} open={!view.current || Boolean(view.draft && view.draft.hash !== view.current.hash)}>
       <summary>编辑方向草稿{view.draft ? ` · v${view.draft.revision}` : ""}{view.draftOrigin === "AI" ? " · AI候选待人工核对" : ""}</summary>
+      <SystemPresentationEditor value={systemPresentation} disabled={!view.permissions.canEdit || saving} evidence={view.source.evidence} onChange={next => { setSystemPresentation(next); setDirty(true); dirtyRef.current = true; setCoverage(false); }} />
+      <div className={styles.preview}>
+        <h3>要不要更强的情绪、更快的运镜、更多大胆幻想？</h3>
+        <p>全文共用读取完成后，会在候选里按剧情与对白气质建议；这是待你确认的表达选择，不是自动采用。旧卡未设置时沿用原口径，不自动重读全剧。可直接修改、免费保存并确认，已有制作结果不变。</p>
+        <div className={styles.formGrid}>{expressionFields.map(field => <div className={styles.field} key={field.key}>
+          <label htmlFor={`direction-${field.key}`}>{field.label}</label>
+          <select id={`direction-${field.key}`} value={values[field.key]} disabled={!view.permissions.canEdit || saving} aria-describedby={`direction-${field.key}-hint`} onChange={event => { setValues({ ...values, [field.key]: event.target.value }); setDirty(true); dirtyRef.current = true; setCoverage(false); }}>
+            <option value="">未设置 · 沿用既有口径</option>
+            {Object.entries(SERIES_EXPRESSION_OPTIONS[field.key]).map(([value, label]) => <option value={value} key={value}>{label}</option>)}
+          </select><small id={`direction-${field.key}-hint`}>{field.hint}</small>
+        </div>)}<div className={`${styles.field} ${styles.wide}`}>
+          <label htmlFor="direction-rationale">建议／选择依据（非源事实，可编辑）</label>
+          <input id="direction-rationale" maxLength={140} value={values.rationale} disabled={!view.permissions.canEdit || saving} onChange={event => { setValues({ ...values, rationale: event.target.value }); setDirty(true); dirtyRef.current = true; setCoverage(false); }} />
+          <small>依据只保存在卡内，不随每集重复发送。手工选择不冒充模型已完成全文评估；三维明确选择优先于表达原则中的泛化强弱描述，原文事实和必要情绪仍优先。</small>
+        </div></div>
+      </div>
       <div className={styles.formGrid}>{fields.map(field => <div className={`${styles.field} ${field.rows ? styles.wide : ""}`} key={field.key}>
         <label htmlFor={`direction-${field.key}`}>{field.label}</label>
         {field.rows ? <textarea id={`direction-${field.key}`} rows={field.rows} maxLength={field.maxLength} value={values[field.key]} disabled={!view.permissions.canEdit || saving} onChange={event => { setValues({ ...values, [field.key]: event.target.value }); setDirty(true); dirtyRef.current = true; setCoverage(false); }} aria-describedby={`direction-${field.key}-hint`} />
@@ -156,6 +191,6 @@ export function SeriesDirectionPanel({ projectId, initialWorkspace }: { projectI
       {view.draftBrief ? <details className={styles.preview}><summary>已保存草稿 · 短brief预览 <small>{Array.from(view.draftBrief).length}/600字</small></summary><p>{view.draftBrief}</p></details> : view.draftIssue ? <p className={styles.warning}>{view.draftIssue}</p> : null}
     </details>
     {error ? <p className={styles.error} role="alert">{error}</p> : null}{message ? <p className={styles.feedback} role="status">{message}</p> : null}
-    {view.history.length ? <details className={styles.history}><summary>版本历史 · {view.history.length} 条</summary>{view.history.map(item => <details key={item.id}><summary>{item.title} <small>{item.createdAt.replace("T", " ").slice(0, 16)} UTC</small></summary>{item.brief ? <p>{item.brief}</p> : <p>原始记录已保留。</p>}{item.card && view.permissions.canEdit ? <button className="studioButton" data-variant="secondary" type="button" disabled={saving} onClick={() => { setValues(fieldsFor({ ...view, draft: item.card })); setDirty(true); dirtyRef.current = true; setCoverage(false); setError(""); setMessage("历史内容已载入表单；当前采用未变。请重新核对来源、保存新草稿并确认，旧确认不会复用。"); }}>载入为新草稿</button> : null}</details>)}</details> : null}
+    {view.history.length ? <details className={styles.history}><summary>版本历史 · {view.history.length} 条</summary>{view.history.map(item => <details key={item.id}><summary>{item.title} <small>{item.createdAt.replace("T", " ").slice(0, 16)} UTC</small></summary>{item.brief ? <p>{item.brief}</p> : <p>原始记录已保留。</p>}{item.card?.content.systemPresentation ? <p>系统选择：{item.card.content.systemPresentation.systems.map(system => `${system.identity} · ${system.mode}`).join('；')}（完整源锚与边界随版本保留）</p> : null}{item.card && view.permissions.canEdit ? <button className="studioButton" data-variant="secondary" type="button" disabled={saving} onClick={() => { setValues(fieldsFor({ ...view, draft: item.card })); setSystemPresentation(item.card?.content.systemPresentation); setDirty(true); dirtyRef.current = true; setCoverage(false); setError(""); setMessage("历史内容已载入表单；当前采用未变。请重新核对来源、保存新草稿并确认，旧确认不会复用。"); }}>载入为新草稿</button> : null}</details>)}</details> : null}
   </section>;
 }

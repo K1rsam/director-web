@@ -72,7 +72,21 @@ async function main() {
     // Ordinary writer dialects reach completion without manual syntax choices
     // or extra catalogue repair; the original source remains byte-for-byte.
     const dialect=await create('writer dialect completes once');
-    await db.episode.updateMany({where:{projectId:dialect.id,number:1},data:{content:'第1集\n1-1 客厅 日 内\n甲：你好。\n甲Q版：太突然了！\n众人（大笑）：欢迎！\n助理：请进。\n闺蜜B：等等。\n场景 走廊（快切）\n监控员A（惊叫）：有人！\n男考生B：别关门。\n系统窗口（系统）：叮！\n系统窗口：已连接。\n'}});
+    await db.episode.updateMany({where:{projectId:dialect.id,number:1},data:{content:'第1集\n1-1 客厅 日 内\n人物：甲\n甲：你好。\n甲 os：别慌。\n甲（盯着门口，眼神渐沉） vo：有人来了。\n甲憋笑：听到了。\n甲Q版：太突然了！\n众人（大笑）：欢迎！\n助理：请进。\n闺蜜B：等等。\n网友A：太好了！\n网友B：快看！\n......\n弹幕：“终于来了！”\n防护队员（低声）：安全。\n血月观察者：目标到了。\n钢铁之城的刘老（沉声）：准备。\n场景 走廊（快切）\n监控员A（惊叫）：有人！\n男考生B：别关门。\n系统窗口（系统）：叮！\n系统窗口：已连接。\n'}});
+    const dialectEpisode=await db.episode.findFirstOrThrow({where:{projectId:dialect.id,number:1}});
+    await db.episode.update({where:{id:dialectEpisode.id},data:{content:dialectEpisode.content+[
+      '人物：甲、乙、两名山门弟子、诸位大能',
+      '甲：诸位请听。规矩老样子：价高者得，全程禁武！',
+      '乙震惊抬头。',
+      '字幕（铜镜镜面）：【本轮结算】',
+      '山门弟子甲（恭敬）：多谢。',
+      '众修（恭敬）：多谢。',
+      '众弟子：谨记教诲。',
+      '山门同门（振奋）：好！',
+      '四人（郑重）：多谢。',
+      '甲、乙及诸位大能：告辞。',
+      '',
+    ].join('\n')}});
     await preprocessProject(dialect.id,db);
     const dialectBefore=await db.episode.findMany({where:{projectId:dialect.id},orderBy:{number:'asc'}});
     const dialectTask=await api.queueFoundationDelivery(dialect.id,{},db),dialectCalls:string[]=[];

@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import { assertSourceVersion, buildSourceIndex, type SourceIndex } from './project-foundation-contracts';
-import { prepareStandardEpisode, type PreparedStandardEpisode, type StandardScriptSyntax } from './standard-script-plan';
+import type { PreparedStandardEpisode, StandardScriptSyntax } from './standard-script-plan';
+import {prepareEpisodeScript,scriptPerformanceVersion,type ScriptPerformanceOptions} from './standard-script-reception';
 import type { LightScene } from './light-foundation-supply';
 
 export type BoundaryNode = { id: string; target: string; kind: string; sourceUnitIds: string[]; sourceRange: { start: number; end: number }; startLine: number; endLine: number };
@@ -11,12 +12,12 @@ export type BoundarySourceEvidence = {
   sourceTextHash: string; sourceLength: number;
   nodes: BoundaryNode[]; clipped: boolean; budgetExceeded: boolean; diagnostics: PreparedStandardEpisode['diagnostics'];
 };
-export type BoundarySeedOptions = { resolutions?: Record<number, PreparedStandardEpisode>; knownSpeakers?: string[]; syntax?: StandardScriptSyntax; softBudget?: number };
+export type BoundarySeedOptions = { resolutions?: Record<number, PreparedStandardEpisode>; knownSpeakers?: string[]; syntax?: StandardScriptSyntax; softBudget?: number }&ScriptPerformanceOptions;
 
 const sourceTextHash=(text:string)=>createHash('sha256').update(text).digest('hex');
 function sourceEvidence(index: SourceIndex, number: number, scenes: LightScene[], side: 'previous' | 'current', options: BoundarySeedOptions, fullEpisode=false): BoundarySourceEvidence {
   const episode = index.episodes.find(e => e.number === number)!;
-  const prepared = options.resolutions?.[number] ?? prepareStandardEpisode(episode.content, `episode-${number}`, { knownSpeakers: options.knownSpeakers, syntax: options.syntax });
+  const prepared = prepareEpisodeScript(episode,null,options.resolutions?.[number],{knownSpeakers:options.knownSpeakers,syntax:options.syntax,inlinePerformance:options.inlinePerformance,inlinePerformanceVersion:options.inlinePerformanceVersion});
   if (prepared.index.text !== episode.content || prepared.index.sourceId !== `episode-${number}`) throw new Error('边界解析决定与当前集原文不匹配。');
   const units = prepared.index.units, unitMap = new Map(units.map((unit, i) => [unit.id, { unit, line: i + 1 }])), byUnit = new Map(prepared.plan.entries.flatMap(entry => entry.unitIds.map(id => [id, entry] as const)));
   const seen = new Set<string>(), nodes: BoundaryNode[] = [];
@@ -66,6 +67,7 @@ function sourceEvidence(index: SourceIndex, number: number, scenes: LightScene[]
 
 /** Mechanical boundary receipt only. Story order and current states require evidence-aware review. */
 export function buildEpisodeBoundarySeed(index: SourceIndex, scenes: LightScene[], toEpisode: number, options: BoundarySeedOptions = {}) {
+  scriptPerformanceVersion(options);
   assertSourceVersion(index, index.version);
   if (!index.episodes.some(e => e.number === toEpisode)) throw new Error('边界目标集不存在。');
   const previous = index.episodes.filter(e => e.number < toEpisode).at(-1);
@@ -99,15 +101,17 @@ export function buildEpisodeBoundarySeed(index: SourceIndex, scenes: LightScene[
 export type EpisodeBoundarySeed = ReturnType<typeof buildEpisodeBoundarySeed>;
 
 /** Keep evidence already supplied to this run; resolving a need must not shrink its basis. */
-export function retainExpandedEpisodeBoundarySeed(seed:EpisodeBoundarySeed,prior?:EpisodeBoundarySeed|null):EpisodeBoundarySeed{
+export function retainExpandedEpisodeBoundarySeed(seed:EpisodeBoundarySeed,prior?:EpisodeBoundarySeed|null,options:BoundarySeedOptions={}):EpisodeBoundarySeed{
+  scriptPerformanceVersion(options);
   const current=seed.previousSource,old=prior?.previousSource;
   if(!current||!old||old.selectionKind!=='FULL_EPISODE_EXPANSION'||prior?.fromEpisode!==seed.fromEpisode||prior.toEpisode!==seed.toEpisode
     ||old.sourceTextHash!==current.sourceTextHash||old.sourceLength!==current.sourceLength)return structuredClone(seed);
-  return expandEpisodeBoundarySeed(seed,old.text);
+  return expandEpisodeBoundarySeed(seed,old.text,options);
 }
 
 /** Free evidence expansion. No semantic inference, source rewrite, budget clipping or current-opening mutation. */
-export function expandEpisodeBoundarySeed(seed:EpisodeBoundarySeed,previousEpisodeText:string):EpisodeBoundarySeed{
+export function expandEpisodeBoundarySeed(seed:EpisodeBoundarySeed,previousEpisodeText:string,options:BoundarySeedOptions={}):EpisodeBoundarySeed{
+  scriptPerformanceVersion(options);
   const previous=seed.previousSource;
   const reject=(message:string):never=>{throw Object.assign(new Error(message),{code:'BOUNDARY_SOURCE_STALE',requestOutcome:'NOT_SENT'});};
   if(seed.schema!=='EPISODE_BOUNDARY_SEED_V1'||!seed.sourceVersion||seed.fromEpisode===null||!previous||previous.episode!==seed.fromEpisode)reject('边界记录没有可验证的前集原文绑定。');
@@ -116,7 +120,7 @@ export function expandEpisodeBoundarySeed(seed:EpisodeBoundarySeed,previousEpiso
   if(!Number.isSafeInteger(range.start)||!Number.isSafeInteger(range.end)||range.start<0||range.end<range.start||range.end>previousEpisodeText.length||previous!.text!==previousEpisodeText.slice(range.start,range.end))reject('前集已有选段与原文坐标不符，未扩展不可信记录。');
   if(previous!.selectionKind==='FULL_EPISODE_EXPANSION'&&range.start===0&&range.end===previousEpisodeText.length&&!previous!.clipped)return structuredClone(seed);
   const index=buildSourceIndex([{number:seed.fromEpisode!,title:null,content:previousEpisodeText}]);
-  const expanded=sourceEvidence(index,seed.fromEpisode!,[],'previous',{softBudget:Number.POSITIVE_INFINITY},true);
+  const expanded=sourceEvidence(index,seed.fromEpisode!,[],'previous',{...options,softBudget:Number.POSITIVE_INFINITY},true);
   const result=structuredClone(seed);result.previousSource=expanded;
   result.evidence=result.evidence.map(item=>item.role==='PREVIOUS_SOURCE'?{role:'PREVIOUS_SOURCE',episode:expanded.episode,...expanded.sourceRange,startLine:expanded.startLine,endLine:expanded.endLine,nodeIds:expanded.nodes.map(n=>n.id)}:item);
   const oldClippedNote=`第${previous!.episode}集仅供完整节点选段，未供部分可按sourceVersion与源坐标补读。`;

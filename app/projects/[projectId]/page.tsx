@@ -69,7 +69,7 @@ export default async function ProjectStudioPage({ params, searchParams }: { para
           <a className="quietButton" href={`/projects/${encodeURIComponent(projectId)}/asset-prompts`}>第二阶段 · 资产形象设计</a>
         </div>
         <LightFoundationDocumentViewer projectId={projectId} state={delivery} sourceEpisodes={sourceEpisodes.map(episode => ({ ...episode, sceneCount: sceneCounts.get(episode.id) ?? 0, productionEligible: isProductionEpisodeNumber(episode.number, productionScope) }))} />
-        {delivery.complete ? <p className="mutedSmall">资料整理完成不等于全剧方向已采用。<a href={`/projects/${encodeURIComponent(projectId)}/preparation#series-direction`}>查看与确认全剧方向</a>，后续制作自动读取你确认的精简卡；不需要再整理一遍资料。</p> : null}
+        {delivery.complete ? <p className="mutedSmall">全文资料已整理：要不要更强的情绪、更快的运镜，以及更多、更大胆的幻想表达？<a href={`/projects/${encodeURIComponent(projectId)}/preparation#series-direction`}>查看剧情建议并确认表达选择</a>。候选不自动采用；修改、保存和确认无需额外模型调用，不改变已有制作结果，也不需要重读资料。旧版缺少建议时可手工选择，不冒充已作全文评估。</p> : null}
         {delivery.document.editorialTodos.some(todo => todo.owner === "STAGE2") ? <details className="bibleSection"><summary className="bibleSectionHead">后续分镜提醒（不触发第一阶段重试）</summary>
           <div className="bibleBody">{delivery.document.editorialTodos.filter(todo => todo.owner === "STAGE2").map(todo => <p key={todo.id}>{todo.episodes?.length ? `第${todo.episodes.join("、")}集：` : ""}{todo.note}</p>)}</div>
         </details> : null}

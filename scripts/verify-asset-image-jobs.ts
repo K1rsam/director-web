@@ -1,6 +1,6 @@
 /** Actual services + isolated synthetic SQLite and decoded PNG files; no model/provider calls. */
 import assert from 'node:assert/strict';
-import {mkdtempSync, readdirSync, readFileSync, mkdirSync, writeFileSync, symlinkSync, renameSync, rmdirSync} from 'node:fs';
+import {mkdtempSync, readdirSync, readFileSync, mkdirSync, writeFileSync, symlinkSync, renameSync, rmdirSync, unlinkSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
@@ -150,7 +150,7 @@ async function main() {
     assert.equal(createHash('sha256').update((await jobs.readImageJobImage(project.id,actor.id,largeReview.id,largeImage.id)).bytes).digest('hex'),originalSha);
     const savedCache=`${cacheRoot}-saved`,outsideCache=path.join(directory,'outside-preview-cache');mkdirSync(outsideCache);
     renameSync(cacheRoot,savedCache);symlinkSync(outsideCache,cacheRoot,process.platform==='win32'?'junction':'dir');
-    try{await assert.rejects(()=>jobs.readImageJobPreview(project.id,actor.id,largeReview.id,largeImage.id),/符号链接|目录联接/);}finally{rmdirSync(cacheRoot);renameSync(savedCache,cacheRoot);}
+    try{await assert.rejects(()=>jobs.readImageJobPreview(project.id,actor.id,largeReview.id,largeImage.id),/符号链接|目录联接/);}finally{if(process.platform==='win32')rmdirSync(cacheRoot);else unlinkSync(cacheRoot);renameSync(savedCache,cacheRoot);}
     console.log(`PASS preview: original ${largePng.length} bytes -> ${preview.bytes.length} bytes 640x480 WebP; original SHA unchanged; cache, small-image sizing, permissions, corrupt cache and junction isolation verified.`);
     await assert.rejects(() => jobs.importImageJob(project.id, actor.id, hero.id, hero.revision, [file(), file(png2)]), /结束|身份/);
     const beforeOptions = await options.readImageOptions(project.id, 'hero');

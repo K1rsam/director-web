@@ -4,12 +4,14 @@ import fs from 'node:fs';
 import {buildRequest,captureRules as currentRules} from './core.mjs';
 import {standardPackageSource} from './standard-source.mjs';
 import {normalizeSource} from './source.mjs';
-import {PLAN_VERSION,VERSION} from './shared.mjs';
+import {PLAN_VERSION,VERSION,digest} from './shared.mjs';
+import {projectProductionSource} from './production-context-projection.mjs';
+import {validateProductionFeedback} from '../../episode-boundary.mjs';
 
 const fixture=JSON.parse(fs.readFileSync(new URL('./fixtures/production-projection-source.json',import.meta.url),'utf8'));
 // These assertions isolate the frozen v2/v3 lossless projection, not the new
 // opt-in selection contract (covered by production-scoped-supply.test.mjs).
-function captureRules(){const rules=currentRules();delete rules.productionSupplyVersion;return rules;}
+function captureRules(){const rules=currentRules();rules.modelProjectionVersion='production-context-v3';delete rules.productionSupplyVersion;delete rules.opportunityCoverageVersion;return rules;}
 const newVersion='production-context-v3';
 const frozenSettings={model:'gpt-6-sol',reasoning:'medium',visualStyle:'3D三渲二国漫横屏16:9；C4D/Octane风格精细渲染，赛璐璐光影结合PBR材质。角色身份、衣发与道具一致；人物表演的强弱与幅度服从本段情绪和策略，摄影、声光、动作共同组织，空间可读、有纵深。无额外字幕、水印、logo、BGM；源剧情必要屏幕信息保留。'};
 const fact=(id,evidence,statement,extra={})=>({id,evidence,subjects:['甲'],kind:'STATE',claim:'SOURCE',applicability:'SUBJECT',validity:{status:'UNKNOWN'},...(statement===undefined?{}:{statement}),...extra});
@@ -105,6 +107,11 @@ test('partial requests with historical candidates retain unsent source facts and
 
 test('frozen production-context-v2 requests retain their exact prompt, input and schema bytes',()=>{
  const rules=captureRules();Object.assign(rules,{modelProjectionVersion:'production-context-v2',instructions:'固定指令',planHint:'固定计划',draftHint:'固定主创',deltaHint:'固定差异'});rules.files=Object.fromEntries(Object.keys(rules.files).map(p=>[p,'固定方法 '+p]));
+ // The saved v2 snapshot predates the opt-in screen rhythm contract.
+ rules.creativeRevision='expressive-cadence-v1';
+ delete rules.rhythmContractVersion;
+ delete rules.fantasyTimingVersion;
+ delete rules.visualSubjectsVersion;
  const observed=[];
  for(const historical of [false,true])for(const stage of ['plan','author','finish','delta']){
   const r=request(stage,historical?withHistorical():payload(),rules);observed.push([historical,stage,r.promptHash,r.inputHash,r.prompt.length,JSON.stringify(r.schema).length]);
@@ -243,7 +250,8 @@ test('unknown values inside nominally known root metadata retain the original fa
 test('retrieval-facts-v1 frozen snapshot keeps the four stage prompt and input bytes',()=>{
  const rules=captureRules();Object.assign(rules,{modelProjectionVersion:'retrieval-facts-v1',instructions:'固定指令',planHint:'固定计划',draftHint:'固定主创',deltaHint:'固定差异'});rules.files=Object.fromEntries(Object.keys(rules.files).map(p=>[p,'固定方法 '+p]));
  // This fixture models a saved old snapshot, not today's newly captured rules/defaults.
- for(const key of ['unitDirectionVersion','seedanceExportVersion','sourceProjection','inputProjectionVersion','sourceExpressionMethodsVersion','authorCallGroupingVersion','schemaProjectionVersion','acceptedContinuityVersion'])delete rules[key];
+ rules.creativeRevision='expressive-cadence-v1';
+ for(const key of ['unitDirectionVersion','seedanceExportVersion','sourceProjection','inputProjectionVersion','sourceExpressionMethodsVersion','authorCallGroupingVersion','schemaProjectionVersion','acceptedContinuityVersion','rhythmContractVersion','fantasyTimingVersion','visualSubjectsVersion'])delete rules[key];
  const observed=['plan','author','finish','delta'].map(stage=>{const r=request(stage,payload(),rules);return [stage,r.promptHash,r.inputHash,r.prompt.length,JSON.stringify(r.schema).length];});
  assert.deepEqual(observed,[
   ['plan','8c0617d110290588778962b61bc8aa987164d9902d69338f0fc4a268a940f29b','2c474c7a2cc2ac238c2eee1287ad40609687143221b3c84e1d0c8147f4c228fc',3517,4194],
@@ -251,4 +259,40 @@ test('retrieval-facts-v1 frozen snapshot keeps the four stage prompt and input b
   ['finish','51d9e7b91e0323550616cfa2d75d7738726adcadf1981912ad3dc3cfc2d75501','4bbb5385a8c3ed3608080f8c3c1ebc7e58bebdac50832799dc963d860f5272fe',5442,3575],
   ['delta','c6f4919e6fc2b88ec3e810bb95d8ec3685e7d0ccb1d4247eabc918fc3983ba63','c8637ceb99ba9a4b8b70d0087e6565566da867e07252bec15fcf3568a400108f',5500,4015]
  ]);
+});
+
+function evidenceRoleSource(){
+ return normalizeSource({key:'row-evidence',sourceRows:[{id:'source-action',text:'△甲关门。',evidenceRole:'source'},{id:'source-guide',text:'△甲保持神态。',evidenceRole:'guidance'}],contextRows:[{id:'guide-speech',kind:'dialogue',text:'甲：我无所不能。',evidenceRole:'guidance'},{id:'guide-action',kind:'action',text:'建议甲显得强大。',evidenceRole:'guidance'},{id:'true-action',kind:'action',text:'△甲放下钥匙。',evidenceRole:'source'},{id:'untyped',kind:'context',text:'未评级的原上下文'}],entryFacts:[],assets:[]});
+}
+
+test('v5 preserves evidence roles in source and context rows for standard and fast inputs without inferring missing roles',()=>{
+ const fast=evidenceRoleSource(),standard=payload().source;
+ standard.contextRows.push(...fast.contextRows.map(row=>structuredClone(row)));
+ for(const source of [fast,standard]){
+  const before=structuredClone(source),projected=projectProductionSource(source,'production-context-v5');
+  for(const table of ['sourceRows','contextRows'])for(const row of projected[table]){
+   const original=source[table].find(r=>r.id===row.id);
+   assert.equal(row.evidenceRole,original.evidenceRole,`${source.sourceProtocol??'fast'} ${row.id}`);
+   assert.equal(Object.hasOwn(row,'evidenceRole'),Object.hasOwn(original,'evidenceRole'));
+   assert.equal(row.text,original.text);assert.equal(row.kind,original.kind);
+  }
+  assert.deepEqual(projected.dialogue.map(({quote,cue,channel})=>({quote,cue,channel})),source.dialogue.map(({quote,cue,channel})=>({quote,cue,channel})));
+  assert.deepEqual(source,before);
+  for(const ref of ['guide-speech','guide-action']){
+   assert.throws(()=>normalizeSource({...source,entryFacts:[{id:'forbidden',subject:'甲',statement:'甲无所不能',sourceRefs:[ref],evidenceMode:'source_rows'}]}),{code:'ENTRY_FACT_GUIDANCE'});
+   assert.throws(()=>validateProductionFeedback({relation:'DIRECT',entry:[{key:'power',value:'甲无所不能',authority:'SOURCE',sourceRefs:[ref]}],exit:[],sharedChoices:[],usedMaterialIds:[],needs:[],conflicts:[]},{source}),{code:'PRODUCTION_FEEDBACK'});
+  }
+ }
+});
+
+test('v2 v3 v4 row projections preserve their original bytes and v4 historical table behavior',()=>{
+ const source=evidenceRoleSource();
+ for(const version of ['production-context-v2','production-context-v3','production-context-v4']){
+  const projected=projectProductionSource(source,version);
+  assert.equal(digest(projected),'2f6674a47840300bdf56d92cc025f1b05ee4e01d022b9fa439c923d77e7fb83a',version);
+  assert.ok([...projected.sourceRows,...projected.contextRows].every(row=>!Object.hasOwn(row,'evidenceRole')),version);
+ }
+ const historical=withHistorical().source;
+ const old=projectProductionSource(historical,'production-context-v4'),next=projectProductionSource(historical,'production-context-v5');
+ assert.deepEqual(next.context,old.context,'v5 changes row evidence visibility only, retaining v4 historical projection');
 });

@@ -4,8 +4,10 @@ import type { SourceIndex } from './project-foundation-contracts';
 import type { FoundationSourceContext } from './foundation-source';
 import type { ProductionCatalog } from './foundation-production-contracts';
 import { expandRelevantNames } from './foundation-dependency-selector';
-import { prepareStandardEpisode, deriveStandardScriptLines, type PreparedStandardEpisode, type StandardScriptSyntax } from './standard-script-plan';
+import { deriveStandardScriptLines, type PreparedStandardEpisode, type StandardScriptSyntax } from './standard-script-plan';
 import {parseEpisodeNumber} from './episode-presentation';
+import {prepareEpisodeScript,type ScriptPerformanceOptions} from './standard-script-reception';
+import {selectEpisodeEvidence} from '../runtime/episode-evidence.mjs';
 
 export type FoundationFact = {
   id: string; subjects: string[]; kind: 'IDENTITY' | 'RELATION' | 'STATE' | 'SETTING' | 'UTTERANCE' | 'CONTEXT' | 'FORMAT'; statement: string;
@@ -39,10 +41,9 @@ export function isFoundationSourceFormatLine(text: string, start: number, end: n
   return PURE_EPISODE_HEADING.test(statement)||sectionHeading(statement)||start<=first&&first<end&&declaredSourceTitles(text).has(statement);
 }
 /** Includes every nonempty source line, regardless of whether an image asset exists. */
-export function buildFoundationFacts(index: SourceIndex, context: FoundationSourceContext, catalog: ProductionCatalog | null, options: { standard?: boolean; resolutions?:Record<number,PreparedStandardEpisode>; postColonCue?:boolean;syntax?:StandardScriptSyntax } = {}) {
+export function buildFoundationFacts(index: SourceIndex, context: FoundationSourceContext, catalog: ProductionCatalog | null, options: { standard?: boolean; resolutions?:Record<number,PreparedStandardEpisode>; postColonCue?:boolean;syntax?:StandardScriptSyntax }&ScriptPerformanceOptions = {}) {
   const sourceTexts = [...context.background.map(s => s.text), ...index.episodes.map(e => e.content)];
-  const knownSpeakers = (catalog?.assets ?? []).filter(a => ['CH', 'GROUP', 'BEAST'].includes(a.type)).flatMap(a => [a.name.split(/[|｜]/)[0], ...a.aliases]);
-  const prepared = new Map(options.standard ? index.episodes.map(episode => [episode.number, options.resolutions?.[episode.number] ?? prepareStandardEpisode(episode.content, `episode-${episode.number}`, { knownSpeakers, postColonCue: options.postColonCue,syntax:options.syntax })]) : []);
+  const prepared = new Map(options.standard ? index.episodes.map(episode => [episode.number, prepareEpisodeScript(episode,catalog,options.resolutions?.[episode.number], { postColonCue: options.postColonCue,syntax:options.syntax,inlinePerformance:options.inlinePerformance,inlinePerformanceVersion:options.inlinePerformanceVersion })]) : []);
   const typedRows = new Map([...prepared].map(([number, episode]) => [number, new Map(deriveStandardScriptLines(episode).map(row => [episode.index.units[row.line - 1].start, row]))]));
   const names = [...new Set([...(catalog?.assets ?? []).flatMap(a => [a.name, ...(options.standard ? [a.name.split(/[|｜]/)[0]] : []), ...a.aliases]),
     ...(options.standard ? [...prepared.values()].flatMap(episode => deriveStandardScriptLines(episode).flatMap(row => row.speakers ?? (row.speaker ? [row.speaker] : [])))
@@ -84,14 +85,17 @@ export function buildFoundationFacts(index: SourceIndex, context: FoundationSour
     identityNameGroups: (catalog?.assets??[]).map(a=>[a.name,...a.aliases].filter(Boolean)) };
 }
 export type FoundationFacts = ReturnType<typeof buildFoundationFacts>;
-export function selectFoundationFacts(store: FoundationFacts, index: SourceIndex, scope: number[]) {
+export function selectFoundationFacts(store: FoundationFacts, index: SourceIndex, scope: number[], options: {
+  historyMode?: 'full' | 'episode'; requestedEvidence?: FoundationFact['evidence'][];
+} = {}) {
   const { facts: _allFacts, identityNameGroups: _identityNameGroups, ...storeMetadata } = store;
   const text = index.episodes.filter(e => scope.includes(e.number)).map(e => e.content).join('\n');
   const local = store.facts.filter(f => f.evidence.domain === 'EPISODE' && scope.includes(f.evidence.episode!));
   const subjects = expandRelevantNames(local.flatMap(f => f.subjects),store.identityNameGroups??[]);
   const relevant = (fact: FoundationFact) => fact.subjects.some(name => subjects.has(name) || name.length > 1 && text.includes(name));
-  const background = store.facts.filter(f => f.evidence.domain === 'CONTEXT' && f.kind !== 'FORMAT' && (f.applicability === 'GLOBAL' || relevant(f)));
-  const unlinkedBackground = store.facts.filter(f=>f.evidence.domain==='CONTEXT'&&f.kind!=='FORMAT'&&f.applicability==='UNRESOLVED');
+  const withinOutline = (f: FoundationFact) => options.historyMode !== 'episode' || !f.contextUse || scope.includes(f.contextUse.episode);
+  const background = store.facts.filter(f => f.evidence.domain === 'CONTEXT' && f.kind !== 'FORMAT' && withinOutline(f) && (f.applicability === 'GLOBAL' || relevant(f)));
+  const unlinkedBackground = store.facts.filter(f=>f.evidence.domain==='CONTEXT'&&f.kind!=='FORMAT'&&withinOutline(f)&&f.applicability==='UNRESOLVED');
   // Bounded candidates remain unlinked evidence, never global or current-state facts.
   let candidateChars = 0;
   const backgroundCandidates = unlinkedBackground.filter(fact => {
@@ -106,12 +110,13 @@ export function selectFoundationFacts(store: FoundationFacts, index: SourceIndex
     return source !== undefined && Number.isSafeInteger(start) && Number.isSafeInteger(end) && start >= 0 && end > start && end <= source.length && fact.statement === source.slice(start, end);
   };
   const historicalStates = historical.filter(f => f.kind === 'STATE' && backed(f) && relevant(f));
-  // Retrieval deliberately includes all subject-linked original sentences, not only STATE
-  // keywords. One source-neighbour on each side can expose a pronoun/release/counterclaim;
+  // Legacy includes every subject-linked sentence. Episode supply recalls source
+  // actions and state/claim signals, with neighbouring release/counterclaim evidence;
   // proximity is not an identity, knowledge or continuity assertion.
-  const anchors = historical.filter(f => f.kind !== 'FORMAT' && backed(f) && relevant(f));
-  const anchorIds = new Set(anchors.map(f => f.id)), neighbourAnchors = new Map<string, string[]>();
-  for (const [position, fact] of historical.entries()) if (anchorIds.has(fact.id)) {
+  const episodeSelection = options.historyMode === 'episode' ? selectEpisodeEvidence(historical.filter(backed), {scope, relevant, requestedEvidence: options.requestedEvidence}) : null;
+  const anchors = historical.filter(f => f.kind !== 'FORMAT' && backed(f) && (episodeSelection ? episodeSelection.anchors.has(f.id) : relevant(f)));
+  const anchorIds = new Set(anchors.map(f => f.id)), neighbourAnchors = episodeSelection?.neighbours ?? new Map<string, string[]>();
+  if (!episodeSelection) for (const [position, fact] of historical.entries()) if (anchorIds.has(fact.id)) {
     for (const neighbour of [historical[position - 1], historical[position + 1]]) if (neighbour && neighbour.evidence.episode === fact.evidence.episode && neighbour.kind !== 'FORMAT' && backed(neighbour)) {
       neighbourAnchors.set(neighbour.id, [...(neighbourAnchors.get(neighbour.id) ?? []), fact.id]);
     }
@@ -132,5 +137,5 @@ export function selectFoundationFacts(store: FoundationFacts, index: SourceIndex
     unlinkedBackgroundCount: unlinkedBackground.length,
     unlinkedBackground: unlinkedBackground.map(({statement: _statement,...fact})=>fact),
     sourceFactIndex: local.map(({statement: _statement,...fact})=>fact),
-    rules: '原文切片是证据；台词永远只是角色主张，不因必须、不能等词升级世界规则。historicalEvidenceCandidates提供身份、关系、知情、状态与解除反证的原句候选；名字匹配和邻句只用于检索，不证明相同身份、角色知情、故事时间或永久延续。历史状态须核对本集适用性，未给解除依据不等于永远持续。backgroundCandidates是尚未关联的作者资料候选，先判断与本集身份及时间的关系，不可当作全局规则或当前状态；剧情梗概中的未来事件不提前应用。未提供的候选仍可按sectionKey/episode与源位置回查，不声称已语义穷尽。' };
+    rules: (episodeSelection ? 'episode-evidence-v1：本集正文完整提供；历史只先供前集线索、状态/身份/关系/知情及反证候选，不重放全部同名旧对白。需要具体旧事件时按集号和完整源范围补读，不凭省略推断不存在。' : '') + '原文切片是证据；台词永远只是角色主张，不因必须、不能等词升级世界规则。historicalEvidenceCandidates提供身份、关系、知情、状态与解除反证的原句候选；名字匹配和邻句只用于检索，不证明相同身份、角色知情、故事时间或永久延续。历史状态须核对本集适用性，未给解除依据不等于永远持续。backgroundCandidates是尚未关联的作者资料候选，先判断与本集身份及时间的关系，不可当作全局规则或当前状态；剧情梗概中的未来事件不提前应用。未提供的候选仍可按sectionKey/episode与源位置回查，不声称已语义穷尽。' };
 }

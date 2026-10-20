@@ -6,6 +6,7 @@ import {once} from 'node:events';
 import {tmpdir,hostname} from 'node:os';
 import path from 'node:path';
 import {createCoordinator} from './core/legacy-test-fixtures.mjs';
+import {freePreparationRecoveryCause} from './coordinator.mjs';
 import {createStore} from './core/store.mjs';
 import {VERSION,PLAN_VERSION} from './core/shared.mjs';
 import {DELTA_VERSION} from './core/delta.mjs';
@@ -47,6 +48,13 @@ test('call budget is checked before each serial package',async()=>fixture(async(
  await coordinator.start(d.id,{mode:'all'});await coordinator.wait(d.id);
  assert.equal(calls.length,2);
  assert.equal((await coordinator.read(d.id)).web.progress,'budget_stop');
+}));
+test('calibrated defaults affect only newly created budgets, not saved explicit limits',async()=>fixture(async({coordinator})=>{
+ const fresh=await coordinator.create({source,settings,binding});
+ assert.deepEqual(fresh.web.budget,{maxCalls:8,maxTokens:600000});
+ const old=await coordinator.create({source,settings,binding,budget:{maxCalls:32,maxTokens:300000}});
+ assert.deepEqual((await coordinator.read(old.id)).web.budget,{maxCalls:32,maxTokens:300000});
+ assert.equal((await coordinator.read(fresh.id)).operations.length,0);
 }));
 
 test('repeat start is idempotent and another run of the episode is excluded',async()=>fixture(async({coordinator,calls})=>{
@@ -181,7 +189,8 @@ for(const action of ['pause','stop','shutdown'])test(`${action} during saved-pla
 });
 
 test('all four selection modes are handled before authorship',async()=>fixture(async({coordinator,calls})=>{
- const d=await coordinator.create({source,settings,binding});await coordinator.start(d.id,{mode:'next'});await coordinator.wait(d.id);
+ // This deliberately purchases four draft generations on one run; it is not a normal new-episode default.
+ const d=await coordinator.create({source,settings,binding,budget:{maxCalls:32,maxTokens:600000}});await coordinator.start(d.id,{mode:'next'});await coordinator.wait(d.id);
  for(const mode of ['off','recommended','all','review']){
   await coordinator.choose(d.id,{mode,resetDrafts:true});await coordinator.start(d.id,{mode:'all'});await coordinator.wait(d.id);
   const current=await coordinator.read(d.id);
@@ -215,6 +224,33 @@ test('raising the call budget preserves paid attempts and resumes only missing w
  assert.equal(final.operations.length,calls.length);
  assert.equal(final.status,'text_ready_for_review');
 }));
+
+test('budget edits preserve a closed preparation failure and recover legacy-cleared error from its operation',async()=>fixture(async({coordinator,dir})=>{
+ const d=await coordinator.create({source,settings,binding});
+ await coordinator.start(d.id,{mode:'next'});await coordinator.wait(d.id);
+ const failed=await coordinator.read(d.id),operations=JSON.stringify(failed.operations);
+ assert.equal(failed.web.error.code,'WORKFLOW_PAUSED');
+ await coordinator.setBudget(d.id,{maxCalls:32,maxTokens:2000000});
+ let saved=await coordinator.read(d.id);
+ assert.equal(saved.web.progress,'failed');assert.equal(saved.web.error.code,'WORKFLOW_PAUSED');
+ assert.equal(freePreparationRecoveryCause(saved),true);assert.equal(JSON.stringify(saved.operations),operations);
+ await createStore(dir).update(d.id,x=>{x.web.progress='planned';x.web.error=null;return x;});
+ await coordinator.setBudget(d.id,{maxCalls:32,maxTokens:2000000});
+ saved=await coordinator.read(d.id);
+ assert.equal(saved.web.progress,'failed');assert.equal(saved.web.error.code,'WORKFLOW_PAUSED');
+ assert.equal(JSON.stringify(saved.operations),operations);
+},{runner:async()=>{throw Object.assign(new Error('queue disabled'),{code:'WORKFLOW_PAUSED',requestOutcome:'NOT_SENT'});}}));
+
+test('a proven expired preparation read retains its free recovery proof without treating every P2028 as retryable',async()=>{
+ const dir=await mkdtemp(path.join(tmpdir(),'v4-proven-read-'));let calls=0;
+ const c=createCoordinator({dataRoot:dir,beforeExecute:async()=>{throw Object.assign(new Error('pure read transaction expired'),{code:'P2028',retryableRead:true});},modelRunner:async()=>{calls++;throw Error('must not dispatch');}});
+ try{const d=await c.create({source,settings,binding});await c.start(d.id,{mode:'next'});await c.wait(d.id);
+  const saved=await c.read(d.id);assert.equal(saved.web.error.code,'P2028');assert.equal(saved.web.error.retryableRead,true);assert.equal(saved.web.error.requestOutcome,'NOT_SENT');
+  assert.equal(freePreparationRecoveryCause(saved),true);assert.equal(saved.operations.length,0);assert.equal(calls,0);
+  assert.equal(freePreparationRecoveryCause({...saved,web:{...saved.web,error:{code:'P2028'}}}),false);
+  assert.equal(freePreparationRecoveryCause({...saved,web:{...saved.web,error:{code:'SOURCE_STALE',retryableRead:true,requestOutcome:'NOT_SENT'}}}),false);
+ }finally{await c.shutdown();await rm(dir,{recursive:true,force:true});}
+});
 
 test('explicit local repair uses the paid draft and keeps the earlier candidate',async()=>fixture(async({coordinator,calls})=>{
  const d=await coordinator.create({source,settings,binding});

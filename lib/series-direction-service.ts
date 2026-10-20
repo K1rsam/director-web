@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "./prisma";
+import {isTransientDatabaseReadError} from './production-read-guard';
 import { loadFoundationSourceContext } from "./foundation-source";
 import {readCurrentResolvedPlans} from './script-resolution-service';
 import {deriveStandardScriptLines,prepareStandardEpisode} from './standard-script-plan';
@@ -13,8 +14,9 @@ import { prepareDirectionSource } from './series-direction-source';
 import { readSeriesDirectionEvidence, type EvidenceBatch, type EvidenceCoordinateCorrection } from './series-direction-evidence';
 import { validateSeriesDirectionEvidenceReview } from './series-direction-evidence-review';
 import { buildSourceIndex, isRecord } from './project-foundation-contracts';
-import { FOUNDATION_DIRECTION_VERSION, foundationDirectionCoverage, directionDigest, readFoundationDirectionReceipt, type FoundationDirectionBasis, type FoundationDirectionReceipt, type FoundationDirectionWork } from './foundation-series-direction';
+import { FOUNDATION_DIRECTION_VERSION, FOUNDATION_DIRECTION_CONTENT_SCHEMA, foundationDirectionCoverage, directionDigest, readFoundationDirectionReceipt, type FoundationDirectionBasis, type FoundationDirectionReceipt, type FoundationDirectionWork } from './foundation-series-direction';
 import { validateSavedDeliveryAttempt, type DeliveryAttempt } from './foundation-delivery-call';
+import { assertSystemPresentationEvidence, SYSTEM_PRESENTATION_GUIDANCE } from './system-presentation';
 
 type Db = Prisma.TransactionClient;
 type Options = { db?: PrismaClient };
@@ -104,15 +106,23 @@ function assertCurrent(command: CommandBase, source: SourceBundle, pointer: Awai
   if (command.sourceVersion !== source.context.sourceVersion) fail("DIRECTION_STALE", "全剧来源已变化，请刷新并重新核对方向；旧版本已保留。");
   if (command.stateToken !== pointer.token) fail("DIRECTION_CONFLICT", "方向已被其它操作更新，请刷新后再确认。保留了当前输入。");
 }
-async function transaction<T>(db: PrismaClient, fn: (tx: Db) => Promise<T>) {
+async function transaction<T>(db: PrismaClient, fn: (tx: Db) => Promise<T>, preserveTransientReadErrors=false) {
   try { return await db.$transaction(fn, { timeout: 20_000 }); }
-  catch (error) { if (["P2002", "P2034", "P2028"].includes(String((error as { code?: string }).code)) || /SQLITE_BUSY|database is locked/.test(String(error))) fail("DIRECTION_CONFLICT", "另一个操作正在保存方向，请刷新后再试；没有覆盖其它人的修改。"); throw error; }
+  catch (error) {
+    // Only these three pure-read projections may reconnect an expired transaction.
+    // An unscoped P2028 (especially a write) must retain its original stop gate.
+    if(preserveTransientReadErrors&&(error as {code?:string}).code==='P2028'&&/expired transaction/i.test((error as Error).message))throw Object.assign(error as Error,{readOnlyTransactionExpired:true});
+    if(preserveTransientReadErrors&&isTransientDatabaseReadError(error))throw error;
+    if (["P2002", "P2034", "P2028"].includes(String((error as { code?: string }).code)) || /SQLITE_BUSY|database is locked/.test(String(error))) fail("DIRECTION_CONFLICT", "另一个操作正在保存方向，请刷新后再试；没有覆盖其它人的修改。"); throw error;
+  }
 }
 async function persistCard(db: Db, projectId: string, saved: SavedCard) {
   return db.sceneSnapshot.create({ data: { projectId, sceneKey: CARD_KEY, title: `全剧方向 v${saved.card.revision} · ${saved.card.status === "CONFIRMED" ? "已确认" : "草稿"}`, content: JSON.stringify(saved), metadata: JSON.stringify({ sourceVersion: saved.card.sourceVersion, hash: saved.card.hash, actorId: saved.actorId, origin: saved.origin }) } });
 }
 function makeDraft(source: SourceBundle, pointer: Pointer, content: SeriesDirectionContent, reviewed: boolean, knowledgeIndex?:SeriesKnowledgeItem[]) {
-  return createSeriesDirectionDraft({ id: `series-direction:${source.context.projectId}`, revision: pointer.revision + 1, sourceVersion: source.context.sourceVersion, content, reviewedEpisodeIds: reviewed ? source.context.episodeIds : [], evidenceRefs: reviewed ? source.context.evidenceIds : [], ...(knowledgeIndex===undefined?{}:{knowledgeIndex}) }, source.context);
+  const card = createSeriesDirectionDraft({ id: `series-direction:${source.context.projectId}`, revision: pointer.revision + 1, sourceVersion: source.context.sourceVersion, content, reviewedEpisodeIds: reviewed ? source.context.episodeIds : [], evidenceRefs: reviewed ? source.context.evidenceIds : [], ...(knowledgeIndex===undefined?{}:{knowledgeIndex}) }, source.context);
+  assertSystemPresentationEvidence(card.content.systemPresentation, source.units);
+  return card;
 }
 function preview(card: SeriesDirectionCard | null) { if (!card) return { brief: null, issue: null }; try { return { brief: previewSeriesDirectionBrief(card), issue: null }; } catch (e) { return { brief: null, issue: seriesDirectionFailure(e).body.error }; } }
 function splitSource(source: SourceBundle) {
@@ -134,10 +144,11 @@ function plan(source: SourceBundle, batches = prepareSource(source).batches) {
   const reason = source.blocker || (batches.length > MAX_BATCHES ? `全量来源需${batches.length}批，超出本次${MAX_BATCHES}批上限；未截断、未发起模型调用。仍可手工保存方向。` : null);
   return { batches: batches.length, calls: batches.length + 1, characters: source.units.reduce((sum, u) => sum + Array.from(u.text).length, 0), allowed: !reason, reason };
 }
-function projection(saved: SavedCard | null, source: SourceBundle, episodeId: string) {
+function projection(saved: SavedCard | null, source: SourceBundle, episodeId: string, scope: 'EPISODE' | 'PROJECT' = 'EPISODE') {
   if (!saved) return { status: "UNCONFIRMED" as const, projection: null };
   if (source.blocker || saved.card.sourceVersion !== source.context.sourceVersion) return { status: "STALE" as const, projection: null };
-  return { status: "CONFIRMED" as const, projection: projectSeriesDirection(saved.card, source.context, episodeId, saved.card.confirmation) };
+  assertSystemPresentationEvidence(saved.card.content.systemPresentation, source.units);
+  return { status: "CONFIRMED" as const, projection: projectSeriesDirection(saved.card, source.context, episodeId, saved.card.confirmation, scope) };
 }
 
 const FOUNDATION_RECEIPT_KEY = 'SERIES_DIRECTION_FOUNDATION_RECEIPT';
@@ -284,14 +295,14 @@ export async function readSeriesDirectionProjection(projectId: string, episodeId
   return transaction(options.db ?? prisma, async db => {
     const source = await loadSource(db, projectId), pointer = await loadPointer(db, projectId);
     return projection(await loadCard(db, projectId, pointer.value.currentId), source, episodeId);
-  });
+  },true);
 }
 /** Same confirmed series brief for asset design; no guessed production episode. */
 export async function readProjectSeriesDirectionProjection(projectId: string, options: Options = {}) {
   return transaction(options.db ?? prisma, async db => {
     const source = await loadSource(db, projectId), pointer = await loadPointer(db, projectId);
-    return projection(await loadCard(db, projectId, pointer.value.currentId), source, source.context.episodeIds[0] ?? '');
-  });
+    return projection(await loadCard(db, projectId, pointer.value.currentId), source, source.context.episodeIds[0] ?? '', 'PROJECT');
+  },true);
 }
 export async function getSeriesDirectionWorkspace(projectId: string, actorId: string, options: Options = {}): Promise<SeriesDirectionWorkspace> {
   return transaction(options.db ?? prisma, async db => {
@@ -321,14 +332,14 @@ export async function getSeriesDirectionWorkspace(projectId: string, actorId: st
     let recovery:{resumable:boolean;reusableCalls:number;remainingCalls?:number;recoveryIssue:string|null}={resumable:false,reusableCalls:0,recoveryIssue:null};
     if(run&&held&&run.status==='FAILED') {
       try{const saved=await prepareRecovery(db,projectId,run.id,source);recovery={resumable:true,reusableCalls:saved.refs.length,remainingCalls:saved.batches.length+(saved.synthesis?0:1),recoveryIssue:null};}
-      catch(error){recovery.recoveryIssue=seriesDirectionFailure(error).body.error;}
+      catch(error){if(isTransientDatabaseReadError(error))throw error;recovery.recoveryIssue=seriesDirectionFailure(error).body.error;}
     }
     return { source: { sourceVersion: source.context.sourceVersion, episodes: source.episodes, evidence: source.units.map(u => ({ id: u.evidenceId, kind: u.kind, title: u.title })), warnings: source.warnings, blocker: source.blocker }, stateToken: pointer.token,
       status: currentProjection.status, draft: draft?.card ?? null, current: current?.card ?? null, draftOrigin: draft?.origin ?? null, draftReviewed: Boolean(draft?.reviewedAt), draftCanConfirm: shared || Boolean(draft?.reviewedAt), foundationPreparation,
       draftBrief: draftPreview.brief, draftIssue: draftPreview.issue, brief: currentProjection.projection?.brief ?? null, permissions: access, generationPlan: plan(source),
       generation: run ? { ...parse<GenerationSummary>(run.outputSummary || "{}"), id: run.id, status: run.status, createdAt: run.createdAt.toISOString(), pending: held&&run.status==='RUNNING',held,...recovery } : null,
       history: history.map(row => { const card = row.sceneKey === CARD_KEY ? parse<SavedCard>(row.content).card : null; return { id: row.id, title: row.title ?? "方向历史", createdAt: row.createdAt.toISOString(), card, brief: preview(card).brief }; }) };
-  });
+  },true);
 }
 
 /** Explicit source-grounded maintenance, never a model-created approval or a direction confirmation. */
@@ -503,7 +514,7 @@ export async function generateSeriesDirectionCandidate(projectId: string, actorI
       summary = { ...summary, completedCalls: call, message: `已核对返回${index + 1}/${prepared.batches.length}批；这只是分批证据，不是已确认方向。` };
       await db.pipelineRun.update({ where: { id: prepared.run.id }, data: { outputSummary: JSON.stringify(summary) } });
     }
-    const prompt = promptFor("综合所有批次形成全剧创作方向候选，只输出{content:{settingTags:最多3项每项24字,mechanismTags:最多3项每项24字,arcTags:最多3项每项24字,primaryTone:30字内,secondaryTones:最多2项每项24字,audiencePromise:100字内,expressionRules:最多3项每项70字,avoidances:最多3项每项50字,episodeFlexibility:100字内}}。无依据标签用空数组。目标总brief200至350字，绝不超过600字；保留事实/台词/揭示优先。", { phase: "synthesis", sourceVersion: prepared.source.context.sourceVersion, totalBatches: evidence.length, evidence });
+    const prompt = promptFor(`综合所有批次形成全剧创作方向候选，只输出${JSON.stringify({ content: FOUNDATION_DIRECTION_CONTENT_SCHEMA })}。按持续剧情、对白气质与反差分别建议情绪强度、镜头速度、额外幻想密度；嘴贫/荒诞喜剧适配时主动考虑高幅情绪、快速镜头和丰富大胆幻想，不按类型机械全选最高，不把伤痛消解成笑点。三维选择优先于泛化强弱描述，但不覆盖幻想off/逐项取消；rationale只是待确认的建议依据，不是源事实，不随各集重复发送。无依据标签用空数组，维度无据null。目标总brief含三维选择200至350字，绝不超过600字；保留事实/台词/揭示优先。仅候选，用户确认后才采用。${SYSTEM_PRESENTATION_GUIDANCE}`, { phase: "synthesis", sourceVersion: prepared.source.context.sourceVersion, totalBatches: evidence.length, evidence, systemSourceAnchors: prepared.source.units.map(unit => ({ evidenceId: unit.evidenceId, episodeId: unit.episodeId ?? null })) });
     if (Array.from(prompt).length > MAX_SYNTHESIS_CHARS) fail("DIRECTION_BUDGET", "全量证据综合超出预算；分批证据已保留，未截断或发送不完整全剧请求。");
     summary = { ...summary, phase: "synthesis", message: "全部批次已返回，正在综合方向候选；尚未采用。" };
     await db.pipelineRun.update({ where: { id: prepared.run.id }, data: { outputSummary: JSON.stringify(summary) } });
@@ -536,7 +547,8 @@ export async function generateSeriesDirectionCandidate(projectId: string, actorI
 
 export function seriesDirectionFailure(error: unknown) {
   const value = error as { code?: string; message?: string; status?: number };
-  const messages: Record<string, string> = { DIRECTION_TEXT: "请检查字段长度、重复项和换行；列表最多3项，副调最多2项。", DIRECTION_INCOMPLETE: "主调、观众回报和单集弹性尚未填写完整。", DIRECTION_BUDGET: "方向brief超过600字或全量来源超出调用预算；请精简方向或手工处理，不会截断。", DIRECTION_COVERAGE: "请核对并认可当前方向及表达边界，勾选后保存；模型覆盖另行核验。", DIRECTION_EVIDENCE: "缺少可核对的全剧来源依据。", DIRECTION_STALE: "来源已变化，请刷新后重新核对。", DIRECTION_INTEGRITY: "方向卡校验失败，未投递该卡。" };
+  const systemMessages: Record<string, string> = { DIRECTION_SYSTEM_PRESENTATION: '请分别核对各系统身份、呈现方案、源锚及可见/可听/接触边界；原记录保留。', DIRECTION_SYSTEM_EVIDENCE: '系统源锚未逐字匹配当前真实来源；不能用可编辑说明自证源事实，请核对原文。', DIRECTION_SYSTEM_SOURCE_CONFLICT: '所选呈现与登记的明确源载体冲突；请沿原文或保留待核对，未覆盖源实体/外观。' };
+  const messages: Record<string, string> = { DIRECTION_EXPRESSION: "请检查情绪、镜头、幻想选项及140字以内的单行选择依据；未指定维度可留空。", DIRECTION_TEXT: "请检查字段长度、重复项和换行；列表最多3项，副调最多2项。", DIRECTION_INCOMPLETE: "主调、观众回报和单集弹性尚未填写完整。", DIRECTION_BUDGET: "方向brief超过600字或全量来源超出调用预算；请精简方向或手工处理，不会截断。", DIRECTION_COVERAGE: "请核对并认可当前方向及表达边界，勾选后保存；模型覆盖另行核验。", DIRECTION_EVIDENCE: "缺少可核对的全剧来源依据。", DIRECTION_STALE: "来源已变化，请刷新后重新核对。", DIRECTION_INTEGRITY: "方向卡校验失败，未投递该卡。" };
   const known = typeof value?.code === "string" && value.code.startsWith("DIRECTION_");
-  return { status: value?.status ?? (known ? 409 : 500), body: { code: known ? value.code! : "DIRECTION_ERROR", error: known ? (value.message && value.message !== value.code ? value.message : messages[value.code!] ?? "方向记录暂不可用，原记录保留。") : "候选调用或保存未正常完成，结果及费用待核对。" } };
+  return { status: value?.status ?? (known ? 409 : 500), body: { code: known ? value.code! : "DIRECTION_ERROR", error: known ? (value.message && value.message !== value.code ? value.message : systemMessages[value.code!] ?? messages[value.code!] ?? "方向记录暂不可用，原记录保留。") : "候选调用或保存未正常完成，结果及费用待核对。" } };
 }

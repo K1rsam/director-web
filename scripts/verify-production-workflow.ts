@@ -42,6 +42,20 @@ async function main(){
   const adapters=adapterModule.createProductionWorkflowAdapters('u',services);
   const service=runtime.createProductionWorkflowService({directory:path.join(directory,'workflow'),budgetDirectory,adapters});
   let view=await service.create({projectId:'p',actorId:'u',episodeNumbers:[1],costAcknowledged:true});const id=view.workflow.id;
+  const inspectionBase={...services,readStage1:async(p:string)=>({...await services.readStage1(p),complete:true}),readDirection:async(p:string,a:string)=>({...await services.readDirection(p,a),status:'CONFIRMED'})};
+  const beforeInspectionEvents=[...events];
+  for(const slot of ['readInputs','readStage1','readScope','readDirection','readAssets','planAssets','readAdoptions'] as const){
+   const counts:Record<string,number>={};const oneFailure:any={...inspectionBase};
+   for(const key of ['readInputs','readStage1','readScope','readDirection','readAssets','planAssets','readAdoptions'] as const){const original:any=inspectionBase[key];oneFailure[key]=async(...args:any[])=>{counts[key]=(counts[key]??0)+1;if(key===slot&&counts[key]===1)throw Object.assign(new Error('合成只读锁超时'),{code:'P1008'});return original(...args);};}
+   const isolated=adapterModule.createProductionWorkflowAdapters('u',oneFailure);
+   const seen=await isolated.inspect({...view.workflow,criticalAssetKeys:['synthetic-critical']});
+   assert.equal(seen.sourceVersion,view.workflow.sourceVersion);assert.equal(counts[slot],2,`${slot}只重做完整读取，不派生产调用`);
+   assert.ok(counts.readInputs>=2,'不同读槽失败后必须重新装配整份快照');
+  }
+  let persistentReads=0;const persistent=adapterModule.createProductionWorkflowAdapters('u',{...inspectionBase,readInputs:async()=>{persistentReads++;throw Object.assign(new Error('合成持久锁超时'),{code:'P1008'});}});
+  await assert.rejects(()=>persistent.inspect(view.workflow),(e:any)=>e.code==='P1008');assert.equal(persistentReads,3,'至多原读加两次，不无限重试');
+  for(const code of ['SOURCE_STALE','WORKFLOW_FORBIDDEN','DIRECTION_CONFLICT']){let reads=0;const hard=adapterModule.createProductionWorkflowAdapters('u',{...inspectionBase,readInputs:async()=>{reads++;throw Object.assign(new Error('明确源或权限冲突'),{code});}});await assert.rejects(()=>hard.inspect(view.workflow),(e:any)=>e.code===code);assert.equal(reads,1);}
+  assert.deepEqual(events,beforeInspectionEvents,'只读恢复不能触发队列、写入、模型或补料');
   const supplementAdapters=adapterModule.createProductionWorkflowAdapters('u',{...services,readStage1:async()=>({...await services.readStage1(),complete:true}),readDirection:async()=>({...await services.readDirection(),foundationPreparation:{status:'NEEDS_SUPPLEMENT'}})});
   const supplementService=runtime.createProductionWorkflowService({directory:path.join(directory,'missing-direction'),budgetDirectory,adapters:supplementAdapters});
   let supplement=await supplementService.create({projectId:'p',actorId:'u',episodeNumbers:[1],costAcknowledged:true});
@@ -66,6 +80,30 @@ async function main(){
   const ledger=await productionBudgetStore(budgetDirectory).read(view.workflow.budgetId);assert.equal(ledger.summary.calls,3);assert.equal(ledger.summary.knownTokens,24);
   assert.deepEqual((await service.getProductionChain(id,'p')).selectedRuns,{'1':'r'});
   await assert.rejects(()=>service.getProductionChain(id,'other'));
+  // Bound-empty admission is evidence for recovery only, not permission to skip a new source/material check.
+  const beforeEmptyRun=structuredClone(runs.r),beforeEmptyView=services.storyboardView;
+  const emptyRun={...structuredClone(runs.r),status:'created',plan:null,assembly:null,operations:[],candidates:[],adopted:[],
+   web:{...structuredClone(runs.r.web),owner:null,reserved:0,reservedAttemptIds:[],stopped:false,pauseRequested:false,sourceStale:false},
+   production:{needs:[],blocking:false,boundaryCheck:{status:'NO_PREDECESSOR'}}};
+  const emptyView={status:'created',active:false,sourceStale:false,blocked:false,legacyReadOnly:false,preparation:{ready:true},usage:{unknownAttempts:0,acknowledgedUnknownAttempts:0,knownTokens:0},production:{chainComplete:false}};
+  runs.r=structuredClone(emptyRun);services.storyboardView=async()=>structuredClone(emptyView);
+  assert.equal((await adapters.readRun('r',view.workflow)).emptyAdmission,true,'已绑定、无请求/候选/预留且源版本当前的空任务应提供可恢复证明');
+  for(const change of [
+   (r:any)=>r.operations.push({status:'completed'}),(r:any)=>r.candidates.push({status:'received'}),(r:any)=>r.adopted.push('old'),
+   (r:any)=>r.plan={},(r:any)=>r.assembly={text:'paid'},(r:any)=>r.web.owner={pid:1},(r:any)=>r.web.reserved=1,
+   (r:any)=>r.web.reservedAttemptIds.push('reserved'),(r:any)=>r.web.stopped=true,(r:any)=>r.web.pauseRequested=true,(r:any)=>r.web.sourceStale=true,
+   (r:any)=>r.production.blocking=true,(r:any)=>r.production.boundaryCheck.status='CONSTRAINT_CONFLICT',
+   (r:any)=>r.web.binding.productionChain.id='foreign',(r:any)=>r.web.binding.productionBudget.id='foreign',
+   (r:any)=>r.web.budget={maxCalls:0,maxTokens:600000}
+  ]){runs.r=structuredClone(emptyRun);change(runs.r);assert.equal((await adapters.readRun('r',view.workflow)).emptyAdmission,false);}
+  runs.r=structuredClone(emptyRun);
+  for(const patch of [{active:true},{sourceStale:true},{blocked:true},{legacyReadOnly:true},{status:'needs_design'},{preparation:{ready:false}},{usage:{unknownAttempts:1,knownTokens:0}},{usage:{unknownAttempts:0,knownTokens:1}}]){
+   services.storyboardView=async()=>({...structuredClone(emptyView),...patch});assert.equal((await adapters.readRun('r',view.workflow)).emptyAdmission,false);
+  }
+  services.storyboardView=async()=>structuredClone(emptyView);
+  const beforeEmptyInputs=services.readInputs;services.readInputs=async()=>({...await beforeEmptyInputs(),sourceVersion:'changed'});
+  assert.equal((await adapters.readRun('r',view.workflow)).emptyAdmission,false,'真实源版本漂移不能借空任务恢复越过');
+  services.readInputs=beforeEmptyInputs;services.storyboardView=beforeEmptyView;runs.r=beforeEmptyRun;
   for(const status of ['PRELIMINARY','UNRESOLVED']){
    runs.r.production={chainComplete:false,boundaryCheck:{status},needs:[]};
    const run=await adapters.readRun('r',view.workflow);assert.equal(run.complete,false,`${status}链稿不能冒充可交付成稿`);
@@ -99,6 +137,43 @@ async function main(){
   runs.r.status='text_ready_for_review';runs.r.operations=[{status:'completed',issues:[{productionVersion:'repair-v1'}]}];
   assert.equal((await adapters.readRun('r',view.workflow)).canAutoRepair,false,'同版本修复无进展不得重复派单');
   runs.r.operations=[{status:'unknown'}];assert.equal((await adapters.readRun('r',view.workflow)).canAutoRepair,false,'表面状态已就绪也不能掩盖未知作业');
+  const beforeRiskRun=structuredClone(runs.r),beforeRiskView=services.storyboardView;
+  runs.r.status='unknown';runs.r.web.progress='paused';runs.r.production={chainComplete:false,boundaryCheck:{status:'MATCHED'},needs:[],blocking:false};
+  runs.r.operations=[{status:'unknown',localSettledAt:new Date().toISOString(),cancelAcknowledgement:{acceptUnknownUsage:true},error:{requestOutcome:'UNKNOWN'}}];
+  services.storyboardView=async()=>({status:'paused',active:false,sourceStale:false,blocked:false,preparation:{ready:true},usage:{unknownAttempts:1,acknowledgedUnknownAttempts:1},production:{blocking:false,chainComplete:false}});
+  assert.equal((await adapters.readRun('r',view.workflow)).blocked,false,'单次未知费用已明确确认后可续未完成步骤；用量仍未知且共享账本另有门禁');
+  runs.r.status='failed';runs.r.web.progress='failed';runs.r.web.error={code:'WORKFLOW_PAUSED'};runs.r.assembly=null;
+  runs.r.web.localReadRecovery={attempts:2,afterAttemptCount:1};
+  runs.r.operations.push({status:'completed',receipt:{requestOutcome:'RESPONDED',usage:{totalTokens:30}}},{status:'completed',error:{requestOutcome:'NOT_SENT'}});
+  services.storyboardView=async()=>({status:'failed',active:false,sourceStale:false,blocked:false,preparation:{ready:true},usage:{unknownAttempts:1,acknowledgedUnknownAttempts:1,knownTokens:30},production:{blocking:false,chainComplete:false}});
+  assert.equal((await adapters.readRun('r',view.workflow)).canAutoRepair,true,'已核对结束的历史未知不应阻止新已知成果后的免费准备恢复，共享费用仍另查');
+  delete runs.r.operations[0].localSettledAt;
+  assert.equal((await adapters.readRun('r',view.workflow)).canAutoRepair,false,'仅有风险字样而无本地结算证据不能自动恢复');
+  delete runs.r.operations[0].cancelAcknowledgement;assert.equal((await adapters.readRun('r',view.workflow)).blocked,true,'表面paused不能替代费用同意');
+  services.storyboardView=beforeRiskView;runs.r=beforeRiskRun;
+  // A paused queue may reject a pending scoped finish before it reaches the provider.
+  // Keeping its paid author candidate must not strand that existing repair forever.
+  const beforeRejectedRepair=structuredClone(runs.r),beforeRejectedView=services.storyboardView;
+  runs.r={...structuredClone(runs.r),status:'failed',assembly:null,
+   web:{...structuredClone(runs.r.web),progress:'failed',error:{code:'WORKFLOW_PAUSED'}},
+   production:{chainComplete:false,boundaryCheck:{status:'MATCHED'},needs:[],blocking:false},
+   candidates:[{id:'paid-author',stage:'author',status:'needs_repair',packageIds:['p1']}],
+   operations:[{status:'completed',receipt:{requestOutcome:'RESPONDED',usage:{totalTokens:30}}},{stage:'finish',packageIds:['p1'],status:'completed',error:{requestOutcome:'NOT_SENT'}}]};
+  services.storyboardView=async()=>({status:'failed',active:false,sourceStale:false,blocked:false,preparation:{ready:true},usage:{unknownAttempts:0,acknowledgedUnknownAttempts:0,knownTokens:30},production:{blocking:false,chainComplete:false}});
+  assert.equal((await adapters.readRun('r',view.workflow)).canAutoRepair,true,'队列暂停前未派出的局部整编须复用待修付费候选自动续作');
+  assert.equal((await service.inspect(id)).nextAction.kind,'STORYBOARD_CONTINUE');
+  for(const status of ['stale','needs_dependency_repair']){
+   runs.r.candidates[0].status=status;assert.equal((await adapters.readRun('r',view.workflow)).canAutoRepair,false,'未派出恢复不能替代源或依赖修复');
+  }
+  runs.r.candidates[0].status='needs_repair';runs.r.candidates[0].packageIds=['other'];
+  assert.equal((await adapters.readRun('r',view.workflow)).canAutoRepair,false,'不得借本包未派出恢复不相关候选');
+  runs.r.candidates[0].packageIds=['p1'];runs.r.operations.at(-1).error.requestOutcome='UNKNOWN';
+  assert.equal((await adapters.readRun('r',view.workflow)).canAutoRepair,false,'费用未知不能走未派出自动恢复');
+  runs.r.operations.at(-1).error.requestOutcome='NOT_SENT';runs.r.web.localReadRecovery={attempts:2,afterAttemptCount:2};
+  assert.equal((await adapters.readRun('r',view.workflow)).canAutoRepair,false,'无新结果的NOT_SENT不能重置两次免费恢复上限');
+  delete runs.r.web.localReadRecovery;runs.r.web.error.code='CONTEXT_UNAVAILABLE';
+  assert.equal((await adapters.readRun('r',view.workflow)).canAutoRepair,false,'此次修复不扩大一般读取错误的待修候选权限');
+  services.storyboardView=beforeRejectedView;runs.r=beforeRejectedRepair;
   const missingRepair=runs.r.production.pendingRepair;runs.r.production.pendingRepair=null;runs.r.production.chainComplete=true;
   assert.equal((await adapters.readRun('r',view.workflow)).complete,false,'未知回执也不能冒充已完成稿');
   runs.r.production.pendingRepair=missingRepair;runs.r.production.chainComplete=false;
@@ -127,7 +202,25 @@ async function main(){
   assert.equal(await adapters.recoverAction(view.workflow,materialAction),false,'不能借用其它流程候选解除恢复门');
   services.generateAssets=async(_p:string,_n:number[],options:any)=>{assert.equal('materialNeeds' in options,false,'普通明确资产请求不能携空needs误入局部反馈路径');return {assetKeys:['door'],results:[]};};
   await adapters.withBudget({id:view.workflow.budgetId,directory:budgetDirectory},()=>adapters.run({kind:'ASSETS',assetKeys:['door']},view.workflow,{budget:{id:view.workflow.budgetId,directory:budgetDirectory},bind:async()=>{},isPaused:async()=>false}));
-  console.log('PASS production workflow real adapters: stage order, receipts, shared ALS budget, zero default generation, read-only inspect, chain and exact scoped material need binding; all providers/services synthetic');
+  const savedRun=structuredClone(runs.r);runs.r.status='created';runs.r.production={needs:[]};
+  let pauseLanded=false,startedAfterPause=false;const startBeforePauseTest=services.startStoryboard;
+  services.startStoryboard=async()=>{startedAfterPause=true;throw new Error('PAUSED_TASK_MUST_NOT_START');};
+  await assert.rejects(()=>adapters.run({kind:'STORYBOARD_CONTINUE',runId:'r'},view.workflow,{budget:{id:view.workflow.budgetId,directory:budgetDirectory},bind:async()=>{pauseLanded=true;},isPaused:async()=>pauseLanded}),(error:any)=>error.code==='WORKFLOW_PAUSED');
+  assert.equal(startedAfterPause,false);services.startStoryboard=startBeforePauseTest;runs.r=savedRun;
+  const oldBinding=structuredClone(runs.r.web.binding);assert.equal(oldBinding.executionTier,undefined);
+  const createStandard=services.createStoryboard;let frozen:any;
+  const chosenModel={version:'production-model-selection-v1',model:'gpt-6-astra',reasoning:'high'};
+  services.createStoryboard=async(e:any,command:any)=>{frozen=structuredClone(command);assert.deepEqual(command.modelSelection,chosenModel);assert.equal(command.executionTier,'fast');assert.equal(command.maxCalls,32);assert.equal(command.maxTokens,2000000,'实际建稿边界须收到本轮明确配置，而非默认30万');return createStandard(e,command);};
+  let parallel=await service.create({projectId:'p',actorId:'u',episodeNumbers:[1]});
+  parallel=await service.configureParallel(parallel.workflow.id,{expectedRevision:parallel.workflow.revision,actorId:'u',executionTier:'fast',modelSelection:chosenModel,runBudget:{maxCalls:32,maxTokens:2000000}});
+  assert.equal(frozen,undefined,'免费配置不建AI任务');
+  parallel=await service.startParallel(parallel.workflow.id,{expectedRevision:parallel.workflow.revision,actorId:'u',costAcknowledged:true,fastAcknowledged:true});
+  await service.pumpParallel(parallel.workflow.id);
+  const generated=frozen as {productionChain:{selectionProtocol:string};productionBudget:{id:string}}|undefined;assert.ok(generated);
+  assert.equal(generated.productionChain.selectionProtocol,'per-episode-selection-v1');
+  assert.equal(generated.productionBudget.id,parallel.workflow.budgetId);assert.equal(runs.r.web.binding.productionChain.id,parallel.workflow.id);
+  assert.equal(oldBinding.productionChain.selectionProtocol,undefined,'旧制作链的冻结协议不自动更换');
+  console.log('PASS production workflow real adapters: stage order, receipts, shared ALS budget, zero default generation, read-only inspect, exact needs and new Fast/chain binding with frozen old tasks; all providers/services synthetic');
  }finally{await rm(directory,{recursive:true,force:true});}
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

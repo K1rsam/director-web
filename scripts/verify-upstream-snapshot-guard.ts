@@ -12,7 +12,13 @@ async function main() {
     for (const scenario of ['source', 'direction', 'design', 'stable']) {
       let sourceEdition = 1, directionEdition = 1, designEdition = 1, baseReads = 0, directionReads = 0, designReads = 0, writes = 0;
       const write = () => {writes++; throw new Error('Handoff read attempted a write');};
-      const base = () => ({readiness: 'READY', reasons: [], packet: {episode: 1, sourceVersion: `source-${sourceEdition}`, documentRevision: `document-${sourceEdition}`, sourceText: `合成原文版本${sourceEdition}`, assets: [{key: 'local', variants: []}], materialDependencies: []}});
+      const base = () => {
+        const sourceText=`合成人物：这是合成原文版本${sourceEdition}。`;
+        return {readiness:'READY',reasons:[],packet:{episode:1,sourceVersion:`source-${sourceEdition}`,documentRevision:`document-${sourceEdition}`,sourceText,
+          assets:[{key:'local',name:'合成人物',type:'CHAR',aliases:[],variants:[],sceneRefs:[{episode:1,sceneKey:'1-1'}]}],materialDependencies:[],
+          scenes:[{sceneKey:'1-1',sourceRange:{start:0,end:sourceText.length}}],
+          facts:{sourceFactIndex:[{id:'synthetic-dialogue',kind:'DIALOGUE',claim:'CHARACTER_CLAIM',subjects:['合成人物'],evidence:{domain:'EPISODE',episode:1,start:0,end:sourceText.length}}]}}};
+      };
       const direction = () => ({status: 'CONFIRMED', projection: {schemaVersion: 'DIRECTOR_SERIES_DIRECTION_V1', id: 'direction', revision: directionEdition, sourceVersion: `source-${sourceEdition}`, cardHash: `direction-${directionEdition}`, brief: '已确认的合成短方向'}});
       const designs = () => [{assetKey: 'local', status: 'TEXT_ADOPTED', adoptionVersion: designEdition, brief: '已采用的本集简述', materialAvailability: 'TEXT_ONLY', references: []}, {assetKey: 'unrelated', status: 'TEXT_ADOPTED', adoptionVersion: 1, brief: '不应混入的外集长设计', materialAvailability: 'TEXT_ONLY', references: []}];
       const implementations = [
@@ -36,7 +42,7 @@ async function main() {
           const before = JSON.stringify([base(), direction(), designs()]);
           const first = await readProductionEpisodeHandoff('synthetic', 1), second = await readProductionEpisodeHandoff('synthetic', 1);
           assert.equal(first.materialVersion, second.materialVersion);
-          assert.equal(first.packet.sourceText, '合成原文版本1');
+          assert.equal(first.packet.sourceText, '合成人物：这是合成原文版本1。');
           assert.equal(first.packet.upstream.modelDesigns.length, 1);
           assert.ok(!JSON.stringify(first).includes('不应混入的外集长设计'));
           assert.equal(JSON.stringify([base(), direction(), designs()]), before, 'canonical input snapshots stay unchanged');

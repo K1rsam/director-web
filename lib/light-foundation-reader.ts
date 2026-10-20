@@ -8,9 +8,9 @@ import { loadFoundationChoices, type FoundationChoiceView } from './foundation-c
 import { workingReadiness } from './foundation-delivery-assets';
 import { unresolvedOwner, unresolvedEpisodeScope } from './foundation-production-contracts';
 import { buildLightEpisodePackets, collectLightSceneIssues, resolveLightAsset } from './light-foundation-supply';
-import type { ScriptInputProtocol } from './standard-script-reception';
+import type { ScriptInputProtocol,ScriptPerformanceOptions } from './standard-script-reception';
 
-export async function readLightEpisodeFoundation(projectId: string, episodeNumber: number, db: Prisma.TransactionClient = prisma, options: {protocol?: ScriptInputProtocol;inlinePerformance?:boolean} = {}) {
+export async function readLightEpisodeFoundation(projectId: string, episodeNumber: number, db: Prisma.TransactionClient = prisma, options: {protocol?: ScriptInputProtocol; episodeEvidenceVersion?: 'episode-evidence-v1' | null}&ScriptPerformanceOptions = {}) {
   if (!Number.isSafeInteger(episodeNumber) || episodeNumber < 0) throw new Error('无效的交接集号。');
   const episode = await db.episode.findFirst({ where: { projectId, number: episodeNumber }, select: { id: true } });
   if (!episode) throw new Error('交接集号不存在。');

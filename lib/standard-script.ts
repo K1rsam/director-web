@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
-import {inlinePerformanceProjection,type InlinePerformance} from '../runtime/inline-performance.mjs';
+import {inlinePerformanceProjection,compactPerformanceHeadProjection,sourceVoiceProjection,sourceBarePerformanceProjection,sourceHeadPrefix,sourceUtteranceProperty,sourceRepeatedHeadPrefix,type InlinePerformance,type InlinePerformanceVersion} from '../runtime/inline-performance.mjs';
 
 export type SourceUnit = {id: string; start: number; end: number; text: string};
 export type SourceIndex = {
@@ -25,7 +25,7 @@ export type StandardScriptEntry =
   | TextPlan & {target: 'BODY'; kind: 'BODY_GROUP'; children: BodyChildPlan[]}
   | EntryBase & {target: 'EXCLUDE'; category: 'BLANK' | 'SOURCE_METADATA'; reason: string};
 export type StandardScriptPlan = {
-  schemaVersion: 'STANDARD_SCRIPT_PLAN_V1' | 'STANDARD_SCRIPT_PLAN_V2' | 'STANDARD_SCRIPT_PLAN_V3' | 'STANDARD_SCRIPT_PLAN_V4'; sourceId: string; sourceVersion: string; entries: StandardScriptEntry[];
+  schemaVersion: 'STANDARD_SCRIPT_PLAN_V1' | 'STANDARD_SCRIPT_PLAN_V2' | 'STANDARD_SCRIPT_PLAN_V3' | 'STANDARD_SCRIPT_PLAN_V4' | 'STANDARD_SCRIPT_PLAN_V5'; sourceId: string; sourceVersion: string; entries: StandardScriptEntry[];
 };
 export type MappedText = {text: string; parts: SourcePart[]};
 export type CompiledDialogue = {text: string; textAssembly: {parts: SourcePart[]}; layout: SourcePart[]; speaker: MappedText; channel: Channel; channelSource: MappedText | null; cue: MappedText | null;performance?:InlinePerformance};
@@ -85,12 +85,10 @@ const splitPair = (text: string, offset: number) => offset > 0 && offset < text.
 const declaredSpeakerForm = (text: string, name: string) => text.split(/\r\n|\r|\n/).some(line => /^\s*(?:出场人物|人物|角色)[ \t]*[:：]/u.test(line)
   && line.replace(/^\s*(?:出场人物|人物|角色)[ \t]*[:：]/u, '').split(/[、,，;；]/u).some(item => item.trim() === name));
 function compactSpeakerVoice(text: string, speaker: MappedText) {
-  const start = speaker.parts.at(-1)!.end;
-  const match = /\p{Script=Han}$/u.test(speaker.text) ? /^(OS|VO)(?=[\t ]*(?:[（(:：]))/iu.exec(text.slice(start)) : null;
-  return match ? {text: match[1], start, end: start + 2} : null;
+  return sourceVoiceProjection(text,speaker);
 }
-function assertCompactVoice(text: string, speaker: MappedText, channelSource: MappedText | null | undefined, channel: Channel, path: string) {
-  const token = compactSpeakerVoice(text, speaker);
+function assertCompactVoice(text: string, speaker: MappedText, channelSource: MappedText | null | undefined, channel: Channel, path: string,cue?:MappedText|null,v5=false) {
+  const token = (v5?compactPerformanceHeadProjection(text,speaker.parts,cue?.parts,channelSource?.parts):null)??compactSpeakerVoice(text, speaker);
   if (token && (channel !== token.text.toUpperCase() || channelSource?.text !== token.text
     || channelSource.parts[0].start !== token.start || channelSource.parts.at(-1)!.end !== token.end)) fail('COMPACT_VOICE_FIELDS', path);
   return token;
@@ -100,7 +98,7 @@ function postColonFields(text: string, speaker?: SourcePart[], cue?: SourcePart[
   const start = speaker?.[0]?.start, end = body?.[0]?.start;
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return false;
   // A colon inside an existing pre-header cue is not the dialogue separator.
-  const head = /^[^:：()（）\r\n]+?(?:[（(][^()（）\r\n]*[）)])?[\t ]*[:：]/u.exec(text.slice(start, end));
+  const head = /^[^:：()（）\r\n]+?(?:[（(][^()（）\r\n]*[）)])?(?:(?<=[）)])[\t \u00a0\u3000]*(?:OS|VO))?[\t ]*[:：]/iu.exec(text.slice(start, end));
   return Boolean(head && [cue?.[0]?.start, channelSource?.[0]?.start].some(at => Number.isSafeInteger(at) && at! >= start! + head[0].length));
 }
 function entryPostCue(text: string, entry: StandardScriptEntry): boolean {
@@ -109,24 +107,29 @@ function entryPostCue(text: string, entry: StandardScriptEntry): boolean {
   return Array.from(children).some(child => Boolean(child && postColonFields(text, child.speaker, child.cue, child.channelSource, child.parts)));
 }
 /** Version follows actual source-bound features, so manual edits cannot accidentally downgrade a retained post cue. */
-export function standardScriptPlanVersion(index: Pick<SourceIndex, 'text'>, entries: StandardScriptEntry[],options:{inlinePerformance?:boolean}={}): StandardScriptPlan['schemaVersion'] {
-  if(options.inlinePerformance!==false&&entries.some(entry=>entry?.target==='BODY'&&(entry.kind==='DIALOGUE'?[entry]:entry.kind==='DIALOGUE_GROUP'?entry.dialogues:entry.kind==='BODY_GROUP'?entry.children.filter(c=>c.kind==='DIALOGUE'):[]).some(child=>inlinePerformanceProjection(index.text,child.parts))))return 'STANDARD_SCRIPT_PLAN_V4';
+export function standardScriptPlanVersion(index: Pick<SourceIndex, 'text'>, entries: StandardScriptEntry[],options:{inlinePerformance?:boolean;inlinePerformanceVersion?:InlinePerformanceVersion}={}): StandardScriptPlan['schemaVersion'] {
+  const version=options.inlinePerformanceVersion===undefined?'inline-performance-v2':options.inlinePerformanceVersion;
+  if(!['inline-performance-v1','inline-performance-v2'].includes(version))fail('UNSUPPORTED_PERFORMANCE_VERSION','options.inlinePerformanceVersion');
+  if(options.inlinePerformance!==false&&entries.some(entry=>entry?.target==='BODY'&&(entry.kind==='DIALOGUE'?[entry]:entry.kind==='DIALOGUE_GROUP'?entry.dialogues:entry.kind==='BODY_GROUP'?entry.children.filter(c=>c.kind==='DIALOGUE'):[]).some(child=>inlinePerformanceProjection(index.text,child.parts,version)||version==='inline-performance-v2'&&compactPerformanceHeadProjection(index.text,child.speaker,child.cue,child.channelSource))))return version==='inline-performance-v2'?'STANDARD_SCRIPT_PLAN_V5':'STANDARD_SCRIPT_PLAN_V4';
   if(entries.some(entry=>entry?.target==='BODY'&&entry.kind==='BODY_GROUP'))return 'STANDARD_SCRIPT_PLAN_V3';
   return entries.some(entry => entry?.target === 'BODY' && entry.kind === 'DIALOGUE_GROUP' || entryPostCue(index.text, entry)) ? 'STANDARD_SCRIPT_PLAN_V2' : 'STANDARD_SCRIPT_PLAN_V1';
 }
 function assertPostColonHeader(text: string, start: number, bodyStart: number, speaker: MappedText, cue: MappedText | null | undefined, channelSource: MappedText | null | undefined, channel: Channel, path: string) {
-  const match = /^[\t \uFEFF]*([^:：()（）\r\n]+?)(?:（([^()（）\r\n]*)）|\(([^()（）\r\n]*)\))?[\t ]*[:：][\t ]*(?:（([^()（）\r\n]*)）|\(([^()（）\r\n]*)\))[\t \r\n]*$/du.exec(text.slice(start, bodyStart));
+  if(sourceRepeatedHeadPrefix(text,start,speaker.parts[0].start,bodyStart))start=speaker.parts[0].start;
+  const match = /^[\t \uFEFF]*([^:：()（）\r\n]+?)(?:（([^()（）\r\n]*)）|\(([^()（）\r\n]*)\))?(?:(?<=[）)])[\t \u00a0\u3000]*(?:OS|VO))?[\t ]*[:：][\t ]*(?:（([^()（）\r\n]*)）|\(([^()（）\r\n]*)\))[\t \r\n]*$/diu.exec(text.slice(start, bodyStart));
   if (!match || /^[（(]/.test(text.slice(bodyStart))) fail('POST_CUE_HEADER', path);
   const post = match[4] ?? match[5];
   if (!post.trim() || /[:：“”‘’「」『』"'△▲]/u.test(post)) fail('POST_CUE_CONTENT', path);
   const bounds = match.indices!;
   const range = (value: string, offset: number) => ({start: offset + value.length - value.trimStart().length, end: offset + value.trimEnd().length});
   const name = range(match[1], start + bounds[1]![0]);
+  const bare=sourceBarePerformanceProjection(text,speaker,cue);
+  if(bare&&bare.end<=name.end)name.end=speaker.parts.at(-1)!.end;
   const compact = compactSpeakerVoice(text, speaker);
-  if (compact && name.end === compact.end) name.end = compact.start;
+  if (compact && name.end === compact.end) name.end = name.start+text.slice(name.start,compact.start).trimEnd().length;
   const preSlot = match[2] === undefined ? 3 : 2;
   const qualifiedEnd = bounds[preSlot] ? start + bounds[preSlot]![1] + 1 : name.end;
-  const qualified = !compact && qualifiedEnd > name.end && speaker.text === text.slice(name.start, qualifiedEnd)
+  const qualified = (!compact||compact.start>=qualifiedEnd) && qualifiedEnd > name.end && speaker.text === text.slice(name.start, qualifiedEnd)
     && !/^(?:OS|VO|旁白|画外音|内心独白|系统音)$/iu.test(match[preSlot].trim()) && declaredSpeakerForm(text, speaker.text);
   if (qualified) name.end = qualifiedEnd;
   const exact = (field: MappedText | null | undefined, expected: {start: number; end: number} | null) => expected
@@ -139,6 +142,7 @@ function assertPostColonHeader(text: string, start: number, bodyStart: number, s
       : [{slot, text: token[0], start: from, end}];
   }));
   if (compact) tokens.unshift({slot: 1, ...compact});
+  if(bare)tokens.unshift({slot:1,text:cue!.text,start:bare.start,end:bare.end});
   if (tokens.some(token => token.slot >= 4 && !/^(OS|VO)$/i.test(token.text) && /\b(?:OS|VO)\b|\b(?:O\.S\.?|V\.O\.?)|旁白|画外音|内心独白|系统音/i.test(token.text))) fail('POST_CUE_CHANNEL', path);
   const channels = tokens.filter(token => /^(OS|VO)$/i.test(token.text)), cues = tokens.filter(token => !channels.includes(token));
   if (channels.length > 1 || new Set(cues.map(token => token.slot)).size > 1) fail('POST_CUE_AMBIGUOUS', path);
@@ -148,7 +152,7 @@ function assertPostColonHeader(text: string, start: number, bodyStart: number, s
 }
 
 /** A group child must be one closed utterance, never a way to hide another head or an action. */
-function assertGroupUtterance(text: string, path: string) {
+function assertGroupUtterance(text: string, path: string, speaker='', cue='') {
   const closers: string[] = [], pairs: Record<string, string> = {'“': '”', '‘': '’', '「': '」', '『': '』', '"': '"', "'": "'", '【': '】', '[': ']'};
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
@@ -162,7 +166,7 @@ function assertGroupUtterance(text: string, path: string) {
     if (/[△▲]/.test(c)) fail('DIALOGUE_GROUP_ACTION', path);
     if (/[:：]/.test(c)) {
       const prefix = text.slice(0, i), label = /(?:^|[。.!！？?;；,， \t\r\n])([^。.!！？?;；,，:：()（） \t\r\n]+(?:[（(][^()（）]*[）)])?)[ \t]*$/u.exec(prefix)?.[1]?.trim();
-      if (!label || /^(?:时间层|时间|地点|场景|天气|内外|道具)$/.test(label) || /[说问道答喊叫]$/.test(label) && /^[“‘「『"']/.test(text.slice(i + 1).trimStart())) continue;
+      if (!label || sourceUtteranceProperty(speaker,label,cue) || /^(?:时间层|时间|地点|场景|天气|内外|道具)$/.test(label) || /[说问道答喊叫]$/.test(label) && /^[“‘「『"']/.test(text.slice(i + 1).trimStart())) continue;
       if (/^[\p{L}\p{N}·・ _.-]+(?:[（(][^()（）]*[）)])?$/u.test(label)) fail('DIALOGUE_GROUP_NESTED_HEAD', path);
     }
   }
@@ -187,14 +191,15 @@ export function createSourceIndex(text: string, sourceId: string): SourceIndex {
 export function compileStandardScript(index: SourceIndex, plan: StandardScriptPlan) {
   if (!index || typeof index.text !== 'string' || typeof index.sourceId !== 'string' || !isDeepStrictEqual(index, createSourceIndex(index.text, index.sourceId))) fail('SOURCE_INDEX_INTEGRITY', 'sourceIndex');
   shape(plan, ['schemaVersion', 'sourceId', 'sourceVersion', 'entries'], ['schemaVersion', 'sourceId', 'sourceVersion', 'entries'], 'plan');
-  if (!['STANDARD_SCRIPT_PLAN_V1', 'STANDARD_SCRIPT_PLAN_V2', 'STANDARD_SCRIPT_PLAN_V3','STANDARD_SCRIPT_PLAN_V4'].includes(plan.schemaVersion)) fail('UNSUPPORTED_SCHEMA', 'plan.schemaVersion');
+  if (!['STANDARD_SCRIPT_PLAN_V1', 'STANDARD_SCRIPT_PLAN_V2', 'STANDARD_SCRIPT_PLAN_V3','STANDARD_SCRIPT_PLAN_V4','STANDARD_SCRIPT_PLAN_V5'].includes(plan.schemaVersion)) fail('UNSUPPORTED_SCHEMA', 'plan.schemaVersion');
   if (plan.sourceId !== index.sourceId || plan.sourceVersion !== index.sourceVersion) fail('SOURCE_BINDING', 'plan.sourceVersion');
   if (!Array.isArray(plan.entries)) fail('INVALID_ARRAY', 'plan.entries');
   const grouped = plan.entries.some(entry => entry?.target === 'BODY' && entry.kind === 'DIALOGUE_GROUP');
   const mixed = plan.entries.some(entry => entry?.target === 'BODY' && entry.kind === 'BODY_GROUP');
   const postCues = plan.entries.some(entry => entryPostCue(index.text, entry)), v2 = grouped || postCues;
-  const performance=plan.schemaVersion==='STANDARD_SCRIPT_PLAN_V4';
-  if (standardScriptPlanVersion(index, plan.entries,{inlinePerformance:performance}) !== plan.schemaVersion) fail('UNSUPPORTED_SCHEMA', 'plan.schemaVersion');
+  const v5=plan.schemaVersion==='STANDARD_SCRIPT_PLAN_V5',performance=v5||plan.schemaVersion==='STANDARD_SCRIPT_PLAN_V4';
+  const performanceVersion:InlinePerformanceVersion=v5?'inline-performance-v2':'inline-performance-v1';
+  if (standardScriptPlanVersion(index, plan.entries,{inlinePerformance:performance,inlinePerformanceVersion:performanceVersion}) !== plan.schemaVersion) fail('UNSUPPORTED_SCHEMA', 'plan.schemaVersion');
   const units = new Map(index.units.map(unit => [unit.id, unit]));
   const script: {entries: CompiledEntry[]} = {entries: []};
   const annotations: CompiledEntry[] = [];
@@ -254,7 +259,10 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
         end = part.end;
         const text = index.text.slice(part.start, part.end);
         if (part.kind === 'SOURCE_SEPARATOR' && !/^[\t \r\n]+$/.test(text)) fail('INVALID_SEPARATOR', fieldPath, part.unitId);
-        if (isLayout && !/^[\s\uFEFF:：,，()（）△▲【】\[\]]+$/.test(text)) fail('NON_LAYOUT_CONTENT', fieldPath, part.unitId);
+        const repeatedHead = field === 'layout' && entry.target === 'BODY' && entry.kind === 'DIALOGUE'
+          && part.start === units.get(entry.unitIds[0])!.start && part.end === entry.speaker[0]?.start
+          && sourceRepeatedHeadPrefix(index.text,part.start,part.end,entry.parts[0]?.start);
+        if (isLayout && !repeatedHead && !/^[\s\uFEFF:：,，()（）△▲【】\[\]]+$/.test(text)) fail('NON_LAYOUT_CONTENT', fieldPath, part.unitId);
         sink.push({start: part.start, end: part.end, unitId: part.unitId, fieldPath});
         return {kind: part.kind, unitId: part.unitId, start: part.start, end: part.end};
       });
@@ -270,7 +278,7 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
       output.channel = entry.channel;
       output.channelSource = entry.channelSource == null ? null : assemble(entry.channelSource, 'channelSource');
       output.cue = entry.cue == null ? null : assemble(entry.cue, 'cue');
-      assertCompactVoice(index.text, output.speaker, output.channelSource, output.channel, path);
+      assertCompactVoice(index.text, output.speaker, output.channelSource, output.channel, path,output.cue,v5);
     }
     const textStart = text.parts[0].start, textEnd = text.parts[text.parts.length - 1].end;
     const unitStart = units.get(entry.unitIds[0])!.start, unitEnd = units.get(entry.unitIds[entry.unitIds.length - 1])!.end;
@@ -291,7 +299,7 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
           const speaker=assemble(child.speaker,`${field}.speaker`,false,childSpans);
           const cue=child.cue==null?null:assemble(child.cue,`${field}.cue`,false,childSpans);
           const channelSource=child.channelSource==null?null:assemble(child.channelSource,`${field}.channelSource`,false,childSpans);
-          assertCompactVoice(index.text,speaker,channelSource,child.channel,childPath);
+          assertCompactVoice(index.text,speaker,channelSource,child.channel,childPath,cue,v5);
           outputChild={kind:'DIALOGUE',text:body.text,textAssembly:{parts:body.parts},layout:childLayout.parts,speaker,cue,channelSource,channel:child.channel};
         } else {
           const label=assemble(child.label,`${field}.label`,false,childSpans);
@@ -320,19 +328,19 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
       if(spoken!==dialogue.text)fail('BODY_GROUP_SPOKEN_TEXT',path);
       if(postColonFields(index.text,dialogue.speaker.parts,dialogue.cue?.parts,dialogue.channelSource?.parts,[{...dialogue.textAssembly.parts[0],start:a}]))assertPostColonHeader(index.text,unitStart,a,dialogue.speaker,dialogue.cue,dialogue.channelSource,dialogue.channel,path);
       else {
-        const compact=assertCompactVoice(index.text,dialogue.speaker,dialogue.channelSource,dialogue.channel,path);
-        const header=/^\s*([^:：()（）]+?)(?:[（(]([^()（）]*)[）)])?[ \t]*[:：][ \t\r\n]*$/u.exec(index.text.slice(unitStart,a));
-        const qualified=Boolean(header?.[2]&&!/^(?:OS|VO|旁白|画外音|内心独白|系统音)$/iu.test(header[2].trim())&&index.text.slice(unitStart,a).replace(/[:：][\s]*$/u,'').trim()===dialogue.speaker.text&&declaredSpeakerForm(index.text,dialogue.speaker.text));
-        if(!header||!qualified&&header[1].trim()!==dialogue.speaker.text+(compact?.text??''))fail('BODY_GROUP_HEADER',path);
+        const compact=assertCompactVoice(index.text,dialogue.speaker,dialogue.channelSource,dialogue.channel,path,dialogue.cue,v5);
+        const header=/^\s*([^:：()（）]+?)(?:[（(]([^()（）]*)[）)])?(?:(?<=[）)])[\t \u00a0\u3000]*(OS|VO))?[ \t]*[:：][ \t\r\n]*$/iu.exec(index.text.slice(unitStart,a));
+        const qualified=Boolean(header?.[2]&&!/^(?:OS|VO|旁白|画外音|内心独白|系统音)$/iu.test(header[2].trim())&&index.text.slice(unitStart,a).replace(/(?<=[）)])[\t \u00a0\u3000]*(?:OS|VO)[\t \u00a0\u3000]*(?=[:：])/iu,'').replace(/[:：][\s]*$/u,'').trim()===dialogue.speaker.text&&declaredSpeakerForm(index.text,dialogue.speaker.text));
+        if(!header||!qualified&&header[1].trim()!==sourceHeadPrefix(index.text,dialogue.speaker,dialogue.cue,dialogue.channelSource))fail('BODY_GROUP_HEADER',path);
         const fields=[dialogue.speaker,dialogue.cue,dialogue.channelSource].filter((f):f is MappedText=>Boolean(f)).sort((x,y)=>x.parts[0].start-y.parts[0].start);
         let edge=unitStart;
         for(const f of fields){if(f.parts[0].start<edge||!(edge===unitStart?/^[\s\uFEFF]*$/:/^[\s()（）,，]*$/).test(index.text.slice(edge,f.parts[0].start)))fail('BODY_GROUP_HEADER',path);edge=f.parts.at(-1)!.end;}
         if(edge>a||!/^[\t ()（）]*[:：][\t \r\n]*$/.test(index.text.slice(edge,a)))fail('BODY_GROUP_HEADER',path);
-        const tokens=[...(compact?[compact.text]:[]),...(qualified?'':header[2]??'').split(/[,， \t]+/).filter(Boolean)],channels=tokens.filter(t=>/^(OS|VO)$/i.test(t));
+        const tokens=[...(compact&&!header[3]?[compact.text]:[]),...(header[3]?[header[3]]:[]),...(qualified?'':header[2]??'').split(/[,， \t]+/).filter(Boolean)],channels=tokens.filter(t=>/^(OS|VO)$/i.test(t));
         const expected=channels[0]?.toUpperCase()??({旁白:'NARRATION',画外音:'VO',系统音:'SYSTEM'} as Record<string,string>)[dialogue.speaker.text]??'SPEECH';
         if(channels.length>1||dialogue.channel!==expected||(channels.length?dialogue.channelSource?.text!==channels[0]:Boolean(dialogue.channelSource)))fail('BODY_GROUP_CHANNEL',path);
       }
-      assertGroupUtterance(dialogue.text,path);
+      assertGroupUtterance(dialogue.text,path,dialogue.speaker.text,dialogue.cue?.text);
       output.children=children;
     }
     if (entry.target === 'BODY' && entry.kind === 'DIALOGUE_GROUP') {
@@ -345,7 +353,7 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
         const body = assemble(child.parts, `${field}.parts`, false, spans), speaker = assemble(child.speaker, `${field}.speaker`, false, spans);
         const cue = child.cue == null ? null : assemble(child.cue, `${field}.cue`, false, spans);
         const channelSource = child.channelSource == null ? null : assemble(child.channelSource, `${field}.channelSource`, false, spans);
-        const compact = assertCompactVoice(index.text, speaker, channelSource, child.channel, childPath);
+        const compact = assertCompactVoice(index.text, speaker, channelSource, child.channel, childPath,cue,v5);
         const childLayout = assemble(child.layout, `${field}.layout`, true, spans);
         spans.sort((a, b) => a.start - b.start);
         const childStart = groupEdge;
@@ -355,10 +363,10 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
         if (postColonFields(index.text, speaker.parts, cue?.parts, channelSource?.parts, body.parts)) {
           assertPostColonHeader(index.text, childStart, a, speaker, cue, channelSource, child.channel, childPath);
         } else {
-        const header = /^\s*([^:：()（）]+?)(?:[（(]([^()（）]*)[）)])?[ \t]*[:：][ \t]*$/u.exec(index.text.slice(childStart, a));
+        const header = /^\s*([^:：()（）]+?)(?:[（(]([^()（）]*)[）)])?(?:(?<=[）)])[\t \u00a0\u3000]*(OS|VO))?[ \t]*[:：][ \t]*$/iu.exec(index.text.slice(childStart, a));
         const qualified = Boolean(header?.[2] && !/^(?:OS|VO|旁白|画外音|内心独白|系统音)$/iu.test(header[2].trim())
-          && index.text.slice(childStart, a).replace(/[:：][ \t]*$/u, '').trim() === speaker.text && declaredSpeakerForm(index.text, speaker.text));
-        if (!header || !qualified && header[1].trim() !== speaker.text + (compact?.text ?? '') || !/^[\p{L}\p{N}·・ _.-]+(?:、[\p{L}\p{N}·・ _.-]+)*$/u.test(qualified ? header[1].trim() : speaker.text)) fail('DIALOGUE_GROUP_HEADER', childPath);
+          && index.text.slice(childStart, a).replace(/(?<=[）)])[\t \u00a0\u3000]*(?:OS|VO)[\t \u00a0\u3000]*(?=[:：])/iu,'').replace(/[:：][ \t]*$/u, '').trim() === speaker.text && declaredSpeakerForm(index.text, speaker.text));
+        if (!header || !qualified && header[1].trim() !== sourceHeadPrefix(index.text,speaker,cue,channelSource) || !/^[\p{L}\p{N}·・ _.-]+(?:、[\p{L}\p{N}·・ _.-]+)*$/u.test(qualified ? header[1].trim() : speaker.text)) fail('DIALOGUE_GROUP_HEADER', childPath);
         const prefixFields = [speaker, cue, channelSource].filter((f): f is MappedText => Boolean(f)).sort((x, y) => x.parts[0].start - y.parts[0].start);
         let edge = childStart;
         for (const f of prefixFields) {
@@ -366,12 +374,12 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
           edge = f.parts.at(-1)!.end;
         }
         if (edge > a || !/^[\t ()（）【】\[\]]*[:：][\t ]*$/.test(index.text.slice(edge, a))) fail('DIALOGUE_GROUP_HEADER', childPath);
-        const tokens = [...(compact ? [compact.text] : []), ...(qualified ? '' : header[2] ?? '').split(/[,， \t]+/).filter(Boolean)], channels = tokens.filter(token => /^(?:OS|VO)$/i.test(token));
+        const tokens = [...(compact&&!header[3] ? [compact.text] : []), ...(header[3]?[header[3]]:[]), ...(qualified ? '' : header[2] ?? '').split(/[,， \t]+/).filter(Boolean)], channels = tokens.filter(token => /^(?:OS|VO)$/i.test(token));
         const expected = channels.length ? channels[0].toUpperCase() : ({旁白: 'NARRATION', 画外音: 'VO', 系统音: 'SYSTEM'} as Record<string, string>)[speaker.text] ?? 'SPEECH';
         if (channels.length > 1 || child.channel !== expected || (channels.length ? channelSource?.text !== channels[0] : Boolean(channelSource))) fail('DIALOGUE_GROUP_CHANNEL', childPath);
         }
         if (i && !/(?:[。.!！？?;；,，…][”’」』"']?|[ \t])$/u.test(index.text.slice(unitStart, speaker.parts[0].start))) fail('DIALOGUE_GROUP_BOUNDARY', childPath);
-        assertGroupUtterance(body.text, childPath);
+        assertGroupUtterance(body.text, childPath,speaker.text,cue?.text);
         return {text: body.text, textAssembly: {parts: body.parts}, layout: childLayout.parts, speaker, channel: child.channel, channelSource, cue};
       });
       if (groupEdge !== unitEnd) fail('DIALOGUE_GROUP_COVERAGE', path);
@@ -381,10 +389,10 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
     if (output.speaker) {
       if (postColonFields(index.text, output.speaker.parts, output.cue?.parts, output.channelSource?.parts, text.parts)) {
         assertPostColonHeader(index.text, unitStart, textStart, output.speaker, output.cue, output.channelSource, output.channel!, path);
-        assertGroupUtterance(output.text, path);
+        assertGroupUtterance(output.text, path,output.speaker.text,output.cue?.text);
       } else {
       const fields = [output.speaker, output.cue, output.channelSource].filter((field): field is MappedText => Boolean(field)).sort((a, b) => a.parts[0].start - b.parts[0].start);
-      let edge = unitStart;
+      let edge = sourceRepeatedHeadPrefix(index.text,unitStart,output.speaker.parts[0].start,textStart) ? output.speaker.parts[0].start : unitStart;
       for (const field of fields) {
         const gap = index.text.slice(edge, field.parts[0].start);
         const allowed = edge === unitStart ? /^[\s\uFEFF()（）【】\[\]]*$/ : /^[\s\uFEFF()（）【】\[\],，]*$/;
@@ -409,7 +417,7 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
     if (cursor !== units.get(entry.unitIds[entry.unitIds.length - 1])!.end) fail('FIELD_COVERAGE', path);
     if(performance){
       const voices=output.kind==='DIALOGUE'?[output]:output.dialogues??output.children?.filter(c=>c.kind==='DIALOGUE')??[];
-      for(const voice of voices){const projected=inlinePerformanceProjection(index.text,voice.textAssembly.parts);if(projected)voice.performance=projected;}
+      for(const voice of voices){const projected=inlinePerformanceProjection(index.text,voice.textAssembly.parts,performanceVersion);if(projected)voice.performance=projected;}
     }
     (entry.target === 'ANNOTATION' ? annotations : script.entries).push(output);
     const label = entry.target === 'ANNOTATION' ? '辅助资料·语义未验收' : entry.target === 'STRUCTURE' ? '结构' : '正文';
@@ -422,7 +430,7 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
   const sourceBinding = {sourceId: index.sourceId, sourceVersion: index.sourceVersion, indexerVersion: index.indexerVersion, sourceIndexDigest: digest(index)};
   const payload = {
     // ponytail: separate slice schema; full scenes/entities/assets and production adapters are not implemented.
-    schemaVersion: performance?'DIRECTOR_STANDARD_SCRIPT_SLICE_V4' as const:mixed ? 'DIRECTOR_STANDARD_SCRIPT_SLICE_V3' as const : v2 ? 'DIRECTOR_STANDARD_SCRIPT_SLICE_V2' as const : 'DIRECTOR_STANDARD_SCRIPT_SLICE_V1' as const, assemblerVersion: performance?'standard-script-compiler-v4':mixed ? 'standard-script-compiler-v3' : v2 ? 'standard-script-compiler-v2' : 'standard-script-compiler-v1',
+    schemaVersion: v5?'DIRECTOR_STANDARD_SCRIPT_SLICE_V5' as const:performance?'DIRECTOR_STANDARD_SCRIPT_SLICE_V4' as const:mixed ? 'DIRECTOR_STANDARD_SCRIPT_SLICE_V3' as const : v2 ? 'DIRECTOR_STANDARD_SCRIPT_SLICE_V2' as const : 'DIRECTOR_STANDARD_SCRIPT_SLICE_V1' as const, assemblerVersion: v5?'standard-script-compiler-v5':performance?'standard-script-compiler-v4':mixed ? 'standard-script-compiler-v3' : v2 ? 'standard-script-compiler-v2' : 'standard-script-compiler-v1',
     binding: {...sourceBinding, planDigest: digest(plan)}, script, annotations, exclusions,
     evidence: index.units.map(unit => ({...unit, sourceVersion: index.sourceVersion, offsetUnit: 'UTF16' as const})),
     fidelity: {assignments},
@@ -431,7 +439,7 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
   // Digest binds the canonical payload excluding packageId/receipt (no circular self-hash).
   const packageDigest = digest(payload);
   const receipt = {
-    schemaVersion: performance?'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V4' as const:mixed ? 'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V3' as const : v2 ? 'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V2' as const : 'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V1' as const, status: 'MECHANICALLY_VERIFIED' as const,
+    schemaVersion: v5?'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V5' as const:performance?'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V4' as const:mixed ? 'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V3' as const : v2 ? 'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V2' as const : 'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V1' as const, status: 'MECHANICALLY_VERIFIED' as const,
     ...sourceBinding, planDigest: payload.binding.planDigest, packageDigest, readingTextDigest: digest(readingText), assemblerVersion: payload.assemblerVersion,
     checks: {unitCoverage: 'VERIFIED', sourceOrder: 'VERIFIED', sourceSlices: 'VERIFIED', fieldBoundaries: 'VERIFIED', exclusionShape: 'VERIFIED', noTextPatches: 'VERIFIED', ...(grouped ? {dialogueGroups: 'VERIFIED'} : {}), ...(postCues ? {postColonCues:'VERIFIED'} : {}), ...(mixed ? {mixedBodyGroups:'VERIFIED'} : {}),...(performance?{inlinePerformance:'VERIFIED'}:{})},
     semantic: 'NOT_RUN' as const, acceptedForDispatch: false as const,

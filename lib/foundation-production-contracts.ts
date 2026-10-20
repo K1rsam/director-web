@@ -234,7 +234,7 @@ function readProductionCatalog(value: unknown, index: SourceIndex, scope: readon
     const covered = coverage(raw.coverage, index, scope, true), isCanonical = trustedCanonical && isProductionCatalog({ ...raw, format: 'ASSET_CATALOG_V1' });
     const rawAssets = isCanonical ? (raw.assets as ProductionAsset[]).map(a => ({ ...a, episodes: a.usageEpisodes })) : list(raw.assets, 'assets');
     const repairs: CatalogRepairItem[] = [];
-    const assets = rawAssets.map((value, i) => {
+    let assets = rawAssets.map((value, i) => {
       const asset = readAsset(value, covered, `assets.${i}`, true);
       const prior = asset.key ? priorAssets.find(p => p.key === asset.key) as ProductionAsset | undefined : undefined;
       if (asset.key && !prior && !isCanonical) fail(`assets.${i}.key`, `未知已有身份 ${asset.key}；新候选须省略key`);
@@ -242,6 +242,7 @@ function readProductionCatalog(value: unknown, index: SourceIndex, scope: readon
       repairs.push(...assetRepairs(asset, key));
       return canonicalV2(asset, key, prior);
     });
+    if (!trustedCanonical) assets = coalesceCatalogUsages(assets);
     unique(assets.map(a => a.key), 'assets.key');
     if (!isCanonical) resolvePreparations(assets, [...priorAssets, ...assets]);
     const existing = trustedCanonical ? savedRepairs(raw.repairItems, assets, index.episodes.map(episode => episode.number), covered) : [];
@@ -262,6 +263,31 @@ function readProductionCatalog(value: unknown, index: SourceIndex, scope: readon
   return build(covered, assets);
 }
 function union(a: number[], b: number[]) { return [...new Set([...a, ...b])].sort((x, y) => x - y); }
+/** Only explicit registered keys can repeat: new candidates receive per-row keys.
+ * F2 is an additive usage declaration, not Q1's replacement patch. Retain every
+ * source location and note; equal keys do not authorize choosing identity facts. */
+function coalesceCatalogUsages(items: ProductionAsset[]): ProductionAsset[] {
+  const seen = new Map<string, { asset: ProductionAsset; index: number }>();
+  const compatiblePreparation = (a: Preparation | undefined, b: Preparation | undefined) => a?.mode === b?.mode && a?.fromKey === b?.fromKey;
+  for (const [index, asset] of items.entries()) {
+    const previous = seen.get(asset.key);
+    if (!previous) { seen.set(asset.key, { asset, index }); continue; }
+    const prior = previous.asset;
+    const conflict = (field: string): never => fail(`assets.${index}.${field}`, `同一已有身份 ${asset.key} 与 assets.${previous.index} 的${field}声明不同；未自动归并，须核对原声明`);
+    for (const field of ['name', 'type', 'role'] as const) if (prior[field] !== asset[field]) conflict(field);
+    if (!compatiblePreparation(prior.preparation, asset.preparation)) conflict('preparation');
+    for (const [i, variant] of asset.variants.entries()) {
+      const old = prior.variants.find(v => v.key === variant.key);
+      if (old && !compatiblePreparation(old.preparation, variant.preparation)) conflict(`variants.${i}.preparation`);
+    }
+    previous.asset = { ...prior, aliases: [...new Set([...prior.aliases, ...asset.aliases])],
+      usageEpisodes: union(prior.usageEpisodes, asset.usageEpisodes),
+      ...(unionSceneRefs(prior.sceneRefs, asset.sceneRefs) === undefined ? {} : { sceneRefs: unionSceneRefs(prior.sceneRefs, asset.sceneRefs) }),
+      ...(prior.relationNote === undefined && asset.relationNote === undefined ? {} : { relationNote: joinNotes(prior.relationNote, asset.relationNote) }),
+      preparation: mergePreparation(prior.preparation, asset.preparation), variants: unionVariants(prior.variants, asset.variants, true) };
+  }
+  return [...seen.values()].map(item => item.asset);
+}
 function unionSceneRefs(a: readonly SceneAssetRef[] | undefined, b: readonly SceneAssetRef[] | undefined): SceneAssetRef[] | undefined {
   if (a === undefined && b === undefined) return undefined;
   return [...new Map([...(a ?? []), ...(b ?? [])].map(ref => [`${ref.episode}\0${ref.sceneKey}`, structuredClone(ref)])).values()]

@@ -6,6 +6,13 @@ import {validateEpisodeSourceContext} from './source-context.mjs';
 import {canRecheckCandidate,hasPendingSavedResponse} from './core/pipeline.mjs';
 import {repairControl} from '../feedback-repair.mjs';
 import {standardPackageSource,STANDARD_EPISODE_PROTOCOL} from './core/standard-source.mjs';
+import {DIRECTOR_REFINEMENT_VERSION,DIRECTOR_REFINEMENT_VERSIONS,targetedDirectorRefinement,isDirectorRefinement,refinementAssemblyHash} from './core/director-refinement.mjs';
+import {refinementScope} from './core/refinement-scope.mjs';
+import {getRefinementBase,getRefinementComparison} from './core/refinement-comparison.mjs';
+import {getRefinementAcceptanceGroups,getRefinementPartialAdoptionBlock,REFINEMENT_SELECTION_VERSION} from './core/refinement-adoption.mjs';
+import {getRefinementConflictReview} from './core/refinement-source-resolution.mjs';
+import {isVerifiedUnsent} from './core/pre-dispatch-evidence.mjs';
+import {readSystemPresentationProjection} from './system-presentation.mjs';
 export {STANDARD_EPISODE_PROTOCOL};
 
 export const UPSTREAM_MATERIAL_PROTOCOL='upstream-material-v2';
@@ -101,9 +108,10 @@ function materialProjection(packet,episode,sourceRows){
  if(upstream.version!=='EPISODE_UPSTREAM_V1')fail('UPSTREAM_PROTOCOL','未知的上游材料协议，未自动沿用旧资料');
  let seriesDirection=null;
  if(upstream.seriesDirection?.status==='CONFIRMED'){
-  const brief=upstream.seriesDirection.projection?.brief;
+  const projection=upstream.seriesDirection.projection,brief=projection?.brief;
   if(!hasText(brief)||[...brief].length>600)fail('UPSTREAM_DIRECTION','已确认全剧方向缺少有效简述');
   seriesDirection={brief};
+  if(Object.hasOwn(projection,'systemPresentation')){const systemPresentation=readSystemPresentationProjection(projection.systemPresentation,projection,episode);if(systemPresentation)seriesDirection.systemPresentation=systemPresentation;}
  }
  const assetKeys=new Set((packet.assets||[]).flatMap(asset=>[asset.key,...(asset.variants||[]).map(variant=>variant.key)])),materialKeys=new Set((packet.materialDependencies||[]).map(item=>item.key)),keys=new Set([...assetKeys,...materialKeys]);
  if(!Array.isArray(upstream.modelDesigns))fail('UPSTREAM_DESIGN','缺少本集采用设计投影');
@@ -157,12 +165,12 @@ function previousEvidenceRows(existingRows,packet,episode){
     ...(node?{nodeId:node.id,nodeKind:node.kind,nodeTarget:node.target}:{})}};
  });
 }
-function factContextRows(facts,episode,previous,existingRows){
+function factContextRows(facts,episode,previous,existingRows,episodeEvidence=false){
  if(facts?.schema!=='FOUNDATION_FACTS_V1')return [];
  const rows=new Map(),existingById=new Map(existingRows.map(row=>[row.id,row]));
  const previousRanges=typeof previous?.text==='string'?[...previous.text.matchAll(/[^\r\n]*(?:\r\n|\r|\n|$)/g)].filter(match=>match[0].length)
   .map((match,i)=>({id:`previous-${previous.episode}:excerpt-${i+1}`,start:match.index,end:match.index+match[0].length,text:match[0].replace(/(?:\r\n|\r|\n)$/,'')})):[];
- for(const group of ['background','backgroundCandidates','historicalStates'])for(const fact of Array.isArray(facts[group])?facts[group]:[]){
+ for(const group of ['background','backgroundCandidates','historicalStates',...(episodeEvidence?['historicalEvidenceCandidates']:[])])for(const fact of Array.isArray(facts[group])?facts[group]:[]){
   const e=fact?.evidence,statement=fact?.statement;
   if(!hasText(statement)||!record(e)||!Number.isSafeInteger(e.start)||!Number.isSafeInteger(e.end)||e.start<0||e.end-e.start!==statement.length)continue;
   if(e.domain==='EPISODE'?!Number.isSafeInteger(e.episode)||e.episode<0:e.domain!=='CONTEXT'||!hasText(e.sectionKey))continue;
@@ -202,8 +210,8 @@ function factContextRows(facts,episode,previous,existingRows){
 function withUpstreamMaterials(base,packet,episode,project){
  const context=semanticMaterial(base.source.context),retrievalFacts=localFacts(packet?.facts);
  const existingRows=previousEvidenceRows(base.source.contextRows,packet,episode);
- const extraRows=factContextRows(retrievalFacts,episode,packet?.boundaryContext?.previousSource,existingRows);
- Object.assign(context,{retrievalFacts,...materialProjection(packet,episode,base.source.sourceRows),
+ const extraRows=factContextRows(retrievalFacts,episode,packet?.boundaryContext?.previousSource,existingRows,packet?.episodeEvidenceVersion==='episode-evidence-v1');
+ Object.assign(context,{retrievalFacts,...(packet?.episodeEvidenceVersion?{episodeEvidenceVersion:packet.episodeEvidenceVersion,historicalSourceDirectory:packet.historicalSourceDirectory??[]}:{}),...materialProjection(packet,episode,base.source.sourceRows),
   upstreamMaterialRule:'全剧方向与采用设计只约束表达和制作，不是剧情证据；原文事实、台词及揭示时点优先。references只提供参考说明，未读取图像像素；没有图片不冒充已完成素材。',
   contextEvidenceRule:'本集证据使用sourceRows及sourceRefs，不重复抄到contextRows；已有前场原句复用原contextRef。新增背景/历史contextRows保留精确原文和UTF16来源坐标；前情只有与同一绝对坐标逐字匹配的标准动作节点可作来源依据，仍不自动继承当前状态。对白含群体与分行对白、角色主张、备注及无类型依据的片段仅作guidance供理解/contextRefs引用，不能自证世界规则或entryFacts。'});
  const source=normalizeSource({...base.source,context,contextRows:[...existingRows,...extraRows],assets:semanticMaterial(base.source.assets)});
@@ -254,6 +262,28 @@ function publicExecution(value){
   workload:{stage:['plan','author','finish'].includes(value.workload?.stage)?value.workload.stage:'unknown',promptChars:count(value.workload?.promptChars),unitCount:count(value.workload?.unitCount)},
   lastEventType:events.includes(value.lastEventType)?value.lastEventType:null};
 }
+function publicRefinement(value){
+ if(!DIRECTOR_REFINEMENT_VERSIONS.includes(value?.version)||typeof value.baseAssemblyHash!=='string'||!Array.isArray(value.eventIds))return undefined;
+ return {version:value.version,baseAssemblyHash:value.baseAssemblyHash,eventIds:value.eventIds.filter(id=>typeof id==='string'),...(Array.isArray(value.unitIds)?{unitIds:value.unitIds.filter(id=>typeof id==='string')}:{}),...(value.scope?{scope:value.scope}:{}),...(value.workOrder?{workOrder:value.workOrder}:{})};
+}
+// Invalid paid replies remain saved, but only renderable decision fields reach React.
+function publicReviewDecisions(value){
+ return value.filter(item=>record(item)&&Array.isArray(item.unitIds)&&item.unitIds.length&&item.unitIds.every(hasText)
+  &&['changed','retained','unresolved'].includes(item.disposition)&&hasText(item.reason)&&item.reason.length<=1200&&hasText(item.preservedFunction)&&item.preservedFunction.length<=600)
+  .map(({unitIds,disposition,reason,preservedFunction})=>({unitIds:[...unitIds],disposition,reason,preservedFunction}));
+}
+function publicRefinementCandidate(d,c){
+ const adopted=c.adoptedRefinement?.version===REFINEMENT_SELECTION_VERSION?c.adoptedRefinement:null;
+ return {purpose:'director_refinement',refinement:{...publicRefinement(c.refinement),comparison:getRefinementComparison(d,c),
+  scope:refinementScope(d,{eventIds:c.refinement?.eventIds,unitIds:c.refinement?.unitIds,draft:getRefinementBase(d,c)?.draft||{units:[]}}),
+  acceptanceGroups:getRefinementAcceptanceGroups(d,c),partialAdoptionBlocked:getRefinementPartialAdoptionBlock(d,c),
+  conflictReview:c.status==='refinement_ready'?getRefinementConflictReview(d,c):null,
+  ...(Array.isArray(c.output?.reviewDecisions)?{reviewDecisions:publicReviewDecisions(c.output.reviewDecisions)}:{})},
+  previewText:typeof adopted?.text==='string'?adopted.text:typeof c.previewText==='string'?c.previewText:'',
+  ...(adopted?{adoptedRefinement:{version:adopted.version,groupIds:[...adopted.groupIds],partial:adopted.partial,retainedUnitIds:[...adopted.retainedUnitIds],at:adopted.at}}:{}),
+  ...(c.refinementSourceResolution?{sourceResolution:{reason:c.refinementSourceResolution.reason,at:c.refinementSourceResolution.at}}:{}),
+  adoptionBlocked:c.adoptionBlocked?{code:c.adoptionBlocked.code,message:c.adoptionBlocked.message}:null};
+}
 export function publicRun(d,{active=false,sourceStale=false,cancellations=[],executions=[],scheduling,preparation={ready:true}}={}){
  const operations=d.operations||[],candidates=d.candidates||[];
  const executionByAttempt=new Map(executions.map(item=>[item.attemptId,publicExecution(item.execution)]));
@@ -264,9 +294,9 @@ export function publicRun(d,{active=false,sourceStale=false,cancellations=[],exe
  for(const c of candidates)if(c.receipt)receipts.set(c.attemptId,c.receipt);
  for(const c of candidates)if(c.receipt?.usage)perAttempt.set(c.attemptId,c.receipt.usage);
  for(const op of operations)if(!perAttempt.has(op.attemptId)&&op.receipt?.usage)perAttempt.set(op.attemptId,op.receipt.usage);
- for(const op of operations){const u=perAttempt.get(op.attemptId);if(!u){if(op.error?.requestOutcome!=='NOT_SENT')usage.complete=false;continue;}for(const key of Object.keys(usage).filter(k=>k!=='complete'))if(Number.isFinite(u[key]))usage[key]+=u[key];else usage.complete=false;}
+ for(const op of operations){const u=perAttempt.get(op.attemptId);if(!u){if(op.error?.requestOutcome!=='NOT_SENT'&&!isVerifiedUnsent(op))usage.complete=false;continue;}for(const key of Object.keys(usage).filter(k=>k!=='complete'))if(Number.isFinite(u[key]))usage[key]+=u[key];else usage.complete=false;}
  usage.knownTokens=usage.totalTokens;
- usage.unknownAttempts=operations.filter(op=>op.error?.requestOutcome!=='NOT_SENT'&&!Number.isFinite(perAttempt.get(op.attemptId)?.totalTokens)).length;
+ usage.unknownAttempts=operations.filter(op=>op.error?.requestOutcome!=='NOT_SENT'&&!isVerifiedUnsent(op)&&!Number.isFinite(perAttempt.get(op.attemptId)?.totalTokens)).length;
  usage.acknowledgedUnknownAttempts=operations.filter(op=>op.cancelAcknowledgement?.acceptUnknownUsage===true&&!Number.isFinite(perAttempt.get(op.attemptId)?.totalTokens)).length;
  let selection=null,selectionError=null;
  if(d.plan)try{selection=resolveSelection(d.plan,d.choice);}catch(e){selectionError={code:e.code,message:e.message};}
@@ -278,15 +308,26 @@ export function publicRun(d,{active=false,sourceStale=false,cancellations=[],exe
  const interrupted=!active&&operations.some(o=>o.status==='running');
  const visibleProgress=['awaiting_confirmation','needs_design','budget_stop','usage_review','source_stale','waiting_dependencies','failed','unknown','pausing','paused','stopped'].includes(d.web?.progress)?d.web.progress:d.status;
  const attentionError=interrupted?{code:'INTERRUPTED',message:'上次服务中断或另一进程仍持有作业，请先核对已保存回执；不自动重发。'}:sourceStale||visibleProgress==='source_stale'?{code:'SOURCE_STALE',message:'原文或前情资料已更新，请新建任务使用最新资料；旧结果仍已保存。'}:visibleProgress==='usage_review'?{code:'USAGE_UNKNOWN',message:'回包已保存，但用量未完整返回。请先确认接受未知用量；只解除费用阻断，不自动重发，也不重跑已完成步骤。'}:visibleProgress==='unknown'||operations.some(o=>o.status==='unknown'&&!o.cancelAcknowledgement?.acceptUnknownUsage)?{code:'UNKNOWN',message:'有结果或用量未知的调用待处理：先检查已有回包；中断、超时或 CLI 失败须按下方回执核验结果，确认本机执行已结束且无可采用完整结果后，才可明确接受未知用量风险。已保存片段保留，确认不会自动重试。'}:null;
+ const refinementSupported=DIRECTOR_REFINEMENT_VERSIONS.includes(d.rulesSnapshot?.directorRefinementVersion);
+ const refinementHistory=operations.some(isDirectorRefinement)||candidates.some(isDirectorRefinement);
+ const refinementSent=d.operations.some(o=>isDirectorRefinement(o)&&o.receipt?.requestOutcome!=='NOT_SENT'&&o.error?.requestOutcome!=='NOT_SENT');
+ const basisHash=d.assembly?.draft?.units?.length?refinementAssemblyHash(d):null;
+ const refinementAvailable=refinementSupported&&Boolean(basisHash)&&d.status==='text_ready_for_review'&&d.assembly?.validation?.errors?.length===0&&!d.legacyReadOnly&&!active&&!sourceStale&&!d.production?.blocking&&!d.production?.pendingRepair&&!refinementSent&&!operations.some(o=>o.status==='running'||o.status==='unknown'&&!o.cancelAcknowledgement?.acceptUnknownUsage);
  return {id:d.id,title:d.web?.title||d.source?.title||d.id,status:interrupted?'interrupted':visibleProgress,createdAt:d.web?.createdAt,settings:d.settings,active,sourceStale,blocked:sourceStale,preparation,repairControl:repairControl(d),directorNotes:d.source?.context?.directorNotes||'',
+  seriesDirectionStatus:typeof d.source?.context?.seriesDirection?.brief==='string'&&d.source.context.seriesDirection.brief.trim()?'adopted':'not_adopted',
+  ...(refinementSupported?{refinementVersion:d.rulesSnapshot.directorRefinementVersion}:{}),
+  ...(refinementSupported||refinementHistory?{refinement:{available:refinementAvailable,basisHash,eventIds:(d.plan?.events||[]).map(event=>event.id),targeted:targetedDirectorRefinement(d.rulesSnapshot?.directorRefinementVersion),scope:refinementScope(d)}}:{}),
   ...(scheduling?{scheduling:{maxConcurrent:scheduling.maxConcurrent,maxPerEpisode:scheduling.maxPerEpisode,inFlight:scheduling.inFlight,queued:scheduling.queued}}:{}),
   error:preparationError||d.web?.error||selectionError||attentionError||candidateError,sourceRows:d.source?.sourceRows||[],sourceWarnings:d.source?.context?.sourceWarnings||[],plan,choice:d.choice,selection,
   dialogue:(d.source?.dialogue||[]).map(({id,speaker,channel,cue,kind})=>({id,speaker,channel,cue,kind})),
   adopted:(d.adopted||[]).map(a=>({packageIds:a.packageIds,stage:a.stage,unitCount:a.draft.units.length,shotCount:a.draft.units.reduce((n,u)=>n+u.shots.length,0),seconds:a.draft.units.flatMap(u=>u.shots).reduce((n,s)=>n+s.duration,0)})),
   operations:operations.map(op=>{const {attemptId,stage,packageIds,status,finishMode,createdAt,error,cancelAcknowledgement,recovery,localSettledAt,cancelRequestedAt}=op;
    const receipt=receipts.get(attemptId)||op.receipt,durationMs=op.durationMs??receipt?.durationMs??op.receipt?.durationMs;
-   return {attemptId,stage,packageIds,status,finishMode,createdAt,error,cancelAcknowledgement,localSettledAt,cancelRequestedAt,recoveryAt:recovery?.at||null,requestOutcome:receipt?.requestOutcome||op.receipt?.requestOutcome||error?.requestOutcome||null,
+   return {attemptId,stage,packageIds,status,finishMode,createdAt,error,cancelAcknowledgement,localSettledAt,cancelRequestedAt,recoveryAt:recovery?.at||null,requestOutcome:receipt?.requestOutcome||op.receipt?.requestOutcome||error?.requestOutcome||null,localVerifiedOutcome:isVerifiedUnsent(op)?'NOT_SENT':null,
+    ...(isDirectorRefinement(op)?{purpose:'director_refinement',refinement:publicRefinement(op.refinement)}:{}),
     ...(op.feedbackRepair?{feedbackRepair:true}:{}),...(Number.isFinite(durationMs)&&durationMs>=0?{durationMs}:{}),execution:executionByAttempt.get(attemptId),canRecoverSaved:hasPendingSavedResponse(d,op),usage:perAttempt.get(attemptId)||null};}),
-  candidates:candidates.map(c=>{const {id,attemptId,stage,packageIds,status,errors,validation,requiredPackageIds,resolvedBy}=c;return {id,attemptId,stage,packageIds,status,errors,validation,requiredPackageIds,resolvedBy,canRecheck:!active&&!sourceStale&&canRecheckCandidate(d,c)};}),
+  candidates:candidates.map(c=>{const {id,attemptId,stage,packageIds,status,errors,requiredPackageIds,resolvedBy,derivedFrom}=c;const validation=c.adoptedRefinement?.version===REFINEMENT_SELECTION_VERSION?c.adoptedRefinement.validation:c.validation;return {id,attemptId,stage,packageIds,status,errors,validation,requiredPackageIds,resolvedBy,...(typeof derivedFrom==='string'?{derivedFrom}:{}),
+   ...(isDirectorRefinement(c)?publicRefinementCandidate(d,c):{}),
+   canRecheck:!active&&!sourceStale&&canRecheckCandidate(d,c)};}),
   assembly:d.assembly?{text:d.assembly.text,...d.assembly.validation,draft:d.assembly.draft?{units:d.assembly.draft.units,fantasyRealization:d.assembly.draft.fantasyRealization}:null}:null,usage,cancellations,budget:{...d.web?.budget,maxRepairs:2},phase:d.web?.progress||null,lastCandidateId:lastFailure?.id||null};
 }

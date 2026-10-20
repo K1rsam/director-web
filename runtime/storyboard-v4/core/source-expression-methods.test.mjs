@@ -52,7 +52,7 @@ test('source dream and explicit 2D Q-form retain detailed methods without adding
  for(const text of ['△甲在梦境中站在门口。','△甲成为二维线描Q版，抬起头。']){
   const r=request('author','off',fixture(text));
   const body=r.snapshot.find(f=>f.path===method)?.body;
-  assert.ok(body);assert.match(body,/二维/);assert.match(body,/同一角色的3D建模Q版/);
+  assert.ok(body);assert.match(body,/二维/);assert.match(body,/3D项目/);assert.match(body,/体积与受光/);
   assert.equal(r.settings.fantasyEnabled,false);
  }
 });

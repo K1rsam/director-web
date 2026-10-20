@@ -132,7 +132,7 @@ export function normalizeSource(raw){
         if(!actual||Object.keys(actual).some(key=>!Object.hasOwn(expected,key))||['id','rowId','line','kind','text'].some(key=>actual[key]!==expected[key])||JSON.stringify(actual.parts)!==JSON.stringify(expected.parts)||JSON.stringify(actual.sourceIds)!==JSON.stringify(expected.sourceIds))fail('STANDARD_ONSCREEN_BINDING','画面文字、类型或来源坐标与原文绑定不一致');
       }
     }
-    if(['DIRECTOR_STANDARD_SCRIPT_SLICE_V3','DIRECTOR_STANDARD_SCRIPT_SLICE_V4'].includes(raw.standardPackage?.schemaVersion))source.onscreenTexts=captions;
+    if(captions.length||['DIRECTOR_STANDARD_SCRIPT_SLICE_V3','DIRECTOR_STANDARD_SCRIPT_SLICE_V4','DIRECTOR_STANDARD_SCRIPT_SLICE_V5'].includes(raw.standardPackage?.schemaVersion))source.onscreenTexts=captions;
     const expected=classified.flatMap(row=>standardDialogues(row));
     if(dialogue!==undefined){
       if(!Array.isArray(dialogue)||dialogue.length!==expected.length)fail('STANDARD_DIALOGUE_COVERAGE','标准对白目录须完整且每段只出现一次');

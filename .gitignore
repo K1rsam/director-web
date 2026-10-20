@@ -55,6 +55,8 @@ scripts/verify-payload-recovery-local.ts
 scripts/audit-foundation-output.ts
 scripts/audit-foundation-payload.ts
 scripts/audit-foundation-scene-wire.ts
+# 单次私人数据库回放；通用隔离回归保留在源码仓库
+scripts/verify-episode-evidence-live-replay.ts
 # 单次已保存样稿的局部候选，不作为通用产品脚本上传
 scripts/prepare-stage3-local-revision-20261002.mjs
 __pycache__/

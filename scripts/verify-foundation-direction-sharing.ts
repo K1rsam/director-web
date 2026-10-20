@@ -18,7 +18,8 @@ const db = new PrismaClient({ datasources: { db: { url } } });
 const content: SeriesDirectionContent = {
   settingTags: ['现代'], mechanismTags: [], arcTags: ['从试探走向互信'], primaryTone: '克制温情', secondaryTones: ['轻松'],
   audiencePromise: '通过行动建立信任，得到相互支持的回报。', expressionRules: ['情绪落实为可见行动，不把角色说法当世界规则。'],
-  avoidances: ['不提前套用未来知情。'], episodeFlexibility: '单集可紧张或低落，整体方向不把所有片段改成同一种情绪。'
+  avoidances: ['不提前套用未来知情。'], episodeFlexibility: '单集可紧张或低落，整体方向不把所有片段改成同一种情绪。',
+  expressionPreferences: { emotion: 'NATURAL', camera: 'BALANCED', fantasy: 'RESTRAINED', rationale: '人物行动逐渐建立信任，建议保留自然层次。' }
 };
 const out = (data: Record<string, unknown>): RoleRunResult => ({ data, rawOutput: JSON.stringify(data), stdout: '', stderr: '', sessionId: null });
 const request = (prompt: string) => JSON.parse(prompt.split('INPUT_JSON:\n').at(-1)!);
@@ -33,6 +34,7 @@ async function main() {
   const require = createRequire(import.meta.url);
   const { makeEpisodeInput } = require('../runtime/storyboard-v4/input.mjs');
   const { buildRequest } = require('../runtime/storyboard-v4/core/core.mjs');
+  const { PLAN_VERSION, VERSION } = require('../runtime/storyboard-v4/core/shared.mjs');
   const user = await db.user.create({ data: { username: 'direction-admin', email: 'direction@synthetic.invalid', passwordHash: 'synthetic' } });
   const create = async (title: string, long = false) => {
     const project = await db.project.create({ data: { title, roles: { create: { userId: user.id, role: 'ADMIN' } }, episodes: { create: [1, 2].map(number => ({
@@ -81,16 +83,42 @@ async function main() {
     const episode = before[0];
     const unconfirmed = await handoffFor(project.id, episode);
     assert.equal(unconfirmed.packet.upstream.seriesDirection.status, 'UNCONFIRMED');
+    assert.deepEqual(view.draft!.content.expressionPreferences, content.expressionPreferences, 'the actual saved Q1 candidate retains the new structured suggestion');
+    const runCount = await db.pipelineRun.count({ where: { projectId: project.id } });
+    const selected = { emotion: 'HEIGHTENED' as const, camera: 'DYNAMIC_FAST' as const, fantasy: 'RICH' as const, rationale: '用户希望更强烈情绪与快速摄影，更多幻想仍服从源与开关。' };
+    view = await service.mutateSeriesDirection(project.id, user.id, { action: 'save', stateToken: view.stateToken, sourceVersion: view.source.sourceVersion, coverageAcknowledged: true, content: { ...view.draft!.content, expressionPreferences: selected } }, { db });
+    assert.equal((await handoffFor(project.id, episode)).packet.upstream.seriesDirection.status, 'UNCONFIRMED', 'saving preferences alone is not adoption');
     view = await service.mutateSeriesDirection(project.id, user.id, { action: 'confirm', stateToken: view.stateToken, sourceVersion: view.source.sourceVersion, draftHash: view.draft!.hash, coverageAcknowledged: true }, { db });
     assert.equal(view.status, 'CONFIRMED', 'An explicitly acknowledged shared-reading candidate can be approved once, without a paid re-read.');
+    assert.deepEqual(view.current!.content.expressionPreferences, selected);
+    assert.equal(await db.pipelineRun.count({ where: { projectId: project.id } }), runCount, 'save/confirm never schedules a paid adoption job');
     for (const currentEpisode of before) {
       const handoff = await handoffFor(project.id, currentEpisode);
       const built = makeEpisodeInput({ episode: currentEpisode, project, handoff, inputProtocol: 'upstream-material-v2' });
       const sent = buildRequest({ stage: 'plan', source: built.source, settings: { fantasyMode: 'off', maxUnits: null } });
       const actual = JSON.parse(sent.prompt.split('【生效设置与本次完整资料】\n')[1].split('\n')[0]).source.context;
       assert.equal(actual.seriesDirection.brief, view.brief, 'Verify the actual Stage3 prompt, not only a saved direction card.');
+      for (const term of ['情绪=高幅夸张', '镜头=快速有冲击', '幻想=丰富大胆']) assert.ok(actual.seriesDirection.brief.includes(term));
+      assert.equal(JSON.stringify(actual.seriesDirection).includes(selected.rationale), false, 'recommendation rationale is not repeated per episode');
+      assert.equal(sent.prompt.includes('fantasyMode": "off"') || sent.prompt.includes('fantasyMode":"off"'), true, 'an adopted rich-fantasy preference cannot change the actual off switch');
       assert.ok(Array.from(actual.seriesDirection.brief).length <= 600);
       assert.equal(actual.seriesDirection.priorSignals, undefined, 'Intermediate evidence/history never accompanies each Stage3 job.');
+      const sourceRefs = built.source.sourceRows.map((row: { id: string }) => row.id);
+      const emotionContract = { subject: '甲', contextTone: '克制温情', audienceEffect: '强烈但保住关系', change: '信任变化', landing: '读清回应', retain: ['源动作与对白'] };
+      const plan = { schemaVersion: PLAN_VERSION, unitPackingPolicy: 'event-first-v1', emotionArc: '信任变化', entryFacts: [],
+        events: [{ id: 'e1', sceneKey: `${currentEpisode.number}-1`, sourceRefs, boundaryBefore: { kind: 'episode_start', reason: '源开始' }, emotionContract }],
+        workPackages: [{ id: 'p1', eventId: 'e1', sourceRefs, emotionContract, entryFactIds: [], contextRefs: [], dependsOn: [], scenarioKeys: [] }],
+        provisionalUnits: [{ id: 'u1', packageId: 'p1', sourceRefs, secondsRange: [2, 6] }], fantasyCandidates: [] };
+      for (const stage of ['author', 'finish', 'delta']) {
+        const native = buildRequest({ stage: stage === 'delta' ? 'finish' : stage, source: built.source, plan, packageId: 'p1', settings: { fantasyMode: 'off', maxUnits: null },
+          ...(stage === 'finish' ? { previousDraft: { rawText: '隔离结构测试，并非制作稿' } } : {}),
+          ...(stage === 'delta' ? { finishMode: 'delta', previousDraft: { schemaVersion: VERSION, units: [{ id: 'p1-u1', shots: [] }], fantasyRealization: [] } } : {}) });
+        const packet = JSON.parse(native.prompt.split('【生效设置与本次完整资料】\n')[1].split('\n')[0]);
+        assert.equal(packet.source.context.seriesDirection.brief, view.brief, `${stage}: actual native request retains the confirmed profile`);
+        assert.equal(packet.settings.fantasyMode, 'off');
+        assert.ok(native.prompt.includes('context.seriesDirection.brief中的表达选择来自已确认全剧卡'), `${stage}: actual method contract is supplied`);
+        assert.ok(native.prompt.includes('只写“靠近、侧移、退移”仍未交代速度'), `${stage}: actual photography method includes the speed-phase distinction`);
+      }
     }
     const cardCount = await db.sceneSnapshot.count({ where: { projectId: project.id, sceneKey: 'SERIES_DIRECTION_CARD' } });
     await get(project.id); await get(project.id);

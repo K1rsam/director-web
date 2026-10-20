@@ -1,0 +1,27 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {createCoordinator} from './coordinator.mjs';
+import {tailFixture} from './core/author-call-group-test-fixtures.mjs';
+
+test('drain waits through final onSettled and retirement never cancels an active model',async t=>{
+ const directory=await mkdtemp(path.join(tmpdir(),'maintenance-drain-')),f=tailFixture();
+ let endModel,modelEntered,endSettlement,settlementEntered,calls=0;
+ const modelGate=new Promise(r=>endModel=r),modelArrival=new Promise(r=>modelEntered=r),settlementGate=new Promise(r=>endSettlement=r),settlementArrival=new Promise(r=>settlementEntered=r);
+ const c=createCoordinator({dataRoot:directory,modelRunner:async()=>{calls++;modelEntered();await modelGate;return {output:f.plan,raw:JSON.stringify(f.plan),requestOutcome:'RESPONDED',usage:{totalTokens:1}};},onSettled:async()=>{settlementEntered();await settlementGate;}});
+ t.after(async()=>{endModel();endSettlement();await c.shutdown();await rm(directory,{recursive:true,force:true});});
+ assert.equal(typeof c.drain,'function','缺少覆盖收尾的公共drain屏障');
+ assert.equal(typeof c.retire,'function','安全退出不得依赖会cancel的shutdown');
+ const run=await c.create({source:f.source,settings:f.settings,binding:{projectId:'p',episodeId:'e',sourceVersion:'s'}});
+ await c.start(run.id,{mode:'next'});await modelArrival;
+ await assert.rejects(c.retire(),{code:'RUN_ACTIVE'});
+ let drained=false;const draining=c.drain().then(()=>drained=true);
+ await new Promise(r=>setTimeout(r,10));assert.equal(drained,false);endModel();await settlementArrival;
+ assert.equal(c.active(run.id),true,'onSettled未结束不能提前删active');
+ await new Promise(r=>setTimeout(r,10));assert.equal(drained,false);
+ endSettlement();await draining;assert.equal(calls,1);await c.retire();
+ assert.equal(c.runtimeIdentity().productionFeedbackResultVersion,'production-feedback-result-v2');
+ await assert.rejects(c.start(run.id),{code:'SHUTDOWN'});
+});

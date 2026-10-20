@@ -59,13 +59,29 @@ test('15-second planning is advisory; missing timing stays unknown instead of in
 test('new creative input is snapshot-versioned without changing the output schema',()=>{
  const payload=fixture(),current=captureRules(),frozen=structuredClone(current);delete frozen.creativeRevision;
  const a=buildRequest({...payload,rulesSnapshot:frozen}),b=buildRequest({...payload,rulesSnapshot:current});
- assert.equal(current.creativeRevision,'expressive-cadence-v1');
+ assert.equal(current.creativeRevision,'expressive-cadence-v4');
  assert.equal(modelInput(a).capacityBrief,undefined);assert.equal(a.plan.fantasyCandidates[0].suggestedProposal,undefined);
  assert.equal(a.schemaHash,b.schemaHash);assert.notEqual(a.inputHash,b.inputHash);
  const changed=structuredClone(payload);changed.plan.fantasyCandidates[0].proposal='新的未锁定建议';
  assert.equal(buildRequest({...changed,rulesSnapshot:frozen}).promptHash,a.promptHash);
  assert.equal(buildRequest({...changed,rulesSnapshot:frozen}).inputHash,a.inputHash);
  assert.throws(()=>buildRequest({...payload,rulesSnapshot:{...current,creativeRevision:'unknown-version'}}),e=>e.code==='RULE_SNAPSHOT');
+});
+
+test('frozen v3 rules and skill text remain stable beside new v4 defaults',()=>{
+ const payload=fixture(),current=captureRules(),frozen=structuredClone(current);
+ frozen.creativeRevision='expressive-cadence-v3';
+ frozen.files['skills/unit-performance-director/SKILL.md']+='\n冻结旧任务的技能正文标记。';
+ const saved=structuredClone(frozen),old=buildRequest({...payload,rulesSnapshot:frozen});
+ const fresh=buildRequest({...payload,rulesSnapshot:current});
+ assert.equal(modelInput(old).creativeRevision,'expressive-cadence-v3');
+ assert.equal(modelInput(fresh).creativeRevision,'expressive-cadence-v4');
+ assert.ok(old.prompt.includes('冻结旧任务的技能正文标记。'));
+ assert.ok(!fresh.prompt.includes('冻结旧任务的技能正文标记。'));
+ assert.equal(buildRequest({...payload,rulesSnapshot:frozen}).promptHash,old.promptHash);
+ assert.equal(buildRequest({...payload,rulesSnapshot:frozen}).inputHash,old.inputHash);
+ assert.notEqual(fresh.inputHash,old.inputHash);
+ assert.deepEqual(frozen,saved);
 });
 
 test('partial repair drafts cannot be blocked by advisory capacity statistics',()=>{

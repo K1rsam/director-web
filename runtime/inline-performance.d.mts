@@ -1,4 +1,14 @@
 type Part={kind:'SOURCE_SLICE'|'SOURCE_SEPARATOR';unitId:string;start:number;end:number};
-export type InlinePerformance={version:'inline-performance-v1';spoken:{text:string;parts:Part[]};cues:Array<{text:string;parts:Part[];markerParts:Part[];spokenOffset:number}>};
-export const INLINE_PERFORMANCE_VERSION:'inline-performance-v1';
-export function inlinePerformanceProjection(source:string,parts:Part[]):InlinePerformance|null;
+export type InlinePerformanceVersion='inline-performance-v1'|'inline-performance-v2';
+export type InlinePerformance={version:InlinePerformanceVersion;spoken:{text:string;parts:Part[]};cues:Array<{text:string;parts:Part[];markerParts:Part[];spokenOffset:number}>};
+export const INLINE_PERFORMANCE_VERSION:'inline-performance-v2';
+export function explicitPerformanceCue(value:string,version?:InlinePerformanceVersion):boolean;
+export function sourceVoiceHead(text:string):{speaker:string;text:string;start:number;end:number}|null;
+export function sourceVoiceProjection(source:string,speaker:{text:string;parts:Part[]}):{text:string;start:number;end:number}|null;
+export function sourceHeadPerformanceCue(value:string):boolean;
+export function sourceBarePerformanceProjection(source:string,speaker:{text:string;parts:Part[]},cue?:{text:string;parts:Part[]}|null):{start:number;end:number}|null;
+export function sourceHeadPrefix(source:string,speaker:{text:string;parts:Part[]},cue?:{text:string;parts:Part[]}|null,channelSource?:{text:string;parts:Part[]}|null):string;
+export function sourceUtteranceProperty(speaker:string,label:string,cue?:string):boolean;
+export function sourceRepeatedHeadPrefix(source:string,start:number,speakerStart:number,bodyStart:number):boolean;
+export function compactPerformanceHeadProjection(source:string,speaker:Part[]|undefined,cue:Part[]|null|undefined,channelSource:Part[]|null|undefined):{text:string;start:number;end:number;cueText:string}|null;
+export function inlinePerformanceProjection(source:string,parts:Part[],version?:InlinePerformanceVersion):InlinePerformance|null;

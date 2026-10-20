@@ -33,10 +33,14 @@ export function selectProductionMaterials(materials,stage,plan,packageIds=[],act
  // The episode projection already excludes future/out-of-scope identities. Once the planner
  // declares actual use, later jobs receive that subset plus explicit unmet material needs.
  let selected=(materials||[]).filter(m=>m.kind!=='ASSET_MATERIAL_CANDIDATE'||m.packageIds.some(id=>packageIds.includes(id)));
+ if(stage!=='plan'&&source?.context?.episodeEvidenceVersion==='episode-evidence-v1')selected=selected.filter(m=>m.kind!=='SOURCE_EVIDENCE'
+  ||!Array.isArray(m.packageIds)||!m.packageIds.length||m.packageIds.some(id=>packageIds.includes(id)));
  const receipt=plan?.productionFeedback;
  if(stage!=='plan'&&receipt){
-  const needs=[...(receipt.needs||[]),...activeNeeds].filter(n=>n.stage===2&&(!n.packageIds?.length||n.packageIds.some(id=>packageIds.includes(id))));
-  const ids=new Set([...(receipt.usedMaterialIds||[]),...needs.map(n=>`asset:${n.target}`)]);
+  const scopedNeeds=[...(receipt.needs||[]),...activeNeeds].filter(n=>!n.packageIds?.length||n.packageIds.some(id=>packageIds.includes(id)));
+  const needs=scopedNeeds.filter(n=>n.stage===2);
+  const historyNeeds=source?.context?.episodeEvidenceVersion==='episode-evidence-v1'?scopedNeeds.filter(n=>n.stage===1&&n.target.startsWith('HISTORY_SOURCE:')):[];
+  const ids=new Set([...(receipt.usedMaterialIds||[]),...needs.map(n=>`asset:${n.target}`),...historyNeeds.map(n=>`history:${n.target}`)]);
   for(const candidate of selected.filter(m=>m.kind==='ASSET_MATERIAL_CANDIDATE'&&ids.has(m.id)))ids.add(`asset:${candidate.assetKey}`);
   selected=selected.filter(m=>m.kind==='ASSET_MATERIAL_CANDIDATE'
    ?m.packageIds.some(id=>packageIds.includes(id))&&(ids.has(m.id)||ids.has(`asset:${m.assetKey}`))

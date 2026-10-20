@@ -25,7 +25,7 @@ test('clear inline acting cue is not spoken; original line and its exact locatio
  const text='苏尘：咳咳，（掐着手指）我算算……';
  const {prepared,pkg,source}=accepted(text);
  assert.equal(source.dialogue[0].quote,'咳咳，我算算……');
- assert.equal(pkg.schemaVersion,'DIRECTOR_STANDARD_SCRIPT_SLICE_V4');
+ assert.equal(pkg.schemaVersion,'DIRECTOR_STANDARD_SCRIPT_SLICE_V5');
  const row=source.sourceRows[0],cue=source.dialogue[0].performanceCues[0];
  assert.equal(row.text,text);assert.equal(cue.text,'掐着手指');assert.equal(cue.quoteOffset,3);
  assert.equal(cue.parts.map(([a,b]:number[])=>row.text.slice(a,b)).join(''),'掐着手指');
@@ -35,7 +35,7 @@ test('clear inline acting cue is not spoken; original line and its exact locatio
 });
 test('literal quoted, explanatory, nested or uncertain parentheses never lose source characters',()=>{
  for(const text of ['苏尘：他说“（掐着手指）”，但我没有。','苏尘：一万元（含税），够吗？','苏尘：你（不是他）答应过。','苏尘：公式（a+b）不能改。','苏尘：他说「（苦笑）」。','苏尘：他写【掐着手指（大笑）】。','苏尘：这叫（苦笑就是苦涩的笑），懂吗？','苏尘：这叫（苦笑），不是笑着哭。','苏尘：纸上写着（点头），懂吗？','苏尘：你把（摇头）这两个字读出来。','苏尘：先（掐着（右手）手指）再算。','苏尘：我（向甲解释）这件事。']){
-  const {source,pkg}=accepted(text);assert.equal(source.dialogue[0].quote,text.slice(text.indexOf('：')+1),text);assert.equal(source.dialogue[0].performanceCues,undefined);assert.notEqual(pkg.schemaVersion,'DIRECTOR_STANDARD_SCRIPT_SLICE_V4');
+  const {source,pkg}=accepted(text);assert.equal(source.dialogue[0].quote,text.slice(text.indexOf('：')+1),text);assert.equal(source.dialogue[0].performanceCues,undefined);assert.notEqual(pkg.schemaVersion,'DIRECTOR_STANDARD_SCRIPT_SLICE_V5');
  }
 });
 test('multiple cues, CRLF, Unicode and multi-speaker groups keep cue owners and positions',()=>{
@@ -75,12 +75,12 @@ test('frozen legacy standard packages keep literal old quotes',()=>{
 test('frozen current requests and saved parsing decisions retain literal old speech',()=>{
  const text='苏尘：咳咳，（掐着手指）我算算……',episode={number:1,content:text};
  const resolution=prepareStandardEpisode(text,'episode-1');
- assert.equal(resolution.plan.schemaVersion,'STANDARD_SCRIPT_PLAN_V4');
+ assert.equal(resolution.plan.schemaVersion,'STANDARD_SCRIPT_PLAN_V5');
  const previous=prepareStandardEpisode(text,'episode-1',{inlinePerformance:false});
  const frozen=prepareEpisodeReception(episode,null,resolution,{inlinePerformance:false});
  assert.equal(frozen.scriptReception.ready,true);
  assert.deepEqual(frozen.standardScript,previous.compiled!.package);
- assert.equal(resolution.plan.schemaVersion,'STANDARD_SCRIPT_PLAN_V4','conversion never mutates the saved decision');
+ assert.equal(resolution.plan.schemaVersion,'STANDARD_SCRIPT_PLAN_V5','conversion never mutates the saved decision');
  const source=normalizeSource(standardPackageSource(frozen.standardScript,{key:'old',sourceText:text}));
  assert.equal(source.dialogue[0].quote,'咳咳，（掐着手指）我算算……');
  assert.equal(source.dialogue[0].performanceCues,undefined);

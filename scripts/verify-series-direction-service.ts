@@ -8,15 +8,124 @@ import path from "node:path";
 import type { PrismaClient } from "@prisma/client";
 import type { FoundationRunUsage } from "../lib/foundation-run-usage";
 import { suppressGeneratedPrismaEnv } from "./compare-three-stage-support.mjs";
+import type { SystemPresentation } from '../lib/system-presentation';
 
 assert.ok(existsSync(path.resolve("lib/series-direction-service.ts")), "全剧方向必须有可信服务层，不能只保存在浏览器或纯函数中");
 let db: PrismaClient;
 const content = { settingTags: ["都市"], mechanismTags: [], arcTags: ["关系成长"], primaryTone: "克制温情", secondaryTones: ["轻喜剧"], audiencePromise: "看见人物从试探走向彼此信任。", expressionRules: ["用反应和距离表现情感变化。"], avoidances: ["不把真实伤害当作笑料。"], episodeFlexibility: "单集可悲伤、悬疑或低谷，事实与揭示时点优先。" };
 const hasCode = (code: string) => (error: unknown) => (error as { code?: string }).code === code;
 
+async function systemPresentationChecks(service: typeof import('../lib/series-direction-service'), actorId: string) {
+  const project = await db.project.create({ data: { title: '隔离系统表现', executionMode: 'API', roles: { create: { userId: actorId, role: 'ADMIN' } }, episodes: { create: [
+    { number: 1, content: '1-1 房间 日 内\n△甲停步。\n系统：任务开始。' },
+    { number: 2, content: '2-1 房间 夜 内\n裁决系统：失败。' },
+  ] } } });
+  const episodes = await db.episode.findMany({ where: { projectId: project.id }, orderBy: { number: 'asc' } });
+  let sourceOffset = 0;
+  const sections = episodes.map(episode => { const start = sourceOffset; sourceOffset += episode.content.length; return { key: `ep${episode.number}`, kind: 'EPISODE', episodeNumber: episode.number, start, end: sourceOffset }; });
+  await db.sceneSnapshot.create({ data: { projectId: project.id, sceneKey: 'SOURCE_IMPORT', metadata: JSON.stringify({ schema: 'IMPORTED_SOURCE_TEXT_V2' }), content: JSON.stringify({ sourceText: episodes.map(episode => episode.content).join(''), sourceStructure: { version: 'SOURCE_STRUCTURE_V1', sections, issues: [] } }) } });
+  const system = { id: 'guide', identity: '引导系统', mode: 'SPRITE' as const, carrierNotes: '观众可见的小光点；提示结束后收起',
+    sourceEvidence: [{ evidenceId: `episode:${episodes[0].id}`, quote: '系统：任务开始。' }], sourceCarrier: null,
+    visibility: 'AUDIENCE_ONLY' as const, audibility: 'SOURCE_ONLY' as const, contact: 'NO_ADDED_CONTACT' as const, originalVoice: 'PRESERVE_SOURCE' as const, screenText: 'NO_ADDED_TEXT' as const, rationale: null };
+  const systemPresentation = { systems: [system, { ...system, id: 'judge', identity: '裁决系统', mode: 'VOICE_ONLY' as const, sourceEvidence: [{ evidenceId: `episode:${episodes[1].id}`, quote: '裁决系统：失败。' }] }] };
+  let view = await service.getSeriesDirectionWorkspace(project.id, actorId, { db });
+  const save = (value: SystemPresentation = systemPresentation) => service.mutateSeriesDirection(project.id, actorId, { action: 'save', stateToken: view.stateToken, sourceVersion: view.source.sourceVersion, content: { ...content, systemPresentation: value }, coverageAcknowledged: true }, { db });
+  await assert.rejects(() => save({ systems: [{ ...system, sourceEvidence: [{ evidenceId: `episode:${episodes[0].id}`, quote: '伪造的系统原话。' }] }] }), hasCode('DIRECTION_SYSTEM_EVIDENCE'), 'free editable text cannot prove its own source');
+  view = await save();
+  assert.equal((await service.readSeriesDirectionProjection(project.id, episodes[0].id, { db })).projection, null, 'a saved choice is not adopted');
+  view = await service.mutateSeriesDirection(project.id, actorId, { action: 'confirm', stateToken: view.stateToken, sourceVersion: view.source.sourceVersion, draftHash: view.draft!.hash, coverageAcknowledged: true }, { db });
+  const old = JSON.stringify(view.current);
+  const first = await service.readSeriesDirectionProjection(project.id, episodes[0].id, { db });
+  assert.equal(first.projection!.systemPresentation!.systems.length, 1);
+  assert.equal((await service.readProjectSeriesDirectionProjection(project.id, { db })).projection!.systemPresentation!.systems.length, 2, 'project asset input includes all actual identities');
+  const { createEmptyDocument } = await import('../lib/foundation-document');
+  const { loadFoundationInputs } = await import('../lib/foundation-state');
+  const document = createEmptyDocument(await loadFoundationInputs(project.id));
+  document.workflow = 'LIGHT_STAGE1_V1'; document.editorialCoverage = [1, 2];
+  document.f2 = { format: 'ASSET_CATALOG_V1', coverage: [1, 2], issues: [], assets: [{ key: 'guide', name: '引导系统', type: 'PROP', aliases: [], description: '', sourceRefs: [], appearances: [], usageEpisodes: [1], variants: [], preparation: { mode: 'REFERENCE' } }], episodes: [{ number: 1, context: '', assetKeys: ['guide'] }, { number: 2, context: '', assetKeys: [] }] };
+  await db.sceneSnapshot.create({ data: { projectId: project.id, sceneKey: 'FOUNDATION_DOCUMENT', content: JSON.stringify(document) } });
+  const prompts = await import('../lib/asset-prompt-service');
+  const workspace = await prompts.loadAssetPromptWorkspace(project.id);
+  assert.equal(workspace.seriesDirection!.systemPresentation!.systems.length, 2, 'actual asset workspace retains structured choices');
+  const facts = await import('../lib/asset-visual-facts-service');
+  await facts.ensureAssetVisualFacts(project.id, async input => {
+    const packet = JSON.parse(input.prompt), data = { batches: packet.chunks.map((chunk: { id: string }) => ({ coveredChunkId: chunk.id, facts: [], issues: [] })) };
+    return { data, rawOutput: JSON.stringify(data), stdout: '', stderr: '', sessionId: null };
+  });
+  let actualInput: Record<string, any> | undefined;
+  const designed = await prompts.generateAssetPrompt(project.id, 'guide', 0, async input => {
+    actualInput = JSON.parse(input.prompt);
+    return { data: { key: 'guide', body: '小光点的独立轮廓。', suggestions: '' }, stdout: '', stderr: '', sessionId: null };
+  });
+  assert.ok(actualInput?.systemPresentation?.systems.some((item: { id: string }) => item.id === 'guide'), designed.error || 'real design runner must receive the approved structured choice');
+  assert.deepEqual(actualInput?.systemPresentation?.decision, { id: first.projection!.id, revision: first.projection!.revision, sourceVersion: first.projection!.sourceVersion, cardHash: first.projection!.cardHash }, 'actual asset runner must receive the same confirmed direction identity as native authoring');
+  const { readLightEpisodeFoundation } = await import('../lib/light-foundation-reader');
+  const { attachEpisodeMaterials } = await import('../lib/episode-upstream-material');
+  const handoff = attachEpisodeMaterials(await readLightEpisodeFoundation(project.id, 1, db), first, []);
+  assert.equal(handoff.packet.upstream.seriesDirection.projection!.systemPresentation!.systems[0].mode, 'SPRITE', 'actual episode handoff contains the same adopted decision');
+  const { readProductionEpisodeHandoff } = await import('../lib/episode-upstream-material');
+  const actualHandoff = await readProductionEpisodeHandoff(project.id, 1);
+  const { makeEpisodeInput } = createRequire(import.meta.url)('../runtime/storyboard-v4/input.mjs');
+  const { buildRequest, captureRules } = createRequire(import.meta.url)('../runtime/storyboard-v4/core/core.mjs');
+  const native = makeEpisodeInput({ episode: episodes[0], project, handoff: actualHandoff, inputProtocol: 'upstream-material-v2' });
+  const rules = captureRules();
+  const request = buildRequest({ stage: 'plan', source: native.source, rulesSnapshot: rules, settings: { maxUnits: null, fantasyMode: 'off' } });
+  const actualPacket = JSON.parse(request.prompt.split('【生效设置与本次完整资料】\n')[1].split('\n')[0]);
+  const actualSystem = actualPacket.source.context.seriesDirection.systemPresentation;
+  assert.equal(rules.systemPresentationVersion, 'SYSTEM_PRESENTATION_V1');
+  assert.equal(actualSystem.schemaVersion, 'SYSTEM_PRESENTATION_V1');
+  assert.equal(actualSystem.decision.cardHash, view.current!.hash);
+  assert.equal(actualSystem.systems[0].id, 'guide');
+  assert.equal(actualSystem.systems[0].sourceEvidence[0].episodeId, episodes[0].id);
+  assert.equal(actualSystem.systems[0].originalVoice, 'PRESERVE_SOURCE');
+  assert.equal(actualSystem.systems[0].mode, 'SPRITE');
+  assert.match(request.prompt, /系统音.*画内.*嘴/);
+  assert.match(request.prompt, /必要提示.*off/);
+  view = await save({ systems: [{ ...system, mode: 'HUD' }] });
+  assert.equal(JSON.stringify(view.current), old, 'editing the carrier preserves the frozen adopted record');
+  view = await service.mutateSeriesDirection(project.id, actorId, { action: 'revoke', stateToken: view.stateToken, sourceVersion: view.source.sourceVersion }, { db });
+  assert.equal((await service.readSeriesDirectionProjection(project.id, episodes[0].id, { db })).projection, null);
+  assert.equal((await prompts.loadAssetPromptWorkspace(project.id)).seriesDirection!.systemPresentation, undefined);
+  assert.ok(view.history.some(item => JSON.stringify(item.card) === old));
+  view = await service.mutateSeriesDirection(project.id, actorId, { action: 'confirm', stateToken: view.stateToken, sourceVersion: view.source.sourceVersion, draftHash: view.draft!.hash, coverageAcknowledged: true }, { db });
+  await db.episode.update({ where: { id: episodes[0].id }, data: { content: `${episodes[0].content}\n△甲转身。` } });
+  assert.equal((await service.readSeriesDirectionProjection(project.id, episodes[0].id, { db })).projection, null);
+  assert.equal((await prompts.loadAssetPromptWorkspace(project.id)).seriesDirection!.systemPresentation, undefined, 'source-stale decisions do not reach asset design');
+  assert.equal(await db.pipelineRun.count({ where: { projectId: project.id } }), 0, 'save/confirm/revoke have no production calls');
+  const q1Project = await db.project.create({ data: { title: '系统候选共用Q1', executionMode: 'API', roles: { create: { userId: actorId, role: 'ADMIN' } }, episodes: { create: { number: 1, content: '第1集\n1-1 房间 日 内\n人物：甲\n△甲停步。\n系统：任务开始。' } } } });
+  const q1Episode = await db.episode.findFirstOrThrow({ where: { projectId: q1Project.id } });
+  await db.sceneSnapshot.create({ data: { projectId: q1Project.id, sceneKey: 'SOURCE_IMPORT', metadata: JSON.stringify({ schema: 'IMPORTED_SOURCE_TEXT_V2' }), content: JSON.stringify({ sourceText: q1Episode.content, sourceStructure: { version: 'SOURCE_STRUCTURE_V1', sections: [{ key: 'ep1', kind: 'EPISODE', episodeNumber: 1, start: 0, end: q1Episode.content.length }], issues: [] } }) } });
+  const { preprocessProject } = await import('../lib/project-preprocess');
+  await preprocessProject(q1Project.id, db);
+  const delivery = await import('../lib/foundation-delivery');
+  const task = await delivery.queueFoundationDelivery(q1Project.id, {}, db);
+  const calls: string[] = [];
+  await delivery.executeFoundationDelivery(q1Project.id, task.id, { db, stageRunner: async (stage, prompt) => {
+    calls.push(stage);
+    const packet = JSON.parse(prompt.split('INPUT_JSON:\n').at(-1)!);
+    const data = stage === 'F2' ? { format: 'ASSET_CATALOG_V2', coverage: packet.scope, assets: [{ name: '甲', type: 'CH', episodes: [1], sceneRefs: [[1, '1-1']], preparation: { mode: 'REFERENCE' } }] }
+      : { format: 'FOUNDATION_OPTIMIZATION_V2', coverage: packet.scope, changes: {}, seriesDirection: { content: { ...content, systemPresentation: { systems: [{ ...system, sourceEvidence: [{ evidenceId: `episode:${q1Episode.id}`, quote: '系统：任务开始。' }] }] } } } };
+    if (stage === 'Q1') {
+      assert.equal(packet.seriesDirectionPreparation.mode, 'FINAL');
+      assert.deepEqual(packet.seriesDirectionPreparation.systemSourceAnchors, [[1, `episode:${q1Episode.id}`]]);
+      assert.ok(prompt.includes('系统声道') && prompt.includes('voiceBindings'), 'actual existing Q1 prompt contains system voice/source constraints');
+    }
+    return { data, rawOutput: JSON.stringify(data), stdout: '', stderr: '', sessionId: null };
+  } });
+  assert.deepEqual(calls, ['F2', 'Q1'], 'system recommendations add no role or paid call');
+  const candidate = await service.getSeriesDirectionWorkspace(q1Project.id, actorId, { db });
+  assert.equal(candidate.draft!.content.systemPresentation!.systems[0].mode, 'SPRITE');
+  assert.equal(candidate.current, null, 'Q1 recommendations remain unadopted');
+  assert.equal(candidate.foundationPreparation!.status, 'CANDIDATE_READY');
+  assert.equal(candidate.foundationPreparation!.extraCalls, 0);
+  console.log('PASS system presentation service: exact source proof, save/confirm/revoke/stale/history, actual asset runner, actual handoff -> native input -> plan/cardHash/voice boundaries, existing F2+Q1 only; disposable DB and injected runners');
+}
+
 async function main() {
   const service = await import("../lib/series-direction-service");
   const [admin, reviewer, operator, outsider] = await Promise.all(["admin", "reviewer", "operator", "outsider"].map(username => db.user.create({ data: { username, email: `${username}@synthetic.invalid`, passwordHash: "synthetic" } })));
+  await systemPresentationChecks(service, admin.id);
+  if (process.argv.includes('--system-only')) return;
   const project = await db.project.create({ data: { title: "合成全剧方向测试", executionMode: "API", episodes: { create: [{ number: 1, title: "相遇", content: "1-1 日 内 屋\n甲小心试探。" }, { number: 2, title: "信任", content: "2-1 夜 外 街\n乙把伞交给甲。" }] }, roles: { create: [{ userId: admin.id, role: "ADMIN" }, { userId: reviewer.id, role: "REVIEWER" }, { userId: operator.id, role: "OPERATOR" }] } } });
   const background = "作者资料：关系从试探走向信任。\n";
   const episodes = await db.episode.findMany({ where: { projectId: project.id }, orderBy: { number: "asc" } });
@@ -295,7 +404,7 @@ async function isolatedMain() {
     require.cache[runnerPath] = { ...require.cache[runnerPath]!, exports: { ...runnerModule, runRoleByProvider: forbidProvider } };
     assert.equal(require("../lib/role-runner").runRoleByProvider, forbidProvider);
     await main();
-    console.log("PASS all series-direction service checks; temporary SQLite, injected runner, no real provider");
+    console.log(`PASS ${process.argv.includes('--system-only') ? 'selected system-presentation' : 'all series-direction'} service checks; temporary SQLite, injected runner, no real provider`);
   } finally {
     try { await client?.$disconnect(); }
     finally {

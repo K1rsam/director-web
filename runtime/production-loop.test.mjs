@@ -3,11 +3,10 @@ import assert from 'node:assert/strict';
 import {mkdtemp,rm} from 'node:fs/promises';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
-import {createEngine} from './storyboard-v4/core/pipeline.mjs';
+import {createUnversionedProductionEngine as createEngine,createUnversionedProductionCoordinator as createCoordinator} from './storyboard-v4/core/legacy-test-fixtures.mjs';
 import {tailFixture,tailDraft} from './storyboard-v4/core/author-call-group-test-fixtures.mjs';
 import {makeBoundaryContext} from './episode-boundary.mjs';
 import {digest} from './storyboard-v4/core/shared.mjs';
-import {createCoordinator} from './storyboard-v4/coordinator.mjs';
 import {DELTA_VERSION} from './storyboard-v4/core/delta.mjs';
 
 const seed={schema:'EPISODE_BOUNDARY_SEED_V1',sourceVersion:'all-source',fromEpisode:1,toEpisode:2,adjacentEpisode:true,

@@ -2,6 +2,7 @@ import type {VisualFact,VisualIssue} from './asset-visual-facts-contract';
 import type {ApplicationScope} from './foundation-application-scope';
 import type {AssetImageOptions} from './asset-image-options';
 import type {AssetPromptAutomation} from './asset-prompt-automation';
+import type {projectSeriesDirection} from './series-direction';
 export type PromptEvidence = { label: string; text: string };
 /** Historical output only: never supplied as current source facts or referenceDesign. */
 export type PreviousDesignAudit = {revision:number;body:string;facts:string;suggestions:string;rawOutput?:string;origin:'AI'|'MANUAL';updatedAt:string};
@@ -18,7 +19,7 @@ export type PromptRecord = {
 };
 export type PromptWorkspace = {
   projectId: string; title: string; style: string; stylePrefix: string; styleRevision: number;
-  seriesDirection?: {status:'CONFIRMED'|'UNCONFIRMED'|'STALE'; brief:string|null; cardHash?:string};
+  seriesDirection?: {status:'CONFIRMED'|'UNCONFIRMED'|'STALE'; brief:string|null; cardHash?:string; systemPresentation?:NonNullable<ReturnType<typeof projectSeriesDirection>['systemPresentation']>};
   visualFactsStatus?:'MISSING'|'READY'|'REVIEW'; visualFactIssues?:VisualIssue[]; assets: PromptAsset[]; records: Record<string, PromptRecord>; busy: boolean; imageOptions?:Record<string,AssetImageOptions>;automation?:AssetPromptAutomation;
 };
 export function composeAssetPrompt(prefix: string, body: string) {

@@ -7,16 +7,23 @@ import {createCoordinator} from './coordinator.mjs';
 import {tailFixture,tailDraft} from './core/author-call-group-test-fixtures.mjs';
 import {makeBoundaryContext} from '../episode-boundary.mjs';
 import {DELTA_VERSION} from './core/delta.mjs';
+import {createStore} from './core/store.mjs';
 
 const seed={schema:'EPISODE_BOUNDARY_SEED_V1',sourceVersion:'source-v1',fromEpisode:null,toEpisode:1,adjacentEpisode:false,previousSource:null,currentOpening:{episode:1,text:'甲：第1句。',nodes:[],sourceRange:{start:0,end:7}},story:{timeLayer:'UNKNOWN',realityDomain:'UNKNOWN'},unknowns:[]};
 const baseFeedback=()=>({relation:'INDEPENDENT',entry:[],exit:[],sharedChoices:[],usedMaterialIds:[],needs:[],conflicts:[]});
 const makeNeed=(packageIds=['p3'])=>({stage:2,target:'CH01',purpose:'确定本包动作所需服装范围',packageIds,sourceRefs:['s6'],blocking:true});
 const initial=()=>({version:'production-feedback-v1',globalBlocking:false,boundary:makeBoundaryContext({seed,selected:null}),materials:[]});
+// These scoped-gate receipts have no full-result revision; replay their original contract.
+function legacyCoordinator(options){
+ const c=createCoordinator(options),create=c.create.bind(c);
+ c.create=async input=>{const run=await create(input);await createStore(options.dataRoot).update(run.id,d=>{d.rulesSnapshot.productionFeedbackResultVersion='production-feedback-result-v1';return d;});return c.read(run.id);};
+ return c;
+}
 
 async function fixture(fn,{need=makeNeed(),conflicts=[]}={}){
  const directory=await mkdtemp(path.join(tmpdir(),'scoped-production-gate-')),f=tailFixture(),calls=[];
  let context=initial();
- const coordinator=createCoordinator({dataRoot:directory,loadProductionContext:async()=>context,modelRunner:async request=>{
+ const coordinator=legacyCoordinator({dataRoot:directory,loadProductionContext:async()=>context,modelRunner:async request=>{
   calls.push({stage:request.stage,packageIds:[...request.packageIds],finishMode:request.finishMode});
   const feedback={...baseFeedback(),...(request.stage==='plan'?{needs:need?[need]:[],conflicts}:{}),usedMaterialIds:request.materialIds||[]};
   let output=request.stage==='plan'?f.plan:tailDraft(request);
@@ -88,7 +95,7 @@ test('automatic consumed-material repair is scoped independently of a later bloc
 
 test('before a valid plan, a scoped-looking need cannot be treated as dispatchable',async()=>{
  const directory=await mkdtemp(path.join(tmpdir(),'unplanned-production-gate-')),f=tailFixture();let calls=0;
- const c=createCoordinator({dataRoot:directory,modelRunner:async()=>{calls++;throw Error('must not dispatch');}});
+ const c=legacyCoordinator({dataRoot:directory,modelRunner:async()=>{calls++;throw Error('must not dispatch');}});
  try{
   const run=await create(c,f.source,f.settings,{...initial(),blocking:true,needs:[makeNeed(['p3'])]});
   await c.start(run.id);const stopped=await c.wait(run.id);
@@ -98,7 +105,7 @@ test('before a valid plan, a scoped-looking need cannot be treated as dispatchab
 
 test('legacy unknown aggregate blocking remains fail-closed without a scoped classification',async()=>{
  const directory=await mkdtemp(path.join(tmpdir(),'legacy-production-gate-')),f=tailFixture();let calls=0;
- const c=createCoordinator({dataRoot:directory,modelRunner:async()=>{calls++;throw Error('must not dispatch');}});
+ const c=legacyCoordinator({dataRoot:directory,modelRunner:async()=>{calls++;throw Error('must not dispatch');}});
  try{
   const production=initial();delete production.globalBlocking;production.blocking=true;
   const run=await create(c,f.source,f.settings,production);await c.start(run.id);const stopped=await c.wait(run.id);

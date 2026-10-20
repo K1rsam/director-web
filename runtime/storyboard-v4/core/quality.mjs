@@ -1,8 +1,11 @@
 import {VERSION,fail} from './shared.mjs';
-import {resolveSourceRef} from './source.mjs';
+import {normalizeSource,resolveSourceRef} from './source.mjs';
 import {UNIT_PACKING_POLICY,packEventUnits} from './event-unit-packing.mjs';
 import {UNIT_DIRECTION_VERSION} from './output-schema.mjs';
 import {SUPPORTED_SEEDANCE_EXPORT_VERSIONS} from './visual-style.mjs';
+import {FANTASY_TIMING_VERSION,fantasyTiming,normalizeFantasyTiming} from './fantasy-timing.mjs';
+import {validVisualSubjects} from './visual-subjects.mjs';
+import {resolvedDialogue} from './source-resolution.mjs';
 
 const has=x=>typeof x==='string'&&!!x.trim();
 const issue=(code,coordinate,detail)=>({code,coordinate,detail});
@@ -13,6 +16,54 @@ function resolvedId(source,ref,allowContext=false){
 }
 const synonyms={'画外→画内':'画外转画内','画外到画内':'画外转画内','画外切画内':'画外转画内','画内→画外':'画内转画外','画内到画外':'画内转画外','画内切画外':'画内转画外'};
 const presentations=new Set(['画内','画外','VO','OS','系统音','画外转画内','画内转画外']);
+export const DIALOGUE_SOURCE_LINK_VERSION='dialogue-source-link-v1';
+
+function linkDialogueSources(draft,source,plan){
+ const changes=[],links=[],offsets=new Map(),unitIds=new Set(),shotIds=new Set();
+ if(!Array.isArray(draft?.units)||!Array.isArray(plan?.events)||!Array.isArray(plan?.workPackages)||!plan.workPackages.length)return changes;
+ let verified;try{verified=normalizeSource(source);}catch{return changes;}
+ if(verified.diagnostics.length)return changes;
+ const rows=new Map(verified.sourceRows.map(r=>[r.id,r])),originalRows=new Map(source.sourceRows.map(r=>[canonical(r,source),r]));
+ const quotes=new Map(verified.dialogue.map((q,index)=>[q.id,{...q,index}])),events=new Map(),owners=new Map(),packageIds=new Set();
+ for(const event of plan.events){if(!has(event?.id)||events.has(event.id)||!Array.isArray(event.sourceRefs))return changes;events.set(event.id,event);}
+ for(const w of plan.workPackages){
+  if(!has(w?.id)||packageIds.has(w.id)||!Array.isArray(w.sourceRefs))return changes;packageIds.add(w.id);
+  for(const ref of w.sourceRefs){if(owners.has(ref))return changes;owners.set(ref,w);}
+ }
+ let previous=-1;
+ for(const unit of draft.units){
+  const event=events.get(unit?.eventId);
+  if(!has(unit?.id)||unitIds.has(unit.id)||!event||!Array.isArray(event.sourceRefs)||!Array.isArray(unit.shots))return changes;
+  unitIds.add(unit.id);
+  for(const shot of unit.shots){
+   if(!has(shot?.id)||shotIds.has(shot.id)||!Number.isFinite(shot.duration)||shot.duration<=0||!Array.isArray(shot.dialogueParts)||!Array.isArray(shot.sourceRefs)
+     ||new Set(shot.sourceRefs).size!==shot.sourceRefs.length||shot.sourceRefs.some(ref=>!rows.has(ref)||!event.sourceRefs.includes(ref)))return changes;
+   if(shot.contextRefs!==undefined&&(!Array.isArray(shot.contextRefs)||shot.contextRefs.some(ref=>!resolvedId(source,ref,true))))return changes;
+   shotIds.add(shot.id);let voiceEnd=0;
+   for(const part of shot.dialogueParts){
+    const q=quotes.get(part?.lineId),rowId=q?.sourceIds?.[0],row=rows.get(rowId),owner=owners.get(rowId);
+    // ponytail: multi-row legacy speech needs explicit per-row character ranges before any association can be derived.
+    if(!q||!has(q.speaker)||!has(q.quote)||!Array.isArray(q.sourceIds)||q.sourceIds.length!==1||q.rowId!==rowId||row?.kind!=='dialogue'
+      ||originalRows.get(rowId)?.kind==='guidance'||row.evidenceRole==='guidance'||!owner||owner.eventId!==unit.eventId||!event.sourceRefs.includes(rowId))return changes;
+    if(shot.sourceRefs.some(ref=>owners.get(ref)?.id!==owner.id)||!shot.sourceRefs.length&&plan.workPackages.length!==1)return changes;
+    if(!has(part.text)||q.index<previous||!presentations.has(part.presentation)||!has(part.delivery)
+      ||!Number.isFinite(part.voiceStart)||!Number.isFinite(part.voiceEnd)||part.voiceStart<0||part.voiceEnd<=part.voiceStart||part.voiceEnd>shot.duration+1e-6||part.voiceStart<voiceEnd-1e-6)return changes;
+    if(!['现场对白','VO','OS','系统音'].includes(q.channel)||['VO','OS'].includes(q.channel)&&part.presentation!==q.channel
+      ||q.channel==='现场对白'&&['VO','OS','系统音'].includes(part.presentation)||q.channel==='系统音'&&!['画外','系统音'].includes(part.presentation))return changes;
+    const start=offsets.get(q.id)||0,end=start+part.text.length;
+    if(q.quote.slice(start,end)!==part.text)return changes;
+    offsets.set(q.id,end);previous=q.index;voiceEnd=part.voiceEnd;
+    links.push({shot,q,range:[start,end]});
+   }
+  }
+ }
+ if(verified.dialogue.some(q=>offsets.get(q.id)!==q.quote.length))return changes;
+ for(const {shot,q,range} of links)if(!shot.sourceRefs.includes(q.rowId)){
+  const from=[...shot.sourceRefs];shot.sourceRefs.push(q.rowId);
+  changes.push({coordinate:shot.id,field:'sourceRefs',from,to:[...shot.sourceRefs],action:'derive',reason:'verified_dialogue_source_link',version:DIALOGUE_SOURCE_LINK_VERSION,lineId:q.id,sourceId:q.rowId,speaker:q.speaker,sourcePartRange:range});
+ }
+ return changes;
+}
 
 export function normalizeDraft(raw,source,options={}){
  const draft=structuredClone(raw),changes=[];
@@ -38,7 +89,9 @@ export function normalizeDraft(raw,source,options={}){
   if(Array.isArray(s.contextRefs))s.contextRefs=s.contextRefs.map((ref,i)=>{const id=resolvedId(source,ref,true);if(id&&id!==ref){changes.push({coordinate:s.id,field:`contextRefs[${i}]`,from:ref,to:id});return id;}return ref;});
   for(const p of Array.isArray(s.dialogueParts)?s.dialogueParts:[])if(p&&typeof p==='object')change(p,'presentation',synonyms[p.presentation],s.id);
  }
+ if(options.dialogueSourceLinkVersion===DIALOGUE_SOURCE_LINK_VERSION)changes.push(...linkDialogueSources(draft,source,options.plan));
  for(const f of Array.isArray(draft?.fantasyRealization)?draft.fantasyRealization:[])if(f&&typeof f==='object')change(f,'status',{'已兑现':'realized',implemented:'realized'}[f.status],f.candidateId);
+ changes.push(...normalizeFantasyTiming(draft,options.fantasyTimingVersion));
  changes.push(...packEventUnits(draft,options));
  return {draft,changes};
 }
@@ -67,6 +120,7 @@ export function validateDraft({draft,source,settings={},selection,plan,unitDirec
    for(const [i,segment] of (Array.isArray(u?.segments)?u.segments:[]).entries())if(!has(segment?.unitDirection))add('UNIT_DIRECTION',`${uid}.segments[${i}]`,'合并前分段的专属演出总指令缺失');
   }
   for(const k of ['props','participants'])if(!Array.isArray(u?.[k])||u[k].some(x=>!has(x)))add('FIELD',uid,`单元${k}格式错误`);
+  if(u&&Object.hasOwn(u,'visualSubjects')&&!validVisualSubjects(u.visualSubjects))add('VISUAL_SUBJECTS',uid,'主观或未来图示主体清单格式、类型或唯一性无效；不当作现实出场或觉醒事实');
   if(!u?.intent||!['subject','change','landing'].every(k=>has(u.intent[k]))||!Array.isArray(u.intent.retain)||!u.intent.retain.length||u.intent.retain.some(x=>!has(x)))add('INTENT',uid,'情绪主体、变化、落点及保留功能不完整');
   if(!Array.isArray(u?.shots)||!u.shots.length){add('SHOTS',uid,'缺少镜头');continue;}
   let duration=0;
@@ -108,6 +162,10 @@ export function validateDraft({draft,source,settings={},selection,plan,unitDirec
   if(!candidates.has(id))add('FANTASY_UNKNOWN',id,'未知幻想候选');
   if(selection&&!selected.has(id))add('FANTASY_UNSELECTED',id,'未选候选不得实施');
   if(!['realized','not_realized'].includes(f.status))add('FANTASY_STATUS',id,'兑现状态无效');
+  if(Object.hasOwn(f,'screenSpans')){
+   const timing=fantasyTiming(f,draft);
+   if(!timing||f.timingVersion!==FANTASY_TIMING_VERSION||JSON.stringify(f.shotIds)!==JSON.stringify(timing.shotIds)||f.screenSeconds!==timing.screenSeconds)add('FANTASY_SPAN',id,'幻想镜内范围、顺序、归属或派生占时不一致；不猜入出或截断镜长');
+  }
   if(f.status!=='realized')continue;
   if(!Array.isArray(f.unitIds)||!f.unitIds.length||new Set(f.unitIds).size!==f.unitIds.length||f.unitIds.some(uid=>!unitIds.has(uid)))add('FANTASY_UNIT',id,'缺少有效单元归属或归属重复');
   const shots=units.flatMap(u=>u?.shots||[]),linked=Array.isArray(f.shotIds)?f.shotIds.map(sid=>shots.find(s=>s?.id===sid)):[];
@@ -142,11 +200,11 @@ function sourceQuoteEdges(draft,quotes){
  return {first,last};
 }
 
-export function renderDraft({draft,source,settings={},seedanceExportVersion}={}){
+export function renderDraft({draft,source,settings={},seedanceExportVersion,sourceResolutions=[]}={}){
  if(seedanceExportVersion!==undefined&&!SUPPORTED_SEEDANCE_EXPORT_VERSIONS.includes(seedanceExportVersion))fail('EXPORT_VERSION','未知视频执行稿导出版本');
  const execution=seedanceExportVersion!==undefined;
  const unitTimeline=seedanceExportVersion==='seedance-execution-v3';
- const quotes=new Map((source?.dialogue||[]).map(q=>[q.id,q])),sections=[];
+ const quotes=new Map((source?resolvedDialogue(source,sourceResolutions):[]).map(q=>[q.id,q])),sections=[];
  // V2 and later only omit redundant display delimiters at verified source edges; stored text is untouched.
  const quoteEdges=seedanceExportVersion==='seedance-execution-v2'||unitTimeline?sourceQuoteEdges(draft,quotes):null;
  const style=has(settings?.visualStyle)?settings.visualStyle:'3D国漫横屏短剧，16:9；角色、场景与光影连续，表演和空间关系清晰。';
@@ -169,7 +227,9 @@ export function renderDraft({draft,source,settings={},seedanceExportVersion}={})
    ?`${style}\n${active?'已选幻想只按本单元画面正文呈现':'本单元不加入额外幻想段落'}；源剧情明确的Q版、梦境、法术与特效照常表现；主观形变遵守正文声明的主观边界，现实状态及角色知情范围遵循原文。\n${displayHeader(u.unitDirection)}`
    :`${style}${active?'；已选幻想只按本单元画面正文呈现。':'；本单元不加入额外幻想段落，源剧情的法术与特效照常表现。'}`;
   const opening=u.segments?.[0]||u;
-  const lines=[`# ${u.title}｜${num(total)}s`,`[通用提示词] ${common}`,`[场景] ${u.scene}`,`[本单元道具] ${u.props?.join('、')||'无'}`,`[本单元出场人物] ${u.participants?.join('、')||'无'}`,`[本单元光影] ${displayHeader(opening.lighting)}`,`[人物状态与站位前提] ${displayHeader(opening.initialState)}`];
+  const subjects=validVisualSubjects(u.visualSubjects)?u.visualSubjects:[];
+  const subjective=subjects.filter(s=>s.domain==='subjective').map(s=>s.name),prospective=subjects.filter(s=>s.domain==='prospective').map(s=>s.name);
+  const lines=[`# ${u.title}｜${num(total)}s`,`[通用提示词] ${common}`,`[场景] ${u.scene}`,`[本单元道具] ${u.props?.join('、')||'无'}`,`[本单元出场人物] ${u.participants?.join('、')||'无'}`,...(subjective.length?[`[主观视觉主体] ${subjective.join('、')}`]:[]),...(prospective.length?[`[未来图示主体] ${prospective.join('、')}`]:[]),`[本单元光影] ${displayHeader(opening.lighting)}`,`[人物状态与站位前提] ${displayHeader(opening.initialState)}`];
   for(const [i,s] of (u.shots||[]).entries()){
    const segment=u.segments?.find(segment=>segment.shotIds?.[0]===s.id);
    if(segment&&i>0){

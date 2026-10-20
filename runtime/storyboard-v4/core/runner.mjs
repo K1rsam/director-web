@@ -8,6 +8,8 @@ import {StringDecoder} from 'node:string_decoder';
 import {digest,fail} from './shared.mjs';
 import {createAttemptDiagnostics} from './attempt-diagnostics.mjs';
 import {restoreModelCoordinates} from './model-coordinates.mjs';
+import {schemaCompatibilityIssue,classifySchemaAdmissionEvent,isPureStartupEvent} from './schema-admission.mjs';
+import {productionModelSelection} from '../../production-policy.mjs';
 export {readAttemptDiagnostics} from './attempt-diagnostics.mjs';
 
 const disabled=['apps','browser_use','computer_use','image_generation','in_app_browser','workspace_dependencies','multi_agent','plugins','memories','hooks','shell_tool','unified_exec','view_image','skill_search'];
@@ -52,18 +54,26 @@ function safeDiagnostic(value){
     .replace(/\beyJ[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+/gi,'[redacted]')
     .trim();
 }
-function selected(model='gpt-6.1-sol',reasoning='medium'){
+function selected(model='gpt-6.1-sol',reasoning='medium',selection){
+  if(selection!==undefined){
+    const validated=productionModelSelection(selection);
+    if(validated.model===model&&validated.reasoning===reasoning)return {model,reasoning};
+    throw Object.assign(new Error('请求模型与新任务冻结选择不符，未派发。'),{code:'MODEL_POLICY_CHANGED',requestOutcome:'NOT_SENT',providerCalls:0});
+  }
   // Saved requests remain immutable; only new requests using the current policy may dispatch.
   if(model!=='gpt-6.1-sol'||reasoning!=='medium')throw Object.assign(new Error('后续生成仅支持 GPT-6.1 Sol / medium；此任务保存了旧模型设置，请新建制作任务。旧稿及已有回包仍保留。'),{code:'MODEL_POLICY_CHANGED',requestOutcome:'NOT_SENT',providerCalls:0});
   return {model,reasoning};
 }
-export function buildRunnerArgs({model='gpt-6.1-sol',reasoning='medium',cwd,outputPath,instructionsPath,schemaPath}={}){
-  selected(model,reasoning);
+function requestedTier(serviceTier){if(!['standard','fast'].includes(serviceTier))fail('INVALID_SERVICE_TIER','此入口仅支持标准或Fast速度档；模型和推理档位不变');return serviceTier==='fast'?'priority':null;}
+export function buildRunnerArgs({model='gpt-6.1-sol',reasoning='medium',modelSelection,serviceTier='standard',cwd,outputPath,instructionsPath,schemaPath}={}){
+  selected(model,reasoning,modelSelection);
+  const tier=requestedTier(serviceTier);
   if(![cwd,outputPath,instructionsPath].every(s=>typeof s==='string'&&path.isAbsolute(s)))fail('INVALID_PATH','Absolute runner paths required');
   return ['exec','--ignore-user-config','--ignore-rules','--ephemeral','--json',
     ...disabled.flatMap(name=>['--disable',name]),'--enable','skip_host_skill_discovery',
     '-c','skills.include_instructions=false','-c','project_doc_max_bytes=0',
     '--model',model,'-c',`model_reasoning_effort=${JSON.stringify(reasoning)}`,
+    ...(tier?['-c',`service_tier=${JSON.stringify(tier)}`,'-c','features.fast_mode=true']:[]),
     '-c',`model_instructions_file=${JSON.stringify(instructionsPath)}`,'-c','web_search="disabled"',
     '--sandbox','read-only','--skip-git-repo-check','--cd',cwd,
     ...(schemaPath?['--output-schema',schemaPath]:[]),'-o',outputPath,'-'];
@@ -158,9 +168,10 @@ async function durable(file,value,replace=false){
     if(replace)await rename(target,file);
   }finally{if(replace)await rm(target,{force:true}).catch(()=>{});}
 }
-export async function runModel(request,{directory,attemptId,signal,shouldDispatch=()=>true,executable='codex',executableArgs=[],timeoutMs,startupTimeoutMs,idleTimeoutMs}={}){
+export async function runModel(request,{directory,attemptId,signal,shouldDispatch=()=>true,executable='codex',executableArgs=[],modelSelection,serviceTier='standard',timeoutMs,startupTimeoutMs,idleTimeoutMs}={}){
   const start=Date.now();let sent=false,raw='',usage=usageEmpty(),tempDir=null,model,reasoning,attempt=null,owned=false,state='PREPARED',localProcess=null,stderr='',responseDisposition=null,incompleteResponse=false,stageDiagnostics=null,diagnosticsError=null,spawnFailed=false;
-  const execution={phase:'starting',startedAt:new Date(start).toISOString(),lastEventAt:null,lastActivityAt:null,lastProgressAt:null,eventCount:0,lastEventType:null,eventCounts:{},terminalEvent:null,terminalAt:null,timeoutKind:null,limits:resolveRunnerLimits(request,{timeoutMs,startupTimeoutMs,idleTimeoutMs}),workload:runnerWorkload(request)};
+  const execution={phase:'starting',startedAt:new Date(start).toISOString(),lastEventAt:null,lastActivityAt:null,lastProgressAt:null,eventCount:0,lastEventType:null,eventCounts:{},terminalEvent:null,terminalAt:null,timeoutKind:null,modelActivityObserved:false,limits:resolveRunnerLimits(request,{timeoutMs,startupTimeoutMs,idleTimeoutMs}),workload:runnerWorkload(request)};
+  let admission=null,admissionCandidate=null,admissionConflict=false;
   const diagnosticEvents=[];
   const diagnostics=()=>({events:diagnosticEvents,stderr:safeDiagnostic(stderr).slice(-4000)});
   const failureDetail=()=>[...diagnosticEvents].reverse().find(e=>e.type==='turn.failed')?.message||diagnosticEvents.at(-1)?.message||diagnostics().stderr.slice(-2000);
@@ -168,7 +179,7 @@ export async function runModel(request,{directory,attemptId,signal,shouldDispatc
   const receipt=async(outcome,errorCode,errorMessage)=>{
     if(!owned)return;
     // Snapshot before queuing: a late heartbeat can never replace FINAL.
-    const snapshot=JSON.stringify({state,requestOutcome:outcome,responseDisposition,usage,model,reasoning,durationMs:Date.now()-start,errorCode:errorCode||null,errorMessage:errorMessage?safeDiagnostic(errorMessage).slice(-2300):null,diagnostics:diagnostics(),localProcess,execution,...(diagnosticsError?{diagnosticsError}:{})});
+    const snapshot=JSON.stringify({state,requestOutcome:outcome,responseDisposition,usage,model,reasoning,requestedServiceTier:serviceTier==='fast'?'priority':null,durationMs:Date.now()-start,errorCode:errorCode||null,errorMessage:errorMessage?safeDiagnostic(errorMessage).slice(-2300):null,diagnostics:diagnostics(),localProcess,execution,...(admission?{admission}:{}),...(diagnosticsError?{diagnosticsError}:{})});
     receiptQueue=receiptQueue.catch(()=>{}).then(()=>durable(path.join(attempt,'receipt.json'),snapshot,true));
     await receiptQueue;
   };
@@ -184,7 +195,8 @@ export async function runModel(request,{directory,attemptId,signal,shouldDispatc
   try{
     if(!directory||!validName(attemptId))fail('INVALID_ATTEMPT','Invalid attempt directory or id');
     if(!request||!Object.hasOwn(timeoutDefaults,request.stage)||typeof request.prompt!=='string'||!request.prompt.trim()||typeof request.instructions!=='string'||!request.instructions.trim()||typeof request.inputHash!=='string'||typeof request.promptHash!=='string')fail('INVALID_REQUEST','Incomplete model request');
-    ({model,reasoning}=selected(request.settings?.model,request.settings?.reasoning));
+    ({model,reasoning}=selected(request.settings?.model,request.settings?.reasoning,modelSelection));
+    requestedTier(serviceTier);
     if(request.promptHash!==digest(request.prompt))fail('PROMPT_HASH_MISMATCH','Prompt differs from saved digest');
     if(signal?.aborted)fail('ABORTED','Request cancelled before dispatch');
     attempt=path.join(path.resolve(directory),'attempts',attemptId);
@@ -199,15 +211,22 @@ export async function runModel(request,{directory,attemptId,signal,shouldDispatc
       throw error;
     }
     const requestFile=await open(path.join(attempt,'request.json'),'wx',0o600);
-    try{await requestFile.writeFile(JSON.stringify(request));await requestFile.sync();}finally{await requestFile.close();}
+    try{await requestFile.writeFile(JSON.stringify(serviceTier==='fast'||modelSelection?{...request,executionSettings:{model,reasoning,serviceTier,requestedServiceTier:requestedTier(serviceTier),...(modelSelection?{modelSelection}:{} )}}:request));await requestFile.sync();}finally{await requestFile.close();}
     await receipt('NOT_SENT');
+    if(request.schema!==undefined&&request.schema!==null){
+      const issue=schemaCompatibilityIssue(request.schema);
+      if(issue){
+        admission={source:'local_schema_preflight',requestSent:false,inferenceStarted:false,schemaHash:digest(request.schema),...issue,attemptId,requestFingerprint:digest([request.promptHash,request.instructionHash,request.inputHash])};
+        throw Object.assign(new Error('JSON schema 含当前 CLI 不支持的约束；未启动模型，原约束及请求已保留。'),{code:'SCHEMA_ADMISSION_REJECTED'});
+      }
+    }
     tempDir=await mkdtemp(path.join(tmpdir(),'v4-model-'));
     const cwd=path.join(tempDir,'work');await mkdir(cwd,{mode:0o700});
     const instructionsPath=path.join(tempDir,'instructions.txt');await writeFile(instructionsPath,request.instructions,{flag:'wx',mode:0o600});
     let schemaPath;
     if(request.schema!==undefined&&request.schema!==null){schemaPath=path.join(tempDir,'schema.json');await writeFile(schemaPath,JSON.stringify(request.schema),{flag:'wx',mode:0o600});}
     const outputPath=path.join(attempt,'raw.txt');
-    const args=[...executableArgs,...buildRunnerArgs({model,reasoning,cwd,outputPath,instructionsPath,schemaPath})];
+    const args=[...executableArgs,...buildRunnerArgs({model,reasoning,modelSelection,serviceTier,cwd,outputPath,instructionsPath,schemaPath})];
     const policy=readTimeoutPolicy(),configured=process.env[`DIRECTOR_STORYBOARD_${request.stage.toUpperCase()}_TIMEOUT_MS`];
     const totalOverride=timeoutMs===undefined?(configured===undefined?undefined:policy[request.stage]):validTimeout(timeoutMs);
     execution.limits=resolveRunnerLimits(request,{timeoutMs:totalOverride,startupTimeoutMs,idleTimeoutMs});
@@ -280,11 +299,23 @@ export async function runModel(request,{directory,attemptId,signal,shouldDispatc
       child.stderr.on('data',part=>{if(done)return;stageDiagnostics.activity('stderr',part.length);stderr=(stderr+stderrDecoder.write(part)).slice(0,64000);execution.lastActivityAt=new Date().toISOString();progressDirty=true;});
       let priorUsage=null,conflictingUsage=false;
       const progressItems=new Map();
-      const eventLine=line=>{let e;try{e=JSON.parse(line);}catch{return;}
+      const eventLine=line=>{let e;try{e=JSON.parse(line);}catch{if(line.trim())execution.modelActivityObserved=true;return;}
         stageDiagnostics.event(e);
-        if(done||!e||typeof e.type!=='string')return;
+        if(done)return;
+        if(!e||typeof e.type!=='string'){execution.modelActivityObserved=true;return;}
         const now=Date.now(),stamp=new Date(now).toISOString(),type=eventTypes.has(e.type)?e.type:'other';
         execution.lastEventAt=stamp;execution.lastEventType=type;execution.eventCount=Math.min(Number.MAX_SAFE_INTEGER,execution.eventCount+1);execution.eventCounts[type]=Math.min(Number.MAX_SAFE_INTEGER,(execution.eventCounts[type]||0)+1);progressDirty=true;
+        // Lifecycle events alone do not prove inference. Any content/tool/unknown
+        // item (even empty reasoning) or usage does rule out free admission recovery.
+        const rejection=['error','turn.failed'].includes(e.type)?classifySchemaAdmissionEvent(e):null;
+        const startup=isPureStartupEvent(e)&&!execution.terminalEvent&&
+          (e.type==='item.completed'?execution.eventCounts['thread.started']===1&&!execution.eventCounts['turn.started']&&!execution.eventCounts.error:
+           e.type==='thread.started'?!execution.eventCounts['turn.started']:true);
+        if(!rejection&&!startup)execution.modelActivityObserved=true;
+        if(e.type==='error'||e.type==='turn.failed'){
+          if(!rejection)admissionConflict=true;
+          if(e.type==='turn.failed')admissionCandidate=rejection;
+        }
         const lifecycle=e.type==='thread.started'||e.type==='turn.started'||e.type==='turn.completed'||(['item.started','item.updated','item.completed'].includes(e.type)&&['reasoning','agent_message'].includes(e.item?.type));
         if(lifecycle&&cliStartedAt===null){cliStartedAt=now;execution.phase='waiting';armTimeout();}
         if(['item.started','item.updated','item.completed'].includes(e.type)&&['reasoning','agent_message'].includes(e.item?.type)&&typeof e.item.text==='string'&&e.item.text.trim()){
@@ -320,7 +351,7 @@ export async function runModel(request,{directory,attemptId,signal,shouldDispatc
         }
         if(e.type==='item.completed'&&e.item?.type==='agent_message'&&typeof e.item.text==='string')finalText=e.item.text;
       };
-      child.stdout.on('data',part=>{if(done)return;stageDiagnostics.activity('stdout',part.length);execution.lastActivityAt=new Date().toISOString();progressDirty=true;pending+=decoder.write(part);let i;while((i=pending.indexOf('\n'))>=0){eventLine(pending.slice(0,i));pending=pending.slice(i+1);}if(pending.length>4_000_000)pending='';});
+      child.stdout.on('data',part=>{if(done)return;stageDiagnostics.activity('stdout',part.length);execution.lastActivityAt=new Date().toISOString();progressDirty=true;pending+=decoder.write(part);let i;while((i=pending.indexOf('\n'))>=0){eventLine(pending.slice(0,i));pending=pending.slice(i+1);}if(pending.length>4_000_000){execution.modelActivityObserved=true;pending='';}});
       child.on('error',error=>{spawnFailed=!sent;finish(error);});
       child.on('close',(code,exitSignal)=>{
         if(done)return;
@@ -340,6 +371,11 @@ export async function runModel(request,{directory,attemptId,signal,shouldDispatc
     // "final" is eligible for the existing parser/validation path, not proof of
     // valid JSON. Only explicit failure/cancellation disqualifies the saved body.
     responseDisposition=raw.trim()?(incompleteResponse?'incomplete':'final'):'none';
+    if(processError?.code==='CLI_FAILED'&&admissionCandidate&&!admissionConflict&&request.schema&&sent&&localProcess?.closeObserved===true&&execution.terminalEvent==='turn.failed'&&!execution.timeoutKind&&!execution.modelActivityObserved&&
+      (execution.eventCounts['turn.started']||0)<=1&&(execution.eventCounts['thread.started']||0)<=1&&execution.eventCounts['turn.failed']===1&&!execution.eventCounts['turn.completed']&&Object.values(usage).every(value=>value===null)&&!raw.trim()){
+      admission={source:'cli_schema_validation',requestSent:true,inferenceStarted:false,...admissionCandidate,schemaHash:digest(request.schema),attemptId,requestFingerprint:digest([request.promptHash,request.instructionHash,request.inputHash])};
+      processError=Object.assign(new Error('CLI 在模型准入前拒绝 JSON schema（invalid_json_schema）；未观察到模型活动，原生用量未提供。'),{code:'SCHEMA_ADMISSION_REJECTED'});
+    }
     if(processError)throw processError;
     if(!raw.trim())fail('EMPTY_RESPONSE','CLI returned no final body');
     let output;try{({output,raw}=parseResponseBodies(raw,finalText));}catch{fail('INVALID_JSON','CLI returned non-JSON body; raw preserved');}
@@ -347,9 +383,11 @@ export async function runModel(request,{directory,attemptId,signal,shouldDispatc
     state='FINAL';execution.phase='completed';await finishDiagnostics();await receipt('RESPONDED');
     return {output,raw,usage,requestOutcome:'RESPONDED',responseDisposition,durationMs:Date.now()-start,model,reasoning,...(diagnosticsError?{diagnosticsError}:{})};
   }catch(error){
-    const outcome=error.code==='ATTEMPT_EXISTS'||error.code==='ATTEMPT_CONFLICT'?error.requestOutcome:raw?.trim()&&!incompleteResponse?'RESPONDED':sent?'UNKNOWN':'NOT_SENT';
+    // NOT_SENT is the existing model-admission/accounting outcome; the explicit
+    // requestSent flag prevents confusing a server rejection with no HTTP send.
+    const outcome=error.code==='ATTEMPT_EXISTS'||error.code==='ATTEMPT_CONFLICT'?error.requestOutcome:admission?'NOT_SENT':raw?.trim()&&!incompleteResponse?'RESPONDED':sent?'UNKNOWN':'NOT_SENT';
     if(owned){state='FINAL';execution.phase='failed';await finishDiagnostics(error.code||'UNKNOWN');try{await receipt(outcome,error.code,error.message);}catch(saveError){error.receiptError=saveError;}}
-    throw Object.assign(error,{raw:raw||null,usage,requestOutcome:outcome,responseDisposition,durationMs:Date.now()-start,model,reasoning,...(diagnosticsError?{diagnosticsError}:{})});
+    throw Object.assign(error,{raw:raw||null,usage,requestOutcome:outcome,responseDisposition,durationMs:Date.now()-start,model,reasoning,...(admission?{admission}:{}),...(diagnosticsError?{diagnosticsError}:{})});
   }
   finally{clearInterval(progressTimer);if(tempDir)await rm(tempDir,{recursive:true,force:true}).catch(()=>{});}
 }

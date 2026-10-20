@@ -54,6 +54,7 @@ export function applyScriptResolutions(text:string,sourceId:string,decisions:Scr
  const prepared=prepareStandardEpisode(text,sourceId,{knownSpeakers});
  if(!decisions.length)return prepared;
  const choices=decisions.map(readResolutionChoice).sort((a,b)=>a.startLine-b.startLine),{index}=prepared;
+ const speakerDecisions:NonNullable<PreparedStandardEpisode['speakerDecisions']>={version:'script-speaker-decisions-v1',sourceVersion:index.sourceVersion,entries:[]};
  let entries=[...prepared.plan.entries];
  for(const [position,choice] of choices.entries()){
   if(choice.endLine>index.units.length||position>0&&choices[position-1].endLine>=choice.startLine)resolutionError('RANGE_OVERLAP','核对范围越界或与另一项重叠；请修改已有核对项。');
@@ -62,6 +63,7 @@ export function applyScriptResolutions(text:string,sourceId:string,decisions:Scr
   const local=localEntry(selected.map(unit=>unit.text).join(''),choice,knownSpeakers),offset=selected[0].start;
   const shift=(part:SourcePart):SourcePart=>({...part,unitId:selected[local.index.units.findIndex(unit=>unit.id===part.unitId)].id,start:part.start+offset,end:part.end+offset});
   const original=local.entry,entry:StandardScriptEntry=original.target==='EXCLUDE'?original:{...original,unitIds:selected.map(unit=>unit.id),parts:original.parts.map(shift),layout:original.layout.map(shift),...(original.target==='BODY'&&original.kind==='DIALOGUE'?{speaker:original.speaker.map(shift),cue:original.cue?.map(shift)??null,channelSource:original.channelSource?.map(shift)??null}:{})};
+  if(choice.type==='DIALOGUE'&&entry.target==='BODY'&&entry.kind==='DIALOGUE')speakerDecisions.entries.push({entryId:entry.id,speaker:structuredClone(entry.speaker),channel:entry.channel});
   entries=[...entries.filter(entry=>!entry.unitIds.some(id=>ids.has(id))),entry];
  }
  entries.sort((a,b)=>index.units.findIndex(unit=>unit.id===a.unitIds[0])-index.units.findIndex(unit=>unit.id===b.unitIds[0]));
@@ -70,5 +72,5 @@ export function applyScriptResolutions(text:string,sourceId:string,decisions:Scr
  if(!diagnostics.length){
   try{compiled=compileStandardScript(index,plan);}catch(error){if(!(error instanceof StandardScriptError))throw error;resolutionError('COMPILE',`核对方案未通过全原文覆盖检查（${error.code}），未保存。`);}
  }
- return {index,plan,compiled,diagnostics};
+ return {index,plan,compiled,diagnostics,...(speakerDecisions.entries.length?{speakerDecisions}:{})};
 }

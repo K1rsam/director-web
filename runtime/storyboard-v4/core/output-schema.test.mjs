@@ -59,7 +59,7 @@ test('author and full finish schemas preserve every creative field and close eve
   const r=request(kind);strict(r.schema);
   assert.deepEqual(r.schema.properties.schemaVersion.enum,[VERSION]);
   const unit=r.schema.properties.units.items,frame=shot(r.schema),part=frame.properties.dialogueParts.items;
-  assert.deepEqual(unit.required,['id','eventId','boundaryBefore','title','unitDirection','intent','scene','props','participants','lighting','initialState','exitState','shots']);
+  assert.deepEqual(unit.required,['id','eventId','boundaryBefore','title','unitDirection','intent','scene','props','participants','visualSubjects','lighting','initialState','exitState','shots']);
   assert.deepEqual(frame.required,['id','duration','camera','picture','lighting','sound','dialogueParts','transition','sourceRefs','contextRefs']);
   assert.deepEqual(part.required,['lineId','text','presentation','delivery','voiceStart','voiceEnd']);
   for(const field of ['camera','picture','lighting','sound','transition'])assert.deepEqual(frame.properties[field],{type:'string'});
@@ -71,7 +71,7 @@ test('author and full finish schemas preserve every creative field and close eve
 
 test('author schema allows only scoped sources, dialogue ids and selected fantasy ids',()=>{
  const data=fixture();data.plan.fantasyCandidates=[{id:'f1',anchorRefs:['s1'],subject:'甲',emotionPurpose:'决心',recommended:true,proposal:'影子先行',screenSecondsRange:[1,2],extraSecondsRange:[0,1]}];
- const r=request('author',{...data,settings:{maxUnits:null,fantasyMode:'recommended'}});strict(r.schema);
+ const r=request('author',{...data,settings:{maxUnits:null,fantasyMode:'recommended'},choice:{mode:'recommended',overrides:{f1:true},unitOverrides:{},confirmedFingerprint:null}});strict(r.schema);
  const frame=shot(r.schema);
  assert.deepEqual(frame.properties.sourceRefs.items.enum,['s1']);
  assert.deepEqual(frame.properties.contextRefs.items.enum,['s1','c1']);

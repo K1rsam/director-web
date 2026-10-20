@@ -1,13 +1,14 @@
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { createStoryboardRun, loadStoryboardInput, prepareStoryboardView, refreshProductionChain, refreshStoryboardRun, storyboardSavedIndex, storyboardSavedRunView, storyboardChainComplete, storyboardSourceCompatible, storyboardFailure, storyboardHttp, storyboardRunnerStatus, storyboardRunView, storyboardService } from "@/lib/storyboard-service";
+import { createStoryboardRun, loadStoryboardInput, prepareStoryboardView, refreshProductionChain, refreshStoryboardRun, storyboardSavedIndex, storyboardSavedRunView, storyboardChainComplete, storyboardSourceCompatible, storyboardPerformanceMode, storyboardEvidenceVersion, storyboardFailure, storyboardHttp, storyboardReviewPacket, storyboardRunnerStatus, storyboardRunView, storyboardService } from "@/lib/storyboard-service";
 import { UPSTREAM_MATERIAL_PROTOCOL } from '@/lib/standard-script-reception';
+import {recordStoryboardMaintenancePause,storyboardMaintenanceBridgeVersion,assertStoryboardAdmission} from '@/lib/storyboard-service';
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 type Context = { params: Promise<{ episodeId: string }> };
-const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff",'x-runtime-maintenance-bridge':storyboardMaintenanceBridgeVersion()??'unavailable' } });
 async function episodeFor(context: Context) {
   const user = await getCurrentUser();
   if (!user) throw Object.assign(new Error("请先登录"), { status: 401, code: "UNAUTHORIZED" });
@@ -19,6 +20,7 @@ async function episodeFor(context: Context) {
 export async function GET(request: Request, context: Context) {
   try {
     const episode = await episodeFor(context), url = new URL(request.url), service = storyboardService();
+    if (url.searchParams.get('view') === 'runtime') return json({kernel:service.runtimeIdentity()});
     const id = url.searchParams.get("runId");
     if (!id) {
       if(url.searchParams.get('view')==='saved'){
@@ -32,11 +34,17 @@ export async function GET(request: Request, context: Context) {
     storyboardHttp.assertEpisodeBinding(run, episode);
     const format = url.searchParams.get("format");
     if (format) {
-      if (!["json", "md"].includes(format)) return json({ error: "仅支持Markdown/JSON导出" }, 400);
+      if (!["json", "md", "review"].includes(format)) return json({ error: "仅支持Markdown/JSON/盲审材料导出" }, 400);
+      if(format==='review'){
+        if(run.web.legacyReadOnly)return json({error:'旧任务未冻结精修审稿协议，请保留历史导出。',code:'LEGACY_READ_ONLY'},409);
+        const packet=storyboardReviewPacket.buildReviewPacket(run,{candidateId:url.searchParams.get('candidateId')||undefined});
+        return new Response(packet.text,{headers:{'cache-control':'no-store','content-type':'text/markdown; charset=utf-8',
+          'content-disposition':`attachment; filename="storyboard-review-${run.id}.md"`,'x-content-type-options':'nosniff'}});
+      }
       if(format==='md'&&!run.web.legacyReadOnly){await refreshProductionChain(episode.projectId);run=await service.read(id);}
       // Historical Markdown is an archived result, not a claim that it matches today's source.
       if (format === "md" && !run.web.legacyReadOnly) {
-        const current = await loadStoryboardInput(episode, '', run.web.binding.inputProtocol ?? 'legacy',undefined,run.web.binding.inlinePerformanceVersion==='inline-performance-v1');
+        const current = await loadStoryboardInput(episode, '', run.web.binding.inputProtocol ?? 'legacy',undefined,storyboardPerformanceMode(run.web.binding),storyboardEvidenceVersion(run.web.binding));
         const stale = !storyboardSourceCompatible(run.web.binding,current);
         if (stale) return json({ error: "原文或关键约束已更新，旧记录仍可导出JSON。", code: "SOURCE_STALE" }, 409);
         if(!storyboardChainComplete(run))return json({error:'本次连续生产链还有承接或材料问题，不能作为正式连续稿导出；完整历史可导出JSON。',code:'PRODUCTION_CHAIN_INCOMPLETE'},409);
@@ -57,7 +65,7 @@ export async function GET(request: Request, context: Context) {
     try{
       // Reuse this request's current input instead of reconstructing it in a second index GET.
       const [{index},prepared]=await Promise.all([storyboardSavedIndex(episode),
-        checked.prepared?.protocol===UPSTREAM_MATERIAL_PROTOCOL&&checked.prepared.inlinePerformance?Promise.resolve(checked.prepared):prepareStoryboardView(episode)]);
+        checked.prepared?.protocol===UPSTREAM_MATERIAL_PROTOCOL&&checked.prepared.inlinePerformance&&checked.prepared.inlinePerformanceVersion==='inline-performance-v2'&&checked.prepared.episodeEvidenceVersion==='episode-evidence-v1'?Promise.resolve(checked.prepared):prepareStoryboardView(episode)]);
       return json({run:view,index:{...index,preparation:prepared.preparation,sourceWarnings:prepared.sourceWarnings}});
     }catch(error){return json({run:view,indexError:storyboardFailure(error).body.error});}
   } catch (e) { const failure = storyboardFailure(e); return json(failure.body, failure.status); }
@@ -69,12 +77,14 @@ export async function POST(request: Request, context: Context) {
     const run = await service.read(command.runId);
     storyboardHttp.assertEpisodeBinding(run, episode);
     if (run.web.legacyReadOnly) return json({error:'旧版第三阶段记录只读，可导出已有稿；请新建任务使用新版。',code:'LEGACY_READ_ONLY'},409);
-    if (["start", "repair", "replan", "recheck", "choice", "confirm"].includes(command.action)) {
-      const current = await loadStoryboardInput(episode, '', run.web.binding.inputProtocol ?? 'legacy',undefined,run.web.binding.inlinePerformanceVersion==='inline-performance-v1');
+    if(['pause','stop'].includes(command.action))await recordStoryboardMaintenancePause(run.id);
+    if(['start','repair','replan','refine'].includes(command.action))assertStoryboardAdmission();
+    if (["start", "repair", "replan", "refine", "accept_refinement", "recheck", "choice", "confirm"].includes(command.action)) {
+      const current = await loadStoryboardInput(episode, '', run.web.binding.inputProtocol ?? 'legacy',undefined,storyboardPerformanceMode(run.web.binding),storyboardEvidenceVersion(run.web.binding));
       const stale = !storyboardSourceCompatible(run.web.binding,current);
       if (run.web.sourceStale || stale) return json({ error: "原文或关键约束已更新，请新建任务使用最新资料；旧结果仍已保存。", code: "SOURCE_STALE" }, 409);
     }
-    if (["start", "repair", "replan"].includes(command.action)) {
+    if (["start", "repair", "replan", "refine"].includes(command.action)) {
       const runner = await storyboardRunnerStatus(true);
       if (!runner.ready) return json({ error: runner.message, code: runner.configurationError ? "RUNNER_TIMEOUT_CONFIG" : "CLI_NOT_READY" }, 503);
     }
@@ -89,11 +99,13 @@ export async function POST(request: Request, context: Context) {
       case "choice": result = await service.choose(id, command); break;
       case "confirm": result = await service.confirm(id, command); break;
       case "repair": result = await service.repair(id, { packageIds: command.packageIds, notes: [{ problem: command.notes, scope: command.packageIds }] }); break;
+      case "refine": result = await service.refine(id, { eventIds: command.eventIds, unitIds: command.unitIds, reviewNotes: command.reviewNotes, preserveNotes: command.preserveNotes, expectedBaseHash: command.expectedBaseHash }); break;
+      case "accept_refinement": result = await service.acceptRefinement(id, command.candidateId, command.expectedBaseHash, command.groupIds, command.sourceResolution); break;
       case "recover": result = await service.recover(id, command.attemptId); break;
       case "recheck": result = await service.recheck(id, command.candidateId); break;
       case "budget": result = await service.setBudget(id, { maxCalls: command.maxCalls, maxTokens: command.maxTokens }); break;
       default: return json({ error: "未知操作" }, 400);
     }
-    return json({ run: await storyboardRunView(result, episode) }, ["start", "repair", "replan"].includes(command.action) ? 202 : 200);
+    return json({ run: await storyboardRunView(result, episode) }, ["start", "repair", "replan", "refine"].includes(command.action) ? 202 : 200);
   } catch (e) { const failure = storyboardFailure(e); return json(failure.body, failure.status); }
 }

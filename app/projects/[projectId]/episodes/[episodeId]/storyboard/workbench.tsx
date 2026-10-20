@@ -7,11 +7,13 @@ import { derivePhaseSteps, deriveView, formatCount, formatElapsed, formatWorkben
 import { WorkflowGlassRail, WorkflowGlassCard, workflowGlassStyles as glass } from "@/app/ui/workflow-glass";
 import { MODE_LABELS, operationLabel, messageOf, statusLabel, type WorkbenchSnapshot } from "./types";
 import { usePublishStoryboardStatus } from "./page-status";
+import { RefinementPanel, productionViewRun, refinementActivityLabel } from "./refinement-panel";
 import styles from "./workbench.module.css";
+import {EPISODE_TOKEN_WARNING} from '@/runtime/production-policy.mjs';
 
 type Tab = "plan" | "result" | "activity";
 const tabs: { id: Tab; label: string }[] = [{ id: "plan", label: "情绪与幻想" }, { id: "result", label: "完整分镜" }, { id: "activity", label: "执行记录" }];
-const pendingLabels: Record<string, string> = { create: "正在准备原文与平读参考…", start: "正在提交制作请求…", pause: "正在请求保存后暂停…", stop: "正在提交立即中断…", choice: "正在保存幻想选择…", confirm: "正在确认选择…", recover: "正在检查已有回包…", recheck: "正在重新核查候选…", replan: "正在提交补充规划…", repair: "正在提交关联返修…", budget: "正在保存运行停止线…", acknowledge_cancel: "正在保存风险确认…" };
+const pendingLabels: Record<string, string> = { create: "正在准备原文与平读参考…", start: "正在提交制作请求…", refine: "正在提交导演精修请求…", accept_refinement: "正在采用精修候选…", pause: "正在请求保存后暂停…", stop: "正在提交立即中断…", choice: "正在保存幻想选择…", confirm: "正在确认选择…", recover: "正在检查已有回包…", recheck: "正在重新核查候选…", replan: "正在提交补充规划…", repair: "正在提交关联返修…", budget: "正在保存运行停止线…", acknowledge_cancel: "正在保存风险确认…" };
 
 function StageIcon() {
   return <svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="5" y="10" width="22" height="17" rx="3" /><path d="m5 10 21-5 1 5M12 8l3 3m5-5 3 4M5 15h22m-14 4 6 3-6 3z" /></svg>;
@@ -23,20 +25,23 @@ export function StoryboardWorkbench({ episodeId, episodeTitle, projectId, episod
   const [tab, setTab] = useState<Tab>(initialSnapshot?.run?.status==='text_ready_for_review'&&initialSnapshot.run.assembly?.text?'result':'plan'), [settingsOpen, setSettingsOpen] = useState(false), [now, setNow] = useState(initialSnapshot?.savedAt??Date.now());
   // Unknown connection status permits a request for server-side preflight, not a paid dispatch.
   const canRequestExecution=Boolean(index&&(index.runner.checked===false||index.runner.ready)&&(index.preparation?.ready!==false||index.preparation.deferred));
-  const view = run ? deriveView(run, canRequestExecution) : null;
-  const phases = derivePhaseSteps(run, canRequestExecution);
+  const productionRun = run ? productionViewRun(run) : null;
+  const refinementActivity = run ? refinementActivityLabel(run) : null;
+  const view = productionRun ? deriveView(productionRun, canRequestExecution) : null;
+  const phases = derivePhaseSteps(productionRun, canRequestExecution);
   const disabled = Boolean(pending) || work.detailLoading;
   const warnings = [...new Set([...(index?.sourceWarnings || []), ...(run?.sourceWarnings || [])])];
   const showSettings = settingsOpen || !work.loading && !work.runId;
   const knownTokens = run?.usage.knownTokens ?? run?.usage.totalTokens;
-  const currentStart = view?.currentStartedAt;
+  const endedRecords = run?.operations.filter(operation => operation.status === "completed").length ?? 0;
+  const currentStart = view?.currentStartedAt || (refinementActivity ? [...(run?.operations || [])].reverse().find(operation => operation.purpose === "director_refinement")?.createdAt : undefined);
   const modelLabel = run ? ({ "gpt-6.1-sol": "GPT-6.1 Sol", "gpt-6-sol": "GPT-6 Sol", "gpt-6-astra": "GPT-6 Astra" } as Record<string, string>)[run.settings.model || ""] || run.settings.model || "未记录模型" : "GPT-6.1 Sol";
   const reasoningLabel = run ? run.settings.reasoning === "medium" ? "中档" : run.settings.reasoning || "未记录档位" : "中档";
 
   usePublishStoryboardStatus({
-    label: pending ? pendingLabels[pending] || '操作处理中' : view?.title || (work.loading || work.detailLoading ? '正在读取任务状态' : '尚未开始制作'),
-    description: view?.description || '创建任务后，可连续完成情绪统筹、完整主创与统一整编。',
-    tone: pending || run?.sourceCheckPending ? 'waiting' : run?.active && view?.tone !== 'attention' ? phases.find(phase => phase.isCurrent)?.state || view?.tone || 'idle' : view?.tone || 'idle'
+    label: pending ? pendingLabels[pending] || '操作处理中' : refinementActivity || view?.title || (work.loading || work.detailLoading ? '正在读取任务状态' : '尚未开始制作'),
+    description: refinementActivity ? '可选精修单独生成候选，已有完整稿仍可审看。' : view?.description || '创建任务后，可连续完成情绪统筹、完整主创与统一整编。',
+    tone: pending || run?.sourceCheckPending || refinementActivity ? 'waiting' : run?.active && view?.tone !== 'attention' ? phases.find(phase => phase.isCurrent)?.state || view?.tone || 'idle' : view?.tone || 'idle'
   });
 
   useEffect(() => { if (!run?.active) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [run?.active]);
@@ -70,11 +75,11 @@ export function StoryboardWorkbench({ episodeId, episodeTitle, projectId, episod
       {controls ? <div className={styles.primaryActions}>{controls}</div> : null}
     </div></div>
 
-    <section className={`${styles.statusSurface} ${view?.tone === "running" ? styles.statusRunning : ""}`} aria-label="制作状态">
-      <div className={styles.statusTop}><div className={styles.statusMain}><span className={styles.statusIcon}><StageIcon /></span><div><span className={styles.kicker}>{pending ? "操作处理中" : run?.active ? "LIVE · 实际作业状态" : view?.ready ? "文字成果" : "本集制作"}</span><h2>{pending ? pendingLabels[pending] || "正在保存操作…" : !run&&(work.loading || work.detailLoading) ? "正在读取任务…" : view?.title || "一场完整的戏，从情绪开始"}</h2><p aria-live="polite" role="status">{pending === "create" ? "正在准备资料，尚未派发生成模型。创建完成后可连续制作，也可只做情绪分析。" : view?.description || "先规划本集情绪，再由完整主创联合处理表演、摄影、光影与声音，最后整编交稿。"}</p></div></div>
+    <section className={`${styles.statusSurface} ${view?.tone === "running" || run?.active && refinementActivity ? styles.statusRunning : ""}`} aria-label="制作状态">
+      <div className={styles.statusTop}><div className={styles.statusMain}><span className={styles.statusIcon}><StageIcon /></span><div><span className={styles.kicker}>{pending ? "操作处理中" : run?.active ? "LIVE · 实际作业状态" : view?.ready ? "文字成果" : "本集制作"}</span><h2>{pending ? pendingLabels[pending] || "正在保存操作…" : refinementActivity || (!run&&(work.loading || work.detailLoading) ? "正在读取任务…" : view?.title || "一场完整的戏，从情绪开始")}</h2><p aria-live="polite" role="status">{pending === "create" ? "正在准备资料，尚未派发生成模型。创建完成后可连续制作，也可只做情绪分析。" : refinementActivity ? "可选精修单独生成候选，已有完整稿仍可审看。" : view?.description || "先规划本集情绪，再由完整主创联合处理表演、摄影、光影与声音，最后整编交稿。"}</p></div></div>
         <span className={styles.modelTag}>{modelLabel} <i /> {reasoningLabel} · 全局4 / 同集1</span>
       </div>
-      {run ? <div className={styles.statusBottom}><div className={styles.savedSettings} aria-label="当前任务已保存配置"><span><i className={run.active ? styles.liveDot : ""} />{run.settings.maxUnitSeconds}秒单元档</span><span>{MODE_LABELS[run.choice?.mode || run.settings.fantasyMode]}</span><span>{modelLabel} · {reasoningLabel}</span></div><div className={styles.metrics}><span>{run.usage.complete ? "已知完整用量" : "已知用量"}<strong>{formatCount(knownTokens)} <small>Token</small></strong></span><span>{run.active && currentStart ? "当前作业历时" : "已结束记录"}<strong>{run.active && currentStart ? formatElapsed(currentStart, undefined, now) : `${view?.endedRecords || 0} / ${run.operations.length}`}</strong></span><span className={styles.syncTime}>状态同步于<br />{work.syncedAt ? formatWorkbenchDate(work.syncedAt,{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : "—"}</span></div></div> : null}
+      {run ? <div className={styles.statusBottom}><div className={styles.savedSettings} aria-label="当前任务已保存配置"><span><i className={run.active ? styles.liveDot : ""} />{run.settings.maxUnitSeconds}秒单元档</span><span>{MODE_LABELS[run.choice?.mode || run.settings.fantasyMode]}</span><span>{modelLabel} · {reasoningLabel}</span></div><div className={styles.metrics}><span>{run.usage.complete ? "已知完整用量" : "已知用量"}<strong>{formatCount(knownTokens)} <small>Token</small></strong></span><span>{run.active && currentStart ? "当前作业历时" : "已结束记录"}<strong>{run.active && currentStart ? formatElapsed(currentStart, undefined, now) : `${endedRecords} / ${run.operations.length}`}</strong></span><span className={styles.syncTime}>状态同步于<br />{work.syncedAt ? formatWorkbenchDate(work.syncedAt,{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : "—"}</span></div></div> : null}
     </section>
 
     {work.error ? <div className={styles.errorBanner} role="alert"><strong>这次操作需要留意</strong><p>{work.error}</p>{work.creationUncertain ? <button type="button" className="quietButton" onClick={() => void work.refresh()}>核对已有任务列表</button> : null}</div> : null}
@@ -116,13 +121,14 @@ export function StoryboardWorkbench({ episodeId, episodeTitle, projectId, episod
           </div></div>;
         })}
       </section> : null}
+      {(knownTokens??0)>=EPISODE_TOKEN_WARNING?<p role="status" className={styles.fine}>本集已知用量超过50万提醒线；当前停止线为{run.budget.maxTokens.toLocaleString('zh-CN')}Token / {run.budget.maxCalls}条请求记录。提醒不触发重做、扩额或额外AI调用。</p>:null}
       {!run.usage.complete ? <p className={styles.fine}>用量尚未完整，另有 {run.usage.unknownAttempts || 0} 项待回执；上面的已知用量不代表实际总消耗。</p> : null}
       <div className={styles.tabs} role="tablist" aria-label="本集工作视图">{tabs.map((item, position) => <button key={item.id} id={`stage3-tab-${item.id}`} role="tab" type="button" tabIndex={tab === item.id ? 0 : -1} aria-selected={tab === item.id} aria-controls={`stage3-panel-${item.id}`} onClick={() => setTab(item.id)} onKeyDown={event => {
         const next = event.key === "ArrowRight" ? (position + 1) % tabs.length : event.key === "ArrowLeft" ? (position + tabs.length - 1) % tabs.length : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : -1;
         if (next < 0) return; event.preventDefault(); setTab(tabs[next].id); document.getElementById(`stage3-tab-${tabs[next].id}`)?.focus();
       }}>{item.label}{item.id === "result" && run.assembly?.draft?.units.length ? <span>{run.assembly.draft.units.length}</span> : item.id === "activity" && run.operations.length ? <span>{run.operations.length}</span> : null}</button>)}<span className={styles.tabsHint}>{view.ready ? "文字待人工审看，不等于成片验收" : "已保存成果随任务保留"}</span></div>
       <div role="tabpanel" id="stage3-panel-plan" aria-labelledby="stage3-tab-plan" className={styles.tabPanel} hidden={tab !== "plan"}><PlanningPanel key={run.id} run={run} view={view} disabled={disabled} act={work.act} /></div>
-      <div role="tabpanel" id="stage3-panel-result" aria-labelledby="stage3-tab-result" className={styles.tabPanel} hidden={tab !== "result"}><ResultsPanel key={run.id} run={run} view={view} endpoint={work.endpoint} copy={() => void copy()} /></div>
+      <div role="tabpanel" id="stage3-panel-result" aria-labelledby="stage3-tab-result" className={styles.tabPanel} hidden={tab !== "result"}><ResultsPanel key={run.id} run={run} view={view} endpoint={work.endpoint} copy={() => void copy()} /><RefinementPanel key={`refinement-${run.id}`} run={run} endpoint={work.endpoint} disabled={disabled} pending={pending} canExecute={canRequestExecution} act={work.act} /></div>
       <div role="tabpanel" id="stage3-panel-activity" aria-labelledby="stage3-tab-activity" className={styles.tabPanel} hidden={tab !== "activity"}><ActivityPanel key={run.id} run={run} view={view} pending={pending} act={work.act} endpoint={work.endpoint} budget={work.budget} setBudget={work.setBudget} /></div>
     </> : null}
   </section>;

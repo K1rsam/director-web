@@ -16,6 +16,7 @@ import {readProjectSeriesDirectionProjection} from './series-direction-service';
 import { loadFoundationInputs } from './foundation-state';
 import { loadFoundationDocument } from './foundation-document';
 import { getFoundationDeliveryState } from './foundation-delivery';
+import {createInflightRead} from './production-read-guard';
 import { workingReadiness } from './foundation-delivery-assets';
 import { runRoleByProvider, resolveProvider } from './role-runner';
 import { defaultStylePrefix, emptyPrompt, validatePromptOutput, promptNeedsReview, selectAssetPromptDecisions, type PromptAsset, type PromptRecord, type PromptWorkspace } from './asset-prompt-contract';
@@ -36,7 +37,12 @@ function currentPrompt(record:PromptRecord):PromptRecord{
   return {...record,...(legacyProvenance?{previousDesignAudit:auditDesign(record)}:{}),facts:'',suggestions:'',...(['READY','EMPTY'].includes(record.status)?{rawOutput:undefined}:{})};
 }
 
+const workspaceInFlight=createInflightRead<PromptWorkspace>();
+/** Share only overlapping pure reads; no settled cache may hide a source/design change. */
 export async function loadAssetPromptWorkspace(projectId: string,scope?:AssetProductionScope): Promise<PromptWorkspace> {
+  return workspaceInFlight(JSON.stringify([projectId,scope??null]),()=>readAssetPromptWorkspace(projectId,scope));
+}
+async function readAssetPromptWorkspace(projectId: string,scope?:AssetProductionScope): Promise<PromptWorkspace> {
   const input = await loadFoundationInputs(projectId);
   const loaded = await loadFoundationDocument(prisma, projectId, input);
   const { document, needsContextEdit } = loaded;
@@ -72,7 +78,7 @@ export async function loadAssetPromptWorkspace(projectId: string,scope?:AssetPro
     }
   }
   const scoped=scope?await readAssetVisualFacts(projectId,true,scope):visual;
-  return {projectId,title:input.project.title,style:input.project.style??'',stylePrefix:settings?.prefix??defaultStylePrefix(input.project.style??''),styleRevision:settings?.revision??0,seriesDirection:{status:direction.status,brief:direction.projection?.brief??null,...(direction.projection?{cardHash:direction.projection.cardHash}:{})},visualFactsStatus:scoped?.complete===false?'MISSING':scoped?.status??'MISSING',visualFactIssues:scoped?.issues??[],assets,records,busy:delivery.busy,imageOptions,automation:automation?effectiveAutomationState(automation):undefined};
+  return {projectId,title:input.project.title,style:input.project.style??'',stylePrefix:settings?.prefix??defaultStylePrefix(input.project.style??''),styleRevision:settings?.revision??0,seriesDirection:{status:direction.status,brief:direction.projection?.brief??null,...(direction.projection?{cardHash:direction.projection.cardHash}:{}),...(direction.projection?.systemPresentation?{systemPresentation:direction.projection.systemPresentation}:{})},visualFactsStatus:scoped?.complete===false?'MISSING':scoped?.status??'MISSING',visualFactIssues:scoped?.issues??[],assets,records,busy:delivery.busy,imageOptions,automation:automation?effectiveAutomationState(automation):undefined};
 }
 
 async function compareWrite(projectId: string, key: string, expectedRevision: number, value: PromptRecord | Setting) {
@@ -132,7 +138,7 @@ export async function generateAssetPrompt(projectId:string,key:string,revision:n
     const [project,systemPrompt,input]=await Promise.all([prisma.project.findUniqueOrThrow({where:{id:projectId}}),readFile(path.join(process.cwd(),asset.variant?'prompts/asset-image-derive-v1.md':'prompts/asset-image-design-v1.md'),'utf8'),loadFoundationInputs(projectId)]);
     const decisions=selectAssetPromptDecisions(input.presentationConditions,asset);
     const result=await runner({projectId,provider:resolveProvider(project.executionMode),role:{code:asset.variant?'A15_D':'A15',skill:'',systemPrompt,model:PRODUCTION_CLI_MODEL,reasoningEffort:PRODUCTION_CLI_REASONING},sessionMode:'ephemeral',
-      prompt:JSON.stringify({asset:{key:asset.key,name:asset.name,type:asset.type,variant:asset.variant},...projectAssetDesignFacts(asset.visualFacts??[]),style:workspace.stylePrefix,...(workspace.seriesDirection?.status==='CONFIRMED'?{seriesDirection:workspace.seriesDirection.brief}:{}),decisions,referenceDesign:reference?{key:dependencyKey,body:reference.body}:null,evidencePolicy:'原文引用是事实依据，提取记录不是用户确认；资产名称只是目录标识。全剧方向仅约束表达气质，不是外貌或剧情事实。基础设计只补未限定的美术细节；变体仅依来源形象与明确版本事实写变化，不重新设计五官。未提取到外观不代表原文绝对没有；冲突留待核对，设计补足不得冒充剧本事实。'})});
+      prompt:JSON.stringify({asset:{key:asset.key,name:asset.name,type:asset.type,variant:asset.variant},...projectAssetDesignFacts(asset.visualFacts??[]),style:workspace.stylePrefix,...(workspace.seriesDirection?.status==='CONFIRMED'?{seriesDirection:workspace.seriesDirection.brief,...(workspace.seriesDirection.systemPresentation?{systemPresentation:workspace.seriesDirection.systemPresentation}:{})}:{}),decisions,referenceDesign:reference?{key:dependencyKey,body:reference.body}:null,evidencePolicy:'原文引用是事实依据，提取记录不是用户确认；资产名称只是目录标识。全剧方向仅约束表达气质，不是外貌或剧情事实。基础设计只补未限定的美术细节；变体仅依来源形象与明确版本事实写变化，不重新设计五官。未提取到外观不代表原文绝对没有；冲突留待核对，设计补足不得冒充剧本事实。系统呈现按叙事身份匹配本资产，不能串用另一系统的选择；纯声不强建虚构图片，旁观化身不升级为世界内人物。载体轮廓、配色、尺度和出现规则服从已确认选择与源文锁定，未定位资产对应关系时保留待核对。'})});
     rawOutput=result.rawOutput??JSON.stringify(result.data);
     const content={...validatePromptOutput(result.data,key),facts:asset.evidence.map(e=>e.label+'\n'+e.text).join('\n\n')};
     const current=await loadAssetPromptWorkspace(projectId);
@@ -149,8 +155,10 @@ export async function generateAssetPrompt(projectId:string,key:string,revision:n
 }
 
 /** Explicit scope entry. The full catalogue is read only as an index; only these keys enter generation. */
-export async function planEpisodeAssetProduction(projectId:string,episodeNumbers:number[],requestedAssetKeys?:string[]){
- const [workspace,input,production]=await Promise.all([loadAssetPromptWorkspace(projectId),loadFoundationInputs(projectId),readProductionScope(projectId)]);
+export async function planEpisodeAssetProduction(projectId:string,episodeNumbers:number[],requestedAssetKeys?:string[],prepared?:{workspace:PromptWorkspace;input:Awaited<ReturnType<typeof loadFoundationInputs>>;production:Awaited<ReturnType<typeof readProductionScope>>}){
+ // Server-owned, operation-local snapshots only. No permission/source verdict is
+ // cached; ordinary callers still perform fresh reads and dispatch rechecks.
+ const [workspace,input,production]=prepared?[prepared.workspace,prepared.input,prepared.production]:await Promise.all([loadAssetPromptWorkspace(projectId),loadFoundationInputs(projectId),readProductionScope(projectId)]);
  const scope=normalizeAssetProductionScope({episodeNumbers},input.sourceIndex.episodes.filter(e=>isProductionEpisodeNumber(e.number,production)).map(e=>e.number));
  const actual=workspace.assets.filter(asset=>asset.episodes.some(n=>scope.episodeNumbers.includes(n))).map(asset=>asset.key);
  let keys=new Set(actual);const visiting=new Set<string>();

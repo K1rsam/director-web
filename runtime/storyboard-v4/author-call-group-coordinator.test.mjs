@@ -94,7 +94,8 @@ test('later local repairs of every group retain the adopted whole-episode finish
 });
 
 test('explicit draft archival invalidates old whole-episode evidence even with unchanged choices',async t=>{
- let broken=false;const {c,id,calls}=await setup(t,{authorOutput:r=>broken&&r.packageIds[0]!=='p3'?emptyAuthor(r):tailDraft(r)});
+ // Explicitly budget the second archived/repaired generation instead of resetting the call counter.
+ let broken=false;const {c,id,calls}=await setup(t,{budget:{maxCalls:32,maxTokens:600000},authorOutput:r=>broken&&r.packageIds[0]!=='p3'?emptyAuthor(r):tailDraft(r)});
  await c.start(id);const first=await c.wait(id),oldWhole=first.adopted[0].candidateId;
  await c.choose(id,{mode:'off',resetDrafts:true});broken=true;
  // Archived paid groups are no longer fresh-group eligible. Repair two scopes,

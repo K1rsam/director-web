@@ -6,7 +6,7 @@ export function withStoryboardArchive(current,archiveRoot){
  const archive=createStore(archiveRoot);
  const mark=d=>({...d,web:{...d.web,legacyReadOnly:true}});
  const read=async id=>{try{return await current.read(id);}catch(e){if(e.code!=='ENOENT')throw e;return mark(await archive.read(id));}};
- const methods=['start','replan','repair','pause','stop','choose','confirm','recover','acknowledgeCancelled','recheck','setBudget'];
+ const methods=['start','replan','repair','refine','acceptRefinement','pause','stop','choose','confirm','recover','recoverSaved','reviewBoundary','resolveSource','acknowledgeCancelled','recheck','setBudget'];
  const facade={...current,read,
   async list(binding={}){
    const active=await current.list(binding),ids=new Set(active.map(d=>d.id));

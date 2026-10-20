@@ -14,6 +14,12 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 本地版在 `main`，Sites 平台适配在 `sites-online`，本机额外开发改动保存在 `handoff/windows-local-20260905`。同步遵循 `.platform/platform-boundaries.json`，不能将 Prisma/本地 CLI 代码盲目覆盖到 Sites。不要提交数据库、`.env`、登录文件或私人项目导出。
 
+## 3008 与独立系列分镜 Skill 的维护同步
+
+仅在维护/优化分镜 Skill 或相关规则时，对照独立 `series-storyboard-director` 的版本和本次适用差异，吸收适用项并记录一次同步结果（版本、路径、采纳项、未采纳理由与验证边界）。当前对照入口见 `docs/3008-OPPORTUNITY-COVERAGE-20261020.md`。独立 Skill 保持独立运行，不复制网页、数据库、队列和收费控制；3008 保留自己的真实输入、冻结协议和选择权限。
+
+普通生产不启动版本同步。不开后台/监控任务，不跨会话追进度或互发进度。任一方被用户要求维护/优化时，先比对双方版本与适用差异；已有授权内发现需对应方落实的新差异，可向共享交接记录中已核实的对应维护会话通知一次并读回结果，记录已同步版本。同版无新差异不触发，不循环回报；超出既有维护范围才另求授权，不把用户手动转发作为默认前提。既有授权、已保存取消/待确认选择、旧任务冻结及付费边界不因同步放宽。
+
 <!-- aoci:begin -->
 ## AOCI 仓库认知
 

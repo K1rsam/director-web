@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,rm} from 'node:fs/promises';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
-import {createCoordinator} from './storyboard-v4/coordinator.mjs';
+import {createUnversionedProductionCoordinator as createCoordinator} from './storyboard-v4/core/legacy-test-fixtures.mjs';
 import {createStore} from './storyboard-v4/core/store.mjs';
 import {tailFixture,tailDraft} from './storyboard-v4/core/author-call-group-test-fixtures.mjs';
 import {DELTA_VERSION} from './storyboard-v4/core/delta.mjs';
@@ -76,7 +76,7 @@ test('one continuous start repairs a local receipt with v3 and completes without
  assert.equal(saved.status,'text_ready_for_review',JSON.stringify(saved.web));
  const repairs=seen.filter(r=>r.feedbackRepair);assert.equal(repairs.length,1);
  assert.equal(repairs[0].feedbackRepair.version,'production-feedback-repair-v3');
- assert.ok(seen.filter(r=>!r.feedbackRepair).every(r=>r.productionSnapshot.transportVersion==='production-compact-v3'));
+ assert.ok(seen.filter(r=>!r.feedbackRepair).every(r=>r.productionSnapshot.transportVersion===d.rulesSnapshot.productionTransportVersion),'正文请求沿用任务冻结的传输版本，回执v3不把新版正文回退到旧传输');
  assert.deepEqual(seen.map(r=>r.feedbackRepair?'receipt':r.stage),['plan','receipt','author','author','finish']);
  assert.equal(saved.web.autoRepairs,1);
 },(r,n,f)=>{

@@ -79,7 +79,7 @@ test('unknown schemas, reserved metadata and unsupported fact shapes pass throug
 
 test('frozen snapshots without projection version retain pre-change request bytes and identity',()=>{
  const current=captureRules();
- const rules={version:VERSION,outputSchemaVersion:current.outputSchemaVersion,unitPackingPolicy:current.unitPackingPolicy,creativeRevision:current.creativeRevision,instructions:'固定测试指令',planHint:'固定规划输出',draftHint:'固定主创输出',deltaHint:'固定整编输出',files:Object.fromEntries(Object.keys(current.files).map(p=>[p,'固定规则 '+p]))};
+ const rules={version:VERSION,outputSchemaVersion:current.outputSchemaVersion,unitPackingPolicy:current.unitPackingPolicy,creativeRevision:'expressive-cadence-v1',instructions:'固定测试指令',planHint:'固定规划输出',draftHint:'固定主创输出',deltaHint:'固定整编输出',files:Object.fromEntries(Object.keys(current.files).map(p=>[p,'固定规则 '+p]))};
  const expected={
   plan:['cf61f51ef6126e64d86ffde9a572b06517722c2771bc175242932d68b05d5579','db832b89d2440abd84e73623ec1f29e9c3f31ec6b6a4633cf8852ea1a9204836',3301],
   author:['66fd763887ac5c676d00cac82c56edeb66f9aa601c8136a348473adc14d1f2a7','7e479cf588397205ee165df98d148b2a39a8a6dd42bc8a8a87554b4cd56f000b',4426],

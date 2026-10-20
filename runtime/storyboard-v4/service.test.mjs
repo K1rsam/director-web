@@ -8,14 +8,16 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import vm from 'node:vm';
 import ts from 'typescript';
+import {require as tsxRequire} from 'tsx/cjs/api';
 import {makeEpisodeInput} from './input.mjs';
 import {canRecheckCandidate,createEngine} from './core/pipeline.mjs';
 import {createStore} from './core/store.mjs';
-import {buildRequest} from './core/core.mjs';
+import {buildRequest,captureRules} from './core/core.mjs';
 import {digest} from './core/shared.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 const require=createRequire(import.meta.url);
+const productionReadGuard=tsxRequire(path.join(root,'lib/production-read-guard.ts'),import.meta.url);
 const episode={id:'ep1',projectId:'p1',number:1,title:'历史',content:'1-1 日 外 城墙\n甲：我还没输！',project:{id:'p1',style:'3D国漫',aspectRatio:'16:9'}};
 const prepared=makeEpisodeInput({episode,project:episode.project});
 const saved={id:'saved-run',status:'drafting',source:prepared.source,settings:{},operations:[{attemptId:'a1',stage:'plan',status:'running'}],candidates:[],adopted:[],web:{title:'已保存任务',createdAt:'2026-09-26T00:00:00Z',progress:'running',binding:{episodeId:episode.id,projectId:episode.projectId,sourceVersion:prepared.sourceVersion}}};
@@ -23,13 +25,14 @@ const saved={id:'saved-run',status:'drafting',source:prepared.source,settings:{}
 function loadTs(file,imports,context={}){
  const module={exports:{}};
  const output=ts.transpileModule(readFileSync(path.join(root,file),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
- vm.runInNewContext(output,{module,exports:module.exports,require:name=>Object.hasOwn(imports,name)?imports[name]:require(name),process,Response,Request,URL,Buffer,...context},{filename:file});
+ const fileRequire=createRequire(path.join(root,file));
+ vm.runInNewContext(output,{module,exports:module.exports,require:name=>Object.hasOwn(imports,name)?imports[name]:fileRequire(name),process,Response,Request,URL,Buffer,...context},{filename:file});
  return module.exports;
 }
 
-function fixture({sourceError=null,active=false,run=structuredClone(saved),env={},coordinatorOverrides={},sourcePartition=null,episodeNumber=1,diagnostics=null,diagnosticsError=null,policyError=null,localPhase=null,budgetAttempts=[],nativeRecovery=null,chain=null,lockedChain=null,boundaryHelpers=null,handoff=null,runtimeGlobal=null,cliState={error:null}}={}){
- const stats={sourceLoads:0,sourceProtocols:[],sourceReaders:[],inlinePerformanceModes:[],productionRefreshes:[],voiceMeasurements:0,cliChecks:0,resolverCalls:0,dispatches:[],coordinatorOptions:null,diagnosticReads:[],executionReads:[],budgetReconciliations:[]};
- const readSource=(protocol,reader,inlinePerformance)=>{stats.sourceLoads++;stats.sourceProtocols.push(protocol);stats.sourceReaders.push(reader);stats.inlinePerformanceModes.push(inlinePerformance);if(sourceError)throw sourceError;return null;};
+function fixture({sourceError=null,active=false,run=structuredClone(saved),env={},coordinatorOverrides={},sourcePartition=null,episodeNumber=1,diagnostics=null,diagnosticsError=null,policyError=null,localPhase=null,budgetAttempts=[],nativeRecovery=null,chain=null,lockedChain=null,boundaryHelpers=null,handoff=null,runtimeGlobal=null,kernelRules=null,cliState={error:null}}={}){
+ const stats={sourceLoads:0,sourceProtocols:[],sourceReaders:[],inlinePerformanceModes:[],inlinePerformanceVersions:[],episodeEvidenceVersions:[],productionRefreshes:[],voiceMeasurements:0,cliChecks:0,resolverCalls:0,dispatches:[],coordinatorOptions:null,diagnosticReads:[],executionReads:[],budgetReconciliations:[]};
+ const readSource=(protocol,reader,inlinePerformance,version,evidenceVersion)=>{stats.sourceLoads++;stats.sourceProtocols.push(protocol);stats.sourceReaders.push(reader);stats.inlinePerformanceModes.push(inlinePerformance);stats.inlinePerformanceVersions.push(version);stats.episodeEvidenceVersions.push(evidenceVersion);if(sourceError)throw sourceError;return null;};
  const current={...structuredClone(episode),number:episodeNumber};
  const coordinator={
   read:async()=>structuredClone(run),list:async()=>[structuredClone(run)],active:()=>active,cancellationStatus:async()=>[],executionState:()=>localPhase,executionStatus:async id=>{stats.executionReads.push(id);return [];},scheduling:()=>({maxConcurrent:4,maxPerEpisode:1,inFlight:active?1:0,queued:localPhase==='queued'?1:0}),refreshProduction:async id=>{stats.productionRefreshes.push(id);return structuredClone(run);},
@@ -40,18 +43,25 @@ function fixture({sourceError=null,active=false,run=structuredClone(saved),env={
  const db={episode:{findFirst:async()=>current},sceneSnapshot:{findFirst:async()=>sourcePartition?{content:JSON.stringify(sourcePartition)}:null}};
  const presentation=loadTs('lib/episode-presentation.ts',{});
  const productionScope=loadTs('lib/production-episodes.ts',{'./prisma':{prisma:db}});
+ const listDocuments=coordinator.list.bind(coordinator);
  const service=loadTs('lib/storyboard-service.ts',{
   'server-only':{},'@/lib/prisma':{prisma:db},
   '@/lib/episode-presentation':presentation,'@/lib/production-episodes':productionScope,
-  '@/lib/light-foundation-reader':{readLightEpisodeFoundation:async(_project,_episode,_db,options)=>readSource(options?.protocol,'light',options?.inlinePerformance)},
-  './episode-upstream-material':{readProductionEpisodeHandoff:async(_project,_episode,_db,options)=>handoff??readSource('upstream-material-v2','production',options?.inlinePerformance)},
+  '@/lib/light-foundation-reader':{readLightEpisodeFoundation:async(_project,_episode,_db,options)=>readSource(options?.protocol,'light',options?.inlinePerformance,options?.inlinePerformanceVersion,options?.episodeEvidenceVersion)},
+  './episode-upstream-material':{readProductionEpisodeHandoff:async(_project,_episode,_db,options)=>{
+   if(typeof handoff==='function'){readSource('upstream-material-v2','production',options?.inlinePerformance,options?.inlinePerformanceVersion,options?.episodeEvidenceVersion);return handoff(options);}
+   return handoff??readSource('upstream-material-v2','production',options?.inlinePerformance,options?.inlinePerformanceVersion,options?.episodeEvidenceVersion);
+  }},
   './production-workflow':{getProductionChain:async()=>chain,withChainSelection:async(_id,_project,action)=>action(lockedChain??chain)},
   './episode-boundary-seed':boundaryHelpers,
+  './production-read-guard':productionReadGuard,
+  './storyboard-read-catalog':{createStoryboardReadCatalog:()=>listDocuments},
   './standard-script-reception':{UPSTREAM_MATERIAL_PROTOCOL:'upstream-material-v2'},
   './production-budget':{currentProductionBudget:()=>null,productionBudgetRoot:'/fixture-only-budget',productionBudgetStore:()=>({create:async()=>null,read:async()=>({projectIds:['p1'],maxCalls:40,maxTokens:2000000,summary:{},attempts:budgetAttempts}),reconcile:async(id,attemptId,receipt)=>{stats.budgetReconciliations.push({id,attemptId,...receipt});}}),withProductionBudgetContext:(_budget,action)=>action(),budgetedProductionCall:(_metadata,action)=>action()},
   '@/lib/codex-cli':{resolveCodexExecutable:()=>{stats.resolverCalls++;return env.CODEX_CLI_PATH||'/resolved/codex';}},
   'node:child_process':{execFile:(_file,_args,_options,callback)=>{stats.cliChecks++;callback(cliState.error,'fixture','');}},
   'node:module':{createRequire:()=>name=>{
+   if(name.endsWith('/core/core.mjs')&&kernelRules)return {captureRules:()=>kernelRules};
    if(name.endsWith('/source-context.mjs'))return {readEpisodeSourceContext:async()=>null};
    if(name.endsWith('/storyboard-archive.mjs'))return {withStoryboardArchive:current=>current};
    if(name.endsWith('/voice.mjs'))return {measureVoiceReference:async()=>{stats.voiceMeasurements++;return {warnings:[],rows:[]};}};
@@ -74,6 +84,28 @@ function fixture({sourceError=null,active=false,run=structuredClone(saved),env={
   post:command=>route.POST(new Request(url,{method:'POST',headers:{'content-type':'application/json','x-storyboard-action':'1','origin':'http://localhost:3008'},body:JSON.stringify(command)}),context)
  };
 }
+
+test('new tasks reject a partially reloaded native kernel before source preparation or creation',async()=>{
+ const versions=captureRules();
+ for(const key of ['rhythmContractVersion','fantasyTimingVersion','visualSubjectsVersion','opportunityCoverageVersion','systemPresentationVersion']){
+  let created=0;const f=fixture({kernelRules:{...versions,[key]:undefined},coordinatorOverrides:{create:async()=>{created++;return {id:'should-not-create'};}}});
+  await assert.rejects(f.service.createStoryboardRun(f.current,{}),error=>error.code==='RUNTIME_RELOAD_REQUIRED'&&error.requestOutcome==='NOT_SENT'&&error.status===503);
+  assert.equal(created,0);assert.equal(f.stats.sourceLoads,0);assert.equal(f.stats.voiceMeasurements,0);assert.deepEqual(f.stats.dispatches,[]);
+ }
+});
+
+test('a current native kernel permits creating a new task without dispatching a model',async()=>{
+ let created;const f=fixture({kernelRules:captureRules(),coordinatorOverrides:{create:async value=>{created=value;return {id:'new-kernel'};}}});
+ const result=await f.service.createStoryboardRun(f.current,{});
+ assert.equal(result.id,'new-kernel');assert.equal(created.binding.inlinePerformanceVersion,'inline-performance-v2');
+ assert.equal(created.binding.episodeEvidenceVersion,'episode-evidence-v1');
+ assert.equal(created.settings.model,'gpt-6.1-sol');assert.equal(created.settings.reasoning,'medium');assert.deepEqual(f.stats.dispatches,[]);
+});
+
+test('an obsolete native kernel does not block reading frozen historical drafts',async()=>{
+ const f=fixture({kernelRules:{}}),snapshot=await f.service.storyboardPageSnapshot(f.current,saved.id);
+ assert.equal(snapshot.run.id,saved.id);assert.equal(f.stats.sourceLoads,0);assert.equal(f.stats.cliChecks,0);assert.deepEqual(f.stats.dispatches,[]);
+});
 
 test('a retained coordinator uses the current source reader after service hot reload',async()=>{
  const runtimeGlobal={},old=fixture({runtimeGlobal,sourceError:new Error('old grammar rejected source role labels')});
@@ -186,13 +218,16 @@ test('selector index validates new-task preparation once, not every old grammar 
 });
 
 test('combined page check shares current input and keeps legacy protocol validation separate',async()=>{
- for(const protocol of ['upstream-material-v2','legacy']){
-  const run=structuredClone(saved);Object.assign(run.web.binding,{inputProtocol:protocol,inlinePerformanceVersion:'inline-performance-v1'});
+ for(const [protocol,version,evidenceVersion] of [['upstream-material-v2','inline-performance-v1'],['upstream-material-v2','inline-performance-v2'],['upstream-material-v2','inline-performance-v2','episode-evidence-v1'],['legacy','inline-performance-v1']]){
+  const run=structuredClone(saved);Object.assign(run.web.binding,{inputProtocol:protocol,inlinePerformanceVersion:version});
+  if(evidenceVersion)run.web.binding.episodeEvidenceVersion=evidenceVersion;
   const f=fixture({run}),response=await f.get('?runId=saved-run&includeIndex=1');
   assert.equal(response.status,200);const result=await response.json();
   assert.equal(result.run.id,saved.id);assert.equal(result.run.sourceCheckPending,false);
   assert.equal(result.index.preparation.ready,true);assert.equal(result.index.runner.checked,false);assert.equal(f.stats.cliChecks,0);
-  assert.equal(f.stats.sourceLoads,protocol==='upstream-material-v2'?1:2);
+  assert.equal(f.stats.sourceLoads,evidenceVersion==='episode-evidence-v1'?1:2,'相同表演语法的旧/新版资料准备不可混用');
+  assert.equal(f.stats.inlinePerformanceVersions[0],version);assert.equal(f.stats.inlinePerformanceVersions.at(-1),'inline-performance-v2');
+  assert.equal(f.stats.episodeEvidenceVersions[0],evidenceVersion??null);assert.equal(f.stats.episodeEvidenceVersions.at(-1),'episode-evidence-v1');
   assert.equal(f.stats.sourceProtocols[0],protocol);assert.deepEqual(f.stats.dispatches,[]);
  }
 });
@@ -434,6 +469,103 @@ test('frozen and new delivery grammars sharing a protocol are prepared separatel
  }
 });
 
+test('new task bindings freeze v2 and saved v1 or absent bindings keep their original delivery version',async()=>{
+ for(const version of [undefined,'inline-performance-v1','inline-performance-v2']){
+  const run=structuredClone(saved);run.web.binding.inputProtocol='upstream-material-v2';if(version)run.web.binding.inlinePerformanceVersion=version;
+  const before=JSON.stringify(run),f=fixture({run});
+  assert.equal((await f.get()).status,200);assert.equal(f.stats.inlinePerformanceVersions[0],'inline-performance-v2');
+  assert.equal((await f.get('?runId=saved-run')).status,200);
+  assert.equal(f.stats.inlinePerformanceVersions.at(-1),version??'inline-performance-v1');
+  assert.equal(f.stats.episodeEvidenceVersions[0],'episode-evidence-v1');assert.equal(f.stats.episodeEvidenceVersions.at(-1),null);
+  assert.equal(f.stats.inlinePerformanceModes.at(-1),!!version);assert.equal(JSON.stringify(run),before);assert.deepEqual(f.stats.dispatches,[]);
+ }
+ let created;
+ const f=fixture({coordinatorOverrides:{create:async input=>{created=input;return {id:'new'};}}});
+ await f.service.createStoryboardRun(f.current,{productionBudget:{id:'fixture-budget'}});
+ assert.equal(created.binding.inlinePerformanceVersion,'inline-performance-v2');assert.equal(f.stats.inlinePerformanceVersions[0],'inline-performance-v2');
+ const unknown=structuredClone(saved);unknown.web.binding.inlinePerformanceVersion='inline-performance-v99';
+ const bad=fixture({run:unknown}),detail=await (await bad.get('?runId=saved-run')).json();
+ assert.equal(detail.run.preparation.ready,false);assert.equal(detail.run.preparation.code,'SOURCE_PROTOCOL');assert.equal(bad.stats.sourceLoads,0);
+});
+
+test('service reload preserves frozen source versions and full request hashes with real standard packages and facts',async()=>{
+ const {prepareEpisodeReception}=tsxRequire('../../lib/standard-script-reception.ts',import.meta.url);
+ const {buildSourceIndex}=tsxRequire('../../lib/project-foundation-contracts.ts',import.meta.url);
+ const {cachedFoundationFacts}=tsxRequire('../../lib/foundation-fact-cache.ts',import.meta.url);
+ const {selectFoundationFacts}=tsxRequire('../../lib/foundation-facts.ts',import.meta.url);
+ const {splitProductionMaterials}=require('../production-materials.mjs');
+ const text='人物：苏远\n苏远抬头os：是这里。',current={...episode,content:text};
+ const index=buildSourceIndex([{number:1,title:current.title,content:text}]),context={version:'frozen-context',background:[]};
+ const handoff=options=>({readiness:'READY',reasons:[],packet:{sourceText:text,
+  ...prepareEpisodeReception(current,null,undefined,options),facts:selectFoundationFacts(cachedFoundationFacts(index,context,null,{standard:true,...options}),index,[1])}});
+ const original=handoff({inlinePerformanceVersion:'inline-performance-v1'});
+ assert.equal(original.packet.standardScript.packageId,'standard:ed326bb9f57231459e44dcf8619abe0d86f28a742e0b10841cdad8dcfe34f811');
+ const baseline=splitProductionMaterials(makeEpisodeInput({episode:current,project:current.project,handoff:original,inputProtocol:'upstream-material-v2'}));
+ const rules=structuredClone(require('./core/core.mjs').captureRules());for(const flag of ['modelProjectionVersion','fantasyTimingVersion','visualSubjectsVersion'])delete rules[flag];
+ const requestHash=source=>digest(buildRequest({stage:'plan',source,settings:{maxUnits:null},rulesSnapshot:rules}));
+ const beforeHash=requestHash(baseline.source);
+ for(const version of [undefined,'inline-performance-v1']){
+  const run=structuredClone(saved);Object.assign(run.web.binding,{inputProtocol:'upstream-material-v2',sourceVersion:baseline.sourceVersion,sourceBasisVersion:baseline.sourceBasisVersion,contextEvidence:baseline.contextEvidence});
+  if(version)run.web.binding.inlinePerformanceVersion=version;run.source=structuredClone(baseline.source);
+  const before=JSON.stringify(run),f=fixture({run,handoff});f.current.content=text;
+  const result=await f.service.refreshStoryboardRun(run,f.current);
+  assert.equal(result.prepared.sourceVersion,baseline.sourceVersion);assert.equal(result.prepared.sourceBasisVersion,baseline.sourceBasisVersion);
+  const frozen=await f.service.loadStoryboardInput(f.current,'','upstream-material-v2',undefined,version??false);
+  assert.equal(requestHash(frozen.source),beforeHash);assert.equal(frozen.source.standardPackage.packageId,baseline.source.standardPackage.packageId);
+  const fresh=await f.service.loadStoryboardInput(f.current);
+  assert.equal(fresh.source.dialogue[0].speaker,'苏远');assert.equal(fresh.source.standardPackage.schemaVersion,'DIRECTOR_STANDARD_SCRIPT_SLICE_V5');
+  assert.notEqual(fresh.sourceVersion,baseline.sourceVersion);assert.notEqual(fresh.sourceBasisVersion,baseline.sourceBasisVersion);
+  assert.equal(JSON.stringify(run),before);assert.deepEqual(f.stats.dispatches,[]);assert.equal(f.stats.cliChecks,0);
+ }
+});
+
+test('service reload keeps frozen boundary source, context evidence and full request hashes with real packets',async()=>{
+ const {prepareStandardEpisode}=tsxRequire('../../lib/standard-script-plan.ts',import.meta.url);
+ const {buildSourceIndex}=tsxRequire('../../lib/project-foundation-contracts.ts',import.meta.url);
+ const {buildLightEpisodePackets}=tsxRequire('../../lib/light-foundation-supply.ts',import.meta.url);
+ const {splitProductionMaterials}=require('../production-materials.mjs');
+ const current={...episode,number:2,title:'第2集',content:'人物：苏远\n苏远抬头os：是这里。'};
+ const episodes=[{id:'prior',projectId:current.projectId,number:1,title:'第1集',content:'导演备注抬头os：先看表情。'},current];
+ const index=buildSourceIndex(episodes),context={version:'service-frozen-boundary',background:[],notices:[]};
+ const document={revision:'fixture',sourceVersion:index.version,f2:null,editorialTodos:[]};
+ const db={episode:{findMany:async()=>episodes},presentationContract:{findMany:async()=>[]},scriptScene:{findMany:async()=>[]}};
+ const input={project:{...current.project,episodes},sourceIndex:index,sourceContext:context};
+ const packet=async(options,saved)=>{const [packet]=await buildLightEpisodePackets(current.projectId,document,db,[2],{...input,scriptResolutions:saved},options);return {readiness:'READY',reasons:[],packet};};
+ const rules=structuredClone(require('./core/core.mjs').captureRules());for(const flag of ['modelProjectionVersion','fantasyTimingVersion','visualSubjectsVersion','episodeEvidenceVersion'])delete rules[flag];
+ const hash=source=>digest(buildRequest({stage:'plan',source,settings:{maxUnits:null},rulesSnapshot:rules}));
+ for(const version of [undefined,'inline-performance-v1','inline-performance-v2']){
+  const grammar=version??'inline-performance-v1',resolutions=Object.fromEntries(episodes.map(ep=>[ep.number,prepareStandardEpisode(ep.content,`episode-${ep.number}`,{inlinePerformanceVersion:grammar})]));
+  const original=await packet({inlinePerformanceVersion:grammar},resolutions),baseline=splitProductionMaterials(makeEpisodeInput({episode:current,project:current.project,handoff:original,inputProtocol:'upstream-material-v2'}));
+  const run=structuredClone(saved);Object.assign(run.web.binding,{episodeNumber:2,inputProtocol:'upstream-material-v2',sourceVersion:baseline.sourceVersion,sourceBasisVersion:baseline.sourceBasisVersion,contextEvidence:baseline.contextEvidence});
+  if(version)run.web.binding.inlinePerformanceVersion=version;run.source=structuredClone(baseline.source);
+  const before=JSON.stringify(run),f=fixture({run,episodeNumber:2,handoff:options=>packet(options)});Object.assign(f.current,current);
+  const result=await f.service.refreshStoryboardRun(run,f.current);
+  assert.equal(result.prepared.preparation.ready,true);assert.equal(result.prepared.sourceVersion,baseline.sourceVersion);assert.deepEqual(result.prepared.contextEvidence,baseline.contextEvidence);
+  const frozen=await f.service.loadStoryboardInput(f.current,'','upstream-material-v2',undefined,version??false,f.service.storyboardEvidenceVersion(run.web.binding));
+  assert.equal(frozen.source.context.episodeEvidenceVersion,undefined,'旧v2表演语法不代表新版按集历史供给');
+  assert.deepEqual(frozen.source,baseline.source);assert.equal(hash(frozen.source),hash(baseline.source));assert.equal(JSON.stringify(run),before);
+  assert.deepEqual(f.stats.dispatches,[]);assert.equal(f.stats.cliChecks,0);
+ }
+});
+
+test('production boundary expansion and retention use each binding frozen grammar',async()=>{
+ const helpers=tsxRequire('../../lib/episode-boundary-seed.ts',import.meta.url),{buildSourceIndex}=tsxRequire('../../lib/project-foundation-contracts.ts',import.meta.url);
+ const previous='导演备注抬头os：先看表情。',index=buildSourceIndex([{number:1,title:null,content:previous},{number:2,title:null,content:'苏远：走。'}]);
+ for(const version of [undefined,'inline-performance-v1','inline-performance-v2']){
+  const options={inlinePerformance:!!version,inlinePerformanceVersion:version??'inline-performance-v1',syntax:'current'},seed=helpers.buildEpisodeBoundarySeed(index,[],2,options);
+  const expected=helpers.expandEpisodeBoundarySeed(seed,previous,options),calls=[];
+  const f=fixture({boundaryHelpers:{retainExpandedEpisodeBoundarySeed:(now,prior,actual)=>{calls.push(actual);return helpers.retainExpandedEpisodeBoundarySeed(now,prior,actual);},expandEpisodeBoundarySeed:(now,text,actual)=>{calls.push(actual);return helpers.expandEpisodeBoundarySeed(now,text,actual);}}});
+  f.current.content=previous;
+  const binding={projectId:episode.projectId,episodeNumber:2,inputProtocol:'upstream-material-v2',...(version?{inlinePerformanceVersion:version}:{})};
+  const run={production:{needs:[{stage:1,target:'PREVIOUS_SOURCE'}]}};
+  const current=await f.service.productionContextFromPrepared(binding,{episodeBoundarySeed:seed,materials:[]},run,f.service);
+  assert.deepEqual(current.boundary.seed,expected);assert.deepEqual(structuredClone(calls),[options,options]);
+  calls.length=0;
+  const retained=await f.service.productionContextFromPrepared(binding,{episodeBoundarySeed:seed,materials:[]},{production:{boundary:{seed:expected}}},f.service);
+  assert.deepEqual(retained.boundary.seed,expected);assert.deepEqual(structuredClone(calls),[options]);assert.deepEqual(f.stats.dispatches,[]);assert.equal(f.stats.cliChecks,0);
+ }
+});
+
 test('preparation failure keeps saved index, detail, operations and raw JSON readable',async()=>{
  const f=fixture({sourceError:new Error('fixture unavailable')});
  const indexResponse=await f.get();assert.equal(indexResponse.status,200);
@@ -447,7 +579,8 @@ test('preparation failure keeps saved index, detail, operations and raw JSON rea
  const detailResponse=await f.get('?runId=saved-run');assert.equal(detailResponse.status,200);
  const detail=(await detailResponse.json()).run;
  assert.equal(detail.preparation.ready,false);
- assert.equal(detail.sourceStale,true);
+ assert.equal(detail.sourceStale,false,'a failed read does not prove that frozen source changed');
+ assert.equal(detail.sourceCheckPending,true,'current source remains unverified and cannot authorize execution');
  assert.equal(detail.blocked,true);
  assert.equal(detail.operations[0].attemptId,'a1');
  assert.deepEqual(detail.sourceRows,saved.source.sourceRows);
@@ -468,6 +601,14 @@ test('strict creation rejects unavailable source before persisting or measuring 
  assert.equal((await response.json()).code,'CONTEXT_UNAVAILABLE');
  assert.equal(f.stats.cliChecks,0);
  assert.equal(f.stats.voiceMeasurements,0);
+});
+
+test('wrapping a proven read outage preserves only its safe reconnect marker',async()=>{
+ const f=fixture({sourceError:Object.assign(new Error('database is locked'),{code:'SQLITE_BUSY'})});
+ await assert.rejects(f.service.loadStoryboardInput(f.current),e=>e.code==='CONTEXT_UNAVAILABLE'&&e.requestOutcome==='NOT_SENT'&&e.retryableRead===true);
+ assert.equal(f.stats.voiceMeasurements,0);assert.deepEqual(f.stats.dispatches,[]);
+ const unknown=fixture({sourceError:new Error('unproven read failure')});
+ await assert.rejects(unknown.service.loadStoryboardInput(unknown.current),e=>e.code==='CONTEXT_UNAVAILABLE'&&e.retryableRead!==true);
 });
 
 test('default new input uses production material reader while saved standard/legacy keep their old reader',async()=>{
