@@ -203,7 +203,8 @@ function sourceQuoteEdges(draft,quotes){
 export function renderDraft({draft,source,settings={},seedanceExportVersion,sourceResolutions=[]}={}){
  if(seedanceExportVersion!==undefined&&!SUPPORTED_SEEDANCE_EXPORT_VERSIONS.includes(seedanceExportVersion))fail('EXPORT_VERSION','未知视频执行稿导出版本');
  const execution=seedanceExportVersion!==undefined;
- const unitTimeline=seedanceExportVersion==='seedance-execution-v3';
+ const completeFields=seedanceExportVersion==='seedance-execution-v4';
+ const unitTimeline=seedanceExportVersion==='seedance-execution-v3'||completeFields;
  const quotes=new Map((source?resolvedDialogue(source,sourceResolutions):[]).map(q=>[q.id,q])),sections=[];
  // V2 and later only omit redundant display delimiters at verified source edges; stored text is untouched.
  const quoteEdges=seedanceExportVersion==='seedance-execution-v2'||unitTimeline?sourceQuoteEdges(draft,quotes):null;
@@ -230,8 +231,17 @@ export function renderDraft({draft,source,settings={},seedanceExportVersion,sour
   const subjects=validVisualSubjects(u.visualSubjects)?u.visualSubjects:[];
   const subjective=subjects.filter(s=>s.domain==='subjective').map(s=>s.name),prospective=subjects.filter(s=>s.domain==='prospective').map(s=>s.name);
   const lines=[`# ${u.title}｜${num(total)}s`,`[通用提示词] ${common}`,`[场景] ${u.scene}`,`[本单元道具] ${u.props?.join('、')||'无'}`,`[本单元出场人物] ${u.participants?.join('、')||'无'}`,...(subjective.length?[`[主观视觉主体] ${subjective.join('、')}`]:[]),...(prospective.length?[`[未来图示主体] ${prospective.join('、')}`]:[]),`[本单元光影] ${displayHeader(opening.lighting)}`,`[人物状态与站位前提] ${displayHeader(opening.initialState)}`];
+  if(completeFields&&u.segments?.length){
+   if(u.lighting!==opening.lighting)lines.push(`[单元光影] ${displayHeader(u.lighting)}`);
+   if(u.initialState!==opening.initialState)lines.push(`[单元起始状态] ${displayHeader(u.initialState)}`);
+  }
   for(const [i,s] of (u.shots||[]).entries()){
    const segment=u.segments?.find(segment=>segment.shotIds?.[0]===s.id);
+   if(completeFields&&segment){
+    const range=`分镜${i+1}—${u.shots.findIndex(shot=>shot.id===segment.shotIds.at(-1))+1}`;
+    if(has(segment.title))lines.push(`[分段标题｜${range}] ${segment.title}`);
+    if(has(segment.unitDirection))lines.push(`[分段演出｜${range}] ${displayHeader(segment.unitDirection)}`);
+   }
    if(segment&&i>0){
     const last=u.shots.findIndex(shot=>shot.id===segment.shotIds.at(-1))+1;
     const previous=u.segments[u.segments.indexOf(segment)-1];
@@ -258,7 +268,12 @@ export function renderDraft({draft,source,settings={},seedanceExportVersion,sour
     return `${q?.speaker||'未知说者'}${kind?`（${kind}）`:''}，${p.presentation}，本镜${num(p.voiceStart)}-${num(p.voiceEnd)}s，演法：${p.delivery}：${spoken}`;
    }).join(unitTimeline?'\n台词：':'；')||'无';
    lines.push(`分镜${i+1}｜${num(start)}-${num(t)}s｜${num(s.duration)}s`,`机位/运镜：${s.camera}`,`画面：${s.picture}`,`光影：${s.lighting}`,`声音：${s.sound}`,`台词：${dialogue}`,`转场：${s.transition}`);
+   if(completeFields)for(const ending of u.segments?.filter(segment=>segment.shotIds?.at(-1)===s.id)||[]){
+    const first=u.shots.findIndex(shot=>shot.id===ending.shotIds[0])+1;
+    if(has(ending.exitState))lines.push(`[分段结束状态｜分镜${first}—${i+1}] ${displayHeader(ending.exitState)}`);
+   }
   }
+  if(completeFields&&has(u.exitState))lines.push(`[结束状态] ${displayHeader(u.exitState)}`);
   sections.push(lines.join('\n'));
  }
  return sections.join('\n\n---\n\n')+'\n';

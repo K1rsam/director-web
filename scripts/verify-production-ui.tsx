@@ -155,8 +155,9 @@ async function main(){
   }finally{await zero.close();}
   const conflict=await fixture(true);try{
    conflict.state.value.nextAction={kind:'STORYBOARD_CREATE',episodeNumber:1,owner:'EXECUTOR',message:'按当前版本创建。'};conflict.state.value.budget.summary.unknownAttempts=0;
-   await conflict.open();conflict.state.failNext=true;conflict.state.value.workflow.revision=4;
-   await conflict.page.getByRole('button',{name:'开始第1集分镜 · 推进一次',exact:true}).click();await conflict.page.getByRole('alert').filter({hasText:'流程已更新'}).waitFor();
+   await conflict.open();const advance=conflict.page.getByRole('button',{name:'开始第1集分镜 · 推进一次',exact:true});await advance.waitFor();
+   conflict.state.failNext=true;conflict.state.value.workflow.revision=4;
+   await advance.click();await conflict.page.getByRole('alert').filter({hasText:'流程已更新'}).waitFor();
    assert.equal(conflict.state.posts.length,1,'CAS conflicts never retry automatically');assert.equal(conflict.state.posts[0].expectedRevision,3);
    await conflict.page.getByRole('button',{name:'开始第1集分镜 · 推进一次',exact:true}).click();await conflict.page.getByText('已有动作已登记，请查看实际状态。',{exact:true}).waitFor();assert.equal(conflict.state.posts[1].expectedRevision,4);assert.deepEqual(conflict.state.errors,[]);console.log('PASS revision conflicts refresh saved state without retrying; next explicit action uses the fresh revision');
   }finally{await conflict.close();}

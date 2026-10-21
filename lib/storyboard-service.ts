@@ -8,6 +8,7 @@ import { currentProductionBudget, productionBudgetRoot, productionBudgetStore, w
 import { prisma } from "@/lib/prisma";
 import { readLightEpisodeFoundation } from "@/lib/light-foundation-reader";
 import { readProductionEpisodeHandoff } from './episode-upstream-material';
+import {ADOPTED_DESIGN_TEXT_VERSION} from './asset-design-adoption';
 import { UPSTREAM_MATERIAL_PROTOCOL } from './standard-script-reception';
 import { resolveCodexExecutable } from "@/lib/codex-cli";
 import { episodePresentation } from "@/lib/episode-presentation";
@@ -56,11 +57,11 @@ const agreementStore = createAgreementStore(path.join(process.env.DIRECTOR_PRODU
 type RecordValue = Record<string, any>;
 type ScriptPerformanceMode=boolean|InlinePerformanceVersion;
 const CURRENT_INLINE_PERFORMANCE_VERSION='inline-performance-v2' as const;
-const CURRENT_KERNEL_VERSIONS={systemPresentationVersion:'SYSTEM_PRESENTATION_V1',opportunityCoverageVersion:'opportunity-coverage-v2',modelCoordinateVersion:MATERIAL_COORDINATE_VERSION,modelProjectionVersion:PRODUCTION_CONTEXT_VERSION,dialogueSourceLinkVersion:DIALOGUE_SOURCE_LINK_VERSION,productionEntryReviewVersion:ENTRY_REVIEW_VERSION,productionFeedbackResultVersion:FEEDBACK_RESULT_VERSION,episodeEvidenceVersion:EPISODE_EVIDENCE_VERSION,productionTransportVersion:'production-shared-v5',creativeRevision:'expressive-cadence-v4',rhythmContractVersion:'screen-rhythm-v5',fantasyTimingVersion:'fantasy-spans-v1',visualSubjectsVersion:'visual-subjects-v1',directorRefinementVersion:'director-refinement-v3'} as const;
+const CURRENT_KERNEL_VERSIONS={seedanceExportVersion:'seedance-execution-v4',systemPresentationVersion:'SYSTEM_PRESENTATION_V1',opportunityCoverageVersion:'opportunity-coverage-v2',modelCoordinateVersion:MATERIAL_COORDINATE_VERSION,modelProjectionVersion:PRODUCTION_CONTEXT_VERSION,dialogueSourceLinkVersion:DIALOGUE_SOURCE_LINK_VERSION,productionEntryReviewVersion:ENTRY_REVIEW_VERSION,productionFeedbackResultVersion:FEEDBACK_RESULT_VERSION,episodeEvidenceVersion:EPISODE_EVIDENCE_VERSION,productionTransportVersion:'production-shared-v5',creativeRevision:'expressive-cadence-v4',rhythmContractVersion:'screen-rhythm-v5',fantasyTimingVersion:'fantasy-spans-v1',visualSubjectsVersion:'visual-subjects-v1',directorRefinementVersion:'director-refinement-v3'} as const;
 function assertStoryboardKernelReady(){
   const {captureRules}=nativeRequire(path.join(runtimePath,'core/core.mjs'));
   const loaded=captureRules();
-  if(Object.entries(CURRENT_KERNEL_VERSIONS).some(([key,version])=>loaded[key]!==version))
+  if(Object.entries(CURRENT_KERNEL_VERSIONS).some(([key,version])=>loaded[key]!==version)||input.ADOPTED_DESIGN_TEXT_VERSION!==ADOPTED_DESIGN_TEXT_VERSION)
     throw Object.assign(new Error('本机执行内核尚未完整重载；请先重启3008，再新建任务。未发送AI请求，已有稿不受影响。'),{code:'RUNTIME_RELOAD_REQUIRED',status:503,requestOutcome:'NOT_SENT'});
 }
 export function storyboardPerformanceMode(binding:RecordValue):ScriptPerformanceMode{return binding.inlinePerformanceVersion===undefined?false:binding.inlinePerformanceVersion;}
@@ -85,7 +86,7 @@ state.storyboardRuntimeHooks = {
   beforeExecute: async binding => {
     const episode = await retryDatabaseRead(()=>prisma.episode.findFirst({ where: { id: binding.episodeId, projectId: binding.projectId }, include: { project: true } }));
     if (!episode) return false;
-    const prepared = await loadStoryboardInput(episode, '', binding.inputProtocol ?? 'legacy', undefined, storyboardPerformanceMode(binding), storyboardEvidenceVersion(binding));
+    const prepared = await loadStoryboardInput(episode, '', binding.inputProtocol ?? 'legacy', undefined, storyboardPerformanceMode(binding), storyboardEvidenceVersion(binding),binding.adoptedDesignTextVersion??null);
     return storyboardSourceCompatible(binding, prepared);
   },
   loadProductionContext, beforeAuthorAdmission: sealOutgoingProductionAgreements, onSettled: async(...args)=>(await maintenanceHost).trackRuntimeSettlement(()=>refreshProductionChain(...args))
@@ -104,11 +105,12 @@ export function storyboardChainComplete(run:RecordValue){
   return !run.production?.blocking&&!run.production?.pendingRepair&&(!requiresActual||['NO_PREDECESSOR','NOT_CONTINUOUS','NOT_CONSUMED','MATCHED'].includes(run.production?.boundaryCheck?.status));
 }
 
-export async function loadStoryboardInput(episode: RecordValue, notes = "", protocol: ScriptInputProtocol = UPSTREAM_MATERIAL_PROTOCOL, productionScope?:{workflowId:string;runId:string},inlinePerformance:ScriptPerformanceMode=CURRENT_INLINE_PERFORMANCE_VERSION,episodeEvidenceVersion:typeof EPISODE_EVIDENCE_VERSION|null=inlinePerformance===CURRENT_INLINE_PERFORMANCE_VERSION?EPISODE_EVIDENCE_VERSION:null) {
+export async function loadStoryboardInput(episode: RecordValue, notes = "", protocol: ScriptInputProtocol = UPSTREAM_MATERIAL_PROTOCOL, productionScope?:{workflowId:string;runId:string},inlinePerformance:ScriptPerformanceMode=CURRENT_INLINE_PERFORMANCE_VERSION,episodeEvidenceVersion:typeof EPISODE_EVIDENCE_VERSION|null=inlinePerformance===CURRENT_INLINE_PERFORMANCE_VERSION?EPISODE_EVIDENCE_VERSION:null,adoptedDesignTextVersion:typeof ADOPTED_DESIGN_TEXT_VERSION|null=null) {
   if (!['legacy',STANDARD_EPISODE_PROTOCOL,UPSTREAM_MATERIAL_PROTOCOL].includes(protocol)) throw Object.assign(new Error('未知正文接收协议，旧任务保留。'), {code: 'SOURCE_PROTOCOL'});
   if(![true,false,'inline-performance-v1','inline-performance-v2'].includes(inlinePerformance))throw Object.assign(new Error('未知行中表演接收版本，已有任务保留。'),{code:'SOURCE_PROTOCOL'});
   if(episodeEvidenceVersion!==null&&episodeEvidenceVersion!==EPISODE_EVIDENCE_VERSION)throw Object.assign(new Error('未知按集资料版本。'),{code:'SOURCE_PROTOCOL'});
-  const performanceOptions={...performanceFields(inlinePerformance),episodeEvidenceVersion};
+  if(adoptedDesignTextVersion!==null&&adoptedDesignTextVersion!==ADOPTED_DESIGN_TEXT_VERSION)throw Object.assign(new Error('未知采用设计正文供料版本。'),{code:'SOURCE_PROTOCOL'});
+  const performanceOptions={...performanceFields(inlinePerformance),episodeEvidenceVersion,...(adoptedDesignTextVersion?{adoptedDesignTextVersion}:{})};
   if (!isProductionEpisodeNumber(episode.number, await readProductionScope(episode.projectId))) throw Object.assign(new Error("此条目尚未归入可制作正文，不能仅按数字把作者资料或待核对范围当作正剧。请先核对来源分区；已有记录仍保留。"), { status: 409, code: "EPISODE_NOT_PRODUCTION" });
   const independentSource = await sourceContext.readEpisodeSourceContext(storyboardDataRoot, episode);
   if (independentSource) return splitProductionMaterials(input.makeEpisodeInput({ episode, project: episode.project, notes, independentSource }));
@@ -189,7 +191,7 @@ export async function refreshStoryboardRun(run:RecordValue,episode:RecordValue){
   let current,episodeEvidenceVersion:typeof EPISODE_EVIDENCE_VERSION|null=null;
   try{
     episodeEvidenceVersion=storyboardEvidenceVersion(run.web.binding);
-    current=await loadStoryboardInput(episode,'',protocol,run.web.binding.productionChain?.id?{workflowId:run.web.binding.productionChain.id,runId:run.id}:undefined,inlinePerformance,episodeEvidenceVersion);
+    current=await loadStoryboardInput(episode,'',protocol,run.web.binding.productionChain?.id?{workflowId:run.web.binding.productionChain.id,runId:run.id}:undefined,inlinePerformance,episodeEvidenceVersion,run.web.binding.adoptedDesignTextVersion??null);
     if(current.source.diagnostics?.length)throw Object.assign(new Error(current.source.diagnostics.map((d:RecordValue)=>d.reason).join('；')),{code:'SOURCE_DIAGNOSTICS'});
   }catch(error){
     const {body}=storyboardFailure(error);
@@ -284,7 +286,7 @@ export async function createStoryboardRun(episode: RecordValue, command: RecordV
   const modelSelection=command.modelSelection===undefined?undefined:productionModelSelection(command.modelSelection);
   assertStoryboardKernelReady();
   return storyboardService().withPreparation(async () => {
-  const prepared = await loadStoryboardInput(episode, command.notes || "");
+  const prepared = await loadStoryboardInput(episode, command.notes || "",UPSTREAM_MATERIAL_PROTOCOL,undefined,CURRENT_INLINE_PERFORMANCE_VERSION,EPISODE_EVIDENCE_VERSION,ADOPTED_DESIGN_TEXT_VERSION);
   let productionBudget = command.productionBudget ?? currentProductionBudget();
   if (!productionBudget) {
     productionBudget = {id: randomUUID(), directory: productionBudgetRoot};
@@ -296,7 +298,7 @@ export async function createStoryboardRun(episode: RecordValue, command: RecordV
   const voiceReference = await measureVoiceReference(prepared.source, { cacheRoot: path.join(storyboardDataRoot, "voice-cache") });
   prepared.source.context.sourceWarnings.push(...voiceReference.warnings);
   const binding = { projectId: episode.projectId, episodeId: episode.id, episodeNumber: episode.number, sourceVersion: prepared.sourceVersion, sourceBasisVersion: prepared.sourceBasisVersion, inputProtocol: UPSTREAM_MATERIAL_PROTOCOL,
-    inlinePerformanceVersion:CURRENT_INLINE_PERFORMANCE_VERSION,episodeEvidenceVersion:EPISODE_EVIDENCE_VERSION,
+    inlinePerformanceVersion:CURRENT_INLINE_PERFORMANCE_VERSION,episodeEvidenceVersion:EPISODE_EVIDENCE_VERSION,adoptedDesignTextVersion:ADOPTED_DESIGN_TEXT_VERSION,
     contextEvidence:prepared.contextEvidence,productionBudget, productionChain: command.productionChain ?? null,
     ...(command.executionTier!==undefined?{executionTier:command.executionTier}:{} ),...(modelSelection?{modelSelection}:{} ) };
   const production = await productionContextFromPrepared(binding,prepared,null,storyboardService());
@@ -355,7 +357,7 @@ export async function productionContextFromPrepared(binding:RecordValue,prepared
     if(previous.web?.legacyReadOnly||previous.web?.binding?.projectId!==binding.projectId||previous.web.binding.episodeNumber!==seed.fromEpisode)
       throw Object.assign(new Error('选定前集与本次生产链不匹配。'),{code:'PRODUCTION_CHAIN_BINDING'});
     const priorEpisode = await retryDatabaseRead(()=>prisma.episode.findFirst({where:{id:previous.web.binding.episodeId,projectId:binding.projectId},include:{project:true}}));
-    const priorInput = priorEpisode ? await loadStoryboardInput(priorEpisode,'',previous.web.binding.inputProtocol??'legacy',undefined,storyboardPerformanceMode(previous.web.binding),storyboardEvidenceVersion(previous.web.binding)) : null;
+    const priorInput = priorEpisode ? await loadStoryboardInput(priorEpisode,'',previous.web.binding.inputProtocol??'legacy',undefined,storyboardPerformanceMode(previous.web.binding),storyboardEvidenceVersion(previous.web.binding),previous.web.binding.adoptedDesignTextVersion??null) : null;
     const compatible = priorInput&&storyboardSourceCompatible(previous.web.binding,priorInput);
     // Revalidate the scoped source in today's index instead of expiring an unrelated
     // episode merely because another episode changed the whole-series index hash.
@@ -406,7 +408,7 @@ export async function productionContextFromPrepared(binding:RecordValue,prepared
 async function loadProductionContext(binding:RecordValue,run:RecordValue,service:RecordValue,currentInput?:RecordValue){
   const episode=await retryDatabaseRead(()=>prisma.episode.findFirst({where:{id:binding.episodeId,projectId:binding.projectId},include:{project:true}}));
   if(!episode)throw Object.assign(new Error('本集来源不存在，已有记录保留。'),{code:'SOURCE_STALE'});
-  const prepared=currentInput??await loadStoryboardInput(episode,'',binding.inputProtocol,binding.productionChain?.id?{workflowId:binding.productionChain.id,runId:run.id}:undefined,storyboardPerformanceMode(binding),storyboardEvidenceVersion(binding));
+  const prepared=currentInput??await loadStoryboardInput(episode,'',binding.inputProtocol,binding.productionChain?.id?{workflowId:binding.productionChain.id,runId:run.id}:undefined,storyboardPerformanceMode(binding),storyboardEvidenceVersion(binding),binding.adoptedDesignTextVersion??null);
   if(!storyboardSourceCompatible(binding,prepared))throw Object.assign(new Error('原文或关键约束已变化，不能用旧任务继续。'),{code:'SOURCE_STALE'});
   const usedRefs=new Set<string>([...(run.plan?.entryFacts??[]).flatMap((f:RecordValue)=>f.sourceRefs??[]),...(run.plan?.workPackages??[]).flatMap((w:RecordValue)=>w.contextRefs??[]),...(run.adopted??[]).flatMap((a:RecordValue)=>a.draft.units.flatMap((u:RecordValue)=>u.shots.flatMap((s:RecordValue)=>s.contextRefs??[])))]);
   const currentRows=new Map<string,string>(prepared.source.contextRows.map((r:RecordValue)=>[r.id,r.text]));

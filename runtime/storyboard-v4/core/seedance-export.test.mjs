@@ -14,7 +14,7 @@ import {createStore} from './store.mjs';
 
 const exportVersion='seedance-execution-v2';
 const previousExportVersion='seedance-execution-v1';
-const newExportVersion='seedance-execution-v3';
+const newExportVersion='seedance-execution-v4';
 const direction='甲先攥紧拳头，再抬眼看向门口；停住的中景随目光缓推，窗光照清指节。';
 const workflowText=/额外幻想关闭|遵守已有幻想选择|本单元不加入额外幻想段落|已选幻想只按|开关未开|幻想层关闭|迭代版本|审核解释/;
 function fixture(){
@@ -240,7 +240,7 @@ test('new snapshots freeze the export version without changing model schemas or 
   const payload={...f,stage,packageId:'p1',...(stage==='finish'?{previousDraft:f.draft}:{})};
   const old=buildRequest({...payload,rulesSnapshot:rules}),next=buildRequest({...payload,rulesSnapshot:{...rules,seedanceExportVersion:newExportVersion}});
   assert.deepEqual([next.inputHash,next.promptHash,next.schemaHash,next.schema],[old.inputHash,old.promptHash,old.schemaHash,old.schema]);
-  for(const version of [previousExportVersion,exportVersion]){
+  for(const version of [previousExportVersion,exportVersion,'seedance-execution-v3']){
    const previous=buildRequest({...payload,rulesSnapshot:{...rules,seedanceExportVersion:version}});
    assert.deepEqual([next.inputHash,next.promptHash,next.schemaHash,next.schema],[previous.inputHash,previous.promptHash,previous.schemaHash,previous.schema]);
   }
@@ -292,12 +292,12 @@ test('saved unversioned work assembles identically without model calls and canno
  assert.equal(requests.length,calls);for(const key of ['source','adopted','operations','candidates','settings'])assert.deepEqual(d[key],before[key],key);
 });
 
-for(const frozenExportVersion of [previousExportVersion,exportVersion])test(`saved ${frozenExportVersion} work keeps its frozen assembly bytes and cannot silently refresh to v3 after planning`,async t=>{
+for(const frozenExportVersion of [previousExportVersion,exportVersion,'seedance-execution-v3'])test(`saved ${frozenExportVersion} work keeps its frozen assembly bytes and cannot silently refresh to v4 after planning`,async t=>{
  const {engine,requests}=await setup(t,{frozenExportVersion}),before=await engine.read('export'),calls=requests.length;
  await assert.rejects(engine.refreshRules('export'),e=>e.code==='RULES_PROTOCOL_CHANGE');assert.deepEqual(await engine.read('export'),before);
  const d=await engine.assemble('export');assert.equal(d.rulesSnapshot.seedanceExportVersion,frozenExportVersion);
  assert.equal(d.assembly.text,renderDraft({draft:d.assembly.draft,source:d.source,settings:d.settings,seedanceExportVersion:frozenExportVersion}));
- assert.ok(d.assembly.text.includes('台词：甲（平静｜本镜0.5-1.5s）：“走。”'));
+ assert.ok(d.assembly.text.includes(frozenExportVersion==='seedance-execution-v3'?'台词：0.5–1.5秒｜甲（平静）：“走。”':'台词：甲（平静｜本镜0.5-1.5s）：“走。”'));
  assert.equal(requests.length,calls);for(const key of ['source','adopted','operations','candidates','settings'])assert.deepEqual(d[key],before[key],key);
 });
 

@@ -18,6 +18,7 @@ import {DIRECTOR_REFINEMENT_PURPOSE,freezeDirectorRefinement,assertDirectorRefin
 import {DEFAULT_EPISODE_BUDGET} from '../production-policy.mjs';
 import {assertRuntimeAdmission,RUNTIME_MAINTENANCE_VERSION} from '../production-maintenance-state.mjs';
 import {isVerifiedUnsent,isVerifiedPreparationFailure} from './core/pre-dispatch-evidence.mjs';
+import {ADOPTED_DESIGN_TEXT_VERSION} from './input.mjs';
 
 const shared=globalThis[Symbol.for('storyboard-v4.coordinator')]??={owners:new Map(),leaseTokens:new Map(),leaseClaims:new Map(),inFlight:0,queued:[]};
 const {owners,leaseTokens,leaseClaims,queued}=shared;
@@ -581,7 +582,7 @@ export function createCoordinator({dataRoot,modelRunner=runModel,executable,maxC
   executionState(id,attemptId){if(!activeRuns.has(id)||currentAttempts.get(attemptId)!==id)return null;if(queued.some(item=>item.key===pauseKey(id)&&item.attemptId===attemptId))return 'queued';return executingAttempts.has(attemptId)?'executing':'preparing';},
   scheduling:id=>({maxConcurrent,maxPerEpisode,inFlight:inFlightByRun.get(pauseKey(id))||0,queued:queued.filter(item=>item.key===pauseKey(id)).length}),
   wait:idle,
-  runtimeIdentity:()=>{const rules=captureRules();return {maintenanceVersion:RUNTIME_MAINTENANCE_VERSION,productionFeedbackResultVersion:rules.productionFeedbackResultVersion,productionEntryReviewVersion:rules.productionEntryReviewVersion,modelCoordinateVersion:rules.modelCoordinateVersion,modelProjectionVersion:rules.modelProjectionVersion,dialogueSourceLinkVersion:rules.dialogueSourceLinkVersion,coordinatorModule:import.meta.url,coreRoot,pid:process.pid};},
+  runtimeIdentity:()=>{const rules=captureRules();return {maintenanceVersion:RUNTIME_MAINTENANCE_VERSION,seedanceExportVersion:rules.seedanceExportVersion,adoptedDesignTextVersion:ADOPTED_DESIGN_TEXT_VERSION,commonContractHash:digest(rules.files['references/common-contract.md']),productionFeedbackResultVersion:rules.productionFeedbackResultVersion,productionEntryReviewVersion:rules.productionEntryReviewVersion,modelCoordinateVersion:rules.modelCoordinateVersion,modelProjectionVersion:rules.modelProjectionVersion,dialogueSourceLinkVersion:rules.dialogueSourceLinkVersion,coordinatorModule:import.meta.url,coreRoot,pid:process.pid};},
   async drain(){
    while(activeRuns.size||pendingWrites.size){await Promise.allSettled([...activeRuns.values(),...pendingWrites]);}
    if(preflights.size||queued.some(item=>item.key.startsWith(directory+':'))||[...inFlightByRun].some(([key,n])=>key.startsWith(directory+':')&&n))fail('RUN_ACTIVE','本机仍有准备、队列或执行槽位，未排空。');

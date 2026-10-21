@@ -40,6 +40,20 @@ function knowledge(timing='CURRENT_EPISODE_EVENT'){
  const quote='还没结束。',start=episode.content.indexOf(quote);
  return {id:'knowledge-1',kind:'REVEAL',claim:'CHARACTER_CLAIM',statement:'甲声称还没结束。',subjects:['甲'],source:{evidenceId:'source-1',episodeId:timing==='CURRENT_EPISODE_EVENT'?episode.id:'prior-episode',quote,start,end:start+quote.length},timing};
 }
+test('version-bound full adopted text survives native input without truncation or authority promotion',()=>{
+ const p=packet(),body='已采用设计外观与结构约束。'.repeat(80)+'末尾：门轴只向内开；这不是相机运动指令。';
+ const fullText={schema:'ADOPTED_DESIGN_TEXT_V1',source:'ADOPTED_ASSET_PROMPT',assetKey:'hero',adoptionVersion:1,promptRevision:3,promptFingerprint:'a'.repeat(64),bodyHash:digest(body),body,usage:'DESIGN_ONLY_NOT_SHOT_INSTRUCTIONS'};
+ p.upstream.assetProductionCards=[{...productionCard(),adoptedDesign:{version:1,brief:'灰衣。',provenance:'ADOPTED_DESIGN_NOT_SOURCE_FACT',fullText}}];
+ p.upstream.modelDesigns[0].fullText=fullText;
+ const original=structuredClone(p),result=build(p),actual=modelInput(result).source.context;
+ assert.deepEqual(actual.assetProductionCards[0].adoptedDesign.fullText,fullText);
+ assert.deepEqual(actual.modelDesigns[0].fullText,fullText);
+ assert.deepEqual(result.source.entryFacts,[]);assert.deepEqual(p,original);
+ for(const change of [x=>{x.assetKey='other';},x=>{x.adoptionVersion=2;},x=>{x.body+='篡改';},x=>{x.usage='SHOT_INSTRUCTIONS';},x=>{x.source='CANDIDATE';},x=>{x.promptRevision=0;}]){
+  const bad=structuredClone(p);change(bad.upstream.assetProductionCards[0].adoptedDesign.fullText);
+  assert.throws(()=>build(bad),e=>e.code==='UPSTREAM_DESIGN_TEXT');
+ }
+});
 test('unadopted production cards and source-timed series evidence reach every model request without invented state or pixels',()=>{
  const p=packet();p.upstream.modelDesigns=[];p.upstream.assetProductionCards=[productionCard()];p.upstream.seriesKnowledge=[knowledge()];
  const before=structuredClone(p),result=build(p),actual=modelInput(result).source.context;

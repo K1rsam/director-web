@@ -1,6 +1,6 @@
 // A project label selects a visual basis; it must not erase that basis at the web boundary.
-export const SEEDANCE_EXPORT_VERSION='seedance-execution-v3';
-export const SUPPORTED_SEEDANCE_EXPORT_VERSIONS=Object.freeze(['seedance-execution-v1','seedance-execution-v2',SEEDANCE_EXPORT_VERSION]);
+export const SEEDANCE_EXPORT_VERSION='seedance-execution-v4';
+export const SUPPORTED_SEEDANCE_EXPORT_VERSIONS=Object.freeze(['seedance-execution-v1','seedance-execution-v2','seedance-execution-v3',SEEDANCE_EXPORT_VERSION]);
 const presets={
  '3D国漫':'三渲二国漫；C4D/Octane风格精细渲染，赛璐璐明暗色块结合PBR材质；国漫造型与干净轮廓，发丝、布料褶皱和物体纹理清楚，明暗有层次、饱和度适中',
  '3D三渲二国漫':'C4D/Octane风格精细渲染，赛璐璐明暗色块结合PBR材质；国漫造型与干净轮廓，发丝、布料褶皱和物体纹理清楚，明暗有层次、饱和度适中',

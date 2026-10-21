@@ -5,6 +5,8 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {createCoordinator} from './coordinator.mjs';
 import {tailFixture} from './core/author-call-group-test-fixtures.mjs';
+import {captureRules} from './core/core.mjs';
+import {digest} from './core/shared.mjs';
 
 test('drain waits through final onSettled and retirement never cancels an active model',async t=>{
  const directory=await mkdtemp(path.join(tmpdir(),'maintenance-drain-')),f=tailFixture();
@@ -23,5 +25,8 @@ test('drain waits through final onSettled and retirement never cancels an active
  await new Promise(r=>setTimeout(r,10));assert.equal(drained,false);
  endSettlement();await draining;assert.equal(calls,1);await c.retire();
  assert.equal(c.runtimeIdentity().productionFeedbackResultVersion,'production-feedback-result-v2');
+ assert.equal(c.runtimeIdentity().seedanceExportVersion,'seedance-execution-v4');
+ assert.equal(c.runtimeIdentity().adoptedDesignTextVersion,'adopted-design-text-v1');
+ assert.equal(c.runtimeIdentity().commonContractHash,digest(captureRules().files['references/common-contract.md']));
  await assert.rejects(c.start(run.id),{code:'SHUTDOWN'});
 });

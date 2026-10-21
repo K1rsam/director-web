@@ -16,6 +16,7 @@ import {readSystemPresentationProjection} from './system-presentation.mjs';
 export {STANDARD_EPISODE_PROTOCOL};
 
 export const UPSTREAM_MATERIAL_PROTOCOL='upstream-material-v2';
+export const ADOPTED_DESIGN_TEXT_VERSION='adopted-design-text-v1';
 const record=value=>Boolean(value)&&typeof value==='object'&&!Array.isArray(value);
 const hasText=value=>typeof value==='string'&&value.trim().length>0;
 const trackingFields=new Set(['documentRevision','sourceVersion','sourceContextVersion','revision','round','decidedAt','createdAt','updatedAt']);
@@ -33,6 +34,15 @@ function localFacts(facts){
   projected[group]=projected[group].map(item=>{if(!record(item))return item;const {id,...fields}=item;return {id:`local-fact:${digest(fields)}`,...fields};});
  }
  return projected;
+}
+function adoptedDesignText(value,assetKey,adoptionVersion){
+ if(value===undefined)return undefined;
+ if(!record(value)||Object.keys(value).some(key=>!['schema','source','assetKey','adoptionVersion','promptRevision','promptFingerprint','bodyHash','body','usage'].includes(key))
+  ||value.schema!=='ADOPTED_DESIGN_TEXT_V1'||value.source!=='ADOPTED_ASSET_PROMPT'||value.assetKey!==assetKey||value.adoptionVersion!==adoptionVersion
+  ||!Number.isSafeInteger(value.adoptionVersion)||value.adoptionVersion<1||!Number.isSafeInteger(value.promptRevision)||value.promptRevision<1
+  ||typeof value.promptFingerprint!=='string'||!/^[a-f0-9]{64}$/.test(value.promptFingerprint)||!hasText(value.body)||value.bodyHash!==digest(value.body)
+  ||value.usage!=='DESIGN_ONLY_NOT_SHOT_INSTRUCTIONS')fail('UPSTREAM_DESIGN_TEXT','采用设计正文的身份、版本、正文哈希或用途边界无效');
+ return structuredClone(value);
 }
 function productionEvidence(packet,episode,assetKeys,materialKeys,sourceRows){
  const upstream=packet.upstream,result={};
@@ -58,6 +68,7 @@ function productionEvidence(packet,episode,assetKeys,materialKeys,sourceRows){
    const adopted=card.adoptedDesign;
    if(adopted!==null&&(!record(adopted)||adopted.provenance!=='ADOPTED_DESIGN_NOT_SOURCE_FACT'||!hasText(adopted.brief)
     ||adopted.version!==null&&(!Number.isSafeInteger(adopted.version)||adopted.version<1)))fail('UPSTREAM_PRODUCTION_CARD','采用设计必须与原文事实分开');
+   const fullText=adopted===null?undefined:adoptedDesignText(adopted.fullText,card.assetKey,adopted.version);
    let candidateDesign,candidateDesigns;
    if(card.candidateDesigns!==undefined&&!Array.isArray(card.candidateDesigns))fail('UPSTREAM_MATERIAL_CANDIDATE','局部材料候选列表无效');
    const candidateNeeds=new Set();
@@ -82,7 +93,7 @@ function productionEvidence(packet,episode,assetKeys,materialKeys,sourceRows){
    const references=Array.from(card.references,ref=>{if(!record(ref)||!hasText(ref.id)||refs.has(ref.id)||typeof ref.description!=='string'||typeof ref.available!=='boolean')fail('UPSTREAM_REFERENCE','制作参考说明无效');refs.add(ref.id);return {id:ref.id,description:ref.description,available:ref.available};});
    const materialNeeds=Array.from(card.materialNeeds,need=>{if(!record(need)||!['SOURCE_FUNCTION_EVIDENCE','DESIGN_REVIEW','REFERENCE_IMAGE'].includes(need.kind)||need.required!==false||!hasText(need.detail))fail('UPSTREAM_PRODUCTION_CARD','材料补足说明无效');return {kind:need.kind,required:false,detail:need.detail};});
    return {schema:card.schema,assetKey:card.assetKey,name:card.name,type:card.type,use:card.use,applicable:structuredClone(card.applicable),sourceFacts,
-    adoptedDesign:adopted===null?null:{version:adopted.version,brief:adopted.brief,provenance:adopted.provenance},...(candidateDesigns?{candidateDesigns}:candidateDesign?{candidateDesign}:{}),freeDesignScope:card.freeDesignScope,materialAvailability:card.materialAvailability,imageEvidence:'NO_PIXELS_READ',references,materialNeeds};
+    adoptedDesign:adopted===null?null:{version:adopted.version,brief:adopted.brief,provenance:adopted.provenance,...(fullText?{fullText}:{})},...(candidateDesigns?{candidateDesigns}:candidateDesign?{candidateDesign}:{}),freeDesignScope:card.freeDesignScope,materialAvailability:card.materialAvailability,imageEvidence:'NO_PIXELS_READ',references,materialNeeds};
   });
  }
  if(upstream.seriesKnowledge!==undefined){
@@ -124,7 +135,8 @@ function materialProjection(packet,episode,sourceRows){
    if(!record(ref)||!hasText(ref.id)||refs.has(ref.id)||typeof ref.description!=='string'||typeof ref.available!=='boolean')fail('UPSTREAM_REFERENCE','采用设计的参考说明或可用状态无效');
    refs.add(ref.id);return {id:ref.id,description:ref.description,available:ref.available};
   });
-  return {assetKey:design.assetKey,adoptionVersion:design.adoptionVersion,brief:design.brief,materialAvailability:design.materialAvailability,references};
+  const fullText=adoptedDesignText(design.fullText,design.assetKey,design.adoptionVersion);
+  return {assetKey:design.assetKey,adoptionVersion:design.adoptionVersion,brief:design.brief,materialAvailability:design.materialAvailability,references,...(fullText?{fullText}:{})};
  });
  return {seriesDirection,modelDesigns,...productionEvidence(packet,episode,assetKeys,materialKeys,sourceRows)};
 }

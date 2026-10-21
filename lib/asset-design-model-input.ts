@@ -8,7 +8,7 @@ export type AssetProductionCard = {
   use: 'ACTUAL_APPEARANCE' | 'MATERIAL_SOURCE_ONLY' | 'CANDIDATE_ONLY';
   applicable: {episode: number; sceneKeys: string[]};
   sourceFacts: {id: string; claim: 'SOURCE' | 'CHARACTER_CLAIM'; quote: string; association: 'ASSET_NAME' | 'SCENE_ACTION' | 'VISUAL_FACT'; evidence: Record<string, unknown>}[];
-  adoptedDesign: {version: number | null; brief: string; provenance: 'ADOPTED_DESIGN_NOT_SOURCE_FACT'} | null;
+  adoptedDesign: {version: number | null; brief: string; provenance: 'ADOPTED_DESIGN_NOT_SOURCE_FACT';fullText?:AssetDesignHandoff['fullText']} | null;
   candidateDesign?:AssetCandidateDesign;
   candidateDesigns?:AssetCandidateDesign[];
   freeDesignScope: string; materialAvailability: 'TEXT_ONLY' | 'REFERENCE_AVAILABLE'; imageEvidence: 'NO_PIXELS_READ';
@@ -61,7 +61,7 @@ export function buildAssetProductionCards(packet: LightEpisodePacket, designs: A
     if (!effective || design?.materialAvailability !== 'REFERENCE_AVAILABLE') materialNeeds.push({kind: 'REFERENCE_IMAGE', required: false, detail: '缺图不阻断文字制作；需要外观锁定时再补参考图。'});
     return {schema: 'ASSET_PRODUCTION_CARD_V1', assetKey: entry.assetKey, name: entry.name, type: entry.type, use: entry.use,
       applicable: {episode: packet.episode, sceneKeys}, sourceFacts,
-      adoptedDesign: effective ? {version: design!.adoptionVersion ?? null, brief: design!.brief!, provenance: 'ADOPTED_DESIGN_NOT_SOURCE_FACT'} : null,
+      adoptedDesign: effective ? {version: design!.adoptionVersion ?? null, brief: design!.brief!, provenance: 'ADOPTED_DESIGN_NOT_SOURCE_FACT',...(design!.fullText?{fullText:structuredClone(design!.fullText)}:{})} : null,
       ...(candidateDesigns.length?{candidateDesigns}:{}),
       freeDesignScope: effective && design?.freeDesignScope ? design.freeDesignScope : '原文与已采用设计未限定的非剧情美术细节可提出补足；不得擅自新增剧情功能、出入口、遮挡关系或道具能力。',
       materialAvailability: effective ? design!.materialAvailability : 'TEXT_ONLY', imageEvidence: 'NO_PIXELS_READ', references: effective ? design!.references : [], materialNeeds};

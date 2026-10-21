@@ -28,7 +28,8 @@ async function main(){
    {key:'bridge',name:'石桥',type:'LOC',aliases:[],description:'',sourceRefs:[],appearances:[],usageEpisodes:[2],variants:[]}
   ],episodes:[{number:1,context:'',assetKeys:['hero']},{number:2,context:'',assetKeys:['bridge']}]};
   await prisma.sceneSnapshot.create({data:{projectId:project.id,sceneKey:'FOUNDATION_DOCUMENT',content:JSON.stringify(doc)}});
-  await saveAssetPrompt(project.id,'hero',0,'白衣黑发。完整提示词只保存在第二阶段。');
+  const adoptedBody='白衣黑发。完整提示词只保存在第二阶段。'+'服装接缝及袖口细节按采用设计保持。'.repeat(60)+'正文尾部约束：右袖有暗扣，抬臂不露腕；禁止把七视图排版当作动作。';
+  await saveAssetPrompt(project.id,'hero',0,adoptedBody);
   await saveAssetPrompt(project.id,'bridge',0,'灰色石拱桥。');
   const adopt=async(key:string,brief:string)=>{const state=(await readAssetDesignAdoptions(project.id,user.id)).assets[key];return adoptAssetDesign(project.id,user.id,{assetKey:key,expectedRevision:state.revision,expectedMaterialToken:state.materialToken,brief,referenceIds:[]});};
   await adopt('hero','白衣黑发，神情克制。');
@@ -36,6 +37,20 @@ async function main(){
   assert.equal(h1.packet.upstream.seriesDirection.status,'UNCONFIRMED');
   assert.equal(h1.packet.upstream.modelDesigns[0].assetKey,'hero');
   assert(!JSON.stringify(h1).includes('完整提示词只保存在第二阶段'));
+  const full=await readProductionEpisodeHandoff(project.id,1,undefined,{adoptedDesignTextVersion:'adopted-design-text-v1'});
+  const supplied=full.packet.upstream.assetProductionCards[0].adoptedDesign!.fullText!;
+  assert.equal(supplied.body,adoptedBody,'bound full text must not be summarized to the 600-character brief');
+  assert.equal(supplied.adoptionVersion,full.packet.upstream.modelDesigns[0].adoptionVersion);
+  assert.equal(supplied.source,'ADOPTED_ASSET_PROMPT');
+  const preparedFull=makeEpisodeInput({episode:{...episodes[0],project},project,handoff:full,inputProtocol:'upstream-material-v2'});
+  assert.deepEqual(preparedFull.source.context.assetProductionCards[0].adoptedDesign.fullText,supplied);
+  const {splitProductionMaterials}=createRequire(import.meta.url)('../runtime/production-materials.mjs');
+  const {buildRequest}=createRequire(import.meta.url)('../runtime/storyboard-v4/core/core.mjs');
+  const separated=splitProductionMaterials(preparedFull);
+  const request=buildRequest({stage:'plan',source:separated.source,settings:{fantasyMode:'off',maxUnits:null},productionSnapshot:{version:'synthetic-full-text-supply',materials:separated.materials,touchesOpening:false,touchesEnding:false}});
+  assert.ok(request.prompt.includes(adoptedBody));
+  assert.ok(request.prompt.includes('正文尾部约束：右袖有暗扣'));
+  assert.ok(!JSON.stringify(await readProductionEpisodeHandoff(project.id,1)).includes('正文尾部约束'),'legacy reads stay on their brief-only contract, including cache separation');
   let direction=await getSeriesDirectionWorkspace(project.id,user.id);
   const content={settingTags:[],mechanismTags:[],arcTags:['关系成长'],primaryTone:'克制温情',secondaryTones:[],audiencePromise:'等待与信任。',expressionRules:['情感通过行动与反应呈现。'],avoidances:[],episodeFlexibility:'事实和揭示时点优先。'};
   direction=await mutateSeriesDirection(project.id,user.id,{action:'save',stateToken:direction.stateToken,sourceVersion:direction.source.sourceVersion,content,coverageAcknowledged:true});

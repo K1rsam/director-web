@@ -1,5 +1,5 @@
 import {readSeriesDirectionProjection} from './series-direction-service';
-import {readAssetDesignHandoff,type AssetDesignHandoff} from './asset-design-adoption';
+import {readAssetDesignHandoff,ADOPTED_DESIGN_TEXT_VERSION,type AssetDesignHandoff} from './asset-design-adoption';
 import {readLightEpisodeFoundation} from './light-foundation-reader';
 import {createHash} from 'node:crypto';
 import {isProductionEpisodeNumber,readProductionScope} from './production-episodes';
@@ -12,7 +12,7 @@ export const EPISODE_UPSTREAM_VERSION='EPISODE_UPSTREAM_V1' as const;
 type BaseHandoff=Awaited<ReturnType<typeof readLightEpisodeFoundation>>;
 type Direction=Awaited<ReturnType<typeof readSeriesDirectionProjection>>;
 
-/** Projection uses only this episode's identities; canonical prompts/history never become model input. */
+/** Only episode-scoped, explicitly bound adopted text may accompany the legacy brief; never unadopted history. */
 export function attachEpisodeMaterials(base:BaseHandoff,direction:Direction,designs:AssetDesignHandoff[],material?:{scope:AssetMaterialScope;candidates:({assetKey:string}&AssetCandidateDesign)[]}) {
  const keys=new Set([...base.packet.assets.flatMap(a=>[a.key!,...a.variants.map(v=>v.key!)]),...base.packet.materialDependencies.map(d=>d.key)]);
  if(direction.status==='CONFIRMED'&&(!direction.projection?.brief||[...direction.projection.brief].length>600))throw new Error('全剧方向投影无效，未以空方向继续。');
@@ -24,12 +24,12 @@ export function attachEpisodeMaterials(base:BaseHandoff,direction:Direction,desi
  const packet={...base.packet,upstream:{version:EPISODE_UPSTREAM_VERSION,seriesDirection:direction,
    ...(material?.candidates.length?{materialCandidateScope:material.scope}:{}),
    seriesKnowledge:direction.status==='CONFIRMED'?direction.projection?.seriesKnowledge??[]:[],assetProductionCards:buildAssetProductionCards(base.packet,selected,material?.candidates),
-   assetDesigns:selected,modelDesigns:effective.map(({assetKey,adoptionVersion,brief,materialAvailability,references})=>({assetKey,adoptionVersion,brief,materialAvailability,references:references.map(({id,description,available})=>({id,description,available}))})),
+   assetDesigns:selected,modelDesigns:effective.map(({assetKey,adoptionVersion,brief,materialAvailability,references,fullText})=>({assetKey,adoptionVersion,brief,materialAvailability,...(fullText?{fullText:structuredClone(fullText)}:{}),references:references.map(({id,description,available})=>({id,description,available}))})),
    policy:'全剧方向只约束表达，不改原文事实与揭示时点；采用设计是制作材料，不是剧情证据。已有采用设计优先；CANDIDATE_ONLY只回答指定任务need，供局部评估与回执，不是全局采用或源事实，不可推翻关键锁定。只读参考说明，未读取图像像素；未采用或缺图片不冒充已完成素材。'}};
  return {...base,packet,materialVersion:createHash('sha256').update(JSON.stringify(packet)).digest('hex')};
 }
 
-type EvidenceOptions = ScriptPerformanceOptions & {episodeEvidenceVersion?: 'episode-evidence-v1' | null};
+type EvidenceOptions = ScriptPerformanceOptions & {episodeEvidenceVersion?: 'episode-evidence-v1' | null;adoptedDesignTextVersion?:typeof ADOPTED_DESIGN_TEXT_VERSION|null};
 async function readHandoffSnapshot(projectId:string,episodeNumber:number,productionScope?:{workflowId:string;runId:string},options:EvidenceOptions={}) {
  if(!isProductionEpisodeNumber(episodeNumber,await readProductionScope(projectId)))throw new Error('此来源尚未归入可制作正文，请先核对来源分区。');
  const base=await readLightEpisodeFoundation(projectId,episodeNumber,undefined,options);
@@ -37,7 +37,7 @@ async function readHandoffSnapshot(projectId:string,episodeNumber:number,product
  const episode=await prisma.episode.findFirstOrThrow({where:{projectId,number:episodeNumber},select:{id:true}});
  const keys=[...base.packet.assets.flatMap(a=>[a.key!,...a.variants.map(v=>v.key!)]),...base.packet.materialDependencies.map(d=>d.key)];
  const workspace=productionScope?await(await import('./asset-prompt-service')).loadAssetPromptWorkspace(projectId):undefined;
- const [direction,designs]=await Promise.all([readSeriesDirectionProjection(projectId,episode.id),keys.length?readAssetDesignHandoff(projectId,keys,workspace):Promise.resolve([])]);
+ const [direction,designs]=await Promise.all([readSeriesDirectionProjection(projectId,episode.id),keys.length?readAssetDesignHandoff(projectId,keys,workspace,{adoptedDesignTextVersion:options.adoptedDesignTextVersion}):Promise.resolve([])]);
  let material:Parameters<typeof attachEpisodeMaterials>[3];
  if(productionScope){const scope={...productionScope,episodeNumber,sourceVersion:base.packet.sourceVersion};material={scope,candidates:await readScopedAssetMaterialCandidates(projectId,scope,keys,workspace!)};}
  return attachEpisodeMaterials(base,direction,designs,material);

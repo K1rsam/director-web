@@ -30,7 +30,7 @@ function loadTs(file,imports,context={}){
  return module.exports;
 }
 
-function fixture({sourceError=null,active=false,run=structuredClone(saved),env={},coordinatorOverrides={},sourcePartition=null,episodeNumber=1,diagnostics=null,diagnosticsError=null,policyError=null,localPhase=null,budgetAttempts=[],nativeRecovery=null,chain=null,lockedChain=null,boundaryHelpers=null,handoff=null,runtimeGlobal=null,kernelRules=null,cliState={error:null}}={}){
+function fixture({sourceError=null,active=false,run=structuredClone(saved),env={},coordinatorOverrides={},sourcePartition=null,episodeNumber=1,diagnostics=null,diagnosticsError=null,policyError=null,localPhase=null,budgetAttempts=[],nativeRecovery=null,chain=null,lockedChain=null,boundaryHelpers=null,handoff=null,runtimeGlobal=null,kernelRules=null,nativeInputVersion='adopted-design-text-v1',cliState={error:null}}={}){
  const stats={sourceLoads:0,sourceProtocols:[],sourceReaders:[],inlinePerformanceModes:[],inlinePerformanceVersions:[],episodeEvidenceVersions:[],productionRefreshes:[],voiceMeasurements:0,cliChecks:0,resolverCalls:0,dispatches:[],coordinatorOptions:null,diagnosticReads:[],executionReads:[],budgetReconciliations:[]};
  const readSource=(protocol,reader,inlinePerformance,version,evidenceVersion)=>{stats.sourceLoads++;stats.sourceProtocols.push(protocol);stats.sourceReaders.push(reader);stats.inlinePerformanceModes.push(inlinePerformance);stats.inlinePerformanceVersions.push(version);stats.episodeEvidenceVersions.push(evidenceVersion);if(sourceError)throw sourceError;return null;};
  const current={...structuredClone(episode),number:episodeNumber};
@@ -45,6 +45,7 @@ function fixture({sourceError=null,active=false,run=structuredClone(saved),env={
  const productionScope=loadTs('lib/production-episodes.ts',{'./prisma':{prisma:db}});
  const listDocuments=coordinator.list.bind(coordinator);
  const service=loadTs('lib/storyboard-service.ts',{
+  './asset-design-adoption':{ADOPTED_DESIGN_TEXT_VERSION:'adopted-design-text-v1'},
   'server-only':{},'@/lib/prisma':{prisma:db},
   '@/lib/episode-presentation':presentation,'@/lib/production-episodes':productionScope,
   '@/lib/light-foundation-reader':{readLightEpisodeFoundation:async(_project,_episode,_db,options)=>readSource(options?.protocol,'light',options?.inlinePerformance,options?.inlinePerformanceVersion,options?.episodeEvidenceVersion)},
@@ -61,6 +62,7 @@ function fixture({sourceError=null,active=false,run=structuredClone(saved),env={
   '@/lib/codex-cli':{resolveCodexExecutable:()=>{stats.resolverCalls++;return env.CODEX_CLI_PATH||'/resolved/codex';}},
   'node:child_process':{execFile:(_file,_args,_options,callback)=>{stats.cliChecks++;callback(cliState.error,'fixture','');}},
   'node:module':{createRequire:()=>name=>{
+   if(name.endsWith('/input.mjs'))return {...require(name),ADOPTED_DESIGN_TEXT_VERSION:nativeInputVersion};
    if(name.endsWith('/core/core.mjs')&&kernelRules)return {captureRules:()=>kernelRules};
    if(name.endsWith('/source-context.mjs'))return {readEpisodeSourceContext:async()=>null};
    if(name.endsWith('/storyboard-archive.mjs'))return {withStoryboardArchive:current=>current};
@@ -87,8 +89,8 @@ function fixture({sourceError=null,active=false,run=structuredClone(saved),env={
 
 test('new tasks reject a partially reloaded native kernel before source preparation or creation',async()=>{
  const versions=captureRules();
- for(const key of ['rhythmContractVersion','fantasyTimingVersion','visualSubjectsVersion','opportunityCoverageVersion','systemPresentationVersion']){
-  let created=0;const f=fixture({kernelRules:{...versions,[key]:undefined},coordinatorOverrides:{create:async()=>{created++;return {id:'should-not-create'};}}});
+ for(const [key,value] of [...['rhythmContractVersion','fantasyTimingVersion','visualSubjectsVersion','opportunityCoverageVersion','systemPresentationVersion','seedanceExportVersion'].map(key=>[key,undefined]),['seedanceExportVersion','seedance-execution-v3']]){
+  let created=0;const f=fixture({kernelRules:{...versions,[key]:value},coordinatorOverrides:{create:async()=>{created++;return {id:'should-not-create'};}}});
   await assert.rejects(f.service.createStoryboardRun(f.current,{}),error=>error.code==='RUNTIME_RELOAD_REQUIRED'&&error.requestOutcome==='NOT_SENT'&&error.status===503);
   assert.equal(created,0);assert.equal(f.stats.sourceLoads,0);assert.equal(f.stats.voiceMeasurements,0);assert.deepEqual(f.stats.dispatches,[]);
  }
@@ -99,7 +101,13 @@ test('a current native kernel permits creating a new task without dispatching a 
  const result=await f.service.createStoryboardRun(f.current,{});
  assert.equal(result.id,'new-kernel');assert.equal(created.binding.inlinePerformanceVersion,'inline-performance-v2');
  assert.equal(created.binding.episodeEvidenceVersion,'episode-evidence-v1');
+ assert.equal(created.binding.adoptedDesignTextVersion,'adopted-design-text-v1');
  assert.equal(created.settings.model,'gpt-6.1-sol');assert.equal(created.settings.reasoning,'medium');assert.deepEqual(f.stats.dispatches,[]);
+});
+test('an old cached native input reader cannot silently drop full adopted text on new creation',async()=>{
+ const f=fixture({kernelRules:captureRules(),nativeInputVersion:null});
+ await assert.rejects(f.service.createStoryboardRun(f.current,{}),error=>error.code==='RUNTIME_RELOAD_REQUIRED'&&error.requestOutcome==='NOT_SENT');
+ assert.equal(f.stats.sourceLoads,0);assert.deepEqual(f.stats.dispatches,[]);
 });
 
 test('an obsolete native kernel does not block reading frozen historical drafts',async()=>{

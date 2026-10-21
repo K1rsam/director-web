@@ -113,12 +113,12 @@ for (const hasCandidate of [false, true]) test(`current all mode completes in on
 });
 
 const recoveryCases = [...styles.map(style => ({style, allAtOnce: false})), {style: styles[0], allAtOnce: true}];
-for (const {style, allAtOnce} of recoveryCases) test(`current rules recover quote edges and export v3 without losing ${style.name}${allAtOnce ? ' in one mode:all run' : ''}`, async t => {
+for (const {style, allAtOnce} of recoveryCases) test(`current rules recover quote edges and export v4 without losing ${style.name}${allAtOnce ? ' in one mode:all run' : ''}`, async t => {
   const directory = await mkdtemp(path.join(tmpdir(), 'v4-current-rules-recovery-'));
   let c, beforeAutomaticFinish;
   t.after(async () => {try {await c?.shutdown();} finally {await rm(directory, {recursive: true, force: true});}});
   const f = fixture(style), calls = [], frozenRules = captureRules(), frozenHash = digest(frozenRules);
-  assert.equal(frozenRules.seedanceExportVersion, 'seedance-execution-v3');
+  assert.equal(frozenRules.seedanceExportVersion, 'seedance-execution-v4');
   assert.equal(frozenRules.unitDirectionVersion, 'unit-direction-v1');
   assert.equal(frozenRules.sourceExpressionMethodsVersion, 'source-expression-methods-v2');
   const originalSource = structuredClone(f.source), originalDraft = structuredClone(f.draft);
@@ -170,7 +170,7 @@ for (const {style, allAtOnce} of recoveryCases) test(`current rules recover quot
   assert.equal(result.status, 'text_ready_for_review');
   assert.equal(result.web.progress, 'text_ready_for_review');
   assert.equal(digest(result.rulesSnapshot), frozenHash, 'saved task rules must remain frozen through repair');
-  assert.equal(result.rulesSnapshot.seedanceExportVersion, 'seedance-execution-v3');
+  assert.equal(result.rulesSnapshot.seedanceExportVersion, 'seedance-execution-v4');
   assert.deepEqual(result.assembly.validation.errors, []);
   assert.equal(repaired.status, 'adopted');
   assert.equal(preserved.resolvedBy, repaired.id);
@@ -205,6 +205,7 @@ for (const {style, allAtOnce} of recoveryCases) test(`current rules recover quot
   assert.deepEqual(parts.map(({voiceStart, voiceEnd}) => [voiceStart, voiceEnd]), [[0.5, 1.5], [0.5, 1.5]]);
   assert.equal(unit.shots.reduce((seconds, shot) => seconds + shot.duration, 0), 8);
   const text = result.assembly.text;
+  assert.ok(text.includes('[结束状态] '+unit.exitState));
   assert.ok(text.includes(style.visualStyle));
   assert.ok(text.includes(f.direction));
   for (const shot of f.draft.units[0].shots) {
@@ -253,7 +254,7 @@ for (const defect of ['missing quote edges', 'changed dialogue words']) test(`cu
   assert.equal(result.assembly, null, 'invalid finishing cannot produce an accepted export');
   assert.deepEqual(result.adopted, []);
   assert.deepEqual(result.source, originalSource);
-  assert.equal(result.rulesSnapshot.seedanceExportVersion, 'seedance-execution-v3');
+  assert.equal(result.rulesSnapshot.seedanceExportVersion, 'seedance-execution-v4');
   assert.equal(result.rulesSnapshot.sourceExpressionMethodsVersion, 'source-expression-methods-v2');
   assert.equal(author.raw, rawAuthor);
   assert.deepEqual(author.output, f.invalid);
@@ -268,7 +269,7 @@ for (const defect of ['missing quote edges', 'changed dialogue words']) test(`cu
   assert.equal((await c.read(d.id)).assembly, null);
 });
 
-test('current rules retain one long OS across two capacity units and delta finish resets each v3 timeline', async t => {
+test('current rules retain one long OS across two capacity units and delta finish resets each v4 timeline', async t => {
   const directory = await mkdtemp(path.join(tmpdir(), 'v4-current-rules-long-os-'));
   let c;
   t.after(async () => {try {await c?.shutdown();} finally {await rm(directory, {recursive: true, force: true});}});
@@ -322,7 +323,7 @@ test('current rules retain one long OS across two capacity units and delta finis
   assert.deepEqual(calls.map(request => request.stage), ['plan', 'author', 'finish']);
   assert.equal(result.status, 'text_ready_for_review');
   assert.equal(result.web.autoRepairs, 0);
-  assert.equal(result.rulesSnapshot.seedanceExportVersion, 'seedance-execution-v3');
+  assert.equal(result.rulesSnapshot.seedanceExportVersion, 'seedance-execution-v4');
   assert.equal(result.rulesSnapshot.sourceExpressionMethodsVersion, 'source-expression-methods-v2');
   assert.deepEqual(result.assembly.validation.errors, []);
   assert.equal(finished.output.schemaVersion, DELTA_VERSION);
