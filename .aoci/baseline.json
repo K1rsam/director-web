@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-03T17:23:13Z",
-  "updated_at": "2026-10-21T07:32:30Z",
+  "updated_at": "2026-10-21T09:13:22Z",
   "files": {
     ".agents/skills/e0-narrative-rhythm-director/SKILL.md": {
       "sha256": "466263e51d49ffced60923b43f4ee19a26cb15f6b0b6c357aa910b7c124ead36",
@@ -164,14 +164,14 @@
       "normalized_sha256": "26ed1731e57ad3aaf41aba1aa15edee4689b16bc01a851d0ae85fbb648579bff"
     },
     "README.md": {
-      "sha256": "f44526d49675df14a8dc7a6ae6f27b61acf3b30a58e8b1cbd7c57c43f69421fc",
-      "size": 13593,
-      "normalized_sha256": "f44526d49675df14a8dc7a6ae6f27b61acf3b30a58e8b1cbd7c57c43f69421fc"
+      "sha256": "5f5801935541fed81340bcc0c91db2e81e3c12932034f9b4efe7f92ad0284894",
+      "size": 13831,
+      "normalized_sha256": "5f5801935541fed81340bcc0c91db2e81e3c12932034f9b4efe7f92ad0284894"
     },
     "aoci.code.txt": {
-      "sha256": "f485353d4a9b2f74310139ba0c9d13a515b4ddc19bfc4a3245dbd084730353de",
-      "size": 476842,
-      "normalized_sha256": "f485353d4a9b2f74310139ba0c9d13a515b4ddc19bfc4a3245dbd084730353de"
+      "sha256": "3fa767835afc66d575364ae7d7e44da362253733c4fe07327f721fa5dd072c83",
+      "size": 478403,
+      "normalized_sha256": "3fa767835afc66d575364ae7d7e44da362253733c4fe07327f721fa5dd072c83"
     },
     "aoci.meta.txt": {
       "sha256": "fbc304fa05182547e96f1f8404c7c30ad6c366bba9589523f1019c2c1da0427c",
@@ -1002,6 +1002,11 @@
       "sha256": "454aabb2de7362d31e7b3a4beb6c340e07737df03c623ca380bc5e0c80d19195",
       "size": 4901,
       "normalized_sha256": "454aabb2de7362d31e7b3a4beb6c340e07737df03c623ca380bc5e0c80d19195"
+    },
+    "docs/3008-SHOT-HANDOFFS-20261021.md": {
+      "sha256": "52642bbf5f2bd3b9d6ab58dc520dd9b13047a8017bb2ba795dee0af12cbfe546",
+      "size": 5568,
+      "normalized_sha256": "52642bbf5f2bd3b9d6ab58dc520dd9b13047a8017bb2ba795dee0af12cbfe546"
     },
     "docs/3008-SKILL-V65-SYNC-20261020.md": {
       "sha256": "f95411a1b2a5e97e692206c311ddb4261e2c8391a327671a1f008a9f783033fa",
@@ -2549,9 +2554,9 @@
       "normalized_sha256": "3cb6ca5a9beb11851a83fd58eba3b86b34556f45646d5048a0feeb436f9a82d4"
     },
     "lib/storyboard-service.ts": {
-      "sha256": "a1156171b5ab81cf56d58d6c8a59c26f99fbfebf0cbac057411cc0c377ec7477",
-      "size": 44897,
-      "normalized_sha256": "a1156171b5ab81cf56d58d6c8a59c26f99fbfebf0cbac057411cc0c377ec7477"
+      "sha256": "24912d55a64c14a45300c2eb6b125251d44da8a6b8f5db0a1a93d9157502f33b",
+      "size": 44938,
+      "normalized_sha256": "24912d55a64c14a45300c2eb6b125251d44da8a6b8f5db0a1a93d9157502f33b"
     },
     "lib/studio.ts": {
       "sha256": "07123138b2dd9e8896df16c2270c9676e62277b29f29723d3a21804dbe0ebc14",
@@ -3068,9 +3073,9 @@
       "normalized_sha256": "ebe44e8236c405c77dd104b3449ecdeebe27d81e7cb40e7631de3e9138ddff4a"
     },
     "runtime/storyboard-v4/core/core.mjs": {
-      "sha256": "cb5098b0c8adb33508746ef9dceb6e10a8c1f0878e84b3d1c0b6fc41997863b5",
-      "size": 57563,
-      "normalized_sha256": "cb5098b0c8adb33508746ef9dceb6e10a8c1f0878e84b3d1c0b6fc41997863b5"
+      "sha256": "8e5d77711d9d023b71a6d1a26c4399a3836c6d523b856af3b2990a41a08f4f4a",
+      "size": 58271,
+      "normalized_sha256": "8e5d77711d9d023b71a6d1a26c4399a3836c6d523b856af3b2990a41a08f4f4a"
     },
     "runtime/storyboard-v4/core/core.test.mjs": {
       "sha256": "5a9c1ca15f89a27b1b076a15df7a4982bbdf19ccedd604df63165a1f1894fca9",
@@ -3368,9 +3373,9 @@
       "normalized_sha256": "84a5ea29fdb89a11cfc8bfd0787db72bda6a43c5ca25cbcc29ee5027ab606893"
     },
     "runtime/storyboard-v4/core/references/cards/editing-integrity.md": {
-      "sha256": "63a322cbde08040b5999ce38f113304389ca044e1e2214bf8e8bbe2b87ddf0b0",
-      "size": 1966,
-      "normalized_sha256": "63a322cbde08040b5999ce38f113304389ca044e1e2214bf8e8bbe2b87ddf0b0"
+      "sha256": "a1cd07fe5271f057089fd704bdb9b9a4592d0ad7365b3fe73b532ad16791d251",
+      "size": 2521,
+      "normalized_sha256": "a1cd07fe5271f057089fd704bdb9b9a4592d0ad7365b3fe73b532ad16791d251"
     },
     "runtime/storyboard-v4/core/references/cards/expressive-emphasis.md": {
       "sha256": "859627f68e7067f79d57afc787fcc08f4904dbff2c7c3394e30e5e21ba0644a2",
@@ -3408,9 +3413,9 @@
       "normalized_sha256": "90281f3f9e6d764a7711ecd89b4c2ddb7d833aeb8bd94926e4150bdbb67d8f3f"
     },
     "runtime/storyboard-v4/core/references/common-contract.md": {
-      "sha256": "aeb6142f82eb74eea208d00ae80e7bee5c5c2d295f9dceaf8e39f838b4329397",
-      "size": 21728,
-      "normalized_sha256": "aeb6142f82eb74eea208d00ae80e7bee5c5c2d295f9dceaf8e39f838b4329397"
+      "sha256": "b3bb2e27bbb670ed1bbdfa461f151f598418fd967a2105dc6d73cc2813ef3b10",
+      "size": 23205,
+      "normalized_sha256": "b3bb2e27bbb670ed1bbdfa461f151f598418fd967a2105dc6d73cc2813ef3b10"
     },
     "runtime/storyboard-v4/core/refinement-adoption.mjs": {
       "sha256": "cc9145bb318ed896a61239c6e9c98e8ead50f197c5f8659d4b669e0f6aaa1525",
@@ -3562,6 +3567,16 @@
       "size": 564,
       "normalized_sha256": "1a929721809d4da5126eb8950ca442cd7803fc7ee8d224cfbee07f979349162e"
     },
+    "runtime/storyboard-v4/core/shot-handoffs.mjs": {
+      "sha256": "aec63fa130836705d4ee7d7908ff63b8f509b46fdc89fda52c221afd31cdae6e",
+      "size": 5082,
+      "normalized_sha256": "aec63fa130836705d4ee7d7908ff63b8f509b46fdc89fda52c221afd31cdae6e"
+    },
+    "runtime/storyboard-v4/core/shot-handoffs.test.mjs": {
+      "sha256": "ac6562bcff17ae0212e66ffebd08f09738de6c3dc36bb43ee3c362cee684fb60",
+      "size": 17387,
+      "normalized_sha256": "ac6562bcff17ae0212e66ffebd08f09738de6c3dc36bb43ee3c362cee684fb60"
+    },
     "runtime/storyboard-v4/core/skills/acting-blocking-methods/SKILL.md": {
       "sha256": "71453a6d95d9bfe0248144f249dc46d8672c6c261e3a83aee8cf6bd72172a9bf",
       "size": 14054,
@@ -3578,14 +3593,14 @@
       "normalized_sha256": "579e82ae4256cbc9e9af3bfdfd0a3ec3590b91f1af818b7a77611264ffd2c937"
     },
     "runtime/storyboard-v4/core/skills/episode-emotion-planner/SKILL.md": {
-      "sha256": "939f9c25508e5c7b298e181c941de8fa258f428336642adeef0051e60c2438e6",
-      "size": 15369,
-      "normalized_sha256": "939f9c25508e5c7b298e181c941de8fa258f428336642adeef0051e60c2438e6"
+      "sha256": "ee6e2834c91b855f3dc5e6a5adea443f26bf7a8f7b80a2f7bec351916a1b60e2",
+      "size": 15748,
+      "normalized_sha256": "ee6e2834c91b855f3dc5e6a5adea443f26bf7a8f7b80a2f7bec351916a1b60e2"
     },
     "runtime/storyboard-v4/core/skills/episode-finishing-editor/SKILL.md": {
-      "sha256": "bfd6034fcb7459ceca364c6d9fe876346c1a5fa9259788b2abaf632239590782",
-      "size": 30467,
-      "normalized_sha256": "bfd6034fcb7459ceca364c6d9fe876346c1a5fa9259788b2abaf632239590782"
+      "sha256": "1501dd1cbb93640fe0172083a7926ada2bc1403c39e62f37bc806a6517f1089d",
+      "size": 31422,
+      "normalized_sha256": "1501dd1cbb93640fe0172083a7926ada2bc1403c39e62f37bc806a6517f1089d"
     },
     "runtime/storyboard-v4/core/skills/fantasy-expression-methods/SKILL.md": {
       "sha256": "5af09e8b98a3aece7046dc717a2aba16be977cc6026e23873f3d1c3ea9a5848c",
@@ -3608,9 +3623,9 @@
       "normalized_sha256": "f563acc7ef27d08e60fd596778e511d7132d4e62144d4cb75f6fee63a4a9d291"
     },
     "runtime/storyboard-v4/core/skills/unit-performance-director/SKILL.md": {
-      "sha256": "98c20fbdbbdcbadd92e963ad500159c9f9c88fb89e35c5bdc9c8f4600b1599b0",
-      "size": 22967,
-      "normalized_sha256": "98c20fbdbbdcbadd92e963ad500159c9f9c88fb89e35c5bdc9c8f4600b1599b0"
+      "sha256": "582f1f1105f1f4b59f2e4099b893a75f68447873bef8c46d4d03255befdcaf25",
+      "size": 23625,
+      "normalized_sha256": "582f1f1105f1f4b59f2e4099b893a75f68447873bef8c46d4d03255befdcaf25"
     },
     "runtime/storyboard-v4/core/source-expression-methods.test.mjs": {
       "sha256": "293d6b53d396bb42e7b784c505992418ca96b25b08530995074a16f097a3b08c",
@@ -3793,9 +3808,9 @@
       "normalized_sha256": "113c1d7be4141abde2a18fb95676fa873192c2ba3c50ef398b6edbfb7a649a7b"
     },
     "runtime/storyboard-v4/review-packet.mjs": {
-      "sha256": "3ed6b155ee5511219f94340e715252f184f9fc3eb9406c0fae2beadd519c2468",
-      "size": 7491,
-      "normalized_sha256": "3ed6b155ee5511219f94340e715252f184f9fc3eb9406c0fae2beadd519c2468"
+      "sha256": "dfa6b35cbd6502ebc50043fae873945ebc1ee6408527e02bc723cc03e12a3697",
+      "size": 7831,
+      "normalized_sha256": "dfa6b35cbd6502ebc50043fae873945ebc1ee6408527e02bc723cc03e12a3697"
     },
     "runtime/storyboard-v4/review-packet.test.mjs": {
       "sha256": "dc8f5cfeccd0d2a47ce7552b2b82d7cc9414d63a0217bac1ecfbea3e71163067",
@@ -3833,9 +3848,9 @@
       "normalized_sha256": "dee3dba2ffd9aa3286e3215e2c4b6a4d81d7ea6eb11893890adfff8403b2911f"
     },
     "runtime/storyboard-v4/service.test.mjs": {
-      "sha256": "a00ef9de74680194b7633ac7f454fd5ccadf6a27dfe728fede5a53b7dd17d41e",
-      "size": 58122,
-      "normalized_sha256": "a00ef9de74680194b7633ac7f454fd5ccadf6a27dfe728fede5a53b7dd17d41e"
+      "sha256": "f9b41c68d0b0a58015054aeb1892f21b442231c54939e9ea0f310d64dcf9d29e",
+      "size": 58181,
+      "normalized_sha256": "f9b41c68d0b0a58015054aeb1892f21b442231c54939e9ea0f310d64dcf9d29e"
     },
     "runtime/storyboard-v4/source-context.mjs": {
       "sha256": "22022add1d9045d2c021e96f4c05e486939ec03f1aa8ce8423b2c7ba8b7a83ee",

@@ -89,7 +89,7 @@ function fixture({sourceError=null,active=false,run=structuredClone(saved),env={
 
 test('new tasks reject a partially reloaded native kernel before source preparation or creation',async()=>{
  const versions=captureRules();
- for(const [key,value] of [...['rhythmContractVersion','fantasyTimingVersion','visualSubjectsVersion','opportunityCoverageVersion','systemPresentationVersion','seedanceExportVersion'].map(key=>[key,undefined]),['seedanceExportVersion','seedance-execution-v3']]){
+ for(const [key,value] of [...['rhythmContractVersion','fantasyTimingVersion','visualSubjectsVersion','opportunityCoverageVersion','systemPresentationVersion','seedanceExportVersion','editingHandoffVersion'].map(key=>[key,undefined]),['seedanceExportVersion','seedance-execution-v3'],['editingHandoffVersion','future']]){
   let created=0;const f=fixture({kernelRules:{...versions,[key]:value},coordinatorOverrides:{create:async()=>{created++;return {id:'should-not-create'};}}});
   await assert.rejects(f.service.createStoryboardRun(f.current,{}),error=>error.code==='RUNTIME_RELOAD_REQUIRED'&&error.requestOutcome==='NOT_SENT'&&error.status===503);
   assert.equal(created,0);assert.equal(f.stats.sourceLoads,0);assert.equal(f.stats.voiceMeasurements,0);assert.deepEqual(f.stats.dispatches,[]);

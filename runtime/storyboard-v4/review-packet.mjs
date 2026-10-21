@@ -3,6 +3,7 @@ import {isDirectorRefinement} from './core/director-refinement.mjs';
 import {getRefinementBase,getRefinementComparison} from './core/refinement-comparison.mjs';
 import {refinementScope} from './core/refinement-scope.mjs';
 import {resolveSelection} from './core/selection.mjs';
+import {SHOT_HANDOFF_VERSION,renderShotHandoffs} from './core/shot-handoffs.mjs';
 
 // Local export only: no model scoring, external upload or request replay.
 export function buildReviewPacket(d,{candidateId}={}){
@@ -19,7 +20,7 @@ export function buildReviewPacket(d,{candidateId}={}){
  }
  if(typeof base?.text!=='string'||!base.text||base.validation?.errors?.length!==0)fail('REFINEMENT_BASE_REQUIRED','尚无完整有效的对照基稿。');
  const unchanged=comparison?.status==='unchanged';
- const drafts=[{origin:'base',text:base.text},...(candidate&&!unchanged?[{origin:'candidate',text:candidate.adoptedRefinement?.text??candidate.previewText}]:[])];
+ const drafts=[{origin:'base',text:base.text,draft:base.draft},...(candidate&&!unchanged?[{origin:'candidate',text:candidate.adoptedRefinement?.text??candidate.previewText,draft:candidate.adoptedRefinement?.draft??candidate.draft}]:[])];
  // Stable assignment avoids changing letters on repeat download; origin mapping
  // is returned to the authenticated caller but deliberately absent from the file.
  if(drafts.length===2&&parseInt(digest(candidate.id).slice(0,2),16)%2)drafts.reverse();
@@ -51,7 +52,7 @@ export function buildReviewPacket(d,{candidateId}={}){
  ...(selection?['本任务实际选入的额外幻想机会（不是每单元强加幻想；源要求另行保留）：\n'+(selected.join('\n')||'无')]:[]),
  ...(scope?['## 本次允许修改范围',scopeText,'## 实际差异坐标（不代表提升）',differenceText]:[]),
  '## 本集冻结原文',source,
- ...drafts.flatMap((draft,i)=>[`## 稿件 ${labels[i].label}`,draft.text]),
+ ...drafts.flatMap((draft,i)=>[`## 稿件 ${labels[i].label}`,draft.text,...(d.rulesSnapshot?.editingHandoffVersion===SHOT_HANDOFF_VERSION&&Array.isArray(draft.draft?.units)?[`## 稿件 ${labels[i].label} 切点取证`,renderShotHandoffs(draft.draft)]:[])]),
  '## 独立评价表（审阅人填写）',
   (paired?'先逐稿独立评阅，再比较。':'独立评阅本稿。')+'每个结论必须标单元/镜号、引用实际片段并说明对观众体验的影响；不以术语数量、文字长度、镜头数量或抽象夸张标签代替有效画面。未验证的视听效果记为待实测。',
   [

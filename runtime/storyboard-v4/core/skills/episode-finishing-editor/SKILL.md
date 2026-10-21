@@ -15,6 +15,8 @@ description: Use when complete storyboard work packages need direct source-groun
 
 先沿源与emotionContract连看每处独立回报：期待—受辱、秘密得势—公开反击、真实受压—救场等仅核适用项。世界理解是否有实质画面，公开释放是否被脑内狂喜冒领，人的打脸是否被符号表演代替？结构通过、候选已记兑现均不足以放行。再核下列风险并联修状态/画框；只在已有正文与revisionNotes交实改，不增加裁判、评分或模型调用。
 
+收到editingHandoffs时，按当前inputSha256所绑定的previousDraft与cutPairs，直接定位outgoing/incoming的unitIndex、shotIndex和segmentIndexes，读两端实际picture/camera/transition及声音与原分段头；它是只读取证，不是质量结论。没有索引的旧输入仍直接连读实际镜文。先区分同次动态、对白视线/落词/J-L声接、换场跳时、有据省略与主观回接；只对需要动作连续处核共同契约的切断/继续相位、方向、轨迹、接触与余势。出画后接入还核离画边、稳定空间去向、入画/落点与未完过程。缺口在本次关联范围联修前镜picture/transition和后镜picture/camera，初末态、revisionNotes或口号不能替代正文；差量须把需要联修的两端纳入完整替换组，改后重读，保留正确邻段。合并后的原内部接点和保留的容量边界同样核，不以单元减少免核，不新建审稿岗。
+
 ## 本次整编内完成创作取舍
 
 通读时定位全部适用段，不只挑容易修的一处；没有相应风险不硬造问题。这是现有独立整编的责任，不另开创作、评分或批准调用。
