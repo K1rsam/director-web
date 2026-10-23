@@ -1,6 +1,10 @@
 export const PRODUCTION_LIMIT_POLICY:'production-limits-20261015-v1';
 export const DEFAULT_EPISODE_BUDGET:Readonly<{maxCalls:8;maxTokens:600000}>;
 export const EPISODE_TOKEN_WARNING:500000;
+export const PRODUCTION_PARALLEL_VERSION:'production-parallel-v2';
+export const PRODUCTION_LANE_COUNTS:ReadonlyArray<4|6>;
+export function productionLaneCount(value?:unknown):4|6;
+export function productionParallelLaneCount(value:unknown):4|6;
 export type ProductionModelSelection={version:'production-model-selection-v1';model:'gpt-6.1-sol'|'gpt-6-sol'|'gpt-6-astra';reasoning:'low'|'medium'|'high'|'xhigh'|'max'|'ultra'};
 export const PRODUCTION_MODELS:ReadonlyArray<ProductionModelSelection['model']>;
 export const PRODUCTION_REASONING:ReadonlyArray<ProductionModelSelection['reasoning']>;

@@ -28,6 +28,7 @@ export type FoundationDeliveryState = {
   task: FoundationDeliveryTask | null; totalEpisodes: number; availableEpisodes: number; editedEpisodes: number;
   busy: boolean; complete: boolean; needsContextEdit: boolean;
   documentReady?: boolean;
+  effectiveEditorialCoverage?:number[];
   needsAssetRefresh?: boolean;
   methodUpdateAvailable?: boolean;
   action: 'START' | 'CONTINUE' | 'NONE' | 'UNKNOWN_CONFIRM' | 'BLOCKED';

@@ -1,3 +1,5 @@
+import {requireSeasonProduction} from './season-scope-service';
+import {assertSeasonEpisodes,seasonAssetAllowed} from '../runtime/season-scope.mjs';
 import {createHash,randomUUID,timingSafeEqual} from 'node:crypto';
 import {mkdir,readFile,writeFile,lstat,realpath,open} from 'node:fs/promises';
 import {constants as fsConstants} from 'node:fs';
@@ -35,13 +37,29 @@ export async function listExecutorImageJobs(){
    json_extract(content,'$.status')='RUNNING' OR
    (json_extract(content,'$.status')='WAITING_EXECUTOR' AND json_extract(content,'$.dispatchMode')='CHROME')
    ELSE 1 END ORDER BY createdAt ASC,id ASC`;
- return rows.map(row=>JSON.parse(row.content) as StoredJob).filter(job=>job.status==='RUNNING'||job.status==='WAITING_EXECUTOR'&&job.dispatchMode==='CHROME').map(job=>({id:job.id,projectId:job.projectId,key:job.key,name:job.name,status:job.status,revision:job.revision}));
+ const candidates=rows.map(row=>JSON.parse(row.content) as StoredJob).filter(job=>job.status==='RUNNING'||job.status==='WAITING_EXECUTOR'&&job.dispatchMode==='CHROME');
+ return (await currentSeasonJobs(candidates)).map(job=>({id:job.id,projectId:job.projectId,key:job.key,name:job.name,status:job.status,revision:job.revision}));
 }
 export async function imageJobExecutorIdentity(id:string){identity(id);const row=await prisma.sceneSnapshot.findFirst({where:{id,sceneKey:JOB_KEY}});if(!row)throw new Error('任务不存在。');const job=JSON.parse(row.content) as StoredJob;return {projectId:job.projectId,actorId:job.actorId};}
 type StoredJob=Omit<ImageJob,'stale'|'leaseExpired'> & {
   schema:typeof JOB_KEY;projectId:string;actorId:string;keys:string[];binding:string;
-  claimToken?:string;leaseUntil?:string;episodeNumbers:number[];
+  claimToken?:string;leaseUntil?:string;episodeNumbers:number[];seasonScopeHash?:string;
 };
+async function requireJobSeason(job:StoredJob,db:Prisma.TransactionClient=prisma){
+  const season=await requireSeasonProduction(job.projectId,job.episodeNumbers,'images',db);
+  if((season?.scopeHash??undefined)!==job.seasonScopeHash)throw Object.assign(new Error('图片任务冻结季范围已变化，旧任务只能保留历史，不能继续生产。'),{code:'SEASON_CHANGED',requestOutcome:'NOT_SENT'});
+  if(!season)return null;
+  assertSeasonEpisodes(season.scope,job.episodeNumbers,'images');
+  const row=await db.sceneSnapshot.findFirst({where:{projectId:job.projectId,sceneKey:'FOUNDATION_DOCUMENT'},orderBy:{createdAt:'desc'}});
+  const catalog=row?JSON.parse(row.content).f2?.assets??[]:[],assets=catalog.flatMap((base:any)=>[base,...(base.variants??[])]);
+  if(!Array.isArray(job.keys)||!job.keys.includes(job.key)||job.keys.some(key=>!assets.some((asset:any)=>asset.key===key&&seasonAssetAllowed(season.scope,asset,season.basis)))||!assets.some((asset:any)=>asset.key===job.key&&seasonAssetAllowed({...season.scope,episodeNumbers:job.episodeNumbers},asset,season.basis)))throw Object.assign(new Error('图片任务形象或父依赖缺少当前选季实际集场用途。'),{code:'SEASON_SCOPE',requestOutcome:'NOT_SENT'});
+  return season;
+}
+async function currentSeasonJobs(jobs:StoredJob[]){
+  const current:StoredJob[]=[];
+  for(const job of jobs){try{await requireJobSeason(job);current.push(job);}catch(error){if(!String((error as {code?:string}).code??'').startsWith('SEASON_'))throw error;}}
+  return current;
+}
 function identity(id:string){if(typeof id!=='string'||!uuid.test(id))throw new Error('图片任务编号无效。');}
 function revision(value:number){if(!Number.isSafeInteger(value)||value<0)throw new Error('图片任务版本无效。');}
 async function permission(projectId:string,actorId:string,db:Prisma.TransactionClient=prisma){
@@ -84,7 +102,7 @@ async function mutate(projectId:string,id:string,expected:number,change:(job:Sto
 export async function listImageJobs(projectId:string,actorId:string,key?:string){
   await permission(projectId,actorId);
   const rows=await prisma.sceneSnapshot.findMany({where:{projectId,sceneKey:JOB_KEY,...(key?{title:key}:{})},orderBy:{createdAt:'desc'}});
-  const jobs=rows.map(row=>JSON.parse(row.content) as StoredJob);
+  const jobs=await currentSeasonJobs(rows.map(row=>JSON.parse(row.content) as StoredJob));
   if(!jobs.length)return {jobs:[]};
   const signatures=[...new Map(jobs.map(job=>[JSON.stringify([...job.keys].sort()),job.keys])).entries()];
   const values=await bindings(projectId,signatures.map(([,keys])=>keys));
@@ -92,6 +110,7 @@ export async function listImageJobs(projectId:string,actorId:string,key?:string)
   return {jobs:await Promise.all(jobs.map(job=>view(job,current.get(JSON.stringify([...job.keys].sort())))))};
 }
 export async function createImageJob(projectId:string,actorId:string,input:{key:string;expectedPromptRevision:number;expectedStyleRevision:number;expectedOptionsRevision:number;episodeNumbers:number[]},dispatchMode:'CHROME'|'MANUAL'='MANUAL'){
+  const season=await requireSeasonProduction(projectId,input.episodeNumbers,'images');
   await permission(projectId,actorId);if(typeof input.key!=='string'||input.key.length>200)throw new Error('请选择有效资产。');
   [input.expectedPromptRevision,input.expectedStyleRevision,input.expectedOptionsRevision].forEach(revision);
   if(!Array.isArray(input.episodeNumbers)||!input.episodeNumbers.length||input.episodeNumbers.some(n=>!Number.isSafeInteger(n)||n<1))throw new Error('请明确选择制作集数。');
@@ -122,13 +141,14 @@ export async function createImageJob(projectId:string,actorId:string,input:{key:
   for(const ref of options.references){const file=await readAssetReference(projectId,asset.key,ref.id);if(!file)throw new Error('补充参考图已移除。');references.push({...ref,assetKey:asset.key,role:'SUPPLEMENT',sha256:bytesHash(file.bytes)});}
   const id=randomUUID();
   const prompt=[direct?'这是基于所附直接来源图片的派生形象编辑任务。保持主体身份和未要求变化的设计；第一组图片是直接来源，其余是补充参考。以下外观文字只描述变化，不可当作独立文生图提示词。':'生成以下单个资产的形象设计。',compileImagePrompt(workspace.stylePrefix,record.body,options),`生成 ${options.count??1} 张独立原图，目标比例 ${options.aspectRatio??'16:9'}，期望画质 ${options.quality??'1K'}；实际尺寸以原图为准。不要用网页截图代替原图。`].join('\n\n');
-  const job:StoredJob={schema:JOB_KEY,id,projectId,actorId,keys,binding:before,key:asset.key,name:asset.variant?`${asset.baseName} · ${asset.name}`:asset.name,revision:0,status:'WAITING_EXECUTOR',provider:'CHATGPT_WEB',dispatchMode,prompt,createdAt:new Date().toISOString(),error:'',expectedCount:options.count??1,quality:options.quality??'1K',aspectRatio:options.aspectRatio??'16:9',references,images:[],usedImageIds:[],episodeNumbers:[...new Set(input.episodeNumbers)]};
+  const job:StoredJob={schema:JOB_KEY,id,projectId,actorId,keys,binding:before,key:asset.key,name:asset.variant?`${asset.baseName} · ${asset.name}`:asset.name,revision:0,status:'WAITING_EXECUTOR',provider:'CHATGPT_WEB',dispatchMode,prompt,createdAt:new Date().toISOString(),error:'',expectedCount:options.count??1,quality:options.quality??'1K',aspectRatio:options.aspectRatio??'16:9',references,images:[],usedImageIds:[],episodeNumbers:[...new Set(input.episodeNumbers)],...(season?{seasonScopeHash:season.scopeHash}:{})};
   const result=await prisma.$transaction(async db=>{
     await permission(projectId,actorId,db);
+    await requireJobSeason(job,db);
     if(before!==await binding(projectId,keys,db))throw new Error('来源刚被更新，未创建任务，请刷新。');
     const existing=await db.sceneSnapshot.findMany({where:{projectId,sceneKey:JOB_KEY,title:asset.key}});
     const active=existing.map(r=>JSON.parse(r.content) as StoredJob).find(j=>['WAITING_EXECUTOR','RUNNING'].includes(j.status));
-    if(active){if(active.binding===before){if(dispatchMode==='CHROME'&&active.dispatchMode!=='CHROME')throw new Error('此资产已有手动等待任务，请在历史中完成或取消后再生成。');return active;}throw new Error('此形象已有未结束任务，请先取消旧任务。');}
+    if(active){await requireJobSeason(active,db);if(active.binding===before){if(dispatchMode==='CHROME'&&active.dispatchMode!=='CHROME')throw new Error('此资产已有手动等待任务，请在历史中完成或取消后再生成。');return active;}throw new Error('此形象已有未结束任务，请先取消旧任务。');}
     await db.sceneSnapshot.create({data:{id,projectId,sceneKey:JOB_KEY,title:asset.key,content:JSON.stringify(job)}});return job;
   },{timeout:20000});
   return view(result);
@@ -137,6 +157,7 @@ export async function cancelImageJob(projectId:string,actorId:string,id:string,e
 export async function claimImageJob(projectId:string,actorId:string,id:string,expected:number){
   await permission(projectId,actorId);const token=randomUUID();
   const next=await mutate(projectId,id,expected,async(job,db)=>{
+    await requireJobSeason(job,db);
     if(job.status!=='WAITING_EXECUTOR')throw new Error('任务已被领取或已结束；不会自动重复提交网页。');
     if(job.binding!==await binding(projectId,job.keys,db))throw new Error('来源已变，禁止发送旧任务。');
     await verifyBoundImages(job);
@@ -151,6 +172,7 @@ function claimMatches(job:StoredJob,token?:string){return typeof token==='string
 export async function failImageJob(projectId:string,actorId:string,id:string,expected:number,token:string,error:string){await permission(projectId,actorId);if(typeof error!=='string')throw new Error('错误说明无效。');return view(await mutate(projectId,id,expected,async job=>{if(job.status!=='RUNNING'||!claimMatches(job,token))throw new Error('任务执行身份已失效。');return {...job,status:'FAILED',error:error.slice(0,1000),claimToken:undefined};}));}
 export async function readImageHandoff(projectId:string,actorId:string,id:string){
   await permission(projectId,actorId);const {job}=await stored(projectId,id),publicJob=await view(job);
+  await requireJobSeason(job);
   if(publicJob.stale||['FAILED','CANCELLED'].includes(job.status))throw new Error('任务来源已变或已结束，不可继续生成。');
   const directory=await safeExportDirectory(job.id,'references');
   const references=[];
@@ -171,13 +193,15 @@ async function inspectImage(file:File):Promise<{image:ImageJobImage;bytes:Buffer
 }
 export async function importImageJob(projectId:string,actorId:string,id:string,expected:number,files:File[],claimToken?:string,executionUrl?:string){
   await permission(projectId,actorId);const {job}=await stored(projectId,id);revision(expected);
+  await requireJobSeason(job);
   if(job.revision!==expected)throw new Error('图片任务已更新，请刷新。');
   if(job.status==='RUNNING'&&!claimMatches(job,claimToken)||!['WAITING_EXECUTOR','RUNNING'].includes(job.status))throw new Error('任务已结束或执行身份无效，迟到图片不会覆盖当前形象。');
   if(files.length!==job.expectedCount)throw new Error(`本任务要求${job.expectedCount}张原图，请一次导入对应数量。`);
   if(executionUrl!==undefined&&!/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/.test(executionUrl))throw new Error('请提供有效的ChatGPT生成会话地址。');
   const inspected=await Promise.all(files.map(inspectImage));if(new Set(inspected.map(i=>i.image.sha256)).size!==files.length)throw new Error('不能把同一张原图重复计为多张结果。');
   await mkdir(/*turbopackIgnore: true*/ refRoot(),{recursive:true});for(const item of inspected)await writeFile(/*turbopackIgnore: true*/ path.join(/*turbopackIgnore: true*/ refRoot(),item.image.id),item.bytes,{flag:'wx'});
-  return view(await mutate(projectId,id,expected,async current=>{
+  return view(await mutate(projectId,id,expected,async(current,db)=>{
+    await requireJobSeason(current,db);
     if(current.status==='RUNNING'&&!claimMatches(current,claimToken)||!['WAITING_EXECUTOR','RUNNING'].includes(current.status))throw new Error('任务已取消或执行身份失效，结果仅保留在磁盘，不会回写。');
     // Stale results are retained for review; promotion independently checks the current binding.
     return {...current,status:'REVIEW',images:inspected.map(i=>i.image),resultOrigin:current.status==='RUNNING'?'WEB_EXECUTOR':'MANUAL_IMPORT',claimToken:undefined,executionUrl,error:''};
@@ -185,6 +209,7 @@ export async function importImageJob(projectId:string,actorId:string,id:string,e
 }
 export async function importImageJobPaths(projectId:string,actorId:string,id:string,expected:number,paths:string[],token:string,url?:string){
   identity(id);if(!Array.isArray(paths)||paths.length>4)throw new Error('原图路径无效。');
+  await permission(projectId,actorId);await requireJobSeason((await stored(projectId,id)).job);
   const directory=await safeExportDirectory(id,'originals');const allowed=await realpath(/*turbopackIgnore: true*/ directory),files:File[]=[];
   for(const name of paths){if(typeof name!=='string'||!path.isAbsolute(name))throw new Error('必须使用原图的绝对路径。');const item=await lstat(/*turbopackIgnore: true*/ name),resolved=await realpath(/*turbopackIgnore: true*/ name),relative=path.relative(/*turbopackIgnore: true*/ allowed,resolved);if(item.isSymbolicLink()||!item.isFile()||relative.startsWith('..')||path.isAbsolute(relative)||item.size>20*1024*1024)throw new Error('原图必须位于此任务专用originals目录内，不能使用链接或其他项目文件。');files.push(new File([new Uint8Array(await readFile(/*turbopackIgnore: true*/ resolved))],path.basename(resolved)));}
   return importImageJob(projectId,actorId,id,expected,files,token,url);
@@ -231,10 +256,12 @@ export async function readImageJobPreview(projectId:string,actorId:string,id:str
 export async function useImageJobResult(projectId:string,actorId:string,id:string,imageId:string,expected:number,expectedOptionsRevision:number){
   await permission(projectId,actorId);identity(imageId);revision(expectedOptionsRevision);
   const {job}=await stored(projectId,id);if(job.revision!==expected||job.status!=='REVIEW')throw new Error('请刷新后选择待审看原图。');
+  await requireJobSeason(job);
   const result=await readImageJobImage(projectId,actorId,id,imageId);
   await verifyBoundImages(job);
   if(job.usedImageIds.includes(imageId))return view(job);
   const next=await mutate(projectId,id,expected,async(current,db)=>{
+    await requireJobSeason(current,db);
     if(current.status!=='REVIEW'||current.binding!==await binding(projectId,current.keys,db))throw new Error('来源、提示词、画风或参考图已变化；保留历史原图，请重新生成。');
     await attachGeneratedAssetReference(projectId,current.key,expectedOptionsRevision,{...result.image,source:current.resultOrigin==='WEB_EXECUTOR'?'CHATGPT_WEB_GENERATED':'TASK_IMAGE_IMPORT',generationJobId:id},db);
     // The newly attached reference is an intentional material change; rebind this completed job only.

@@ -1,18 +1,26 @@
 import {compileStandardScript, createSourceIndex, StandardScriptError, standardScriptPlanVersion} from './standard-script';
 import type {Channel, SourceIndex, SourcePart, StandardScriptEntry} from './standard-script';
 import {prepareStandardEpisode, type PreparedStandardEpisode} from './standard-script-plan';
+import {compileSourceRegroup,SOURCE_REGROUP_VERSION,type SourceRegroupApproval,type SourceRegroupChild} from '../runtime/source-regroup.mjs';
 
 export const RESOLUTION_TYPES=['ACTION','DIALOGUE','CONTINUITY','EMOTION_CLUE','RELATIONSHIP_CONTEXT','KNOWLEDGE_REVEAL','SPACE_CONSTRAINT','CREATIVE_GUIDANCE'] as const;
 export type ResolutionType=typeof RESOLUTION_TYPES[number];
-export type ScriptResolutionChoice={id?:string;startLine:number;endLine:number;type:ResolutionType;speaker?:string;channel?:Channel};
+export type WholeLineResolutionChoice={id?:string;startLine:number;endLine:number;type:ResolutionType;speaker?:string;channel?:Channel};
+export type SourceRegroupChoice={id?:string;startLine:number;endLine:number;type:'SOURCE_REGROUP';version:typeof SOURCE_REGROUP_VERSION;children:SourceRegroupChild[];layout:SourcePart[];speaker?:never;channel?:never};
+export type ScriptResolutionChoice=WholeLineResolutionChoice|SourceRegroupChoice;
 export function resolutionError(code:string,message:string,status=409):never{throw Object.assign(new Error(message),{code,status});}
 export function readResolutionChoice(value:unknown):ScriptResolutionChoice{
  if(!value||typeof value!=='object'||Array.isArray(value))resolutionError('CHOICE','请选择核对类型。',400);
  const choice=value as ScriptResolutionChoice;
- if(Object.keys(choice).some(key=>!['id','startLine','endLine','type','speaker','channel'].includes(key)))resolutionError('CHOICE_FIELDS','解析决定含未知字段；不能提交改写正文或源切片。',400);
+ const regroup=choice.type==='SOURCE_REGROUP';
+ if(Object.keys(choice).some(key=>!(regroup?['id','startLine','endLine','type','version','children','layout']:['id','startLine','endLine','type','speaker','channel']).includes(key)))resolutionError('CHOICE_FIELDS','解析决定含未知字段；不能提交改写正文或批准身份。',400);
  if(!Number.isSafeInteger(choice.startLine)||!Number.isSafeInteger(choice.endLine)||choice.startLine<1||choice.endLine<choice.startLine||choice.endLine-choice.startLine>100)resolutionError('RANGE','请选择1至101行的有效连续范围。',400);
- if(!RESOLUTION_TYPES.includes(choice.type))resolutionError('CHOICE_TYPE','不支持的核对类型；正文不能标为空白或删除。',400);
+ if(!regroup&&!RESOLUTION_TYPES.includes(choice.type))resolutionError('CHOICE_TYPE','不支持的核对类型；正文不能标为空白或删除。',400);
  if(choice.id!==undefined&&(typeof choice.id!=='string'||!choice.id||choice.id.length>100))resolutionError('CHOICE_ID','核对记录标识无效。',400);
+ if(regroup){
+  if(choice.version!==SOURCE_REGROUP_VERSION||!Array.isArray(choice.children)||choice.children.length<2||!Array.isArray(choice.layout))resolutionError('SOURCE_REGROUP_CHOICE','请选择独立对白和动作原片段。',400);
+  return structuredClone(choice);
+ }
  if(choice.type==='DIALOGUE'){
   if(typeof choice.speaker!=='string'||!choice.speaker.trim()||choice.speaker!==choice.speaker.trim()||choice.speaker.length>80)resolutionError('SPEAKER','请选择原文头中已有的说者。',400);
   if(!['SPEECH','OS','VO','NARRATION','SYSTEM'].includes(choice.channel??''))resolutionError('CHANNEL','请选择明确声道。',400);
@@ -22,7 +30,7 @@ export function readResolutionChoice(value:unknown):ScriptResolutionChoice{
 function parts(index:SourceIndex,start:number,end:number):SourcePart[]{
  return index.units.flatMap(unit=>{const a=Math.max(start,unit.start),b=Math.min(end,unit.end);return a<b?[{kind:/^[\t \r\n]+$/.test(index.text.slice(a,b))?'SOURCE_SEPARATOR' as const:'SOURCE_SLICE' as const,unitId:unit.id,start:a,end:b}]:[];});
 }
-function localEntry(text:string,choice:ScriptResolutionChoice,knownSpeakers:string[]):{index:SourceIndex;entry:StandardScriptEntry}{
+function localEntry(text:string,choice:WholeLineResolutionChoice,knownSpeakers:string[]):{index:SourceIndex;entry:StandardScriptEntry}{
  const index=createSourceIndex(text,'selected-source'),start=/^[\s\uFEFF]*/.exec(text)![0].length,end=text.length-/[\t \r\n]*$/.exec(text)![0].length;
  if(start>=end)resolutionError('EMPTY_RANGE','所选范围没有可核对正文。');
  // Detection only: source header labels are not promoted to known character identities.
@@ -50,7 +58,7 @@ function localEntry(text:string,choice:ScriptResolutionChoice,knownSpeakers:stri
 }
 
 /** A user decision changes interpretation only; every character still comes from its original source range. */
-export function applyScriptResolutions(text:string,sourceId:string,decisions:ScriptResolutionChoice[],knownSpeakers:string[]=[]):PreparedStandardEpisode{
+export function applyScriptResolutions(text:string,sourceId:string,decisions:ScriptResolutionChoice[],knownSpeakers:string[]=[],options:{approvals?:Record<string,SourceRegroupApproval>}={}):PreparedStandardEpisode{
  const prepared=prepareStandardEpisode(text,sourceId,{knownSpeakers});
  if(!decisions.length)return prepared;
  const choices=decisions.map(readResolutionChoice).sort((a,b)=>a.startLine-b.startLine),{index}=prepared;
@@ -60,6 +68,12 @@ export function applyScriptResolutions(text:string,sourceId:string,decisions:Scr
   if(choice.endLine>index.units.length||position>0&&choices[position-1].endLine>=choice.startLine)resolutionError('RANGE_OVERLAP','核对范围越界或与另一项重叠；请修改已有核对项。');
   const selected=index.units.slice(choice.startLine-1,choice.endLine),ids=new Set(selected.map(unit=>unit.id));
   if(entries.some(entry=>entry.unitIds.some(id=>ids.has(id))&&!entry.unitIds.every(id=>ids.has(id))))resolutionError('PARTIAL_ENTRY','所选范围切开了已识别的完整对白或资料；请包含该段完整行范围。');
+  if(choice.type==='SOURCE_REGROUP'){
+   const id=choice.id??`resolved-${choice.startLine}-${choice.endLine}`,approval=options.approvals?.[id];
+   if(!approval)resolutionError('SOURCE_REGROUP_APPROVAL','来源重组须经明确批准，由服务端记录批准来源与身份。');
+   const entry:StandardScriptEntry={id,target:'BODY',kind:'SOURCE_REGROUP',sourceRegroupVersion:choice.version,unitIds:selected.map(unit=>unit.id),parts:parts(index,selected[0].start,selected.at(-1)!.end),layout:structuredClone(choice.layout),children:structuredClone(choice.children),approval:structuredClone(approval)};
+   compileSourceRegroup(index,entry);entries=[...entries.filter(entry=>!entry.unitIds.some(id=>ids.has(id))),entry];continue;
+  }
   const local=localEntry(selected.map(unit=>unit.text).join(''),choice,knownSpeakers),offset=selected[0].start;
   const shift=(part:SourcePart):SourcePart=>({...part,unitId:selected[local.index.units.findIndex(unit=>unit.id===part.unitId)].id,start:part.start+offset,end:part.end+offset});
   const original=local.entry,entry:StandardScriptEntry=original.target==='EXCLUDE'?original:{...original,unitIds:selected.map(unit=>unit.id),parts:original.parts.map(shift),layout:original.layout.map(shift),...(original.target==='BODY'&&original.kind==='DIALOGUE'?{speaker:original.speaker.map(shift),cue:original.cue?.map(shift)??null,channelSource:original.channelSource?.map(shift)??null}:{})};

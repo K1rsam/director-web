@@ -7,16 +7,28 @@ import { requireProjectAccess } from "@/lib/auth";
 import { AppChrome } from "@/app/ui/app-chrome";
 import { readFidelityReceipt, applyFidelityDecision } from "@/lib/fidelity-store";
 import { prisma } from "@/lib/prisma";
+import {readSourceReadingState,confirmSourceReading,bindSourceReadingToDisplayedReceipt} from '@/lib/source-reading-confirmation';
+import {SourceReadingConfirmation} from './reading-confirmation';
 export const dynamic="force-dynamic";
 async function decide(form:FormData){"use server";const projectId=String(form.get("projectId"));await requireProjectAccess(projectId);let error="";try{
  await applyFidelityDecision({projectId,revision:String(form.get('revision')),sourceRevision:String(form.get('sourceRevision')),sourceVersion:String(form.get('sourceVersion')),decisionVersion:String(form.get('decisionVersion')),firstLine:Number(form.get('firstLine')),lastLine:Number(form.get('lastLine')),kind:form.get('kind')==='context'?'context':'body',episodeNumber:Number(form.get('episodeNumber')),sceneNumber:Number(form.get('sceneNumber'))});
  revalidatePath('/projects/'+projectId);
 }catch(e){error=e instanceof Error?e.message:'保存失败';}redirect('/projects/'+projectId+'/source'+(error?'?error='+encodeURIComponent(error):''));}
+async function confirmReading(form:FormData){"use server";
+ const projectId=String(form.get('projectId')),user=await requireProjectAccess(projectId);let error='';
+ try{
+  await confirmSourceReading({projectId,userId:user.id,sourceImportId:String(form.get('sourceImportId')),readingHash:String(form.get('readingHash')),originalHash:String(form.get('originalHash')),readerFingerprint:String(form.get('readerFingerprint')),choice:form.get('choice') as 'USE_CURRENT_READING',confirmed:form.get('confirmed')==='on'});
+  revalidatePath('/projects/'+projectId);revalidatePath('/projects/'+projectId+'/source');
+ }catch(e){error=e instanceof Error?e.message:'读取确认保存失败';}
+ redirect('/projects/'+projectId+'/source'+(error?'?error='+encodeURIComponent(error):''));
+}
 export default async function SourcePage({params,searchParams}:{params:Promise<{projectId:string}>;searchParams:Promise<{error?:string}>}){
- const {projectId}=await params;await requireProjectAccess(projectId);
+ const {projectId}=await params;const user=await requireProjectAccess(projectId);
  const current=await readFidelityReceipt(projectId);const {error}=await searchParams;
  const project=await prisma.project.findUniqueOrThrow({where:{id:projectId}});
+ const canConfirm=!!await prisma.projectRole.count({where:{projectId,userId:user.id,role:{in:['ADMIN','REVIEWER']}}});
  if(!current)return <AppChrome eyebrow="来源与清洗" title="来源资料" projectId={projectId} activeSection="project"><p>历史项目未生成本版保真证明；请从新建项目导入原稿。</p><Link href={'/projects/'+projectId}>返回工作台</Link></AppChrome>;
+ const readingState=current.sourceSnapshot?bindSourceReadingToDisplayedReceipt(await readSourceReadingState(projectId,prisma,current.sourceSnapshot),current.receipt):{required:true,binding:null,confirmed:false,confirmationId:null,confirmedAt:null};
  const {receipt,snapshot}=current;const productionCount=await prisma.episode.count({where:{projectId}});
  const rows=[...receipt.result.source.text.matchAll(/[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$/g)].map((match,index)=>({line:index+1,text:match[0]}));
  const readingRows=rows.filter(row=>row.text.trim().length>0);
@@ -27,6 +39,7 @@ export default async function SourcePage({params,searchParams}:{params:Promise<{
    <p>格式版本 {receipt.result.contractVersion} · {productionCount} 个正文集 · 作者资料 {receipt.result.contextText.length} 字符</p>
    <p><a href={download+'&format=md'}>下载清洗稿</a> · <a href={download+'&format=original'}>下载原件</a> · <a href={download}>下载备份 JSON</a></p>
    {receipt.reader.warnings.map((w,i)=><p key={i}>{w}</p>)}
+   <SourceReadingConfirmation projectId={projectId} state={readingState} canConfirm={canConfirm} action={confirmReading}/>
    <details><summary>来源证明与当前版本</summary><p>原件 SHA256：{receipt.originalHash}</p><p>读取文本 SHA256：{receipt.readingHash}</p><p>修订：{snapshot.id}</p><p>正文覆盖、来源顺序、标签绑定：{receipt.result.validation.ok?'通过':'未通过'}。语义分类仍按下方待处理事项核对。</p></details>
    <details><summary>作者资料（不进入生产正文）</summary><pre style={{whiteSpace:'pre-wrap'}}>{receipt.result.contextText||'未识别到作者资料'}</pre></details>
    <FidelityReviewSummary receipt={receipt}/>

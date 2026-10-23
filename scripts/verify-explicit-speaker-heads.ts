@@ -104,7 +104,7 @@ test('unmarked prose, reported speech, unknown ownership and ambiguous channels 
   for (const text of [
     '（大笑）：没说者。', '苏炎说：“围观学生甲：别走。”', '苏炎说：我没有哭。', '苏炎道：我没有哭。', '苏炎说（OS）：我没有哭。', '苏炎（低声）\n没有带冒号的姓名依据。', '苏炎：我在。\n灯光渐暗。',
     '苏炎：我告诉学生甲：别走。', '苏炎：你好。未知标签：回去。', '苏炎：你好。△他转身。学生甲：再见。',
-    '苏炎：（低声）（忍泪）我没哭。', '苏炎：（低声，OS，忍泪）我没哭。',
+    '苏炎：（低声）（忍泪）我没哭。',
     '苏炎（O.S.）：我没哭。', '苏炎（OS/VO）：我没哭。', '苏炎（内心独白）：我没哭。',
     '苏炎：“没说完。学生甲：别走。', '学生甲：没有边界学生乙：不能猜。',
   ]) {const result = prepare(text); assert.equal(Boolean(result.compiled), false, text); assert.ok(result.diagnostics.length, text);}

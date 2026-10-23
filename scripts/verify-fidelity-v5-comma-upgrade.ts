@@ -19,8 +19,8 @@ const packet:Packet={source:old.source,plan:old.plan as FrozenPlan};
 const pristine=structuredClone(packet),oldBefore=structuredClone(old),bytes=Buffer.from(JSON.stringify(packet)),bytesBefore=Buffer.from(bytes);
 const bindings=(result:FidelityResult)=>result.segments.map(row=>[row.start,row.end,row.text]);
 
-test('frozen v4 retains comma-heading issues while current v5 recognizes the same exact source',()=>{
- assert.equal(V4_VERSION,'fidelity/4');assert.equal(CONTRACT_VERSION,'fidelity/5');
+test('frozen v4 retains comma-heading issues while the current contract recognizes the same exact source',()=>{
+ assert.equal(V4_VERSION,'fidelity/4');assert.equal(CONTRACT_VERSION,'fidelity/6');
  assert.equal(old.contractVersion,V4_VERSION);assert.ok(old.validation.issues.some(issue=>issue.code==='SCENE_BOUNDARY_UNCONFIRMED'));
  assert.equal(current.validation.ok,true);assert.deepEqual(current.validation.issues,[]);
  assert.deepEqual(current.episodes.map(episode=>episode.scenes.length),[2,1]);

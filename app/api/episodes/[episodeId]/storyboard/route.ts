@@ -2,7 +2,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { createStoryboardRun, loadStoryboardInput, prepareStoryboardView, refreshProductionChain, refreshStoryboardRun, storyboardSavedIndex, storyboardSavedRunView, storyboardChainComplete, storyboardSourceCompatible, storyboardPerformanceMode, storyboardEvidenceVersion, storyboardFailure, storyboardHttp, storyboardReviewPacket, storyboardRunnerStatus, storyboardRunView, storyboardService } from "@/lib/storyboard-service";
 import { UPSTREAM_MATERIAL_PROTOCOL } from '@/lib/standard-script-reception';
-import {recordStoryboardMaintenancePause,storyboardMaintenanceBridgeVersion,assertStoryboardAdmission} from '@/lib/storyboard-service';
+import {storyboardSourceRegroupVersion,recordStoryboardMaintenancePause,storyboardMaintenanceBridgeVersion,assertStoryboardAdmission,storyboardGenerationText} from '@/lib/storyboard-service';
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,22 +34,29 @@ export async function GET(request: Request, context: Context) {
     storyboardHttp.assertEpisodeBinding(run, episode);
     const format = url.searchParams.get("format");
     if (format) {
-      if (!["json", "md", "review"].includes(format)) return json({ error: "仅支持Markdown/JSON/盲审材料导出" }, 400);
+      if (!["json", "md", "review", "postproduction"].includes(format)) return json({ error: "仅支持Markdown/JSON/盲审材料/后期说明导出" }, 400);
+      if(format==='postproduction'&&(run.web.legacyReadOnly||run.rulesSnapshot?.generationTextVersion!==storyboardGenerationText.GENERATION_TEXT_VERSION))return json({error:'此任务未冻结独立后期协议，原历史导出保留。',code:'POSTPRODUCTION_UNAVAILABLE'},409);
+      const documentExport=format==='md'||format==='postproduction';
       if(format==='review'){
         if(run.web.legacyReadOnly)return json({error:'旧任务未冻结精修审稿协议，请保留历史导出。',code:'LEGACY_READ_ONLY'},409);
         const packet=storyboardReviewPacket.buildReviewPacket(run,{candidateId:url.searchParams.get('candidateId')||undefined});
         return new Response(packet.text,{headers:{'cache-control':'no-store','content-type':'text/markdown; charset=utf-8',
           'content-disposition':`attachment; filename="storyboard-review-${run.id}.md"`,'x-content-type-options':'nosniff'}});
       }
-      if(format==='md'&&!run.web.legacyReadOnly){await refreshProductionChain(episode.projectId);run=await service.read(id);}
+      if(documentExport&&!run.web.legacyReadOnly){await refreshProductionChain(episode.projectId);run=await service.read(id);}
       // Historical Markdown is an archived result, not a claim that it matches today's source.
-      if (format === "md" && !run.web.legacyReadOnly) {
-        const current = await loadStoryboardInput(episode, '', run.web.binding.inputProtocol ?? 'legacy',undefined,storyboardPerformanceMode(run.web.binding),storyboardEvidenceVersion(run.web.binding));
+      if (documentExport && !run.web.legacyReadOnly) {
+        const current = await loadStoryboardInput(episode, '', run.web.binding.inputProtocol ?? 'legacy',undefined,storyboardPerformanceMode(run.web.binding),storyboardEvidenceVersion(run.web.binding),run.web.binding.adoptedDesignTextVersion??null,storyboardSourceRegroupVersion(run.web.binding));
         const stale = !storyboardSourceCompatible(run.web.binding,current);
         if (stale) return json({ error: "原文或关键约束已更新，旧记录仍可导出JSON。", code: "SOURCE_STALE" }, 409);
         if(!storyboardChainComplete(run))return json({error:'本次连续生产链还有承接或材料问题，不能作为正式连续稿导出；完整历史可导出JSON。',code:'PRODUCTION_CHAIN_INCOMPLETE'},409);
       }
-      if (format === "md" && (service.active(id) || run.status !== "text_ready_for_review" || run.assembly?.validation?.errors?.length || !run.assembly?.text)) return json({ error: "当前文字稿尚未完成整编，原记录可用JSON导出" }, 409);
+      if (documentExport && (service.active(id) || run.status !== "text_ready_for_review" || run.assembly?.validation?.errors?.length || !run.assembly?.text)) return json({ error: "当前文字稿尚未完成整编，原记录可用JSON导出" }, 409);
+      if(format==='postproduction'){
+        const notes=storyboardGenerationText.renderPostproductionNotes({draft:run.assembly.draft,source:run.source,generationTextVersion:run.rulesSnapshot.generationTextVersion});
+        if(!notes)return json({error:'此稿没有后期编辑项目，不创建空表。',code:'POSTPRODUCTION_EMPTY'},404);
+        return new Response(notes,{headers:{'cache-control':'no-store','content-type':'text/markdown; charset=utf-8','content-disposition':'attachment; filename="postproduction-notes.md"','x-content-type-options':'nosniff'}});
+      }
       const preliminary=!run.web.legacyReadOnly&&run.production?.boundaryCheck?.status==='PRELIMINARY';
       const content = format === "json" ? JSON.stringify(run, null, 2) : (preliminary?'以上游原文底稿完成；未与上集实际分镜核对。\n\n':'')+run.assembly.text;
       return new Response(content, { headers: { "cache-control": "no-store", "content-type": format === "json" ? "application/json; charset=utf-8" : "text/markdown; charset=utf-8",
@@ -80,7 +87,7 @@ export async function POST(request: Request, context: Context) {
     if(['pause','stop'].includes(command.action))await recordStoryboardMaintenancePause(run.id);
     if(['start','repair','replan','refine'].includes(command.action))assertStoryboardAdmission();
     if (["start", "repair", "replan", "refine", "accept_refinement", "recheck", "choice", "confirm"].includes(command.action)) {
-      const current = await loadStoryboardInput(episode, '', run.web.binding.inputProtocol ?? 'legacy',undefined,storyboardPerformanceMode(run.web.binding),storyboardEvidenceVersion(run.web.binding));
+      const current = await loadStoryboardInput(episode, '', run.web.binding.inputProtocol ?? 'legacy',undefined,storyboardPerformanceMode(run.web.binding),storyboardEvidenceVersion(run.web.binding),run.web.binding.adoptedDesignTextVersion??null,storyboardSourceRegroupVersion(run.web.binding));
       const stale = !storyboardSourceCompatible(run.web.binding,current);
       if (run.web.sourceStale || stale) return json({ error: "原文或关键约束已更新，请新建任务使用最新资料；旧结果仍已保存。", code: "SOURCE_STALE" }, 409);
     }

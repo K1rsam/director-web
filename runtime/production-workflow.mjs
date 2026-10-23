@@ -1,10 +1,11 @@
+import {assertSeasonEpisodes,assertSeasonBinding,seasonHash,seasonDurationException} from './season-scope.mjs';
 import {randomUUID} from 'node:crypto';
 import {readdir,readFile,lstat} from 'node:fs/promises';
 import {hostname} from 'node:os';
 import path from 'node:path';
 import {createStore} from './storyboard-v4/core/store.mjs';
 import {createProductionBudgetStore} from './production-budget.mjs';
-import {DEFAULT_EPISODE_BUDGET,EPISODE_TOKEN_WARNING,PRODUCTION_LIMIT_POLICY,recommendedWorkflowBudget,productionModelSelection} from './production-policy.mjs';
+import {DEFAULT_EPISODE_BUDGET,EPISODE_TOKEN_WARNING,PRODUCTION_LIMIT_POLICY,recommendedWorkflowBudget,productionModelSelection,PRODUCTION_PARALLEL_VERSION,productionLaneCount,productionParallelLaneCount} from './production-policy.mjs';
 import {writeProductionDelivery,productionDeliveryFingerprint} from './production-delivery.mjs';
 
 export const PRODUCTION_WORKFLOW_VERSION='PRODUCTION_WORKFLOW_V1';
@@ -26,6 +27,10 @@ const reconnectableCreate=(action,error,view,budgetDirectory)=>{
 };
 const now=()=>new Date().toISOString();
 const fail=(code,message)=>{throw Object.assign(new Error(message),{code,requestOutcome:'NOT_SENT'});};
+export function assertPaidRepairPolicy(workflow){
+ if(workflow.paidRepairPolicy?.version!=='paid-repair-consent-v1'||workflow.paidRepairPolicy.automatic!==true)
+  fail('PAID_REPAIR_NOT_AUTHORIZED','已有付费回包保留；未单独授权额外付费补正。请先免费核验或恢复，不自动重发。');
+}
 const keys=value=>Array.isArray(value)&&value.every(x=>typeof x==='string'&&x.length>0&&x.length<=200)?[...new Set(value)]:fail('WORKFLOW_INPUT','材料键列表无效。');
 const episodes=value=>Array.isArray(value)&&value.length&&value.length<=500&&value.every(x=>Number.isSafeInteger(x)&&x>=0)?[...new Set(value)].sort((a,b)=>a-b):fail('WORKFLOW_INPUT','请选择有效的生产集数。');
 const wait=(kind,message,owner='EXECUTOR',extra={})=>({kind,message,owner,...extra});
@@ -40,24 +45,27 @@ const runBudget=value=>{
  return {maxCalls:value.maxCalls,maxTokens:value.maxTokens};
 };
 
-export function partitionProductionLanes(numbers){
- const ordered=episodes(numbers),size=Math.ceil(ordered.length/4);
- if(ordered.some((n,i)=>i&&n!==ordered[i-1]+1))fail('WORKFLOW_PARALLEL_SCOPE','四路制作只接受连续集数，不能把缺集当成连续承接。');
+export function partitionProductionLanes(numbers,laneCount=4,sourceOrder=null){
+ const requested=episodes(numbers),ordered=sourceOrder?sourceOrder.filter(n=>requested.includes(n)):requested,size=Math.ceil(ordered.length/productionLaneCount(laneCount));
+ if(sourceOrder?(ordered.length!==requested.length||ordered.some((n,i)=>i&&sourceOrder.indexOf(n)!==sourceOrder.indexOf(ordered[i-1])+1)):ordered.some((n,i)=>i&&n!==ordered[i-1]+1))fail('WORKFLOW_PARALLEL_SCOPE','四路制作只接受连续集数，不能把缺集当成连续承接。');
  return Array.from({length:Math.ceil(ordered.length/size)},(_,i)=>ordered.slice(i*size,(i+1)*size));
 }
-export function productionWorkflowChain(d){
- const chain={id:d.id,mode:d.mode,selectionRevision:d.selectionRevision,selectedRuns:d.selectedRuns,episodeNumbers:d.episodeNumbers};
+export function productionWorkflowChain(d,{forDispatch=false}={}){
+ const chain={...(d.season?{season:d.season}:{}),id:d.id,mode:d.mode,selectionRevision:d.selectionRevision,selectedRuns:d.selectedRuns,episodeNumbers:d.episodeNumbers};
  if(d.parallel){
   const selectedRunRevisions={};
   for(const entry of d.selectionHistory??[])if(d.selectedRuns[entry.episodeNumber]===entry.runId)selectedRunRevisions[entry.episodeNumber]=entry.selectionRevision;
   // New parallel tasks freeze this opt-in protocol; legacy tasks keep their prior global revision semantics.
   Object.assign(chain,{selectionProtocol:'per-episode-selection-v1',selectedRunRevisions});
+  if(d.parallel.version===PRODUCTION_PARALLEL_VERSION&&(!forDispatch||d.parallel.enabled))chain.parallelism={version:PRODUCTION_PARALLEL_VERSION,laneCount:productionParallelLaneCount(d.parallel)};
  }
  return chain;
 }
 function chooseNext(workflow,snapshot,budgetDirectory,{scope=workflow.episodeNumbers,parallel=false}={}){
  if(workflow.paused)return wait('WAIT_PAUSED','流程已暂停；已发送的请求仍保留原回执。');
  if(workflow.activeAction)return wait(workflow.status==='INTERRUPTED'?'WAIT_RECOVERY':'WAIT_RUNNING','已有动作已登记；先读取结果或恢复，不能重复派单。','EXECUTOR',{actionId:workflow.activeAction.id});
+ if((workflow.season?.scopeHash??null)!==(snapshot.season?.scopeHash??null))return wait('WAIT_SEASON_SCOPE','冻结季范围已变化，保留旧流程，未继续派发。','USER');
+ if(snapshot.seasonTiming?.requiresReview&&!seasonDurationException(workflow.season?.scope))return wait('WAIT_SEASON_DURATION_REVIEW','实际分镜已偏离本季目标，停在未派发边界；先核对邻近原生终点或明确时长例外。','USER',{seasonTiming:snapshot.seasonTiming});
  if(snapshot.sourceConflicts?.length)return wait('WAIT_SOURCE_CONFLICT','真实源文存在冲突，需用户裁定。','USER',{issues:snapshot.sourceConflicts});
  if(snapshot.sourceVersion!==workflow.sourceVersion)return wait('WAIT_SOURCE_CHANGED','源稿版本已变更，旧流程与已选版本均保留；请按新源另建流程。','USER');
  if(snapshot.stage1?.busy)return wait('WAIT_STAGE1','基础处理正在进行，查询不会派单。');
@@ -107,9 +115,9 @@ function budgetGate(action,workflow,budget){
 }
 function parallelView(workflow,snapshot,budget,budgetDirectory){
  if(!workflow.parallel)return null;
- const p=workflow.parallel,expected=partitionProductionLanes(workflow.episodeNumbers);
+ const p=workflow.parallel,laneCount=productionParallelLaneCount(p),expected=partitionProductionLanes(workflow.episodeNumbers,laneCount,workflow.season?.scope?.episodeNumbers);
  if(p.runBudget!==undefined)runBudget(p.runBudget);
- if(p.version!=='production-parallel-v1'||!['standard','fast'].includes(p.executionTier)||JSON.stringify(p.lanes)!==JSON.stringify(expected))fail('WORKFLOW_PARALLEL_CONFIG','四路配置无法核验，未派发新请求。');
+ if(!['standard','fast'].includes(p.executionTier)||JSON.stringify(p.lanes)!==JSON.stringify(expected))fail('WORKFLOW_PARALLEL_CONFIG','并行配置无法核验，未派发新请求。');
  const selected=workflow.episodeNumbers.map(n=>snapshot.runs?.[workflow.selectedRuns[n]]).filter(Boolean);
  const completedEpisodes=selected.filter(r=>r.complete).length,provisionalEpisodes=selected.filter(r=>r.continuityPending&&!r.busy&&!r.blocked&&!r.sourceStale).length;
  const first=snapshot.runs?.[workflow.selectedRuns[workflow.episodeNumbers[0]]];
@@ -129,7 +137,7 @@ function parallelView(workflow,snapshot,budget,budgetDirectory){
  else if(p.enabled&&status==='RUNNING'&&!activeEpisodes&&lanes.every(l=>!['STORYBOARD_CREATE','STORYBOARD_CONTINUE'].includes(l.nextAction.kind)))status='WAIT_ISSUES';
  const waitingForEvidence=p.waitPolicy==='evidence-watch-v1'&&p.enabled&&!workflow.paused&&!stoppedBudget
   &&(['QUALITY_CHECK','WAIT_CONTINUITY'].includes(status)||status==='WAIT_ISSUES'&&lanes.every(l=>l.nextAction.kind==='COMPLETE'||l.nextAction.kind==='WAIT_CONTINUITY'||l.run?.boundaryReviewPending));
- return {enabled:p.enabled,modelSelection:productionModelSelection(p.modelSelection),executionTier:p.executionTier,maxConcurrent:4,activeEpisodes,completedEpisodes,provisionalEpisodes,qualityReviewPending,lanes,status,waitingForEvidence,worker:p.worker??null};
+ return {enabled:p.enabled,modelSelection:productionModelSelection(p.modelSelection),executionTier:p.executionTier,maxConcurrent:laneCount,activeEpisodes,completedEpisodes,provisionalEpisodes,qualityReviewPending,lanes,status,waitingForEvidence,worker:p.worker??null};
 }
 
 /** Manual advance remains a single action; an explicitly armed server worker may fill the four lanes. */
@@ -139,12 +147,15 @@ export function createProductionWorkflowService({directory,budgetDirectory,adapt
  const read=async id=>check(await store.read(id));
  const update=(id,revision,mutator)=>store.update(id,d=>{check(d);checkRevision(d,revision);const next=mutator(d);next.revision=d.revision+1;next.updatedAt=now();return next;});
  const updateAction=(id,actionId,mutator)=>store.update(id,d=>{check(d);if(d.activeAction?.id!==actionId)fail('WORKFLOW_ACTION_CHANGED','动作记录已变化，未覆盖已有结果。');const next=mutator(d);next.revision=d.revision+1;next.updatedAt=now();return next;});
- const inspect=async id=>{
-  const workflow=await read(id),snapshot=await adapters.inspect(workflow),budget=publicBudget(await ledger.read(workflow.budgetId));
+ const describe=(workflow,snapshot,budget)=>{
   let nextAction=chooseNext(workflow,snapshot,budgetDirectory);
   nextAction=budgetGate(nextAction,workflow,budget);
   const keyDesignGate=!workflow.criticalAssetKeys.length?'NOT_SPECIFIED':(snapshot.assets?.missingCriticalKeys??[]).some(k=>workflow.criticalAssetKeys.includes(k))?'WAITING_CONFIRMATION':'CONFIRMED';
-  return {workflow,readiness:{sourceVersion:snapshot.sourceVersion,standard:snapshot.standard,stage1:snapshot.stage1,direction:snapshot.direction,assets:snapshot.assets,runs:snapshot.runs??{},progress:snapshot.progress??null,sourceConflicts:snapshot.sourceConflicts??[],technicalIssues:snapshot.technicalIssues??[],keyDesignGate},keyDesignGate,nextAction,budget,parallel:parallelView(workflow,snapshot,budget,budgetDirectory)};
+  return {workflow,readiness:{...(snapshot.seasonTiming?{seasonTiming:snapshot.seasonTiming}:{}),sourceVersion:snapshot.sourceVersion,standard:snapshot.standard,stage1:snapshot.stage1,direction:snapshot.direction,assets:snapshot.assets,runs:snapshot.runs??{},progress:snapshot.progress??null,sourceConflicts:snapshot.sourceConflicts??[],technicalIssues:snapshot.technicalIssues??[],keyDesignGate},keyDesignGate,nextAction,budget,parallel:parallelView(workflow,snapshot,budget,budgetDirectory)};
+ };
+ const inspect=async id=>{
+  const workflow=await read(id),snapshot=await adapters.inspect(workflow),budget=publicBudget(await ledger.read(workflow.budgetId));
+  return describe(workflow,snapshot,budget);
  };
  const notifySelection=async(workflow,changedRunId)=>{if(adapters.onSelectionChanged)await adapters.onSelectionChanged(workflow,changedRunId);};
  const finishReady=async(id,view)=>view.nextAction.kind==='COMPLETE'&&view.workflow.delivery?.enabled&&adapters.deliveryBundle&&view.workflow.delivery.result?.completionFingerprint!==productionDeliveryFingerprint(view.workflow,view.readiness.runs)
@@ -153,7 +164,8 @@ export function createProductionWorkflowService({directory,budgetDirectory,adapt
   read,inspect,
   async configureDelivery(id,command){
    if(typeof command.enabled!=='boolean'||!adapters.deliveryBundle)fail('WORKFLOW_DELIVERY_INPUT','请明确选择自动交付，目标路径由服务端管理。');
-   await update(id,command.expectedRevision,d=>({...d,delivery:{...d.delivery,version:'production-delivery-v1',enabled:command.enabled}}));return inspect(id);
+   if(command.seasonDelivery!==undefined&&!['preview','final'].includes(command.seasonDelivery))fail('SEASON_DELIVERY','请选择preview或final交付。');
+   await update(id,command.expectedRevision,d=>({...d,delivery:{...d.delivery,version:'production-delivery-v1',enabled:command.enabled,...(command.seasonDelivery?{seasonDelivery:command.seasonDelivery}:{})}}));return inspect(id);
   },
   async exportDelivery(id,command){
    if(!adapters.deliveryBundle)fail('WORKFLOW_DELIVERY_EVIDENCE','当前适配器不支持原生对账交付。');
@@ -168,7 +180,7 @@ export function createProductionWorkflowService({directory,budgetDirectory,adapt
    return inspect(id);
   },
   async readDeliveryFile(id,name){
-   if(typeof name!=='string'||!(/^(complete\.md|manifest\.json|usage\.json|report\.md|episodes\/episode-\d{4,}\.md)$/.test(name)))fail('WORKFLOW_DELIVERY_INPUT','文件不在正式文字交付命名范围内。');
+   if(typeof name!=='string'||!(/^(complete\.md|manifest\.json|usage\.json|season-summary\.json|report\.md|episodes\/episode-\d{4,}\.md)$/.test(name)))fail('WORKFLOW_DELIVERY_INPUT','文件不在正式文字交付命名范围内。');
    const d=await read(id);
    if(!d.delivery?.result?.identity||!adapters.deliveryBundle)fail('WORKFLOW_DELIVERY_NOT_READY','尚无已对账的正式文字导出。');
    const bundle=await adapters.deliveryBundle(d,await ledger.read(d.budgetId));
@@ -200,12 +212,14 @@ export function createProductionWorkflowService({directory,budgetDirectory,adapt
   },
   async create(input){
    if(typeof input.projectId!=='string'||!input.projectId||typeof input.actorId!=='string'||!input.actorId)fail('WORKFLOW_INPUT','项目与执行者身份不可缺失。');
-   const episodeNumbers=episodes(input.episodeNumbers),mode=input.mode??'CHAIN';
+   let episodeNumbers=episodes(input.episodeNumbers);const mode=input.mode??'CHAIN';
    if(!['CHAIN','SINGLE'].includes(mode)||mode==='SINGLE'&&episodeNumbers.length!==1)fail('WORKFLOW_INPUT','单集流程必须只选择一集。');
    const criticalAssetKeys=keys(input.criticalAssetKeys??[]),requestedAssetKeys=keys(input.requestedAssetKeys??criticalAssetKeys);
    if(criticalAssetKeys.some(k=>!requestedAssetKeys.includes(k)))fail('WORKFLOW_INPUT','指定关键设计必须包含在请求材料范围内。');
    const workflow={schema:PRODUCTION_WORKFLOW_VERSION,id:randomUUID(),projectId:input.projectId,actorId:input.actorId,episodeNumbers,mode,criticalAssetKeys,requestedAssetKeys,budgetId:input.budgetId??randomUUID(),budgetPolicy:{version:PRODUCTION_LIMIT_POLICY,episode:{...DEFAULT_EPISODE_BUDGET},warningTokens:EPISODE_TOKEN_WARNING},delivery:{version:'production-delivery-v1',enabled:typeof adapters.deliveryBundle==='function'},sourceVersion:null,revision:0,selectionRevision:0,selectedRuns:{},qualityReviews:[],selectionHistory:[],materialRequests:[],receipts:[],activeAction:null,status:'READY',paused:false,costAcknowledged:input.costAcknowledged===true,createdAt:now(),updatedAt:now()};
    const snapshot=await adapters.inspect(workflow);
+   if(snapshot.seasonMode==='season'&&!snapshot.season)fail('SEASON_NOT_LOCKED','本季未锁定，不能新建范围生产流程。');
+   if(snapshot.season){assertSeasonEpisodes(snapshot.season.scope,episodeNumbers,'workflow');workflow.season=structuredClone(snapshot.season);episodeNumbers=snapshot.season.scope.episodeNumbers.filter(n=>episodeNumbers.includes(n));workflow.episodeNumbers=episodeNumbers;}
    if(typeof snapshot.sourceVersion!=='string'||!snapshot.sourceVersion)fail('WORKFLOW_SOURCE','源稿版本不可确定，未创建可派单流程。');
    if(episodeNumbers.some(n=>!snapshot.availableEpisodes?.includes(n))&&!(snapshot.canPrepareSource&&!snapshot.stage1?.ready))fail('WORKFLOW_SCOPE','所选集数不在当前可生产范围。');
    workflow.sourceVersion=snapshot.sourceVersion;
@@ -330,20 +344,32 @@ export function createProductionWorkflowService({directory,budgetDirectory,adapt
    await update(id,command.expectedRevision,d=>({...d,qualityReviews:[...d.qualityReviews,{episodeNumber:first,runId:run.id,fingerprint:run.fingerprint,authorReviewed:true,assemblyReviewed:true,majorIssuesResolved:true,note:command.note.trim(),actorId:command.actorId,at:now()}]}));
    return finishReady(id,await inspect(id));
   },
+  async configurePaidRepairPolicy(id,command){
+   const workflow=await read(id);checkRevision(workflow,command.expectedRevision);
+   if(typeof command.automatic!=='boolean'||typeof command.actorId!=='string'||!command.actorId||command.automatic&&command.costAcknowledged!==true)
+    fail('WORKFLOW_REPAIR_CONSENT','额外自动付费补正须单独明确确认；正常制作授权和预算余量不等于补正授权。');
+   await update(id,command.expectedRevision,d=>({...d,paidRepairPolicy:{version:'paid-repair-consent-v1',automatic:command.automatic,actorId:command.actorId,at:now()}}));
+   return inspect(id);
+  },
   async configureParallel(id,command){
    const workflow=await read(id);checkRevision(workflow,command.expectedRevision);
    if(workflow.mode!=='CHAIN'||workflow.activeAction||workflow.parallel?.enabled)fail('WORKFLOW_PARALLEL_CONFIG','请选择连续制作链并先停止当前派单，再保存四路配置。');
-   const lanes=partitionProductionLanes(workflow.episodeNumbers);
+   const previous=workflow.parallel,oldCount=productionParallelLaneCount(previous);
+   const laneCount=command.laneCount===undefined?oldCount:productionLaneCount(command.laneCount);
+   if(previous&&laneCount!==oldCount&&(previous.version==='production-parallel-v1'||previous.authorizedAt||previous.participatingRuns?.length))fail('WORKFLOW_PARALLEL_FROZEN','原任务路数已冻结，请继续原队列。');
+   const lanes=partitionProductionLanes(workflow.episodeNumbers,laneCount,workflow.season?.scope?.episodeNumbers);
+   const version=previous?.version==='production-parallel-v1'?'production-parallel-v1':command.laneCount!==undefined||previous?.version===PRODUCTION_PARALLEL_VERSION?PRODUCTION_PARALLEL_VERSION:'production-parallel-v1';
    const executionTier=command.executionTier??workflow.parallel?.executionTier??'standard';
    const modelSelection=productionModelSelection(command.modelSelection===undefined?workflow.parallel?.modelSelection:command.modelSelection);
    if(!['standard','fast'].includes(executionTier))fail('WORKFLOW_PARALLEL_CONFIG','执行速度档无效，未更改已保存配置。');
    const configuredBudget=command.runBudget===undefined?workflow.parallel?.runBudget??workflow.budgetPolicy?.episode??{...DEFAULT_EPISODE_BUDGET}:runBudget(command.runBudget);
-   await update(id,command.expectedRevision,d=>({...d,parallel:{version:'production-parallel-v1',waitPolicy:'evidence-watch-v1',reconnectPolicy:'wake-reconnect-v1',lanes,enabled:false,executionTier,modelSelection,...(configuredBudget?{runBudget:configuredBudget}:{}),participatingRuns:d.parallel?.participatingRuns??[],configuredAt:now(),configuredBy:command.actorId}}));
+   await update(id,command.expectedRevision,d=>({...d,parallel:{...d.parallel,version,...(version===PRODUCTION_PARALLEL_VERSION?{laneCount}:{}),waitPolicy:'evidence-watch-v1',reconnectPolicy:'wake-reconnect-v1',lanes,enabled:false,executionTier,modelSelection,...(configuredBudget?{runBudget:configuredBudget}:{}),participatingRuns:d.parallel?.participatingRuns??[],configuredAt:now(),configuredBy:command.actorId}}));
    return inspect(id);
   },
   async startParallel(id,command){
    let view=await inspect(id);checkRevision(view.workflow,command.expectedRevision);
    if(!view.parallel)fail('WORKFLOW_PARALLEL_CONFIG','先保存四路配置。');
+   if(command.laneCount!==undefined&&productionLaneCount(command.laneCount)!==view.parallel.maxConcurrent)fail('WORKFLOW_PARALLEL_FROZEN','启动路数与保存安排不同，请先保存尚未启动的新安排；旧任务继续原路数。');
    const modelSelection=productionModelSelection(command.modelSelection===undefined?view.workflow.parallel.modelSelection:command.modelSelection),executionTier=command.executionTier??view.parallel.executionTier;
    if(!['standard','fast'].includes(executionTier))fail('WORKFLOW_PARALLEL_CONFIG','执行速度档无效。');
    if(command.costAcknowledged!==true||executionTier==='fast'&&command.fastAcknowledged!==true)fail('WORKFLOW_PARALLEL_CONSENT','请明确允许此范围的模型调用；Fast档还须同意额外额度消耗，旧制作授权不自动开启四路。');
@@ -358,15 +384,36 @@ export function createProductionWorkflowService({directory,budgetDirectory,adapt
    }
    if(view.workflow.activeAction)fail('WORKFLOW_BUSY','已有准备动作仍在安全收尾；请稍后继续原四路，不重发。');
    const preview=parallelView({...view.workflow,paused:false,costAcknowledged:true,parallel:{...view.workflow.parallel,modelSelection,executionTier,enabled:true}},await adapters.inspect(view.workflow),view.budget,budgetDirectory);
-   const gates=preview.lanes.map(l=>l.nextAction.kind);
-   if(preview.status==='WAIT_BUDGET'||gates.some(k=>!['STORYBOARD_CREATE','STORYBOARD_CONTINUE','WAIT_STORYBOARD','WAIT_EXECUTOR_REPAIR','NEED_UPSTREAM','WAIT_RUN_SOURCE','WAIT_RUN_BINDING','WAIT_CONTINUITY','COMPLETE'].includes(k)))fail('WORKFLOW_PARALLEL_READY','源稿、全剧方向、指定材料或共享预算尚有待办，不能从四路入口重复生产上游。');
+   const blocker=preview.lanes.map(l=>l.nextAction).find(a=>!['STORYBOARD_CREATE','STORYBOARD_CONTINUE','WAIT_STORYBOARD','WAIT_EXECUTOR_REPAIR','NEED_UPSTREAM','WAIT_RUN_SOURCE','WAIT_RUN_BINDING','WAIT_CONTINUITY','COMPLETE'].includes(a.kind));
+   if(preview.status==='WAIT_BUDGET'||blocker){
+    const reason=blocker?.message??({DIRECTION:'全剧方向尚无已确认的采用卡。',STAGE1:'基础资料尚未整理完成。',ASSETS:'指定材料尚未准备完成。'}[blocker?.kind]??'共享预算需要核对。');
+    const next=blocker?.kind==='DIRECTION'||blocker?.kind.startsWith('WAIT_DIRECTION')?'请打开“全剧方向”完善并确认；已有资料可免费手工保存，额外AI分析需另行发起。':'请处理页面对应待办后继续原队列。';
+    fail('WORKFLOW_PARALLEL_READY',`${reason} ${next}`);
+   }
    await update(id,view.workflow.revision,d=>({...d,paused:false,costAcknowledged:true,parallel:{...d.parallel,modelSelection,executionTier,reconnectPolicy:'wake-reconnect-v1',enabled:true,lastStop:null,authorizedAt:now(),authorizedBy:command.actorId}}));
    return inspect(id);
   },
   async reconnectParallel(id,command){
    const d=await read(id);
    if(!d.parallel?.authorizedAt||command.expectedAuthorization!==d.parallel.authorizedAt)fail('WORKFLOW_PARALLEL_OWNER','原四路授权已变化，未启动任务。');
-   // Read-only wake handshake, not a new authorization or an automatic resume.
+   // Ordinary page/wake reconnect remains read-only. Explicit recovery may arm
+   // ready normal lanes under the original grant; it never clears a run issue.
+   if(command.resumeReadyIssues===true){
+    if(!Number.isSafeInteger(command.expectedRevision))fail('WORKFLOW_CONFLICT','恢复须绑定当前流程修订。');
+    checkRevision(d,command.expectedRevision);
+    if(command.actorId!==d.parallel.authorizedBy||d.paused||d.parallel.enabled||d.status!=='READY'||d.activeAction||d.parallel.lastStop!=='WAIT_ISSUES'||d.parallel.worker?.status!=='WAIT_ISSUES')fail('WORKFLOW_PARALLEL_READY','仅可恢复原启动者的问题等待队列，不越过暂停、在途或其它停止。');
+    const snapshot=await adapters.inspect(d),budget=publicBudget(await ledger.read(d.budgetId));
+    const preview=parallelView({...d,parallel:{...d.parallel,enabled:true,lastStop:null}},snapshot,budget,budgetDirectory);
+    const ready=preview.lanes.filter(l=>['STORYBOARD_CREATE','STORYBOARD_CONTINUE'].includes(l.nextAction.kind)).map(l=>({index:l.index,episodeNumber:l.nextAction.episodeNumber,kind:l.nextAction.kind,...(l.nextAction.runId?{runId:l.nextAction.runId}:{})}));
+    if(preview.status!=='RUNNING'||!ready.length)fail('WORKFLOW_PARALLEL_READY','当前源、材料、预算或各路问题仍未允许正常制作，未恢复派发。');
+    const armed=await update(id,command.expectedRevision,current=>{
+     if(current.paused||current.parallel.enabled||current.activeAction||current.status!=='READY'||current.parallel.authorizedAt!==command.expectedAuthorization||current.parallel.authorizedBy!==command.actorId||current.parallel.lastStop!=='WAIT_ISSUES'||current.parallel.worker?.status!=='WAIT_ISSUES')fail('WORKFLOW_PARALLEL_OWNER','恢复核验期间原队列控制已变化。');
+     current.parallel.enabled=true;current.parallel.lastStop=null;
+     current.parallel.readyIssueRecovery={version:'ready-issue-recovery-v1',at:now(),authorization:command.expectedAuthorization,actorId:command.actorId,fromRevision:command.expectedRevision,sourceVersion:snapshot.sourceVersion,ready,held:preview.lanes.filter(l=>!ready.some(r=>r.index===l.index)).map(l=>({index:l.index,episodeNumber:l.nextAction.episodeNumber??null,kind:l.nextAction.kind}))};
+     return current;
+    });
+    return describe(armed,snapshot,budget);
+   }
    return inspect(id);
   },
   async pumpParallel(id,{expectedAuthorization}={}){
@@ -386,7 +433,7 @@ export function createProductionWorkflowService({directory,budgetDirectory,adapt
      }
      if(attempted)view=await inspect(id);
     }
-    for(let lane=0;lane<4;lane++){
+    for(let lane=0;lane<(view.parallel?.lanes.length??0);lane++){
      if(!view.parallel?.enabled||view.workflow.paused||view.parallel.status==='WAIT_BUDGET')break;
      if(view.workflow.activeAction){
       const a=view.workflow.activeAction,r=view.readiness.runs[a.runId];

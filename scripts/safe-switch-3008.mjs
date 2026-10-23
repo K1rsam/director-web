@@ -9,6 +9,7 @@ import {createStore} from '../runtime/storyboard-v4/core/store.mjs';
 import {createRuntimeMaintenance} from '../runtime/production-maintenance-control.mjs';
 import {runtimeCodeIdentity} from '../runtime/production-maintenance-host.mjs';
 import {ENTRY_REVIEW_VERSION} from '../runtime/storyboard-v4/core/entry-evidence.mjs';
+import {digest} from '../runtime/storyboard-v4/core/shared.mjs';
 
 const fail=(message)=>{throw new Error(message);},sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const alive=pid=>{try{process.kill(pid,0);return true;}catch(e){return e.code!=='ESRCH';}};
@@ -29,8 +30,13 @@ export function inspectLocalHost(repo){
 }
 export function verifyIdleLeaseAbsence(host,state,workflowId,authorization){
  const c=state?.control;
- if(!state?.safeToRetire||state.phase!=='RESUMED'||c?.phase!=='RESUMED'||c.userPauseRequestedAt||c.workflowId!==workflowId||c.authorization!==authorization||c.loadedPid!==host?.pid||c.kernel?.pid!==host?.pid)fail('无租约且不能证明当前监听者是原授权已加载空闲内核，不开始维护');
+ if(!state?.safeToRetire||!['RESUMED','ISSUE_STOPPED'].includes(state.phase)||c?.phase!==state.phase||c.userPauseRequestedAt||c.workflowId!==workflowId||c.authorization!==authorization||c.loadedPid!==host?.pid||c.kernel?.pid!==host?.pid)fail('无租约且不能证明当前监听者是原授权已加载空闲内核，不开始维护');
  return {leaseAbsent:true,previousMaintenanceId:c.id,verifiedLoadedPid:c.loadedPid};
+}
+export function verifyIssueStoppedWorker(host,state,worker,workflowId,authorization){
+ const c=state?.control;
+ if(state?.phase!=='ISSUE_STOPPED'||c?.phase!=='ISSUE_STOPPED'||!state.safeToRetire||c.userPauseRequestedAt||c.workflowId!==workflowId||c.authorization!==authorization||c.loadedPid!==host?.pid||c.kernel?.pid!==host?.pid||worker?.status!=='WAIT_ISSUES'||c.issueStoppedWorkerHash!==digest(worker))fail('历史问题等待worker与当前已加载空闲内核不符，不开始下一次维护');
+ return {previousMaintenanceId:c.id,verifiedLoadedPid:c.loadedPid,historicalWorkerPid:worker.pid};
 }
 function idleHost(repo,host){
  const rows=execFileSync('/bin/ps',['-axo','pid=,ppid=,comm='],{encoding:'utf8'}).split('\n').map(s=>/^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(s)).filter(Boolean).map(m=>({pid:Number(m[1]),ppid:Number(m[2]),name:m[3]}));
@@ -59,7 +65,7 @@ async function waitFor(maintenance,predicate,timeoutMs){
 export async function runLocalSwitch(args=process.argv.slice(2)){
  try{process.loadEnvFile('.env');}catch(e){if(e.code!=='ENOENT')throw e;}
  const repo=process.cwd(),[action,workflowId,authorization]=args;
- if(!['begin','status','retarget','load','resume'].includes(action))fail('用法：safe-switch-3008.mjs begin WORKFLOW AUTHORIZATION | status | retarget OLD_CODE_IDENTITY VERIFICATION_FILE | load | resume');
+ if(!['begin','status','retarget','load','resume','release-issues'].includes(action))fail('用法：safe-switch-3008.mjs begin WORKFLOW AUTHORIZATION | status | retarget OLD_CODE_IDENTITY VERIFICATION_FILE | load | resume | release-issues');
  const dataRoot=path.resolve(process.env.DIRECTOR_STORYBOARD_DATA_DIR||'.storyboard-stage3-v2'),workflowDirectory=path.resolve(process.env.DIRECTOR_PRODUCTION_WORKFLOW_DIR||'.production-workflows'),budgetDirectory=path.resolve(process.env.DIRECTOR_PRODUCTION_BUDGET_DIR||'.production-ledgers');
  const maintenance=createRuntimeMaintenance({dataRoot,workflowDirectory,budgetDirectory}),workflows=createStore(workflowDirectory),runs=createStore(dataRoot);
  const audit=path.join(repo,'runtime-3008','maintenance-audit');await fs.mkdir(audit,{recursive:true,mode:0o700});
@@ -71,12 +77,13 @@ export async function runLocalSwitch(args=process.argv.slice(2)){
   if(!workflowId||!authorization)fail('必须明确原workflow及原授权');
   const host=inspectLocalHost(repo);if(!host)fail('原服务未运行');await installBridge(workflows,runs,workflowId);
   const fresh=inspectLocalHost(repo);if(fresh?.pid!==host.pid||fresh.parentPid!==host.parentPid)fail('桥接装入期间执行者变化');
-  const w=await workflows.read(workflowId);if(w.parallel?.worker?.pid!==host.pid)fail('原worker不是当前监听进程');
+  const w=await workflows.read(workflowId);let historicalWorkerProof=null;
+  if(w.parallel?.worker?.pid!==host.pid)historicalWorkerProof=verifyIssueStoppedWorker(fresh,await maintenance.status(),w.parallel?.worker,workflowId,authorization);
   const {owner,leaseAbsent}=await readCoordinatorLease(path.join(dataRoot,'.coordinator-owner.json'));let leaseAbsenceEvidence=null;
   if(!leaseAbsent){if(!owner||owner.pid!==host.pid)fail('coordinator租约不是当前监听者');}
   else leaseAbsenceEvidence={...verifyIdleLeaseAbsence(fresh,await maintenance.status(),workflowId,authorization),idle:idleHost(repo,fresh)};
   const code=await runtimeCodeIdentity(repo),c=await maintenance.begin({workflowId,expectedAuthorization:authorization,expectedRevision:w.revision,targetPid:host.pid,codeIdentity:code.identity,requiredCapabilities:{productionEntryReviewVersion:ENTRY_REVIEW_VERSION}});
-  const evidence=await save('begin',{control:c,host,coordinatorOwnerTokenHash:owner?createHash('sha256').update(owner.token).digest('hex'):null,leaseAbsenceEvidence,codeManifest:code.files});
+  const evidence=await save('begin',{control:c,host,historicalWorkerProof,coordinatorOwnerTokenHash:owner?createHash('sha256').update(owner.token).digest('hex'):null,leaseAbsenceEvidence,codeManifest:code.files});
   const checked=inspectLocalHost(repo);if(checked?.pid!==c.targetPid)fail('发送信号前PID/cwd漂移');process.kill(c.targetPid,'SIGUSR2');
   console.log(JSON.stringify({phase:c.phase,workflowId,authorization:c.authorization,evidence,newProductionModelCalls:0}));return c;
  }
@@ -119,6 +126,15 @@ export async function runLocalSwitch(args=process.argv.slice(2)){
   await installBridge(workflows,runs,c.workflowId);next=inspectLocalHost(repo);await maintenance.expectLoad(next.pid);process.kill(next.pid,'SIGUSR2');
   c=await waitFor(maintenance,v=>v.phase==='LOADED',60000);
   const evidence=await save('loaded',{control:c,host:next});console.log(JSON.stringify({phase:c.phase,oldPid:c.targetPid,newPid:c.loadedPid,kernel:c.kernel,evidence,newProductionModelCalls:0}));return c;
+ }
+ if(action==='release-issues'){
+  const host=inspectLocalHost(repo);if(!host||host.pid!==c.loadedPid||!['LOADED','RELEASING_ISSUES','ISSUE_STOPPED'].includes(c.phase))fail('新内核加载身份未核验，保持维护门');
+  if((await runtimeCodeIdentity(repo)).identity!==c.codeIdentity)fail('加载证明后源码改变');
+  if(c.phase!=='ISSUE_STOPPED'){
+   c=await maintenance.requestResumeProof();process.kill(c.loadedPid,'SIGUSR2');await waitFor(maintenance,v=>v.resumeProof?.nonce===c.resumeProofNonce,60000);
+  }
+  c=await maintenance.releaseIssues();const fresh=inspectLocalHost(repo);if(fresh?.pid!==c.loadedPid)fail('释放前执行者变化');process.kill(c.loadedPid,'SIGUSR2');
+  const evidence=await save('issue-stopped',{control:c,host:fresh});console.log(JSON.stringify({phase:c.phase,authorization:c.authorization,evidence,maintenanceModelCalls:0,queueEnabled:false}));return c;
  }
  if(action==='resume'){
   const host=inspectLocalHost(repo);if(!host||host.pid!==c.loadedPid||!['LOADED','RESUMING','RESUMED'].includes(c.phase))fail('新内核加载身份未核验，保持维护门');

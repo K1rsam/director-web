@@ -1,9 +1,11 @@
+import {seasonDelivery,assertSeasonBinding} from './season-scope.mjs';
 import {createHash} from 'node:crypto';
 import {mkdir,readFile,readdir,lstat,open,rename} from 'node:fs/promises';
 import path from 'node:path';
 import {digest,fail} from './storyboard-v4/core/shared.mjs';
 import {acquireRuntimeLease} from './storyboard-v4/runtime-lease.mjs';
 import {isVerifiedUnsent} from './storyboard-v4/core/pre-dispatch-evidence.mjs';
+import {renderPostproductionNotes} from './storyboard-v4/core/generation-text.mjs';
 
 const integer=n=>Number.isSafeInteger(n)&&n>=0;
 const sha=value=>createHash('sha256').update(value).digest('hex');
@@ -12,10 +14,14 @@ const safeId=id=>typeof id==='string'&&/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(i
 const finalBoundaries=new Set(['NO_PREDECESSOR','NOT_CONTINUOUS','NOT_CONSUMED','MATCHED']);
 const usageKnown=u=>u&&integer(u.inputTokens)&&integer(u.outputTokens)&&integer(u.totalTokens)&&u.totalTokens===u.inputTokens+u.outputTokens
  &&(u.cachedInputTokens==null||integer(u.cachedInputTokens)&&u.cachedInputTokens<=u.inputTokens);
-export const productionDeliveryFingerprint=(workflow,views)=>digest({sourceVersion:workflow.sourceVersion,selectionRevision:workflow.selectionRevision,selectedRuns:workflow.selectedRuns,runs:workflow.episodeNumbers.map(n=>[workflow.selectedRuns[n],views[workflow.selectedRuns[n]]?.fingerprint??null])});
+export const productionDeliveryFingerprint=(workflow,views)=>digest({...(workflow.season?{seasonScopeHash:workflow.season.scopeHash,seasonDelivery:workflow.delivery?.seasonDelivery??'preview'}:{}),sourceVersion:workflow.sourceVersion,selectionRevision:workflow.selectionRevision,selectedRuns:workflow.selectedRuns,runs:workflow.episodeNumbers.map(n=>[workflow.selectedRuns[n],views[workflow.selectedRuns[n]]?.fingerprint??null])});
 
 /** Free accounting over saved evidence. No coordinator, DB, provider or source writes. */
-export async function buildProductionDelivery({workflow,runs,views,ledger,readAttempt}){
+export async function buildProductionDelivery({workflow,runs,views,ledger,readAttempt,seasonBasis}){
+ const season=workflow.season;
+ if(season&&!seasonBasis)fail('SEASON_SOURCE','季交付缺少当前完整原稿集场绑定。');
+ if(season)for(const run of runs)assertSeasonBinding(season.scope,run.web?.binding?.season,[run.web?.binding?.episodeNumber]);
+ const seasonResult=season?seasonDelivery(season.scope,seasonBasis,runs,workflow.delivery?.seasonDelivery??'preview'):null;
  const bad=message=>fail('WORKFLOW_DELIVERY_NOT_READY',message);
  if(!safeId(workflow.id)||workflow.activeAction||!workflow.episodeNumbers?.length||ledger.summary?.inFlight)bad('先等待原队列落定并核对当前源与采用版本。');
  const unique=new Set(),calls=[],episodes=[],files={};
@@ -29,7 +35,10 @@ export async function buildProductionDelivery({workflow,runs,views,ledger,readAt
   if(n===workflow.episodeNumbers[0]&&!workflow.qualityReviews?.some(r=>r.runId===run.id&&r.fingerprint===view.fingerprint&&r.episodeNumber===n))bad('首集实际文字质量核对尚未绑定当前采用稿。');
   const file=`episodes/episode-${String(n).padStart(4,'0')}.md`;files[file]=run.assembly.text;
   const ids=run.adopted.flatMap(a=>[a.candidateId,...(a.candidateIds??[])]);
-  episodes.push({number:n,runId:run.id,file,sourceHash:digest(run.source),assemblyHash:sha(run.assembly.text),adoptedCandidateIds:[...new Set(ids)],boundaryStatus:run.production?.boundaryCheck?.status??null});
+  const notes=renderPostproductionNotes({draft:run.assembly.draft,source:run.source,generationTextVersion:run.rulesSnapshot?.generationTextVersion});
+  const notesFile=notes?`episodes/episode-${String(n).padStart(4,'0')}/postproduction-notes.md`:null;
+  if(notesFile)files[notesFile]=notes;
+  episodes.push({number:n,runId:run.id,file,...(notesFile?{postproductionFile:notesFile}:{}),sourceHash:digest(run.source),assemblyHash:sha(run.assembly.text),adoptedCandidateIds:[...new Set(ids)],boundaryStatus:run.production?.boundaryCheck?.status??null});
   for(const op of run.operations??[]){
    if(!safeId(op.attemptId)||unique.has(op.attemptId))fail('WORKFLOW_DELIVERY_DUPLICATE','attempt 编号重复或无效，不能重复计费或猜测归属。');unique.add(op.attemptId);
    if(['running','queued'].includes(op.status)||op.status==='unknown'&&!op.cancelAcknowledgement?.acceptUnknownUsage)bad('尚有在途或未明确接受风险的未知回执。');
@@ -70,8 +79,9 @@ export async function buildProductionDelivery({workflow,runs,views,ledger,readAt
   accounting:'唯一 attempt 计数。cache 已含在 input，reasoning 已含在 output。仅原生 FINAL 提供最终用量/时长；NOT_SENT 只证明零派发，不补造回执。共享账本单列，不能与上述 stage3 相加。未知、历史缺失和非 FINAL 均保留 null。墙钟含并行、暂停、读取与调度等待，不能相减当纯推理或精确睡眠。'};
  files['complete.md']=episodes.map(e=>`# 第${e.number}集\n\n${files[e.file]}`).join('\n\n---\n\n');
  files['usage.json']=json(usage);
+ if(seasonResult)files['season-summary.json']=json({productionScope:season.scope,...seasonResult});
  files['report.md']=`# 连续制作文字交付与用量对账\n\n${episodes.length} 集采用稿，逐集正文与 assembly.text 逐字一致。文字交付不是视听成片或用户验收。\n\n- 本地记录 ${summary.localRecords}；有原生请求 ${summary.nativeRequests}；零派发 ${summary.zeroDispatch}。\n- 已知 Token ${knownTokens}；完整总量 ${summary.totalTokens??'未知'}；未知用量 ${summary.unknownUsage}。\n- 已知原生 FINAL 执行时长合计 ${knownNativeDurationMs} ms；完整合计 ${summary.nativeDurationMs??'未知'}。这是并行调用之和，不是项目墙钟。\n- 观察墙钟跨度 ${summary.observedWallMs??'未知'} ms（完整边界：${summary.wallComplete}），含暂停与准备。未单独采集的睡眠/原因不推断。\n\n${usage.accounting}\n\n按岗位的原生用量、逐 attempt 的等待起终点及证据哈希见 usage.json。输入/历史检索、正常分包和整编是主要必要支出；可逆去重、准备读取共用与保存正文恢复可优化。不得删必要来源或反证、合并不同包为重试、降低幻想/表演/保真要求；字符减少不等于实测 Token 节省。\n`;
- const manifest={version:'production-delivery-v1',workflowId:workflow.id,projectId:workflow.projectId,sourceVersion:workflow.sourceVersion,selectionRevision:workflow.selectionRevision,completionFingerprint:productionDeliveryFingerprint(workflow,views),selectedRuns:workflow.selectedRuns,qualityReviews:workflow.qualityReviews,episodes,
+ const manifest={...(seasonResult?{productionScope:season.scope,seasonDelivery:seasonResult}:{}),version:'production-delivery-v1',workflowId:workflow.id,projectId:workflow.projectId,sourceVersion:workflow.sourceVersion,selectionRevision:workflow.selectionRevision,completionFingerprint:productionDeliveryFingerprint(workflow,views),selectedRuns:workflow.selectedRuns,qualityReviews:workflow.qualityReviews,episodes,
   files:Object.fromEntries(Object.entries(files).map(([name,body])=>[name,{bytes:Buffer.byteLength(body),sha256:sha(body)}]))};
  const identity=digest(manifest);files['manifest.json']=json({...manifest,identity});return {identity,manifest,files,usage};
 }

@@ -20,7 +20,7 @@ async function main() {
   const { readFidelityReceipt } = await import('../lib/fidelity-store');
   const { refreshFidelitySource } = await import('../lib/fidelity-refresh');
   try {
-    assert.equal(CONTRACT_VERSION, 'fidelity/5', 'regression exercises a real parser-version upgrade');
+    assert.equal(CONTRACT_VERSION, 'fidelity/6', 'regression exercises a real parser-version upgrade');
     for(const [legacyVersion,normalizeOld,heading] of [['fidelity/2',normalizeV2,'场1-1 日 外 门口'],['fidelity/4',normalizeV4,'1.1 日，内，道观']] as const){
     const text = `第一集\r\n${heading}\r\n` + '甲乙：逐字保留 é😀。  \r\n'.repeat(1800);
     const batches = planP1ReviewBatches(text);

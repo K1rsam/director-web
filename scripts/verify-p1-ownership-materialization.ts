@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {normalize} from '../.agents/skills/screenplay-fidelity/scripts/fidelity.mjs';
+import {normalize as normalizeV5} from '../lib/fidelity-v5.mjs';
 import {reconcileP1OwnershipDecisions} from '../lib/fidelity-p1-ownership';
 import {routeFidelityQuestions} from '../lib/fidelity-question-routing';
 import {planP1ReviewBatches,type P1ReviewState} from '../lib/fidelity-p1-review';
@@ -11,9 +12,9 @@ import path from 'node:path';
 import {PrismaClient} from '@prisma/client';
 const text='第 21 集\r\n\r\n第二十一集\r\n\r\n21-1 日 外 广场\r\n甲乙：来了。😀\r\n21-3 夜 内 房间\r\n甲乙：走吧。\r\n';
 const decision:FidelityDecision={start:0,end:text.length,kind:'body',episodeNumber:21,note:'相邻双标题属于同一集，保留已有场界。'};
-const old=normalize(text,{decisions:[decision]}) as FidelityResult;
+const old=normalizeV5(text,{decisions:[decision]}) as FidelityResult;
 assert(old.validation.issues.some(issue=>issue.code==='SCENE_BOUNDARY_UNCONFIRMED'));
-const reconciled=reconcileP1OwnershipDecisions(text,[decision]);
+const reconciled=reconcileP1OwnershipDecisions(text,[decision],{ownershipDecisions:[decision]});
 assert.deepEqual(reconciled.decisions,[]);assert.equal(reconciled.corrections.length,1);
 const after=normalize(text,{decisions:reconciled.decisions}) as FidelityResult;
 assert.equal(after.validation.issues.length,0);assert.equal(after.source.text,text);
@@ -36,7 +37,7 @@ async function persisted(){
  try{
   const {prepareFidelityImport}=await import('../lib/fidelity-import');const {readFidelityReceipt}=await import('../lib/fidelity-store');const {prepareFidelitySourceAssisted}=await import('../lib/fidelity-source-assist');
   const prepared=await prepareFidelityImport('ownership.txt',Buffer.from(text),'fidelity',[decision]);
-  const state:P1ReviewState={...review,completedRanges:planP1ReviewBatches(text).map(blocks=>({start:blocks[0].start,end:blocks.at(-1)!.end})),runIds:['saved-paid-full-review'],pendingDecisions:[]};
+  const state:P1ReviewState={...review,completedRanges:planP1ReviewBatches(text).map(blocks=>({start:blocks[0].start,end:blocks.at(-1)!.end})),runIds:['saved-paid-full-review'],pendingDecisions:[decision]};
   prepared.receipt.p1Review=state;
   const project=await db.project.create({data:{title:'offline ownership merge',episodes:{create:prepared.imported.episodes}}});
   const source=await db.sceneSnapshot.create({data:{projectId:project.id,sceneKey:'SOURCE_IMPORT',content:JSON.stringify(prepared.imported),metadata:JSON.stringify({schema:'IMPORTED_SOURCE_TEXT_V2'})}});

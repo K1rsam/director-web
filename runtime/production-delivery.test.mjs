@@ -32,6 +32,16 @@ test('NOT_SENT has zero dispatch, not a fabricated native zero receipt; unknown 
  assert.equal(zero.dispatchCount,0);assert.equal(zero.nativeUsage,null);assert.equal(zero.nativeDurationMs,null);
  assert.equal(b.usage.summary.localRecords,3);assert.equal(b.usage.summary.nativeRequests,2);assert.equal(b.usage.summary.totalTokens,null);assert.equal(b.usage.summary.nativeDurationMs,null);assert.equal(b.usage.summary.knownTokens,20);
 });
+test('new editor notes are delivered separately, bound to their draft; old bundles stay unchanged',async()=>{
+ const f=fixture(),old=await buildProductionDelivery(f);
+ const run=f.runs[0];run.rulesSnapshot={generationTextVersion:'voice-delivery-v1'};
+ run.source.sourceRows=[{id:'r1',text:'后期人名条：甲'}];
+ run.assembly.draft={units:[{id:'u1',shots:[{id:'s1',postproductionNotes:[{text:'人名条：甲，左下角淡入，停2秒后淡出。',sourceRefs:['r1']}]}]}]};
+ const next=await buildProductionDelivery(f),name='episodes/episode-0007/postproduction-notes.md';
+ assert.match(next.files[name]||'',/人名条：甲/);assert.match(next.files[name],/u1.*s1/s);
+ assert.ok(next.manifest.files[name]);assert.doesNotMatch(next.files['complete.md'],/人名条/);
+ assert.equal(old.files[name],undefined);assert.equal(next.files['episodes/episode-0007.md'],old.files['episodes/episode-0007.md']);
+});
 function provenUnsentFixture(){
  const f=fixture();f.workflow.budgetId=f.ledger.id;
  const op={attemptId:'proven-unsent',stage:'finish',status:'completed',fingerprint:'original-failure',createdAt:'2026-01-01T00:00:00.000Z',localSettledAt:'2026-01-01T00:00:01.000Z',error:{code:'ERR_REQUIRE_ESM_RACE_CONDITION',requestOutcome:'UNKNOWN'},receipt:{requestOutcome:'RESPONDED',usage:null}};

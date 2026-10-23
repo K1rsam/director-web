@@ -47,6 +47,44 @@ test('issue-stopped original queue may cold-load but cannot restore admission be
  await proved(f);assert.equal((await f.service.resume()).phase,'RESUMED');
  const after=await f.flows.read('flow');assert.equal(after.parallel.authorizedAt,original.parallel.authorizedAt);assert.deepEqual(after.parallel.modelSelection,original.parallel.modelSelection);
 });
+async function issueStoppedLoaded(t){
+ const f=await fixture(t);
+ await f.flows.update('flow',d=>{d.parallel.enabled=false;d.parallel.lastStop='WAIT_ISSUES';d.parallel.worker.status='WAIT_ISSUES';return d;});
+ await f.runs.update('active',d=>{d.web.owner=null;d.web.reserved=0;d.web.reservedAttemptIds=[];d.operations=[];d.production={blocking:true,boundaryCheck:{status:'UNRESOLVED',signature:'original-gate'}};return d;});
+ await f.service.begin({workflowId:'flow',expectedAuthorization:'original-auth',expectedRevision:8,targetPid:process.pid,codeIdentity:'code-v1'});await drained(f);await proved(f);return f;
+}
+test('loaded issue maintenance releases only its own holds and restores WAIT_ISSUES, never paid admission',async t=>{
+ const f=await issueStoppedLoaded(t),before=await f.runs.read('active'),done=await f.runs.read('done');
+ assert.equal(typeof f.service.releaseIssues,'function','缺少冷加载后仅恢复原问题等待的安全出口');
+ const c=await f.service.releaseIssues(),w=await f.flows.read('flow'),after=await f.runs.read('active');
+ assert.equal(c.phase,'ISSUE_STOPPED');assert.equal(w.paused,false);assert.equal(w.parallel.enabled,false);assert.equal(w.parallel.lastStop,'WAIT_ISSUES');assert.equal(w.parallel.worker.status,'WAIT_ISSUES');
+ assert.equal(w.parallel.authorizedAt,'original-auth');assert.equal(after.web.pauseRequested,false);assert.equal(after.web.runtimeMaintenance,undefined);
+ assert.deepEqual(after.production,before.production);assert.deepEqual(after.operations,before.operations);assert.deepEqual(await f.runs.read('done'),done);
+ assert.doesNotThrow(()=>m.assertRuntimeAdmission(f.dataRoot));assert.equal((await f.service.releaseIssues()).phase,'ISSUE_STOPPED');
+ await assert.rejects(f.service.resume(),e=>e.code?.startsWith('RUNTIME_MAINTENANCE_'));assert.equal((await f.flows.read('flow')).parallel.enabled,false);
+});
+test('release to issue wait fails closed on missing proof, user/STOPPED/source/selection/budget drift or in-flight work',async t=>{
+ for(const mode of ['proof','user','stopped','source','selection','budget','inflight','unowned-pause']){
+  const f=await issueStoppedLoaded(t),controls=createStore(path.join(f.dataRoot,'runtime-maintenance'));
+  assert.equal(typeof f.service.releaseIssues,'function');
+  if(mode==='proof')await controls.update('current',c=>({...c,resumeProof:null}));
+  if(mode==='user')await f.service.userPause({workflowId:'flow'});
+  if(mode==='selection')await f.flows.update('flow',w=>{w.selectedRuns[3]='done';return w;});
+  if(mode==='budget')await f.budgets.update('budget',b=>{b.maxTokens++;return b;});
+  if(['stopped','source','inflight','unowned-pause'].includes(mode))await f.runs.update('active',r=>{if(mode==='stopped')r.web.stopped=true;if(mode==='source')r.web.sourceStale=true;if(mode==='inflight')r.operations=[{attemptId:'live',status:'running'}];if(mode==='unowned-pause')r.web.runtimeMaintenance.id='other';return r;});
+  await assert.rejects(f.service.releaseIssues(),e=>e.code?.startsWith('RUNTIME_MAINTENANCE_'),mode);
+  assert.throws(()=>m.assertRuntimeAdmission(f.dataRoot),{code:'RUNTIME_MAINTENANCE'});assert.equal((await f.flows.read('flow')).parallel.enabled,false);
+ }
+});
+test('release recovers its own durable intermediate state without resuming any worker',async t=>{
+ const f=await issueStoppedLoaded(t),controls=createStore(path.join(f.dataRoot,'runtime-maintenance'));
+ assert.equal(typeof f.service.releaseIssues,'function');
+ await controls.update('current',c=>({...c,phase:'RELEASING_ISSUES'}));
+ await f.runs.update('active',r=>{r.web.pauseRequested=false;delete r.web.runtimeMaintenance;return r;});
+ await f.flows.update('flow',w=>{w.paused=false;w.parallel.enabled=false;w.parallel.lastStop='WAIT_ISSUES';w.runtimeMaintenance.phase='RELEASING_ISSUES';return w;});
+ assert.throws(()=>m.assertRuntimeAdmission(f.dataRoot),{code:'RUNTIME_MAINTENANCE'});
+ assert.equal((await f.service.releaseIssues()).phase,'ISSUE_STOPPED');assert.equal((await f.flows.read('flow')).parallel.enabled,false);
+});
 async function deliveryStoppedFixture(t){
  const f=await fixture(t);
  await f.budgets.update('budget',b=>{b.schema='PRODUCTION_BUDGET_V1';delete b.summary;return b;});

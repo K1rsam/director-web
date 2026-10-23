@@ -1,3 +1,4 @@
+import {requireSeasonProduction} from './season-scope-service';
 import { prisma } from "./prisma";
 import type { PrismaClient } from "@prisma/client";
 
@@ -14,6 +15,7 @@ export function isProductionEpisodeNumber(number: number, scope: ProductionScope
   return Number.isSafeInteger(number) && number >= 0 && (scope.sourceKnown ? scope.episodeNumbers.includes(number) : number >= 1);
 }
 export async function readProductionScope(projectId: string, db: Pick<PrismaClient, "sceneSnapshot"> = prisma): Promise<ProductionScope> {
+  try{const s=await requireSeasonProduction(projectId,undefined,'production',db as any);if(s)return {sourceKnown:true,episodeNumbers:s.scope.episodeNumbers};}catch{return {sourceKnown:true,episodeNumbers:[]};}
   const source = await db.sceneSnapshot.findFirst({ where: { projectId, sceneKey: "SOURCE_IMPORT" }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], select: { content: true } });
   if (!source) return productionScopeFromSource(null);
   // Legacy fallback is only for an absent snapshot, never for an unreadable current source.

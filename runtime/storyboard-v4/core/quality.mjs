@@ -6,6 +6,8 @@ import {SUPPORTED_SEEDANCE_EXPORT_VERSIONS} from './visual-style.mjs';
 import {FANTASY_TIMING_VERSION,fantasyTiming,normalizeFantasyTiming} from './fantasy-timing.mjs';
 import {validVisualSubjects} from './visual-subjects.mjs';
 import {resolvedDialogue} from './source-resolution.mjs';
+import {GENERATION_TEXT_VERSION,assertGenerationTextVersion,validatePostproductionNotes} from './generation-text.mjs';
+export {renderPostproductionNotes} from './generation-text.mjs';
 
 const has=x=>typeof x==='string'&&!!x.trim();
 const issue=(code,coordinate,detail)=>({code,coordinate,detail});
@@ -96,9 +98,10 @@ export function normalizeDraft(raw,source,options={}){
  return {draft,changes};
 }
 
-export function validateDraft({draft,source,settings={},selection,plan,unitDirectionVersion}={}){
+export function validateDraft({draft,source,settings={},selection,plan,unitDirectionVersion,generationTextVersion}={}){
  settings=settings&&typeof settings==='object'?settings:{};
- const errors=[],warnings=[],add=(code,coord,detail)=>errors.push(issue(code,coord,detail));
+ assertGenerationTextVersion(generationTextVersion);
+ const errors=generationTextVersion===GENERATION_TEXT_VERSION?validatePostproductionNotes(draft,source):[],warnings=[],add=(code,coord,detail)=>errors.push(issue(code,coord,detail));
  const units=Array.isArray(draft?.units)?draft.units:[],qs=source?.dialogue||[],qmap=new Map(qs.map((q,i)=>[q.id,{...q,index:i}]));
   const rows=new Map((source?.sourceRows||[]).map(r=>[canonical(r,source),r]));
  const covered=new Set(),unitIds=new Set(),shotIds=new Set(),owner=new Map(),assembled=new Map();let previous=-1,partCount=0,seconds=0;
@@ -200,7 +203,8 @@ function sourceQuoteEdges(draft,quotes){
  return {first,last};
 }
 
-export function renderDraft({draft,source,settings={},seedanceExportVersion,sourceResolutions=[]}={}){
+export function renderDraft({draft,source,settings={},seedanceExportVersion,sourceResolutions=[],generationTextVersion}={}){
+ assertGenerationTextVersion(generationTextVersion);
  if(seedanceExportVersion!==undefined&&!SUPPORTED_SEEDANCE_EXPORT_VERSIONS.includes(seedanceExportVersion))fail('EXPORT_VERSION','未知视频执行稿导出版本');
  const execution=seedanceExportVersion!==undefined;
  const completeFields=seedanceExportVersion==='seedance-execution-v4';
@@ -254,7 +258,7 @@ export function renderDraft({draft,source,settings={},seedanceExportVersion,sour
     const spoken=`${quoteEdges?.first.has(p)?'':'“'}${p.text}${quoteEdges?.last.has(p)?'':'”'}`;
     if(execution){
      const channel=['VO','OS','系统音'].includes(q?.channel)?q.channel:null;
-     const kind=q?.kind==='roar'?'兽吼':q?.kind==='scream'?'尖叫':q?.kind==='vocalization'?q.cue:null;
+     const kind=q?.kind==='roar'?'兽吼':q?.kind==='scream'?'尖叫':q?.kind==='vocalization'?(generationTextVersion===GENERATION_TEXT_VERSION?'声事件':q.cue):null;
      const labels=[...new Set([channel,kind,p.presentation==='画内'?null:p.presentation].filter(has))];
      if(unitTimeline){
       let delivery=typeof p.delivery==='string'?p.delivery:'';

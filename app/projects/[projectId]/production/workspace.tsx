@@ -47,10 +47,10 @@ export function ProductionWorkspace({projectId,episodes,assets}:{projectId:strin
   const wake=async()=>{
    const before=current.current,life=epoch.current,id=selected.current;
    if(document.visibilityState==='hidden'||navigator.onLine===false||requests.current.size||!before?.parallel?.enabled||before.workflow.paused||!before.workflow.parallel?.authorizedAt||Date.now()-lastWake<1000)return;
-   lastWake=Date.now();requests.current.add('reconnect-parallel');setPending([...requests.current]);setConnection('正在重连原四路，核对已保存回包…');
+   lastWake=Date.now();requests.current.add('reconnect-parallel');setPending([...requests.current]);setConnection('正在重连原并行队列，核对已保存回包…');
    try{
     const value=await read(endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'reconnect-parallel',workflowId:id,expectedAuthorization:before.workflow.parallel.authorizedAt})});
-    if(alive.current&&epoch.current===life&&selected.current===id){apply(value);setError('');setConnection(current.current?.workflow.paused?'四路仍保持人工暂停，未自动继续。':'已重新连接原四路；只接续已授权的未完成步骤。');}
+    if(alive.current&&epoch.current===life&&selected.current===id){apply(value);setError('');setConnection(current.current?.workflow.paused?'并行队列仍保持人工暂停，未自动继续。':'已重新连接原并行队列；只接续已授权的未完成步骤。');}
    }catch{if(alive.current&&epoch.current===life)setConnection('重连暂未完成；原任务保留，联网后可再次重连，不重复发送已付请求。');}
    finally{requests.current.delete('reconnect-parallel');if(alive.current)setPending([...requests.current]);}
   };
@@ -68,7 +68,7 @@ export function ProductionWorkspace({projectId,episodes,assets}:{projectId:strin
    const value=await read(endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action,...(action==='create'?{}:{workflowId:previous!.workflow.id,expectedRevision:previous!.workflow.revision}),...(action==='pause'&&previous?.workflow.parallel?.authorizedAt?{expectedAuthorization:previous.workflow.parallel.authorizedAt}:{}),...payload})});
    if(!alive.current||epoch.current!==life||selected.current!==target)return;
    if(action==='create'){selected.current=value.workflow.id;setSelectedId(value.workflow.id);const url=new URL(window.location.href);url.searchParams.set('workflowId',value.workflow.id);window.history.replaceState(null,'',url);}
-   apply(value);setConnection('');setUncertain(false);setNotice(action==='configure-parallel'?'四路安排已保存，尚未启动，不调用AI。':action==='start-parallel'?'四路已明确启动；服务端自动补位，切换页面不会停止制作。':action==='pause'?'后续派单已暂停；在途请求会继续保存回包，不取消、不重发。':action==='reconnect-parallel'?'已核对原四路连接；未解除人工暂停、未重发已付请求。':action==='create'?'选集流程已创建；尚未派发模型。':action==='advance'?'本次推进已返回；只依据已保存结果显示下一步。':action==='resume'?'已解除流程暂停；不会自动开始模型调用。':action==='quality-review'?'实际质量核对记录已保存；不代表用户或成片验收。':'操作已保存，没有自动派发新模型。');return value;
+   apply(value);setConnection('');setUncertain(false);setNotice(action==='configure-parallel'?'并行队列安排已保存，尚未启动，不调用AI。':action==='start-parallel'?'并行队列已明确启动；服务端自动补位，切换页面不会停止制作。':action==='pause'?'后续派单已暂停；在途请求会继续保存回包，不取消、不重发。':action==='reconnect-parallel'?'已核对原并行队列连接；未解除人工暂停、未重发已付请求。':action==='create'?'选集流程已创建；尚未派发模型。':action==='advance'?'本次推进已返回；只依据已保存结果显示下一步。':action==='resume'?'已解除流程暂停；不会自动开始模型调用。':action==='quality-review'?'实际质量核对记录已保存；不代表用户或成片验收。':'操作已保存，没有自动派发新模型。');return value;
   }catch(reason){if(alive.current&&epoch.current===life){setError((reason as Error).message);if(action==='create'){setUncertain(true);setNotice('创建结果待核对；请刷新列表，勿重复创建。');}else await load(target).catch(()=>{});}}
   finally{requests.current.delete(action);if(alive.current)setPending([...requests.current]);}
  };
@@ -91,7 +91,7 @@ export function ProductionWorkspace({projectId,episodes,assets}:{projectId:strin
    {workflows.length?<label className={styles.field}>流程记录<select aria-label="流程记录" value={selectedId} disabled={busy} onChange={e=>void choose(e.target.value)}><option value="">新建选集流程</option>{workflows.map(item=><option key={item.id} value={item.id}>{scopeLabel(item.episodeNumbers)} · {item.mode==='CHAIN'?'连续链':'单集'} · {date(item.createdAt)}</option>)}</select></label>:null}
    <button className="quietButton" type="button" onClick={()=>void refresh()}>刷新闭环状态</button>{workflow?<button className="studioButton" data-variant="secondary" type="button" disabled={busy} onClick={()=>{setBudgetId(workflow.budgetId);void choose('');}}>新建选集流程</button>:null}
   </div></div>
-  <p className={styles.meta}>{snapshot?.parallel?'四组接续 / 同集1路 · 新任务模型与速度见下方':'GPT-6.1 Sol · 中档 · 手动逐次推进 · 四路需明确启用'} <span>{syncedAt?`状态同步于 ${syncedAt}`:''}</span></p>
+  <p className={styles.meta}>{snapshot?.parallel?'分组接续 / 同集1路 · 新任务模型与速度见下方':'GPT-6.1 Sol · 中档 · 手动逐次推进 · 并行队列需明确启用'} <span>{syncedAt?`状态同步于 ${syncedAt}`:''}</span></p>
   {connection?<p className={styles.notice} role="status">{connection}</p>:null}
   {error?<p className={styles.error} role="alert">{error}</p>:null}{notice?<p className={styles.notice} role="status">{notice}</p>:null}
   {loading?<p role="status">正在读取已有记录…</p>:!selectedId?<section className={styles.panel} aria-label="选择制作范围"><h3>先明确这轮要做哪些集</h3><div className={styles.fields}>
@@ -110,7 +110,7 @@ export function ProductionWorkspace({projectId,episodes,assets}:{projectId:strin
    <HandoffDeliveryPanel key={`handoff-${workflow.id}`} snapshot={snapshot} endpoint={endpoint} busy={busy} onAction={act}/>
    <WorkflowGlassRail label="三阶段制作流程">{stages.map((stage,i)=><WorkflowGlassCard key={stage.title} index={i} state={stage.state}><span className={glass.number}>{String(i+1).padStart(2,'0')}</span><div className={glass.heading}><h3 className={glass.title}>{stage.title}</h3><span className={glass.status}>{stage.label}</span></div><p className={glass.detail}>{stage.detail}</p><a className="quietButton" href={stage.href}>查看阶段工作台</a></WorkflowGlassCard>)}</WorkflowGlassRail>
    <div className={styles.grid}>
-    <section className={styles.panel} aria-label="当前下一步"><h3>{snapshot.parallel?.enabled?'四路队列正在接续':actionLabel(next)}</h3><p>{snapshot.parallel?.enabled?'每组只在本组当前集落定后接续下一集；局部待办显示在对应队列卡，不重复手工派单。':next.message||'只推进当前必要动作，不自动扩展到其他集或完整资产库。'}</p>
+    <section className={styles.panel} aria-label="当前下一步"><h3>{snapshot.parallel?.enabled?'并行队列正在接续':actionLabel(next)}</h3><p>{snapshot.parallel?.enabled?'每组只在本组当前集落定后接续下一集；局部待办显示在对应队列卡，不重复手工派单。':next.message||'只推进当前必要动作，不自动扩展到其他集或完整资产库。'}</p>
      {next.kind==='WAIT_DIRECTION_CONFIRM'?<a className="studioButton" data-variant="primary" href={`${base}/preparation#series-direction`}>确认全剧方向</a>:next.kind==='WAIT_DESIGN_CONFIRM'?<a className="studioButton" data-variant="primary" href={`${base}/asset-prompts?episodes=${workflow.episodeNumbers.join(',')}`}>核对并采用指定设计</a>:null}
      {['WAIT_SOURCE_CONFLICT','WAIT_SOURCE_CONFIRM','WAIT_STANDARD_SCRIPT','WAIT_STAGE1_REPAIR','WAIT_DIRECTION_REPAIR','WAIT_SCOPE'].includes(next.kind)?<a className="quietButton" href={`${base}/preparation`}>查看对应原文与待办</a>:null}
      {next.runId&&next.episodeNumber!==undefined?<a className="quietButton" href={episodeLink(next.episodeNumber,next.runId)}>查看第{next.episodeNumber}集当前分镜</a>:null}

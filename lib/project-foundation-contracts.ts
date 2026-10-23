@@ -111,7 +111,8 @@ export type F2Output = {
 export type Q1Output = { coverage: number[]; verdict: "READY" | "REPAIR" | "BLOCKED"; summary: string; issues: FoundationIssue[]; humanChoices?: HumanChoice[] };
 
 export class FoundationContractError extends Error {
-  constructor(message: string, public readonly issues: FoundationIssue[], public readonly candidate?: unknown) {
+  constructor(message: string, public readonly issues: FoundationIssue[], public readonly candidate?: unknown,
+    public readonly recoveryPolicy: 'BOUNDED_FIELD_REPAIR' | 'LOCAL_ONLY' = 'BOUNDED_FIELD_REPAIR') {
     super(message);
     this.name = "FoundationContractError";
   }

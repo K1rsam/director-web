@@ -53,6 +53,18 @@ test('GET/inspect never dispatch; explicit requested assets gate only specified 
  v=await f.service.advance(v.workflow.id,{expectedRevision:v.workflow.revision,actorId:'u'});assert.equal(v.nextAction.kind,'WAIT_DESIGN_CONFIRM');
  f.snapshot.assets.missingCriticalKeys=[];assert.equal((await f.service.inspect(v.workflow.id)).nextAction.kind,'STORYBOARD_CREATE');
 });
+test('automatic paid repair requires separate consent; changing policy is free and keeps queue authority',async t=>{
+ const f=await fixture(t);let v=await f.service.create({projectId:'p',actorId:'u',episodeNumbers:[1],costAcknowledged:true});
+ const id=v.workflow.id;
+ assert.throws(()=>module.assertPaidRepairPolicy(v.workflow),{code:'PAID_REPAIR_NOT_AUTHORIZED'});
+ await assert.rejects(()=>f.service.configurePaidRepairPolicy(id,{expectedRevision:v.workflow.revision,actorId:'u',automatic:true}),{code:'WORKFLOW_REPAIR_CONSENT'});
+ v=await f.service.configurePaidRepairPolicy(id,{expectedRevision:v.workflow.revision,actorId:'u',automatic:false});
+ assert.equal(v.workflow.paidRepairPolicy.automatic,false);const revision=v.workflow.revision;
+ v=await f.service.configurePaidRepairPolicy(id,{expectedRevision:revision,actorId:'u',automatic:true,costAcknowledged:true});
+ assert.doesNotThrow(()=>module.assertPaidRepairPolicy(v.workflow));
+ await assert.rejects(()=>f.service.configurePaidRepairPolicy(id,{expectedRevision:revision,actorId:'u',automatic:false}),{code:'WORKFLOW_CONFLICT'});
+ assert.equal(v.budget.summary.calls,0);assert.deepEqual(f.calls,[]);assert.equal(v.workflow.parallel,undefined);
+});
 test('budget is shared, immutable and unknown usage blocks subsequent dispatch',async t=>{
  const f=await fixture(t),ledger=createProductionBudgetStore(f.budgetDirectory);await ledger.create('shared',{projectIds:['p','q'],maxCalls:3,maxTokens:100});
  let v=await f.service.create({projectId:'p',actorId:'u',episodeNumbers:[1],budgetId:'shared',costAcknowledged:true});
@@ -260,6 +272,75 @@ async function parallelFixture(t,patch={},limits={}){
  return {...f,starts,id:created.workflow.id,created};
 }
 const command=v=>({expectedRevision:v.workflow.revision,actorId:'u'});
+for(const laneCount of [4,6])test(`${laneCount}-lane start names the actual upstream blocker without dispatch or authorization`,async t=>{
+ const f=await parallelFixture(t,{direction:{status:'UNCONFIRMED',hasCandidate:false,blocker:'已保存资料，但全剧方向候选待补。'}});
+ const v=await f.service.configureParallel(f.id,{...command(f.created),laneCount});
+ await assert.rejects(f.service.startParallel(f.id,{...command(v),costAcknowledged:true}),error=>{
+  assert.equal(error.code,'WORKFLOW_PARALLEL_READY');assert.match(error.message,/全剧方向候选待补/);assert.match(error.message,/全剧方向/);return true;
+ });
+ assert.deepEqual(f.starts,[]);assert.deepEqual(await f.service.read(f.id),v.workflow);assert.equal((await f.service.inspect(f.id)).budget.summary.calls,0);
+});
+test('saving six-lane settings does not enroll manual dispatch into parallel authorization',async t=>{
+ const f=await parallelFixture(t);let v=await f.service.configureParallel(f.id,{...command(f.created),laneCount:6});
+ const configured=module.productionWorkflowChain(v.workflow);
+ assert.equal(configured.parallelism.laneCount,6);
+ assert.equal(module.productionWorkflowChain(v.workflow,{forDispatch:true}).parallelism,undefined);
+ v=await f.service.startParallel(f.id,{...command(v),costAcknowledged:true});
+ assert.equal(module.productionWorkflowChain(v.workflow,{forDispatch:true}).parallelism.laneCount,6);
+ v=await f.service.pause(f.id,command(v));
+ assert.equal(module.productionWorkflowChain(v.workflow).parallelism.laneCount,6,'paused bindings retain their authorization identity');
+});
+test('six lanes share the unchanged call stop line',async t=>{
+ const f=await parallelFixture(t,{}, {maxCalls:5,maxTokens:1000});
+ let v=await f.service.configureParallel(f.id,{...command(f.created),laneCount:6});
+ await f.service.startParallel(f.id,{...command(v),costAcknowledged:true});
+ await Promise.all([f.service.pumpParallel(f.id),f.service.pumpParallel(f.id)]);
+ v=await f.service.inspect(f.id);assert.equal(f.starts.length,5);assert.equal(v.budget.summary.calls,5);assert.equal(v.budget.maxCalls,5);assert.equal(v.budget.maxTokens,1000);
+ await f.service.pumpParallel(f.id);assert.equal(f.starts.length,5);
+});
+test('six lanes cover 150 episodes and freeze the count across pause and restart',async t=>{
+ const f=await parallelFixture(t,{availableEpisodes:Array.from({length:150},(_,i)=>i+1)});
+ let v=await f.service.configureParallel(f.id,{...command(f.created),laneCount:6});
+ assert.equal(v.parallel.maxConcurrent,6);
+ assert.deepEqual(v.workflow.parallel.lanes.map(a=>[a[0],a.at(-1)]),[[1,25],[26,50],[51,75],[76,100],[101,125],[126,150]]);
+ assert.deepEqual(v.workflow.parallel.lanes.flat(),f.snapshot.availableEpisodes);
+ const budget=structuredClone(v.budget);
+ v=await f.service.startParallel(f.id,{...command(v),costAcknowledged:true,laneCount:6});
+ await Promise.all([f.service.pumpParallel(f.id),f.make().pumpParallel(f.id)]);
+ assert.deepEqual(f.starts,[1,26,51,76,101,126]);
+ v=await f.service.inspect(f.id);const selected=structuredClone(v.workflow.selectedRuns);
+ v=await f.service.pause(f.id,command(v));
+ await assert.rejects(f.service.configureParallel(f.id,{...command(v),laneCount:4}),{code:'WORKFLOW_PARALLEL_FROZEN'});
+ await assert.rejects(f.service.startParallel(f.id,{...command(v),costAcknowledged:true,laneCount:4}),{code:'WORKFLOW_PARALLEL_FROZEN'});
+ for(const run of Object.values(f.runs))Object.assign(run,{busy:false,complete:true});
+ await f.service.pumpParallel(f.id);assert.equal(f.starts.length,6);
+ v=await f.make().inspect(f.id);assert.deepEqual(v.workflow.selectedRuns,selected);assert.equal(v.parallel.maxConcurrent,6);
+ v=await f.service.startParallel(f.id,{...command(v),costAcknowledged:true});await f.service.pumpParallel(f.id);
+ assert.deepEqual(f.starts,[1,26,51,76,101,126,2,27,52,77,102,127]);
+ v=await f.service.inspect(f.id);assert.equal(v.budget.id,budget.id);assert.equal(v.budget.maxCalls,budget.maxCalls);assert.equal(v.budget.maxTokens,budget.maxTokens);
+ assert.equal(v.budget.summary.calls,12);
+});
+test('six lanes preserve provisional seams, block unresolved seams and stop on shared unknown usage',async t=>{
+ const f=await parallelFixture(t,{availableEpisodes:Array.from({length:150},(_,i)=>i+1)});
+ let v=await f.service.configureParallel(f.id,{...command(f.created),laneCount:6});
+ v=await f.service.startParallel(f.id,{...command(v),costAcknowledged:true});await f.service.pumpParallel(f.id);
+ Object.assign(f.runs['run-26'],{busy:false,continuityPending:true,continuityStatus:'PRELIMINARY'});
+ Object.assign(f.runs['run-51'],{busy:false,continuityPending:true,continuityStatus:'UNRESOLVED'});
+ await f.service.pumpParallel(f.id);assert.deepEqual(f.starts,[1,26,51,76,101,126,27]);
+ v=await f.service.inspect(f.id);assert.equal(v.parallel.completedEpisodes,0);assert.equal(v.parallel.lanes[2].nextAction.kind,'WAIT_CONTINUITY');
+ const ledger=createProductionBudgetStore(f.budgetDirectory),a=await ledger.reserve(v.budget.id,{projectId:'p',stage:'test',provider:'API'});
+ await ledger.settle(v.budget.id,a,{outcome:'UNKNOWN'});
+ for(const r of Object.values(f.runs))Object.assign(r,{busy:false,complete:true,continuityPending:false});
+ await f.service.pumpParallel(f.id);v=await f.service.inspect(f.id);assert.equal(v.parallel.status,'WAIT_BUDGET');assert.equal(f.starts.length,7);
+});
+test('legacy four-lane config stays byte-stable on read and rejects six-lane start',async t=>{
+ const f=await parallelFixture(t);let v=await f.service.configureParallel(f.id,command(f.created));
+ assert.equal(v.parallel.maxConcurrent,4);const before=JSON.stringify(v.workflow);
+ assert.equal(JSON.stringify((await f.make().inspect(f.id)).workflow),before);
+ await assert.rejects(f.service.startParallel(f.id,{...command(v),costAcknowledged:true,laneCount:6}),{code:'WORKFLOW_PARALLEL_FROZEN'});
+ assert.equal(JSON.stringify((await f.make().inspect(f.id)).workflow),before);
+ for(const laneCount of [0,5,7,6.5,'6',null])await assert.rejects(f.service.configureParallel(f.id,{...command(v),laneCount}),{code:'WORKFLOW_PARALLEL_CONFIG'});
+});
 test('four-lane model choice is validated, persisted, and never changes already selected runs',async t=>{
  const f=await parallelFixture(t);
  let v=await f.service.configureParallel(f.id,command(f.created));

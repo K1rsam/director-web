@@ -6,6 +6,7 @@ import { loadFoundationDocument, type FoundationDocument } from './foundation-do
 import { loadFoundationChoices, type FoundationChoiceView } from './foundation-choice-store';
 import { requireProductionCatalog, unresolvedOwner, unresolvedEpisodeScope, type Preparation } from './foundation-production-contracts';
 import { isRecord } from './project-foundation-contracts';
+import {effectiveEditorialCoverage} from './source-interpretation-adoption-proof';
 
 type Readiness = { readiness: 'READY' | 'PENDING' | 'NO_IMAGE'; readyForImages: boolean; requiredChoiceIds: string[]; pendingReasons: string[] };
 type Entry = { key: string; parentKey?: string; episodes: number[]; preparation?: Preparation };
@@ -13,6 +14,7 @@ const overlaps = (episodes: number[], scope?: number[]) => !scope?.length || epi
 
 export function workingReadiness(document: FoundationDocument, choices: FoundationChoiceView[], contextPending: boolean, scope?: number[]): Map<string, Readiness> {
   const catalog = document.f2!;
+  const edited=effectiveEditorialCoverage(document);
   const entries: Entry[] = catalog.assets.flatMap(asset => [
     { key: asset.key, episodes: asset.usageEpisodes, preparation: asset.preparation },
     ...asset.variants.map(variant => ({ key: variant.key, parentKey: asset.key, episodes: variant.episodes, preparation: variant.preparation }))
@@ -28,7 +30,7 @@ export function workingReadiness(document: FoundationDocument, choices: Foundati
     if (requiredChoiceIds.length) pendingReasons.push('必要选择尚未采用，待完善。');
     if (!entry.preparation || entry.preparation.mode === 'UNRESOLVED') pendingReasons.push(entry.preparation?.note || '制作方式尚待完善。');
     if (!episodes.length) pendingReasons.push('适用范围尚未定位，不默认出图。');
-    if (episodes.some(number => !document.editorialCoverage.includes(number) || (document.workflow !== 'LIGHT_STAGE1_V1' && !document.f1?.coverage.includes(number)))) pendingReasons.push('有关集的资料编辑尚未完成。');
+    if (episodes.some(number => !edited.includes(number) || (document.workflow !== 'LIGHT_STAGE1_V1' && !document.f1?.coverage.includes(number)))) pendingReasons.push('有关集的资料编辑尚未完成。');
     if (contextPending) pendingReasons.push('当前原文背景或制作条件尚待核对。');
     for (const todo of document.editorialTodos) {
       if (unresolvedOwner(todo) === 'STAGE2') continue;
@@ -83,7 +85,9 @@ function workingMetadata(previous: string | null | undefined, document: Foundati
 }
 
 export async function registerFoundationDocumentAssets(db: PrismaClient, projectId: string, document: FoundationDocument, requiredChoices: FoundationChoiceView[], beforeRegister?: (tx: Prisma.TransactionClient) => Promise<void>): Promise<unknown> {
-  return db.$transaction(async tx => {
+  return db.$transaction(tx=>registerFoundationDocumentAssetsInTransaction(tx,projectId,document,requiredChoices,beforeRegister), { maxWait: 10_000, timeout: 20_000 });
+}
+export async function registerFoundationDocumentAssetsInTransaction(tx:Prisma.TransactionClient,projectId:string,document:FoundationDocument,requiredChoices:FoundationChoiceView[],beforeRegister?:(tx:Prisma.TransactionClient)=>Promise<void>):Promise<unknown>{
     await beforeRegister?.(tx);
     const input = await loadFoundationInputs(projectId, tx);
     if (input.sourceVersion !== document.sourceVersion) throw new Error('原文 source 已改变，未登记旧源资产。');
@@ -140,5 +144,4 @@ export async function registerFoundationDocumentAssets(db: PrismaClient, project
       }
     }
     return { status: 'WORKING', documentRevision: document.revision, sourceVersion: document.sourceVersion, assets: mappings };
-  }, { maxWait: 10_000, timeout: 20_000 });
 }

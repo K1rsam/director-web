@@ -15,6 +15,6 @@ description: 通读中文剧本并返回可复制的集场归属、作者资料�
 
 网站内部原稿入口属于P1，执行真实AI结构检查；外部已整理入口复用本计划，不要求再次全文AI检查。模型输出是受用户整理授权约束的结构建议，不等于已确认制作决定。所有正文由程序复制，不让模型输出替代正文。
 
-程序路径使用 [fidelity/5校验契约及旧版兼容说明](references/contract.md) 和 `scripts/fidelity.mjs`。`scripts/external_protocol.py` 仅把普通协议文本适配为行范围决定，网站随后运行同一Node校验器。现有 `node scripts/cli.mjs 原稿.txt 输出目录` 仅做固定程序检查并导出兼容source+plan JSON，不得将它宣称为AI通读。旧JSON/ZIP先由其冻结版本验真再升级，包内脚本不会因上传而执行。
+程序路径使用 [fidelity/6校验契约及旧版兼容说明](references/contract.md) 和 `scripts/fidelity.mjs`。`scripts/external_protocol.py` 仅把普通协议文本适配为行范围决定，网站随后运行同一Node校验器。现有 `node scripts/cli.mjs 原稿.txt 输出目录` 仅做固定程序检查并导出兼容source+plan JSON，不得将它宣称为AI通读。旧JSON/ZIP先由其冻结版本验真再升级，包内脚本不会因上传而执行。
 
 校验失败修复计划并定位问题，不改源文凑通过。无脚本能力直接给协议文本，不能声称已经运行校验器。原文未知信息留为重要问题候选，不臆造事实。

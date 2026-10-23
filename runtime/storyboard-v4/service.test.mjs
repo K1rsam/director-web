@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {mkdtemp,readFile,rm} from 'node:fs/promises';
@@ -16,6 +16,9 @@ import {buildRequest,captureRules} from './core/core.mjs';
 import {digest} from './core/shared.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
+// Service fixtures must not inherit a live repository's maintenance gate.
+const fixtureDataRoot=await mkdtemp(path.join(tmpdir(),'storyboard-service-fixture-'));
+after(()=>rm(fixtureDataRoot,{recursive:true,force:true}));
 const require=createRequire(import.meta.url);
 const productionReadGuard=tsxRequire(path.join(root,'lib/production-read-guard.ts'),import.meta.url);
 const episode={id:'ep1',projectId:'p1',number:1,title:'历史',content:'1-1 日 外 城墙\n甲：我还没输！',project:{id:'p1',style:'3D国漫',aspectRatio:'16:9'}};
@@ -75,7 +78,7 @@ function fixture({sourceError=null,active=false,run=structuredClone(saved),env={
    if(name.endsWith('/coordinator.mjs'))return {createCoordinator:options=>{stats.coordinatorOptions=options;return coordinator;}};
    return require(name);
   }}
- },{process:{env,cwd:()=>root},...(runtimeGlobal?{globalThis:runtimeGlobal}:{})});
+ },{process:{env:{DIRECTOR_STORYBOARD_DATA_DIR:fixtureDataRoot,...env},cwd:()=>root},...(runtimeGlobal?{globalThis:runtimeGlobal}:{})});
  const route=loadTs('app/api/episodes/[episodeId]/storyboard/route.ts',{
   '@/lib/auth':{getCurrentUser:async()=>({id:'owner'})},'@/lib/prisma':{prisma:db},'@/lib/storyboard-service':service,'@/lib/standard-script-reception':{UPSTREAM_MATERIAL_PROTOCOL:'upstream-material-v2'}
  });
@@ -89,7 +92,7 @@ function fixture({sourceError=null,active=false,run=structuredClone(saved),env={
 
 test('new tasks reject a partially reloaded native kernel before source preparation or creation',async()=>{
  const versions=captureRules();
- for(const [key,value] of [...['rhythmContractVersion','fantasyTimingVersion','visualSubjectsVersion','opportunityCoverageVersion','systemPresentationVersion','seedanceExportVersion','editingHandoffVersion'].map(key=>[key,undefined]),['seedanceExportVersion','seedance-execution-v3'],['editingHandoffVersion','future']]){
+ for(const [key,value] of [...['rhythmContractVersion','fantasyTimingVersion','visualSubjectsVersion','opportunityCoverageVersion','systemPresentationVersion','seedanceExportVersion','editingHandoffVersion','generationTextVersion'].map(key=>[key,undefined]),['seedanceExportVersion','seedance-execution-v3'],['editingHandoffVersion','future'],['generationTextVersion','future']]){
   let created=0;const f=fixture({kernelRules:{...versions,[key]:value},coordinatorOverrides:{create:async()=>{created++;return {id:'should-not-create'};}}});
   await assert.rejects(f.service.createStoryboardRun(f.current,{}),error=>error.code==='RUNTIME_RELOAD_REQUIRED'&&error.requestOutcome==='NOT_SENT'&&error.status===503);
   assert.equal(created,0);assert.equal(f.stats.sourceLoads,0);assert.equal(f.stats.voiceMeasurements,0);assert.deepEqual(f.stats.dispatches,[]);
@@ -289,6 +292,23 @@ test('selected actual tail validates the predecessor using its own frozen gramma
  }
 });
 
+test('postproduction download uses the same source gate as Markdown and creates no empty note file',async()=>{
+ const run=structuredClone(saved);run.status='text_ready_for_review';run.operations=[];
+ run.rulesSnapshot={generationTextVersion:'voice-delivery-v1'};run.assembly={text:'生成正文',validation:{errors:[]},draft:{units:[]}};
+ const missing=fixture({run,sourceError:new Error('missing source')});
+ assert.equal((await missing.get('?runId=saved-run&format=postproduction')).status,503);
+ const f=fixture({run});
+ const prepared=await f.service.loadStoryboardInput(f.current,'','legacy');run.web.binding.sourceVersion=prepared.sourceVersion;
+ assert.equal((await f.get('?runId=saved-run&format=postproduction')).status,404);
+ run.assembly.draft.units=[{id:'u1',shots:[{id:'s1',postproductionNotes:[{text:'人名条：甲，左下角淡入后淡出。',sourceRefs:[run.source.sourceRows[0].id]}]}]}];
+ const download=await f.get('?runId=saved-run&format=postproduction');assert.equal(download.status,200);
+ assert.match(download.headers.get('content-disposition'),/postproduction-notes.md/);assert.match(await download.text(),/人名条：甲/);
+ const md=await f.get('?runId=saved-run&format=md');assert.equal(await md.text(),'生成正文');
+ run.production={boundaryCheck:{status:'PRELIMINARY'},boundary:{seed:{fromEpisode:7,adjacentEpisode:true}}};run.web.binding.productionChain={id:'chain',mode:'CHAIN'};
+ const blocked=await f.get('?runId=saved-run&format=postproduction');assert.equal(blocked.status,409);
+ assert.deepEqual(f.stats.dispatches,[]);assert.equal(f.stats.voiceMeasurements,0);
+});
+
 test('saved display cannot bypass Markdown source checks or raw JSON permissions',async()=>{
  const f=fixture({sourceError:new Error('missing source')});
  assert.equal((await f.get('?runId=saved-run&view=saved&format=md')).status,503);
@@ -436,9 +456,9 @@ test('source partition, not a positive ordinal, gates direct stage3 preparation'
 test('stage3 data and CLI resolution stay isolated while explicit overrides win',()=>{
  for(const env of [{},{CODEX_CLI_PATH:'/configured/codex'},{DIRECTOR_CODEX_CLI:'/direct/codex',CODEX_CLI_PATH:'/configured/codex',DIRECTOR_STORYBOARD_DATA_DIR:'.isolated-storyboard'}]){
   const {service,stats}=fixture({env});service.storyboardService();
-  assert.equal(service.storyboardDataRoot,path.join(root,env.DIRECTOR_STORYBOARD_DATA_DIR||'.storyboard-stage3-v2'));
+  assert.equal(service.storyboardDataRoot,env.DIRECTOR_STORYBOARD_DATA_DIR?path.join(root,env.DIRECTOR_STORYBOARD_DATA_DIR):fixtureDataRoot);
   assert.equal(stats.coordinatorOptions.executable,env.DIRECTOR_CODEX_CLI||env.CODEX_CLI_PATH||'/resolved/codex');
-  assert.equal(stats.coordinatorOptions.maxConcurrent,4);
+  assert.equal(stats.coordinatorOptions.maxConcurrent,6);
   assert.equal(stats.resolverCalls,env.DIRECTOR_CODEX_CLI?0:1);
   assert.equal(stats.cliChecks,0);
  }

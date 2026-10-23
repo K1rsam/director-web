@@ -36,3 +36,12 @@ test('per-episode selection binds the reviewed pair, not unrelated lane admissio
  f.workflow.selectionHistory.push({episodeNumber:22,runId:'current',selectionRevision:4});
  assert.notEqual(buildProductionBoundaryPacket(f.workflow,f.current,f.previous,f.sources).evidenceHash,first.evidenceHash);
 });
+test('a genuine no-predecessor head has source-only evidence, never an invented previous episode',()=>{
+ const f=fixture();f.workflow.episodeNumbers=[22,23];f.current.production.boundary.seed.fromEpisode=null;f.current.production.boundary.seed.previousSource=null;f.current.production.boundary.actual=null;f.current.production.boundaryCheck.status='NO_PREDECESSOR';
+ const p=buildProductionBoundaryPacket(f.workflow,f.current,null,{previous:null,current:f.sources.current});
+ assert.equal(p.version,'production-source-evidence-v1');assert.equal(p.previous,null);assert.equal(p.sources.previous,null);assert.equal(p.current.candidates[0].id,'cf');assert.equal(p.provesCrossEpisodeContinuity,false);assertBoundaryPacket(p,p.evidenceHash);
+ for(const change of [x=>x.current.production.boundary.seed.fromEpisode=21,x=>x.current.production.boundaryCheck.status='PRELIMINARY',x=>x.current.operations[0].status='running',x=>x.workflow.episodeNumbers=[21,22]]){
+  const c=structuredClone(f);change(c);assert.throws(()=>buildProductionBoundaryPacket(c.workflow,c.current,null,{previous:null,current:c.sources.current}),{code:'WORKFLOW_BOUNDARY_EVIDENCE'});
+ }
+ const changed=structuredClone(f);changed.current.candidates[0].validation={errors:[{code:'changed'}]};assert.notEqual(buildProductionBoundaryPacket(changed.workflow,changed.current,null,{previous:null,current:changed.sources.current}).evidenceHash,p.evidenceHash);
+});

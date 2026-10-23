@@ -220,7 +220,16 @@ async function main(){
   assert.equal(generated.productionChain.selectionProtocol,'per-episode-selection-v1');
   assert.equal(generated.productionBudget.id,parallel.workflow.budgetId);assert.equal(runs.r.web.binding.productionChain.id,parallel.workflow.id);
   assert.equal(oldBinding.productionChain.selectionProtocol,undefined,'旧制作链的冻结协议不自动更换');
-  console.log('PASS production workflow real adapters: stage order, receipts, shared ALS budget, zero default generation, read-only inspect, exact needs and new Fast/chain binding with frozen old tasks; all providers/services synthetic');
+  const head:any={id:'head',source:{sourceRows:[{id:'s',text:'甲（OS）原话',kind:'action'}],contextRows:[],dialogue:[]},plan:null,adopted:[],candidates:[{id:'old',stage:'finish',status:'needs_repair'}],operations:[],production:{boundary:{seed:{fromEpisode:null,previousSource:null},actual:null},boundaryCheck:{status:'NO_PREDECESSOR'}},web:{binding:{projectId:'p',episodeId:episode.id,episodeNumber:1,productionChain:{id}}}};
+  const headWorkflow={...view.workflow,selectedRuns:{1:'head'}},reviews:any[]=[];
+  const headServices={...services,readStoryboard:async()=>structuredClone(head),storyboardView:async()=>({sourceStale:false,active:false,legacyReadOnly:false,preparation:{ready:true}}),resolveStoryboardSource:async(...args:any[])=>{reviews.push(args);return head;}};
+  const sourceAdapters=adapterModule.createProductionWorkflowAdapters('u',headServices),packet=await sourceAdapters.boundaryPacket(headWorkflow,'head');
+  assert.equal(packet.version,'production-source-evidence-v1');assert.equal(packet.previous,null);assert.equal(packet.sources.current,episode.content);assert.equal(packet.provesCrossEpisodeContinuity,false);
+  await sourceAdapters.reviewBoundary(headWorkflow,{runId:'head',evidenceHash:packet.evidenceHash,sourceResolution:{kind:'CANDIDATE_DIALOGUE_MAPPING'},approval:{actorId:'untrusted',reference:'human/ref',answer:'原句映射免费恢复'}});
+  assert.equal(reviews.length,1);assert.equal(reviews[0][2].actorId,'u','批准身份须由服务端确定');
+  for(const sourceResolution of [undefined,{kind:'BOUNDARY_ACTION_RECAP'},{kind:'ASSET_QUANTITY_SOURCE_PRIORITY'}])await assert.rejects(()=>sourceAdapters.reviewBoundary(headWorkflow,{runId:'head',evidenceHash:packet.evidenceHash,sourceResolution,approval:{reference:'r',answer:'a'}}),(e:any)=>e.code==='WORKFLOW_SOURCE_REVIEW_SCOPE');
+  head.candidates[0].status='changed';await assert.rejects(()=>sourceAdapters.reviewBoundary(headWorkflow,{runId:'head',evidenceHash:packet.evidenceHash,sourceResolution:{kind:'CANDIDATE_DIALOGUE_MAPPING'},approval:{reference:'r',answer:'a'}}),(e:any)=>e.code==='WORKFLOW_BOUNDARY_STALE');assert.equal(reviews.length,1);
+  console.log('PASS production workflow real adapters including source-only head evidence, bound actor, stale/scope rejection; all providers/services synthetic');
  }finally{await rm(directory,{recursive:true,force:true});}
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

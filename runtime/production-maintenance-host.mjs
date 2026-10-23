@@ -19,7 +19,7 @@ export async function runtimeCodeIdentity(repoRoot){
   else if(item.isFile()&&!/\.test\.mjs$|test-fixtures\.mjs$/.test(item.name))entries.push(file);
  }}
  await walk('runtime');
- entries.push('lib/storyboard-service.ts','lib/production-workflow.ts','app/api/episodes/[episodeId]/storyboard/route.ts','app/api/projects/[projectId]/production-workflow/route.ts','scripts/safe-switch-3008.mjs');
+ entries.push('lib/storyboard-service.ts','lib/production-workflow.ts','app/api/episodes/[episodeId]/storyboard/route.ts','app/api/projects/[projectId]/production-workflow/route.ts','scripts/safe-switch-3008.mjs','lib/season-scope-service.ts','lib/season-handoff-service.ts','lib/foundation-state.ts','lib/foundation-delivery.ts','lib/project-foundation.ts','lib/production-episodes.ts','lib/light-foundation-supply.ts','lib/asset-prompt-service.ts','lib/asset-image-job-service.ts','lib/asset-visual-facts-service.ts','lib/asset-design-adoption.ts','lib/asset-prompt-automation.ts','app/projects/[projectId]/season-scope/route.ts','app/projects/[projectId]/season-scope/handoff/route.ts');
  const hashes=[];for(const file of entries.sort())hashes.push([file,createHash('sha256').update(await readFile(path.join(repoRoot,file))).digest('hex')]);
  return {identity:createHash('sha256').update(JSON.stringify(hashes)).digest('hex'),files:hashes};
 }
@@ -65,9 +65,10 @@ export function installRuntimeMaintenanceBridge(config){
     const service=options.getService()??options.initializeService();
     const kernel=service.runtimeIdentity?.();if(!kernel)fail('RUNTIME_MAINTENANCE_KERNEL','旧缓存没有原生内核加载证明');
     const code=await runtimeCodeIdentity(process.cwd());await maintenance.loaded({pid:process.pid,codeIdentity:code.identity,kernel});
-   }else if(['LOADED','RESUMING'].includes(c.phase)&&c.loadedPid===process.pid&&c.resumeProofNonce){
+   }else if(['LOADED','RESUMING','RELEASING_ISSUES'].includes(c.phase)&&c.loadedPid===process.pid&&c.resumeProofNonce){
     const proof=await options.verify(c);await maintenance.recordResumeProof({pid:process.pid,nonce:c.resumeProofNonce,proof});
    }else if(c.phase==='RESUMED'&&c.loadedPid===process.pid){state.closing=false;await options.resume(c);}
+   else if(c.phase==='ISSUE_STOPPED'&&c.loadedPid===process.pid){state.closing=false;}
   })();
   state.task=task;
   task.catch(error=>maintenance.recordFailure(error).catch(()=>{})).finally(()=>{if(state.task===task)state.task=null;});

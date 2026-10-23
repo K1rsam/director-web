@@ -1,3 +1,5 @@
+import {SeasonScopePanel} from './season-scope-panel';
+import {seasonWorkspace} from '@/lib/season-scope-service';
 import { notFound } from "next/navigation";
 import { getProjectStudio } from "@/lib/studio";
 import { getFoundationDeliveryState } from "@/lib/foundation-delivery";
@@ -25,6 +27,7 @@ export default async function ProjectStudioPage({ params, searchParams }: { para
   const studio = await getProjectStudio(projectId, currentUser.id);
   if (!studio) notFound();
 
+  const season = await seasonWorkspace(projectId);
   const delivery = await getFoundationDeliveryState(projectId);
   const sourceEpisodes = await prisma.episode.findMany({ where: { projectId }, orderBy: { number: "asc" }, select: { id: true, number: true, title: true, content: true } });
   const productionScope = await readProductionScope(projectId);
@@ -57,6 +60,7 @@ export default async function ProjectStudioPage({ params, searchParams }: { para
       <FoundationWorkflowStatus projectId={projectId} state={deliveryView} requiredChoiceCount={delivery.requiredChoices.length} sourceReady={Boolean(studio.firstPhase.preprocessReady)} sceneCount={studio.episodes.reduce((count, episode) => count + episode.scenes.length, 0)}
         remaining={[...new Set([...delivery.document.editorialTodos.filter(todo => todo.owner !== "STAGE2").map(todo => todo.note), ...delivery.issues.map(issue => issue.problem)])]} />
       <section className="studioSection" id="phase-one">
+        <SeasonScopePanel projectId={projectId} initial={season} />
         <PresentationContracts projectId={projectId} pending={delivery.requiredChoices} confirmed={delivery.confirmedChoices}
           active={delivery.busy || unknownOutcome} mode="delivery" expectedTaskId={delivery.task?.id}
           decisionContinued={foundationNotice === "decision-continued"}

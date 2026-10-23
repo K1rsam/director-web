@@ -1,35 +1,7 @@
 /** Browser-safe presentation only: no source text, database identity or numbering is changed. */
-const DIGITS: Record<string, number> = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
-const UNITS: Record<string, number> = { 十: 10, 百: 100, 千: 1000 };
+import {parseEpisodeNumber} from '../.agents/skills/screenplay-fidelity/scripts/episode-number.mjs';
+export {parseEpisodeNumber};
 const halfWidth = (value: string) => value.replace(/[０-９Ａ-Ｚａ-ｚ]/g, character => String.fromCharCode(character.charCodeAt(0) - 0xfee0));
-const safeNumber = (value: number) => Number.isSafeInteger(value) && value >= 0 ? value : null;
-
-export function parseEpisodeNumber(value: string): number | null {
-  const compact = halfWidth(value).trim();
-  if (!compact) return null;
-  if (/^\d+$/.test(compact)) return safeNumber(Number(compact));
-  const repeated = /^([零〇一二两三四五六七八九十百千]+)(\d+)$/.exec(compact);
-  if (repeated) {
-    const chinese = parseEpisodeNumber(repeated[1]), arabic = safeNumber(Number(repeated[2]));
-    return chinese !== null && chinese === arabic ? chinese : null;
-  }
-  if (!/^[零〇一二两三四五六七八九十百千]+$/.test(compact)) return null;
-  if ([...compact].every(character => character in DIGITS)) return safeNumber(Number([...compact].map(character => DIGITS[character]).join("")));
-  let total = 0, previousUnit = 10000, digit: number | null = null;
-  for (const character of compact) {
-    if (character in DIGITS) {
-      if (digit !== null && digit !== 0) return null;
-      digit = DIGITS[character];
-    } else {
-      const unit = UNITS[character];
-      if (unit >= previousUnit || digit === 0) return null;
-      total += (digit ?? 1) * unit;
-      previousUnit = unit;
-      digit = null;
-    }
-  }
-  return safeNumber(total + (digit ?? 0));
-}
 
 const NORMALIZATION_NOTE = /（原集号(?:为第[^）]*?集，不是有效集号|与前文重复)，已自动整理为第\d+集）/g;
 const DIVIDERS = /^[\s:：·・•.．、—–－\-|｜]+/u;

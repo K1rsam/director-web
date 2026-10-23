@@ -9,7 +9,7 @@ import {isDeepStrictEqual} from 'node:util';
 export type ScriptInputProtocol = 'upstream-material-v2' | 'standard-episode-v1' | 'legacy';
 export const UPSTREAM_MATERIAL_PROTOCOL = 'upstream-material-v2' as const;
 export const STANDARD_EPISODE_PROTOCOL = 'standard-episode-v1' as const;
-export type ScriptPerformanceOptions={inlinePerformance?:boolean;inlinePerformanceVersion?:InlinePerformanceVersion};
+export type ScriptPerformanceOptions={inlinePerformance?:boolean;inlinePerformanceVersion?:InlinePerformanceVersion;sourceRegroupVersion?:'source-regroup-v1'|null};
 export function scriptPerformanceVersion(options:ScriptPerformanceOptions={}):InlinePerformanceVersion {
   const version=options.inlinePerformanceVersion===undefined?'inline-performance-v2':options.inlinePerformanceVersion;
   if(!['inline-performance-v1','inline-performance-v2'].includes(version))throw new StandardScriptError('UNSUPPORTED_PERFORMANCE_VERSION','options.inlinePerformanceVersion');
@@ -37,6 +37,7 @@ export function prepareEpisodeScript(episode: {number: number; content: string},
   const version=scriptPerformanceVersion(options);
   const syntaxOptions={knownSpeakers:knownScriptSpeakers(catalog),...options};
   let prepared = resolution ?? prepareStandardEpisode(episode.content, `episode-${episode.number}`,syntaxOptions);
+  if(prepared.plan.schemaVersion==='STANDARD_SCRIPT_PLAN_V6'&&options.sourceRegroupVersion===null)throw new StandardScriptError('SOURCE_REGROUP_VERSION','旧任务未冻结来源重组能力，保留旧任务，不静默降级');
   if(prepared.index.text!==episode.content||prepared.index.sourceId!==`episode-${episode.number}`)throw new Error('解析决定与当前集原文不匹配。');
   const confirmed=confirmedSpeakerEntries(prepared);
   // Derive the requested delivery from a copy. Saved classifications, IDs and source spans stay authoritative.
@@ -68,7 +69,7 @@ export function prepareEpisodeReception(episode: {number: number; content: strin
   const diagnostics = [...prepared.diagnostics];
   if (!diagnostics.length && !prepared.compiled?.package.script.entries.some(e => e.target === 'BODY')) diagnostics.push({line: 1, code: 'EMPTY_BODY', message: '只有标题或资料，没有可制作正文。'});
   return {standardScript: diagnostics.length ? null : prepared.compiled?.package ?? null,
-    scriptReception: {version: STANDARD_EPISODE_PROTOCOL, ready: diagnostics.length === 0, diagnostics}};
+    scriptReception: {version: STANDARD_EPISODE_PROTOCOL, ready: diagnostics.length === 0, diagnostics,...(prepared.plan.schemaVersion==='STANDARD_SCRIPT_PLAN_V6'?{sourceRegroupVersion:'source-regroup-v1' as const}:{})}};
 }
 export function collectScriptReceptionIssues(index: SourceIndex, catalog: ProductionCatalog | null, resolutions:Record<number,PreparedStandardEpisode> = {}): FoundationIssue[] {
   return index.episodes.flatMap(episode => prepareEpisodeReception(episode, catalog, resolutions[episode.number]).scriptReception.diagnostics.map(d => ({

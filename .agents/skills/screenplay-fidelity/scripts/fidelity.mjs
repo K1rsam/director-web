@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-export const CONTRACT_VERSION = 'fidelity/5';
+import {parseEpisodeNumber} from './episode-number.mjs';
+export const CONTRACT_VERSION = 'fidelity/6';
 const hash = text => createHash('sha256').update(text, 'utf8').digest('hex');
 const same = (a,b) => JSON.stringify(a) === JSON.stringify(b);
 export function createSource(text) {
@@ -49,14 +50,14 @@ function canonical(source, options={}, groupBoundaryIssues=true) {
   const contextStart=nonempty[1],contextField=nonempty[afterZeroHeadings];
   const confirmedContext=!!(contextStart && contextField && decisionsCopy.some(d=>d.kind==='context' && d.start<=contextStart.start && d.end>=contextField.end));
   const titleBeforeContext=firstText.length<=60 && !/[。！？!?“”「」△]/.test(firstText) && !episodePattern.test(firstText) && !contextPattern.test(firstText) && afterZeroHeadings>1 && (contextPattern.test(contextField?.text.trim()??'') || confirmedContext);
-  const numberValue=value=>{if(/^\d+$/.test(value))return Number(value);let total=0,digit=0;for(const c of value){const n='零一二三四五六七八九'.indexOf(c);if(n>=0)digit=n;else if(c==='〇')digit=0;else if(c==='两')digit=2;else if(c==='十'||c==='百'||c==='千'){total+=(digit||1)*({十:10,百:100,千:1000}[c]);digit=0;}else return NaN;}return total+digit;};
+  const numberValue=value=>parseEpisodeNumber(value)??NaN;
   const headings=rows.flatMap(row=>{const ep=row.text.trim().match(episodePattern);return ep?[{start:row.start,number:numberValue(ep[1])}]:[];});
   const decisionEpisode=d=>{
     const heading=headings.find((h,i)=>h.number===d.episodeNumber && d.start<(headings[i+1]?.start??source.length) && d.end>h.start);
     if(heading)return `episode:${source.sourceVersion}:${heading.start}`;
     return `episode:${source.sourceVersion}:decision:${decisionsCopy.find(p=>p.episodeNumber===d.episodeNumber).start}`;
   };
-  let episodeId=null,sceneId=null,sourceNumber=null,context=false;
+  let episodeId=null,sceneId=null,sourceNumber=null,context=false,episodePreamble=false;
   const issues=[],segments=[],seen=new Set(),decisionScenes=new Map(),continuedSceneHeaders=new Set();
   let openBoundaryIssue=null;
   for (const [rowIndex,row] of rows.entries()) {
@@ -104,16 +105,23 @@ function canonical(source, options={}, groupBoundaryIssues=true) {
     let kind='body',reason='locked_source_line';
     if (ep || prologue) {
       episodeId=`episode:${source.sourceVersion}:${row.start}`;sceneId=null;sourceNumber=ep?ep[1]:'序章';context=ctx;
+      episodePreamble=!!ep&&!ctx;
       if(seen.has(sourceNumber))issues.push({code:'DUPLICATE_EPISODE_NUMBER',start:row.start,end:row.end,message:'原集号重复，保留两处来源，需核对页眉或异稿'});
       seen.add(sourceNumber);kind='format';reason='explicit_episode_heading';
     }
-    if(ctx){context=true;episodeId=null;sceneId=null;sourceNumber=null;kind='context';reason='explicit_context_heading';}
+    if(ctx){context=true;episodeId=null;sceneId=null;sourceNumber=null;kind='context';reason='explicit_context_heading';episodePreamble=false;}
     else if(context){kind='context';reason='context_section';}
     else if(scene||labeledScene){sceneId=`scene:${source.sourceVersion}:${row.start}`;kind=inlineBody?'body':'format';reason=inlineBody?'inline_scene_body':'explicit_scene_heading';}
     if(taggedMismatch&&!context){sceneId=null;kind='body';reason='scene_episode_mismatch';issues.push({code:'SCENE_EPISODE_MISMATCH',start:row.start,end:row.end,message:'场号所属集与当前集标题不一致；原文保留，未将错集场号自动归入当前集'});}
     if(!t&&!context){kind='format';reason='source_whitespace';}
     if(continuedSceneHeaders.has(row.start)&&!context){kind='format';reason='continued_scene_metadata';}
     if(titleBeforeContext && row.start===nonempty[0].start){kind='context';reason='document_title_before_context';}
+    // An explicit field in the episode preamble is source metadata, not a
+    // missing scene or a character called “集名”. Never apply inside a scene,
+    // after narrative begins, in context, or to a mixed action/dialogue line.
+    const episodeTitle=episodePreamble&&episodeId&&!sceneId&&!context?t.match(/^(?:#{1,6}\s*)?集名\s*[:：]\s*(\S.*)$/):null;
+    if(episodeTitle&&episodeTitle[1].length<=160&&!/[:：△▲]/.test(episodeTitle[1])){kind='format';reason='explicit_episode_metadata';}
+    if(t&&(kind==='body'||kind==='context'||sceneId))episodePreamble=false;
     const decision=decisionsCopy.find(d=>d.start<=row.start&&d.end>=row.end);
     if(decision?.sceneNumber!==undefined && scene && row.start===decision.start && sceneId)decisionScenes.set(decision.start,sceneId);
     if(decision){kind=decision.kind;reason='user_boundary_decision';}
@@ -130,7 +138,7 @@ function canonical(source, options={}, groupBoundaryIssues=true) {
       }
     } else openBoundaryIssue=null;
     if(ep&&/^[0零〇]+$/.test(ep[1])&&!ctx&&!ep[2].trim()&&!decision)issues.push({code:'ZERO_EPISODE_UNCONFIRMED',start:row.start,end:row.end,message:'第0集无类型说明，暂保留正文，需确认资料或序章剧情'});
-    segments.push({id:id(source,row.start,row.end),start:row.start,end:row.end,kind,episodeId:kind==='context'?null:effectiveEpisode,sceneId:kind==='context'?null:effectiveScene,sourceNumber:decision?.episodeNumber===undefined?sourceNumber:String(decision.episodeNumber),productionEligible:kind==='body',reason,speakerLabels:labels(row.text)});
+    segments.push({id:id(source,row.start,row.end),start:row.start,end:row.end,kind,episodeId:kind==='context'?null:effectiveEpisode,sceneId:kind==='context'?null:effectiveScene,sourceNumber:decision?.episodeNumber===undefined?sourceNumber:String(decision.episodeNumber),productionEligible:kind==='body',reason,speakerLabels:reason==='explicit_episode_metadata'?[]:labels(row.text)});
   }
   return {contractVersion:CONTRACT_VERSION,sourceVersion:source.sourceVersion,decisionVersion:hash(JSON.stringify(decisionsCopy)),decisions:decisionsCopy,segments,issues};
 }

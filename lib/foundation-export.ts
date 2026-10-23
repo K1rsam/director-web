@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
+import { types } from "node:util";
 import { prisma } from "@/lib/prisma";
-import { foundationJson, getFoundationState } from "@/lib/foundation-state";
+import { foundationJson, getFoundationState,loadFoundationInputs } from "@/lib/foundation-state";
 import { FOUNDATION_TASK_CONTRACT } from "@/lib/project-foundation-contracts";
 import { summarizeFoundationRunUsage } from "@/lib/foundation-run-usage";
 import { getFoundationDeliveryState } from "@/lib/foundation-delivery";
@@ -15,7 +16,7 @@ export async function buildFoundationExport(projectId: string, db: Prisma.Transa
       episodes: { orderBy: { number: "asc" }, select: { id: true, number: true, title: true, content: true } }
     } }),
     db.sceneSnapshot.findMany({ where: { projectId, OR: [
-      { sceneKey: { in: ["SOURCE_IMPORT", "FIDELITY_IMPORT", "PROJECT_MEMORY"] } },
+      { sceneKey: { in: ["SOURCE_IMPORT", "FIDELITY_IMPORT", "PROJECT_MEMORY","SOURCE_READING_CONFIRMATION","SCRIPT_RESOLUTION_CURRENT_V1","SCRIPT_RESOLUTION_HISTORY_V1"] } },
       { sceneKey: { startsWith: "FOUNDATION_" } }, { sceneKey: { startsWith: "EP-", endsWith: "-CONTEXT" } }
     ] }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] }),
     db.pipelineRun.findMany({ where: { projectId, episodeId: null, stageCode: { in: ["P0", "P1", "P2", "P3", "F1", "F2", "Q1"] } }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] }),
@@ -33,7 +34,10 @@ export async function buildFoundationExport(projectId: string, db: Prisma.Transa
     message: state.message, sourceVersion: state.sourceVersion, inputVersion: state.inputVersion,
     approvalId: state.ready ? state.approved?.id ?? null : null, recoveries: state.recoveries };
   const allEdited = deliveryState.totalEpisodes > 0 && deliveryState.editedEpisodes === deliveryState.totalEpisodes;
+  const effectiveEdited=deliveryState.effectiveEditorialCoverage??workingDocument.editorialCoverage;
+  const packetInput=workingDocument.workflow==='LIGHT_STAGE1_V1'?await loadFoundationInputs(projectId,db):undefined;
   return {
+    archivePurpose:"SOURCE_AND_HISTORY_EVIDENCE_ONLY_NOT_SEASON_PRODUCTION_DELIVERY" as const,
     schema: "PROJECT_FOUNDATION_EXPORT_V1" as const, exportedAt: new Date().toISOString(), project,
     targetArchitecture: FOUNDATION_TASK_CONTRACT.targetArchitecture,
     currentTestScope: FOUNDATION_TASK_CONTRACT.currentTestScope,
@@ -48,8 +52,9 @@ export async function buildFoundationExport(projectId: string, db: Prisma.Transa
       "dataIssues 是程序重算的资料缺口，与模型 issues 分开；assetsReady 仅表示候选存在，dataReady 才表示这些缺口已清。复验成功不等于 Q1 批准。",
       "draftComplete 表示当前三岗已形成完整初稿及审查结论，允许REPAIR/BLOCKED；ready另行表示当前资料已批准，不以未批准否定已形成的初稿。",
       "本轮只测试v0.2目标下的第一阶段资料；后续专业未实施，旧E链不是新版消费者。本导出不代表后续阶段、成片、真实生成稳定性或用户认可。"
+      ,"q1EditorialCoverage保留原模型编辑记录；freeSourceReviewedEpisodes仅为有来源和明确批准的免费解释复核，来源、目录或制作条件变化会失效，不代表新Q1调用或用户视听验收。"
     ],
-    currentState: { ...legacyCurrentState, documentRevision: workingDocument.revision, completedEpisodes: [...workingDocument.editorialCoverage],
+    currentState: { ...legacyCurrentState, documentRevision: workingDocument.revision, completedEpisodes: [...effectiveEdited],q1EditorialCoverage:[...workingDocument.editorialCoverage],freeSourceReviewedEpisodes:effectiveEdited.filter(number=>!workingDocument.editorialCoverage.includes(number)),
       complete: deliveryState.complete, deliveryStatus: deliveryState.task?.status ?? (usesWorkingDocument ? "WORKING" : "LEGACY"),
       ...(usesWorkingDocument ? { planningReady: Boolean(workingDocument.f1), assetsReady: Boolean(workingDocument.f2),
         dataReady: deliveryState.complete,
@@ -58,7 +63,8 @@ export async function buildFoundationExport(projectId: string, db: Prisma.Transa
         message: deliveryState.task?.message ?? (deliveryState.complete ? "工作稿资料已整理完成，未生成审批包。" : "工作稿已保存，局部资料仍待完善。"),
         sourceVersion: workingDocument.sourceVersion } : {}) },
     workingDocument, deliveryState, legacyCurrentState,
-    episodePackets: workingDocument.workflow === 'LIGHT_STAGE1_V1' ? await buildLightEpisodePackets(projectId, workingDocument, db) : [],
+    episodePackets: workingDocument.workflow === 'LIGHT_STAGE1_V1' ? await buildLightEpisodePackets(projectId, workingDocument, db,undefined,packetInput) : [],
+    sourceInterpretations:[...byKey('SCRIPT_RESOLUTION_CURRENT_V1'),...byKey('SCRIPT_RESOLUTION_HISTORY_V1')],sourceReadingConfirmations:byKey('SOURCE_READING_CONFIRMATION'),
     sourceContext: state.sourceContext,
     sourceImports: byKey("SOURCE_IMPORT"), fidelityReceipts: byKey("FIDELITY_IMPORT"), sourceVersions: byKey("FOUNDATION_SOURCE"), candidates,
     finalOutput: state.finalOutput,
@@ -80,4 +86,96 @@ export function serializeFoundationExport(value: unknown, knownApiKeys: Array<st
   const keys = knownApiKeys.filter((key): key is string => Boolean(key));
   return JSON.stringify(value, (_name, item) => typeof item === "string"
     ? keys.reduce((text, key) => text.replaceAll(key, "[REDACTED_API_KEY]"), item) : item, 2);
+}
+
+/** Same V1 JSON bytes as the synchronous serializer, without allocating one export-sized string. */
+export function* foundationExportChunks(value: unknown, knownApiKeys: Array<string | undefined> = []): Generator<string, void> {
+  const keys = knownApiKeys.filter((key): key is string => Boolean(key));
+  const ancestors = new Set<object>();
+  const omitted = (item: unknown) => item === undefined || typeof item === "function" || typeof item === "symbol";
+  function prepare(item: unknown, name: string): unknown {
+    if (item !== null && (typeof item === "object" || typeof item === "function" || typeof item === "bigint")) {
+      const toJSON = (item as { toJSON?: unknown }).toJSON;
+      if (typeof toJSON === "function") item = toJSON.call(item, name);
+    }
+    if (typeof item === "string") return keys.reduce((text, key) => text.replaceAll(key, "[REDACTED_API_KEY]"), item);
+    // Match JSON.stringify's unboxing after its replacer has seen the original value.
+    if (types.isNumberObject(item)) item = Number(item);
+    else if (types.isStringObject(item)) item = String(item);
+    else if (types.isBooleanObject(item)) item = Boolean.prototype.valueOf.call(item);
+    if (typeof item === "bigint" || types.isBigIntObject(item)) {
+      throw new TypeError("Do not know how to serialize a BigInt");
+    }
+    return item;
+  }
+  function* tokens(item: unknown, depth: number): Generator<string, void> {
+    if (item === null || typeof item !== "object") {
+      yield JSON.stringify(item)!;
+      return;
+    }
+    if (ancestors.has(item)) throw new TypeError("Converting circular structure to JSON");
+    ancestors.add(item);
+    const indent = "  ".repeat(depth);
+    try {
+      if (Array.isArray(item)) {
+        yield "[";
+        const length = item.length;
+        for (let index = 0; index < length; index++) {
+          yield `${index ? ",\n" : "\n"}${indent}  `;
+          const child = prepare(item[index], String(index));
+          if (omitted(child)) yield "null";
+          else yield* tokens(child, depth + 1);
+        }
+        if (length) yield `\n${indent}`;
+        yield "]";
+      } else {
+        yield "{";
+        let first = true;
+        for (const name of Object.keys(item)) {
+          const child = prepare((item as Record<string, unknown>)[name], name);
+          if (omitted(child)) continue;
+          yield `${first ? "\n" : ",\n"}${indent}  ${JSON.stringify(name)}: `;
+          first = false;
+          yield* tokens(child, depth + 1);
+        }
+        if (!first) yield `\n${indent}`;
+        yield "}";
+      }
+    } finally { ancestors.delete(item); }
+  }
+  const root = prepare(value, "");
+  if (omitted(root)) return;
+  const chunkSize = 64 * 1024;
+  let pending = "";
+  for (const token of tokens(root, 0)) {
+    let offset = 0;
+    while (offset < token.length) {
+      let end = Math.min(token.length, offset + chunkSize - pending.length);
+      // TextEncoder must never receive separate halves of a UTF-16 surrogate pair.
+      if (end < token.length && token.charCodeAt(end - 1) >= 0xD800 && token.charCodeAt(end - 1) <= 0xDBFF
+        && token.charCodeAt(end) >= 0xDC00 && token.charCodeAt(end) <= 0xDFFF) end++;
+      pending += token.slice(offset, end);
+      offset = end;
+      if (pending.length >= chunkSize) { yield pending; pending = ""; }
+    }
+  }
+  if (pending) yield pending;
+}
+
+export function foundationExportStream(value: unknown, knownApiKeys: Array<string | undefined> = []): ReadableStream<Uint8Array> {
+  const iterator = foundationExportChunks(value, knownApiKeys);
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      try {
+        const next = iterator.next();
+        if (next.done) controller.close();
+        else controller.enqueue(encoder.encode(next.value));
+      } catch (error) {
+        iterator.return(undefined);
+        controller.error(error);
+      }
+    },
+    cancel() { iterator.return(undefined); }
+  }, { highWaterMark: 0 });
 }

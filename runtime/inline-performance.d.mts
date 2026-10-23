@@ -8,6 +8,9 @@ export function sourceVoiceProjection(source:string,speaker:{text:string;parts:P
 export function sourceHeadPerformanceCue(value:string):boolean;
 export function sourceBarePerformanceProjection(source:string,speaker:{text:string;parts:Part[]},cue?:{text:string;parts:Part[]}|null):{start:number;end:number}|null;
 export function sourceHeadPrefix(source:string,speaker:{text:string;parts:Part[]},cue?:{text:string;parts:Part[]}|null,channelSource?:{text:string;parts:Part[]}|null):string;
+export function sourceSplitCueRanges(source:string,channel:{start:number;end:number}):Array<{start:number;end:number}>|null;
+export function sourceSplitCueParts(source:string,cue:Part[]|null|undefined,channel:Part[]|null|undefined):boolean;
+export function sourceSplitCueFields(source:string,speaker:{text:string;parts:Part[]},cue:{text:string;parts:Part[]}|null|undefined,channelSource:{text:string;parts:Part[]}|null|undefined,channel:string):boolean;
 export function sourceUtteranceProperty(speaker:string,label:string,cue?:string):boolean;
 export function sourceRepeatedHeadPrefix(source:string,start:number,speakerStart:number,bodyStart:number):boolean;
 export function compactPerformanceHeadProjection(source:string,speaker:Part[]|undefined,cue:Part[]|null|undefined,channelSource:Part[]|null|undefined):{text:string;start:number;end:number;cueText:string}|null;

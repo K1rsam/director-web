@@ -1,0 +1,11 @@
+import type {SourceIndex,SourcePart,Channel,CompiledDialogue} from '../lib/standard-script';
+export const SOURCE_REGROUP_VERSION:'source-regroup-v1';
+export type SourceRegroupApproval={origin:'SESSION'|'AUTHORIZED_MAINTENANCE';ref:string;explanation:string;actorId:string;approvedAt:string};
+export type SourceRegroupChild={id:string;kind:'ACTION';parts:SourcePart[];layout:SourcePart[]}|{id:string;kind:'DIALOGUE';parts:SourcePart[];layout:SourcePart[];speaker:SourcePart[];channel:Channel;cue?:SourcePart[]|null;channelSource?:SourcePart[]|null};
+export type SourceRegroupPlan={id:string;target:'BODY';kind:'SOURCE_REGROUP';unitIds:string[];parts:SourcePart[];layout:SourcePart[];children:SourceRegroupChild[];sourceRegroupVersion:typeof SOURCE_REGROUP_VERSION;approval:SourceRegroupApproval};
+export type CompiledSourceRegroupChild={id:string;kind:'DIALOGUE'}&CompiledDialogue|{id:string;kind:'ACTION';text:string;textAssembly:{parts:SourcePart[]};layout:SourcePart[]};
+export type CompiledSourceRegroup={id:string;target:'BODY';kind:'SOURCE_REGROUP';sourceUnitIds:string[];text:string;textAssembly:{parts:SourcePart[]};layout:SourcePart[];children:CompiledSourceRegroupChild[];sourceRegroupVersion:typeof SOURCE_REGROUP_VERSION;approval:SourceRegroupApproval};
+export function selectSourceRegroupParts(index:Pick<SourceIndex,'text'|'units'>,start:number,end:number):SourcePart[];
+export function selectSourceRegroupLineParts(index:Pick<SourceIndex,'text'|'units'>,unitId:string,start:number,end:number):SourcePart[];
+export function compileSourceRegroup(index:SourceIndex,entry:SourceRegroupPlan,path?:string):CompiledSourceRegroup;
+export function sourceRegroupPlanFromCompiled(entry:CompiledSourceRegroup):SourceRegroupPlan;

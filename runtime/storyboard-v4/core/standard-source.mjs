@@ -1,6 +1,7 @@
 import {fail} from './shared.mjs';
 import {createHash} from 'node:crypto';
-import {inlinePerformanceProjection,compactPerformanceHeadProjection,sourceVoiceProjection,sourceBarePerformanceProjection,sourceHeadPrefix,sourceUtteranceProperty,sourceRepeatedHeadPrefix} from '../../inline-performance.mjs';
+import {inlinePerformanceProjection,compactPerformanceHeadProjection,sourceVoiceProjection,sourceBarePerformanceProjection,sourceHeadPrefix,sourceUtteranceProperty,sourceRepeatedHeadPrefix,sourceSplitCueRanges,sourceSplitCueParts,sourceSplitCueFields} from '../../inline-performance.mjs';
+import {SOURCE_REGROUP_VERSION,compileSourceRegroup,sourceRegroupPlanFromCompiled} from '../../source-regroup.mjs';
 
 export const STANDARD_EPISODE_PROTOCOL='standard-episode-v1';
 const voices={SPEECH:'现场对白',OS:'OS',VO:'VO',NARRATION:'VO',SYSTEM:'系统音'};
@@ -9,6 +10,7 @@ const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof v
 const fingerprint=value=>createHash('sha256').update(JSON.stringify(canonical(value)),'utf16le').digest('hex');
 const declaredSpeakerForm=(text,name)=>text.split(/\r\n|\r|\n/).some(line=>/^\s*(?:出场人物|人物|角色)[ \t]*[:：]/u.test(line)&&line.replace(/^\s*(?:出场人物|人物|角色)[ \t]*[:：]/u,'').split(/[、,，;；]/u).some(item=>item.trim()===name));
 function compactVoice(source,child,v5=false){
+ check(sourceSplitCueFields(source,child.speaker,child.cue,child.channelSource,child.channel),'STANDARD_SPLIT_CUE_FIELDS','分段提示与唯一原声道必须精确绑定，不能隐藏或更改声道');
  const token=(v5?compactPerformanceHeadProjection(source,child.speaker.parts,child.cue?.parts,child.channelSource?.parts):null)??sourceVoiceProjection(source,child.speaker),field=child.channelSource;
  if(!token)return null;
  check(child.channel===token.text.toUpperCase()&&field?.text===token.text&&field.parts?.[0]?.start===token.start&&field.parts.at(-1)?.end===token.end,'STANDARD_COMPACT_VOICE','贴写声道必须精确绑定原文，不得改成现场对白');
@@ -43,8 +45,10 @@ function postCueHeader(source,start,bodyStart,child){
  const channels=tokens.filter(token=>/^(OS|VO)$/i.test(token.text)),cues=tokens.filter(token=>!channels.includes(token));
  check(channels.length<=1&&new Set(cues.map(token=>token.slot)).size<=1,'STANDARD_POST_CUE_AMBIGUOUS','前后提示或声道归属不明确');
  const cueRange=cues.length?{start:cues[0].start,end:cues.at(-1).end}:null;
+ const splitCue=channels[0]&&sourceSplitCueRanges(source,channels[0]);
+ const exactCue=splitCue?sourceSplitCueParts(source,child.cue?.parts,child.channelSource?.parts)&&child.cue?.text===splitCue.map(range=>source.slice(range.start,range.end)).join(''):exact(child.cue,cueRange);
  const expected=channels[0]?.text.toUpperCase()??({旁白:'NARRATION',画外音:'VO',系统音:'SYSTEM'})[child.speaker.text]??'SPEECH';
- check(exact(child.cue,cueRange)&&exact(child.channelSource,channels[0]??null)&&child.channel===expected,'STANDARD_POST_CUE_FIELDS','表演提示或声道不等于对应源字段');
+ check(exactCue&&exact(child.channelSource,channels[0]??null)&&child.channel===expected,'STANDARD_POST_CUE_FIELDS','表演提示或声道不等于对应源字段');
 }
 function groupUtterance(text,speaker='',cue=''){
  const stack=[],pairs={'“':'”','‘':'’','「':'」','『':'』','"':'"',"'":"'",'【':'】','[':']'};
@@ -98,16 +102,19 @@ function mixedChildShape(child,performance=false){
 }
 
 /** Copy a compiled source slice into local coordinates, never re-infer a speaker from a colon. */
-export function standardPackageSource(pkg,{key,title,context,contextRows=[],sourceText}){
- const v2=pkg?.schemaVersion==='DIRECTOR_STANDARD_SCRIPT_SLICE_V2',v3=pkg?.schemaVersion==='DIRECTOR_STANDARD_SCRIPT_SLICE_V3',v4=pkg?.schemaVersion==='DIRECTOR_STANDARD_SCRIPT_SLICE_V4',v5=pkg?.schemaVersion==='DIRECTOR_STANDARD_SCRIPT_SLICE_V5',performance=v4||v5;
+export function standardPackageSource(pkg,{key,title,context,contextRows=[],sourceText,sourceRegroupVersion}){
+ const v6=pkg?.schemaVersion==='DIRECTOR_STANDARD_SCRIPT_SLICE_V6',v2=pkg?.schemaVersion==='DIRECTOR_STANDARD_SCRIPT_SLICE_V2',v3=pkg?.schemaVersion==='DIRECTOR_STANDARD_SCRIPT_SLICE_V3',v4=pkg?.schemaVersion==='DIRECTOR_STANDARD_SCRIPT_SLICE_V4',v5=v6||pkg?.schemaVersion==='DIRECTOR_STANDARD_SCRIPT_SLICE_V5',performance=v4||v5;
+ check(!v6||sourceRegroupVersion===SOURCE_REGROUP_VERSION,'STANDARD_SOURCE_REGROUP_VERSION','来源重组仅限显式冻结此能力的新任务；旧任务保留');
  check((v5||v4||v3||v2||pkg?.schemaVersion==='DIRECTOR_STANDARD_SCRIPT_SLICE_V1')&&pkg.fidelity?.receipt?.status==='MECHANICALLY_VERIFIED','STANDARD_PACKAGE','标准正文缺少机械保真回执');
  const {packageId,...withReceipt}=pkg,{receipt,...fidelity}=withReceipt.fidelity;
  const packageDigest=fingerprint({...withReceipt,fidelity});
  check(packageId===`standard:${packageDigest}`&&receipt.packageDigest===packageDigest&&receipt.sourceVersion===pkg.binding?.sourceVersion&&receipt.planDigest===pkg.binding?.planDigest,'STANDARD_RECEIPT','标准正文摘要与机械回执不一致');
  check(pkg.binding.sourceVersion===`src:${fingerprint([pkg.binding.sourceId,sourceText])}`,'STANDARD_SOURCE_BINDING','标准正文来源版本与当前原文不一致');
- check(receipt.schemaVersion===(v5?'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V5':v4?'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V4':v3?'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V3':v2?'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V2':'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V1')&&['sourceId','sourceVersion','sourceIndexDigest','indexerVersion','planDigest'].every(field=>receipt[field]===pkg.binding[field])&&receipt.assemblerVersion===pkg.assemblerVersion&&pkg.assemblerVersion===(v5?'standard-script-compiler-v5':v4?'standard-script-compiler-v4':v3?'standard-script-compiler-v3':v2?'standard-script-compiler-v2':'standard-script-compiler-v1')&&pkg.binding.indexerVersion==='physical-lines-v1','STANDARD_RECEIPT','标准正文回执版本或来源绑定不一致');
+ check(receipt.schemaVersion===(v6?'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V6':v5?'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V5':v4?'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V4':v3?'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V3':v2?'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V2':'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V1')&&['sourceId','sourceVersion','sourceIndexDigest','indexerVersion','planDigest'].every(field=>receipt[field]===pkg.binding[field])&&receipt.assemblerVersion===pkg.assemblerVersion&&pkg.assemblerVersion===(v6?'standard-script-compiler-v6':v5?'standard-script-compiler-v5':v4?'standard-script-compiler-v4':v3?'standard-script-compiler-v3':v2?'standard-script-compiler-v2':'standard-script-compiler-v1')&&pkg.binding.indexerVersion==='physical-lines-v1','STANDARD_RECEIPT','标准正文回执版本或来源绑定不一致');
  const grouped=(pkg.script?.entries||[]).some(e=>e.kind==='DIALOGUE_GROUP');
  const mixed=(pkg.script?.entries||[]).some(e=>e.kind==='BODY_GROUP');
+ const regrouped=(pkg.script?.entries||[]).some(e=>e.kind==='SOURCE_REGROUP');
+ check(regrouped===v6&&(!v6||receipt.checks?.sourceRegroup==='VERIFIED'),'STANDARD_SOURCE_REGROUP_VERSION','来源重组须使用独立V6协议，不扩展旧正文组');
  const postCues=(pkg.script?.entries||[]).some(e=>e.kind==='DIALOGUE_GROUP'?(Array.isArray(e.dialogues)?Array.from(e.dialogues).some(child=>postColonFields(sourceText,child)):false):e.kind==='DIALOGUE'&&postColonFields(sourceText,e));
  check((performance||mixed===v3&&(v3||(grouped||postCues)===v2))&&(!postCues||receipt.checks?.postColonCues==='VERIFIED')&&(!mixed||receipt.checks?.mixedBodyGroups==='VERIFIED')&&(!performance||receipt.checks?.inlinePerformance==='VERIFIED'),'STANDARD_RECEIPT','新版表演须V5，旧行中表演保留V4，混合正文须V3，既有对白分组/后置提示须V2，普通稿保留V1');
  const physical=[...sourceText.matchAll(/[^\r\n]*(?:\r\n|\r|\n|$)/g)].filter(match=>match[0].length).map((match,i)=>({id:`${pkg.binding.sourceVersion}:u${i+1}`,start:match.index,end:match.index+match[0].length,text:match[0]}));
@@ -158,6 +165,19 @@ export function standardPackageSource(pkg,{key,title,context,contextRows=[],sour
    return result;
   };
   const id=`${key}:${entry.id}`;
+  if(entry.kind==='SOURCE_REGROUP'){
+   check(v6,'STANDARD_SOURCE_REGROUP_VERSION','旧协议不能夹带来源重组');
+   const rebuilt=compileSourceRegroup(sourceIndex,sourceRegroupPlanFromCompiled(entry));
+   check(fingerprint(rebuilt)===fingerprint(entry),'STANDARD_SOURCE_REGROUP_BINDING','来源重组子目录必须逐项从原文重建，不能改写');
+   notes.push({id:`${id}:original`,line:selected[0].line,text,evidenceRole:'guidance',standard:{target:'ANNOTATION',kind:'SOURCE_REGROUP_ORIGINAL',parentId:id,sourceUnitIds:[...entry.sourceUnitIds]}});
+   for(const child of rebuilt.children){
+    const spans=child.textAssembly.parts,local=parts=>parts.flatMap(part=>{let offset=0;return spans.flatMap(span=>{const a=Math.max(part.start,span.start),b=Math.min(part.end,span.end),from=offset;offset+=span.end-span.start;return a<b?[[from+a-span.start,from+b-span.start]]:[];});});
+    const originalSourceParts={body:structuredClone(spans),speaker:structuredClone(child.speaker?.parts??[]),cue:structuredClone(child.cue?.parts??[]),channelSource:structuredClone(child.channelSource?.parts??[])};
+    const projection=child.performance?{spoken:local(child.performance.spoken.parts),cues:child.performance.cues.map(cue=>({text:cue.text,parts:local(cue.parts),markerParts:local(cue.markerParts),quoteOffset:cue.spokenOffset}))}:null;
+    sourceRows.push({id:`${id}:${child.id}`,text:child.text,standard:{target:'BODY',kind:child.kind,parts:[[0,child.text.length]],...(child.kind==='DIALOGUE'?{channel:voices[child.channel]}:{}),...(projection?{performance:projection}:{}),regroup:{version:SOURCE_REGROUP_VERSION,parentId:id,childId:child.id,originalSourceParts,...(child.kind==='DIALOGUE'?{speakerText:child.speaker.text,cueText:[child.channelSource?.text,child.cue?.text].filter(Boolean).join('；')}:{})}}});
+   }
+   continue;
+  }
   if(entry.target==='EXCLUDE'){
    check(entry.category==='BLANK'&&/^\s*$/.test(text),'STANDARD_EXCLUSION','非空原文不可排除出制作范围');
    sourceRows.push({id,line:selected[0].line,text,standard:{target:'EXCLUDE',kind:'BLANK'}});continue;
@@ -168,7 +188,7 @@ export function standardPackageSource(pkg,{key,title,context,contextRows=[],sour
   if(entry.kind==='DIALOGUE'){
    check(entry.target==='BODY'&&Object.hasOwn(voices,entry.channel),'STANDARD_CHANNEL','对白声道或节点类型无效');
    standard.speaker=parts(entry.speaker?.parts,entry.speaker?.text,'说者');
-   standard.cue=entry.cue?parts(entry.cue.parts,entry.cue.text,'表演提示'):[];
+   standard.cue=entry.cue?parts(entry.cue.parts,entry.cue.text,'表演提示',false,spans,sourceSplitCueParts(sourceText,entry.cue.parts,entry.channelSource?.parts)):[];
    standard.channelSource=entry.channelSource?parts(entry.channelSource.parts,entry.channelSource.text,'声道'):[];
    standard.channel=voices[entry.channel];
    compactVoice(sourceText,entry,v5);
@@ -187,7 +207,7 @@ export function standardPackageSource(pkg,{key,title,context,contextRows=[],sour
     let result;
     if(isDialogue){
      check(Object.hasOwn(voices,child.channel),'STANDARD_CHANNEL','混合对白声道无效');
-     const speaker=parts(child.speaker?.parts,child.speaker?.text,'混合说者',false,own),cue=child.cue?parts(child.cue.parts,child.cue.text,'混合提示',false,own):[],channelSource=child.channelSource?parts(child.channelSource.parts,child.channelSource.text,'混合声道',false,own):[];
+     const speaker=parts(child.speaker?.parts,child.speaker?.text,'混合说者',false,own),cue=child.cue?parts(child.cue.parts,child.cue.text,'混合提示',false,own,sourceSplitCueParts(sourceText,child.cue.parts,child.channelSource?.parts)):[],channelSource=child.channelSource?parts(child.channelSource.parts,child.channelSource.text,'混合声道',false,own):[];
      compactVoice(sourceText,child,v5);const projection=performanceField(child);result={kind:'DIALOGUE',parts:body,speaker,cue,channelSource,channel:voices[child.channel],...(projection?{performance:projection}:{})};
     }else{
      const label=parts(child.label?.parts,child.label?.text,'字幕标记',false,own);
@@ -215,8 +235,8 @@ export function standardPackageSource(pkg,{key,title,context,contextRows=[],sour
     const compact=compactVoice(sourceText,d,v5),header=/^\s*([^:：()（）]+?)(?:[（(]([^()（）]*)[）)])?(?:(?<=[）)])[\t \u00a0\u3000]*(OS|VO))?[ \t]*[:：][ \t\r\n]*$/iu.exec(sourceText.slice(start,a));
     const qualified=Boolean(header?.[2]&&!/^(?:OS|VO|旁白|画外音|内心独白|系统音)$/iu.test(header[2].trim())&&sourceText.slice(start,a).replace(/(?<=[）)])[\t \u00a0\u3000]*(?:OS|VO)[\t \u00a0\u3000]*(?=[:：])/iu,'').replace(/[:：][\s]*$/u,'').trim()===d.speaker.text&&declaredSpeakerForm(sourceText,d.speaker.text));
     check(header&&(qualified||header[1].trim()===sourceHeadPrefix(sourceText,d.speaker,d.cue,d.channelSource)),'STANDARD_BODY_HEADER','混合对白说者与原文头不一致');
-    const fields=[d.speaker,d.cue,d.channelSource].filter(Boolean).sort((x,y)=>x.parts[0].start-y.parts[0].start);let edge=start;
-    for(const f of fields){check(f.parts[0].start>=edge&&(edge===start?/^[\s\uFEFF]*$/:/^[\s()（）,，]*$/).test(sourceText.slice(edge,f.parts[0].start)),'STANDARD_BODY_HEADER','混合对白字段跨越源头');edge=f.parts.at(-1).end;}
+    const fields=[d.speaker,d.cue,d.channelSource].filter(Boolean).flatMap(f=>f.parts).sort((x,y)=>x.start-y.start);let edge=start;
+    for(const f of fields){check(f.start>=edge&&(edge===start?/^[\s\uFEFF]*$/:/^[\s()（）,，]*$/).test(sourceText.slice(edge,f.start)),'STANDARD_BODY_HEADER','混合对白字段跨越源头');edge=f.end;}
     check(edge<=a&&/^[\t ()（）]*[:：][\t \r\n]*$/.test(sourceText.slice(edge,a)),'STANDARD_BODY_HEADER','混合对白冒号边界无效');
     const tokens=[...(compact&&!header[3]?[compact.text]:[]),...(header[3]?[header[3]]:[]),...(qualified?'':header[2]??'').split(/[,， \t]+/).filter(Boolean)],channels=tokens.filter(t=>/^(OS|VO)$/i.test(t)),expected=channels[0]?.toUpperCase()??({旁白:'NARRATION',画外音:'VO',系统音:'SYSTEM'})[d.speaker.text]??'SPEECH';
     check(channels.length<=1&&d.channel===expected&&(channels.length?d.channelSource?.text===channels[0]:!d.channelSource),'STANDARD_BODY_CHANNEL','混合对白声道与源文不一致');
@@ -229,7 +249,7 @@ export function standardPackageSource(pkg,{key,title,context,contextRows=[],sour
    standard.dialogues=Array.from(entry.dialogues,(child,i)=>{
     check(child&&Object.keys(child).every(k=>['text','textAssembly','layout','speaker','channel','channelSource','cue',...(performance?['performance']:[])].includes(k)),'STANDARD_GROUP','对白子目录结构无效');
     const childSpans=[],body=parts(child.textAssembly?.parts,child.text,'组正文',false,childSpans),speaker=parts(child.speaker?.parts,child.speaker?.text,'组说者',false,childSpans);
-    const cue=child.cue?parts(child.cue.parts,child.cue.text,'组提示',false,childSpans):[],channelSource=child.channelSource?parts(child.channelSource.parts,child.channelSource.text,'组声道',false,childSpans):[];
+    const cue=child.cue?parts(child.cue.parts,child.cue.text,'组提示',false,childSpans,sourceSplitCueParts(sourceText,child.cue.parts,child.channelSource?.parts)):[],channelSource=child.channelSource?parts(child.channelSource.parts,child.channelSource.text,'组声道',false,childSpans):[];
     const compact=compactVoice(sourceText,child,v5);
     check(Array.isArray(child.layout),'STANDARD_GROUP','对白分组缺少版式');
     parts(child.layout,child.layout.map(p=>sourceText.slice(p.start,p.end)).join(''),'组版式',true,childSpans);
@@ -242,8 +262,8 @@ export function standardPackageSource(pkg,{key,title,context,contextRows=[],sour
     const header=/^\s*([^:：()（）]+?)(?:[（(]([^()（）]*)[）)])?(?:(?<=[）)])[\t \u00a0\u3000]*(OS|VO))?[ \t]*[:：][ \t]*$/iu.exec(sourceText.slice(childStart,a));
     const qualified=Boolean(header?.[2]&&!/^(?:OS|VO|旁白|画外音|内心独白|系统音)$/iu.test(header[2].trim())&&sourceText.slice(childStart,a).replace(/(?<=[）)])[\t \u00a0\u3000]*(?:OS|VO)[\t \u00a0\u3000]*(?=[:：])/iu,'').replace(/[:：][ \t]*$/u,'').trim()===child.speaker.text&&declaredSpeakerForm(sourceText,child.speaker.text));
     check(header&&(qualified||header[1].trim()===sourceHeadPrefix(sourceText,child.speaker,child.cue,child.channelSource))&&/^[\p{L}\p{N}·・ _.-]+(?:、[\p{L}\p{N}·・ _.-]+)*$/u.test(qualified?header[1].trim():child.speaker.text),'STANDARD_GROUP_HEADER','对白分组说者与原文头不一致');
-    const fields=[speaker,cue,channelSource].filter(f=>f.length).sort((x,y)=>x[0][0]-y[0][0]);let edge=childStart;
-    for(const f of fields){check(f[0][0]+start>=edge&&(edge===childStart?/^[\s\uFEFF()（）【】\[\]]*$/:/^[\s\uFEFF()（）【】\[\],，]*$/).test(sourceText.slice(edge,f[0][0]+start)),'STANDARD_GROUP_HEADER','对白分组字段跨过原文头');edge=f.at(-1)[1]+start;}
+    const fields=[speaker,cue,channelSource].flat().sort((x,y)=>x[0]-y[0]);let edge=childStart;
+    for(const f of fields){check(f[0]+start>=edge&&(edge===childStart?/^[\s\uFEFF()（）【】\[\]]*$/:/^[\s\uFEFF()（）【】\[\],，]*$/).test(sourceText.slice(edge,f[0]+start)),'STANDARD_GROUP_HEADER','对白分组字段跨过原文头');edge=f[1]+start;}
     check(edge<=a&&/^[\t ()（）【】\[\]]*[:：][\t ]*$/.test(sourceText.slice(edge,a)),'STANDARD_GROUP_HEADER','对白分组冒号边界无效');
     const tokens=[...(compact&&!header[3]?[compact.text]:[]),...(header[3]?[header[3]]:[]),...(qualified?'':header[2]||'').split(/[,， \t]+/).filter(Boolean)],channels=tokens.filter(token=>/^(OS|VO)$/i.test(token));
     const expected=channels.length?channels[0].toUpperCase():({旁白:'NARRATION',画外音:'VO',系统音:'SYSTEM'})[child.speaker.text]||'SPEECH';
@@ -263,16 +283,16 @@ export function standardPackageSource(pkg,{key,title,context,contextRows=[],sour
   }else sourceRows.push({id,line:selected[0].line,text,standard});
  }
  check(owned.size===units.length,'STANDARD_COVERAGE','标准正文仍有未归属原文');
- check(!performance||performanceCount>0||v5&&headCueCount>0,'STANDARD_PERFORMANCE_BINDING','V4/V5须实际包含有来源的表演分层');
+ check(v6||!performance||performanceCount>0||v5&&headCueCount>0,'STANDARD_PERFORMANCE_BINDING','V4/V5须实际包含有来源的表演分层');
  check(sourceRows.some(r=>r.standard.target==='BODY'&&r.text.trim()),'SOURCE_EMPTY','本集没有可制作正文');
- return {key,title,sourceProtocol:STANDARD_EPISODE_PROTOCOL,standardPackage:pkg,context:{...context,...(annotations.length?{annotations,annotationRule:'annotations是有来源的辅助说明，不是新增剧情或已证实事实；不得据此虚构entryFacts。'}:{})},contextRows:[...contextRows,...notes],sourceRows};
+ return {key,title,sourceProtocol:STANDARD_EPISODE_PROTOCOL,standardPackage:pkg,...(v6?{sourceRegroupVersion:SOURCE_REGROUP_VERSION}:{}),context:{...context,...(annotations.length?{annotations,annotationRule:'annotations是有来源的辅助说明，不是新增剧情或已证实事实；不得据此虚构entryFacts。'}:{})},contextRows:[...contextRows,...notes],sourceRows};
 }
 
 /** Saved/sliced rows must retain their canonical proof. This proof is never added to modelSource. */
 export function verifyStandardSource(source){
  const pkg=source.standardPackage;
  check(pkg&&Array.isArray(pkg.evidence),'STANDARD_RECEIPT','标准源缺少已绑定的保真包');
- const original=standardPackageSource(pkg,{key:String(source.key),title:source.title,context:{},sourceText:pkg.evidence.map(unit=>unit.text).join('')});
+ const original=standardPackageSource(pkg,{key:String(source.key),title:source.title,context:{},sourceText:pkg.evidence.map(unit=>unit.text).join(''),sourceRegroupVersion:source.sourceRegroupVersion});
  const expected=new Map([...original.sourceRows,...original.contextRows].map(row=>[row.id,row]));
  const allIds=original.sourceRows.map(row=>row.id),scope=source.standardScope;
  if(scope)check(scope.version==='standard-scope-v1'&&Array.isArray(scope.sourceIds)&&new Set(scope.sourceIds).size===scope.sourceIds.length&&scope.sourceIds.every(id=>allIds.includes(id)),'STANDARD_SCOPE','标准切片范围无效');
@@ -301,7 +321,7 @@ export function standardDialogues(row){
  check(Array.isArray(children)&&children.length>0,'STANDARD_ROW','对白子目录缺失');
  return Array.from(children,(s,i)=>{
  const copy=spans=>{check(Array.isArray(spans),'STANDARD_ROW','缺少来源切片');let edge=-1;return spans.map(pair=>{check(Array.isArray(pair)&&pair.length===2&&pair.every(Number.isSafeInteger)&&pair[0]>=0&&pair[1]>pair[0]&&pair[1]<=row.text.length&&pair[0]>=edge,'STANDARD_ROW','对白来源范围无效');edge=pair[1];return row.text.slice(...pair);}).join('');};
- const speaker=copy(s.speaker),quote=copy(s.performance?.spoken??s.parts),cue=[copy(s.channelSource||[]),copy(s.cue||[])].filter(Boolean).join('；');
+ const speaker=s.regroup?s.regroup.speakerText:copy(s.speaker),quote=copy(s.performance?.spoken??s.parts),cue=s.regroup?s.regroup.cueText:[copy(s.channelSource||[]),copy(s.cue||[])].filter(Boolean).join('；');
  check(speaker.trim()&&quote.trim()&&Object.values(voices).includes(s.channel),'STANDARD_ROW','缺少说者、正文或声道');
  return {id:`${row.id}:D${i+1}`,line:row.line,speaker,quote,cue,channel:s.channel,rowId:row.id,...(s.performance?{performanceCues:structuredClone(s.performance.cues)}:{})};
  });

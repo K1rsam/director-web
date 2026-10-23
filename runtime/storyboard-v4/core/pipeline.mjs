@@ -3,7 +3,7 @@ import {VERSION,digest,fail} from './shared.mjs';
 import {normalizeSource} from './source.mjs';
 import {normalizeSettings,normalizePlan,defaultChoice,captureRules,buildRequest,sliceSource} from './core.mjs';
 import {confirmSelection,resolveSelection,rebaseSelection} from './selection.mjs';
-import {normalizeDraft,validateDraft,renderDraft} from './quality.mjs';
+import {normalizeDraft,validateDraft,renderDraft,renderPostproductionNotes} from './quality.mjs';
 import {createStore} from './store.mjs';
 import {runModel,readCompletedAttempt} from './runner.mjs';
 import {applyDelta,baseDraftHash} from './delta.mjs';
@@ -23,6 +23,8 @@ import {REFINEMENT_SELECTION_VERSION,getRefinementAcceptanceGroups,selectRefinem
 import {normalizeRefinementLinkedUnits} from './refinement-linked-units.mjs';
 import {recordRefinementSourceResolution,refinementProductionFeedback} from './refinement-source-resolution.mjs';
 import {recordSourceResolution,currentDocumentSourceResolutions,sourceResolutionFeedback,sourceResolutionForNeed} from './source-resolution.mjs';
+import {REFERENCE_ROLE_REVIEW_KIND,projectReferenceRoleReview,candidateResolvedBy} from './reference-role-review.mjs';
+import {DIALOGUE_MAPPING_REVIEW_KIND,projectDialogueMappingReview,reviewedDialogueSource,withMappedDialogue} from './dialogue-mapping-review.mjs';
 export {executionState,hasExecutionDrafts} from './execution-batches.mjs';
 
 import {OPPORTUNITY_COVERAGE_VERSION,proposeOpportunityAppend} from './opportunity-coverage.mjs';
@@ -32,8 +34,9 @@ const ids=(d,o)=>o.stage==='plan'?[]:(o.packageIds||[o.packageId]);
 const overlap=(a,b)=>a.some(x=>b.includes(x));
 const errorRecord=(e,outcome=e.requestOutcome||'UNKNOWN')=>({code:e.code||'RUNNER_ERROR',message:e.message,requestOutcome:outcome,...(e.coordinate?{coordinate:e.coordinate}:{})});
 export const PLAN_VALIDATION_VERSION='plan-citations-v1';
+export const ADOPTED_UNIT_ORDER_VERSION='adopted-group-order-v1';
 const invalidate=(d,status)=>{d.assembly=null;d.status=status;};
-const renderResolved=(d,draft)=>renderDraft({draft,source:d.source,settings:d.settings,seedanceExportVersion:d.rulesSnapshot.seedanceExportVersion,sourceResolutions:currentDocumentSourceResolutions(d)});
+const renderResolved=(d,draft)=>renderDraft({draft,source:reviewedDialogueSource(d),settings:d.settings,seedanceExportVersion:d.rulesSnapshot.seedanceExportVersion,generationTextVersion:d.rulesSnapshot.generationTextVersion,sourceResolutions:currentDocumentSourceResolutions(d)});
 export const isUnresolvedOperation=o=>o.status==='running'||(o.status==='unknown'&&o.cancelAcknowledgement?.acceptUnknownUsage!==true);
 const savedResponseHash=c=>c?digest(c.raw?.trim()?{raw:c.raw}:{output:c.output??null}):null;
 const consumedResponseHashes=(d,op)=>{
@@ -47,7 +50,7 @@ export function hasPendingSavedResponse(d,op){
   if(!manifest||manifest.version!==op.executionProjectionVersion||manifest.hash!==op.executionManifestHash||manifest.generation!==op.executionBatch?.generation)return false;
  }
  const consumed=consumedResponseHashes(d,op);
- return op.recovery?.epoch!==d.epoch&&(d.candidates||[]).some(c=>c.attemptId===op.attemptId&&!consumed.has(savedResponseHash(c))&&(c.status==='cancelled_late'||op.status==='completed'&&['TIMEOUT','CLI_FAILED'].includes(op.error?.code)&&c.output==null&&c.raw?.trim()&&['needs_repair','refinement_invalid'].includes(c.status)&&!c.resolvedBy));
+ return op.recovery?.epoch!==d.epoch&&(d.candidates||[]).some(c=>c.attemptId===op.attemptId&&!consumed.has(savedResponseHash(c))&&(c.status==='cancelled_late'||op.status==='completed'&&['TIMEOUT','CLI_FAILED'].includes(op.error?.code)&&c.output==null&&c.raw?.trim()&&['needs_repair','refinement_invalid'].includes(c.status)&&!candidateResolvedBy(d,c)));
 }
 const attentionStatus=d=>d.operations.some(o=>o.epoch===d.epoch&&o.status==='running')?'running':d.operations.some(o=>o.status==='unknown'&&isUnresolvedOperation(o))?'unknown':null;
 function assertFeedbackResultPair(d){
@@ -97,6 +100,7 @@ const requestOf=(d,stage,packageIds,previousDraft,issues=[],format='continuity-v
 // An old operation must never acquire a newly enabled input on recovery/recheck.
 const currentRequest=(d,op)=>{
  const request=op.feedbackRepair?feedbackRequestFor(d,op.feedbackRepair.candidateId,op.issues,op.feedbackRepair.version):requestOf(d,op.stage,op.packageIds,op.previousDraft,op.issues,op.dependencyFormat||'legacy',op.finishMode||'full',savedExecutionProjection(d,op),op.acceptedContinuityVersion??null,op.productionSnapshot??null,op.refinement??null,op.opportunityBasis??null);
+ if(op.paidRepair===true)request.paidRepair=true;
  return isDirectorRefinement(op)?decorateDirectorRefinementRequest(request,op.refinement):request;
 };
 // Pure audit surface: rebuild the exact frozen operation without touching a store or runner.
@@ -134,7 +138,7 @@ function continuityRepairScope(d,op,next,explicitOutside){
 }
 const executionFields=batch=>batch?{executionProjectionVersion:batch.version,executionBatchId:batch.id,executionManifestHash:batch.manifestHash,executionBatch:batch}:{};
 const candidateExecutionFields=op=>({...op.executionProjectionVersion?{executionProjectionVersion:op.executionProjectionVersion,executionBatchId:op.executionBatchId,executionManifestHash:op.executionManifestHash}:{},...isDirectorRefinement(op)?{purpose:op.purpose,refinement:{version:op.refinement.version,baseAssemblyHash:op.refinement.baseAssemblyHash,eventIds:op.refinement.eventIds,...(op.refinement.unitIds?{unitIds:op.refinement.unitIds,scope:op.refinement.scope}:{}),...(op.refinement.workOrder?{workOrder:op.refinement.workOrder}:{})}}:{}});
-const batchCandidate=(d,batch)=>d.candidates.findLast(c=>c.executionManifestHash===batch.manifestHash&&c.executionBatchId===batch.id&&!c.resolvedBy&&c.status==='needs_repair');
+const batchCandidate=(d,batch)=>d.candidates.findLast(c=>c.executionManifestHash===batch.manifestHash&&c.executionBatchId===batch.id&&!candidateResolvedBy(d,c)&&c.status==='needs_repair');
 function nextExecution(d,stage,packageIds){
  if(packageIds.length!==1)return null;
  const packageId=packageIds[0];let manifest=d.executionBatches?.[packageId];
@@ -143,14 +147,14 @@ function nextExecution(d,stage,packageIds){
   if(!current){delete d.executionBatches[packageId];manifest=null;}
  }
  if(stage==='author'&&!d.adopted.some(a=>a.packageIds.includes(packageId))){
-  if(!manifest&&d.rulesSnapshot.unitPackingPolicy==='event-first-v1'&&!d.candidates.some(c=>!c.executionProjectionVersion&&c.stage!=='plan'&&c.status!=='adopted'&&!c.resolvedBy&&c.packageIds.includes(packageId)&&(c.raw?.trim()||c.output!=null||c.draft!=null))){
+  if(!manifest&&d.rulesSnapshot.unitPackingPolicy==='event-first-v1'&&!d.candidates.some(c=>!c.executionProjectionVersion&&c.stage!=='plan'&&c.status!=='adopted'&&!candidateResolvedBy(d,c)&&c.packageIds.includes(packageId)&&(c.raw?.trim()||c.output!=null||c.draft!=null))){
    const next=buildExecutionBatches({...d,packageId,generation:randomUUID()});
    if(next.batches.length>1){d.executionBatches??={};d.executionBatches[packageId]=manifest=next;}
   }
   if(manifest){const batch=manifest.batches.find(b=>!manifest.accepted[b.id]);if(batch){assertBatchContinuity(d,manifest);return executionProjection(d,manifest,batch);}}
  }
  if(stage==='finish'&&manifest&&!d.adopted.some(a=>a.packageIds.includes(packageId))){
-  const candidate=d.candidates.findLast(c=>c.executionManifestHash===manifest.hash&&c.status==='needs_repair'&&!c.resolvedBy);
+  const candidate=d.candidates.findLast(c=>c.executionManifestHash===manifest.hash&&c.status==='needs_repair'&&!candidateResolvedBy(d,c));
   if(candidate){assertBatchContinuity(d,manifest);return executionProjection(d,manifest,manifest.batches.find(b=>b.id===candidate.executionBatchId));}
  }
  return null;
@@ -172,7 +176,7 @@ function previousBatch(d,batch){
 }
 function assertGroupScope(d,packageIds){
  if(d.adopted.some(a=>overlap(a.packageIds,packageIds)&&a.packageIds.some(id=>!packageIds.includes(id))))fail('GROUP_SCOPE','已采用关联组须一起重写');
- if(d.candidates.some(c=>c.status==='needs_dependency_repair'&&!c.resolvedBy&&overlap(c.requiredPackageIds,packageIds)&&c.requiredPackageIds.some(id=>!packageIds.includes(id))))fail('GROUP_SCOPE','依赖返修须包含完整扩大范围');
+ if(d.candidates.some(c=>c.status==='needs_dependency_repair'&&!candidateResolvedBy(d,c)&&overlap(c.requiredPackageIds,packageIds)&&c.requiredPackageIds.some(id=>!packageIds.includes(id))))fail('GROUP_SCOPE','依赖返修须包含完整扩大范围');
 }
 function scopeCheck(d,stage,packageIds,{freshAuthor=false}={}){
  if(stage==='plan'){if(d.operations.some(isUnresolvedOperation))fail('SCOPE_BUSY','整集计划仍有未结操作');if(hasExecutionDrafts(d))fail('RESET_DRAFTS_REQUIRED','已有执行批次正文，须先明确归档重做');return;}
@@ -192,15 +196,38 @@ function scopeCheck(d,stage,packageIds,{freshAuthor=false}={}){
 export function canRecheckCandidate(d,candidate){
  if(isDirectorRefinement(candidate)){
   const op=d.operations?.find(o=>o.attemptId===candidate.attemptId);
-  if(!op||op.status!=='completed'||candidate.resolvedBy||candidate.status!=='refinement_invalid'||!candidate.output||d.web?.sourceStale||d.operations.some(isUnresolvedOperation))return false;
+  if(!op||op.status!=='completed'||candidateResolvedBy(d,candidate)||candidate.status!=='refinement_invalid'||!candidate.output||d.web?.sourceStale||d.operations.some(isUnresolvedOperation))return false;
   try{assertDirectorRefinementBase(d,op.refinement);return identity(currentRequest(d,op))===op.fingerprint;}catch{return false;}
  }
- if(!candidate||candidate.resolvedBy||!['needs_repair','needs_dependency_repair'].includes(candidate.status)||!candidate.output||typeof candidate.output!=='object'||Array.isArray(candidate.output)||d.web?.sourceStale||(d.operations||[]).some(isUnresolvedOperation))return false;
+ if(!candidate||candidateResolvedBy(d,candidate)||!['needs_repair','needs_dependency_repair'].includes(candidate.status)||!candidate.output||typeof candidate.output!=='object'||Array.isArray(candidate.output)||d.web?.sourceStale||(d.operations||[]).some(isUnresolvedOperation))return false;
  const op=d.operations?.find(o=>o.attemptId===candidate.attemptId);
  if(!op||op.status!=='completed'||op.epoch!==d.epoch&&op.recovery?.epoch!==d.epoch&&!consumedResponseHashes(d,op).has(savedResponseHash(candidate)))return false;
- try{scopeCheck(d,candidate.stage,candidate.packageIds);if(op.finishMode==='delta'&&baseDraftHash(op.executionProjectionVersion?previousBatch(d,op.executionBatch):previousOf(d,op.packageIds))!==op.baseDraftHash)return false;return identity(currentRequest(d,op))===op.fingerprint;}catch{return false;}
+ try{scopeCheck(d,candidate.stage,candidate.packageIds);if(op.finishMode==='delta'&&baseDraftHash(op.executionProjectionVersion?previousBatch(d,op.executionBatch):previousOf(d,op.packageIds,op.previousDraftOrderVersion??null))!==op.baseDraftHash)return false;return identity(currentRequest(d,op))===op.fingerprint;}catch{return false;}
 }
-function previousOf(d,packageIds){
+// Citations are coverage, not chronology. Preserve each adopted sequence and
+// verified common-candidate interleaving; source rank only breaks unconstrained ties.
+function orderedAdoptedUnits(d,entries){
+ const units=entries.flatMap(a=>a.draft.units),byId=new Map(units.map(u=>[u.id,u]));
+ if(byId.size!==units.length)fail('ADOPTED_UNIT_ORDER','已采用单元ID重复，不能静默去重');
+ const before=new Map(units.map(u=>[u.id,new Set()])),chain=sequence=>{
+  for(let i=1;i<sequence.length;i++)before.get(sequence[i]).add(sequence[i-1]);
+ };
+ for(const a of entries)chain(a.draft.units.map(u=>u.id));
+ for(const id of new Set(entries.map(a=>a.candidateId))){
+  const candidate=d.candidates.find(c=>c.id===id),draft=candidate?.adoptedRefinement?.draft??candidate?.draft;
+  const owned=new Set(entries.filter(a=>a.candidateId===id).flatMap(a=>a.draft.units.map(u=>u.id)));
+  chain((draft?.units||[]).filter(u=>owned.has(u.id)&&digest(u)===digest(byId.get(u.id))).map(u=>u.id));
+ }
+ const rank=new Map(d.source.sourceRows.map((r,i)=>[r.id,i])),priority=u=>Math.min(...u.shots.flatMap(s=>s.sourceRefs.map(ref=>rank.get(ref)??Infinity)));
+ const pending=[...units].sort((a,b)=>priority(a)-priority(b)),ordered=[],done=new Set();
+ while(pending.length){
+  const index=pending.findIndex(u=>[...before.get(u.id)].every(id=>done.has(id)));
+  if(index<0)fail('ADOPTED_UNIT_ORDER','已采用顺序证据冲突，保留原稿待核，不猜排');
+  const [unit]=pending.splice(index,1);ordered.push(unit);done.add(unit.id);
+ }
+ return ordered;
+}
+function previousOf(d,packageIds,orderVersion=null){
  assertFeedbackResultPair(d);
  const entries=d.adopted.filter(a=>overlap(a.packageIds,packageIds));
  if(entries.some(a=>a.packageIds.some(id=>!packageIds.includes(id))))fail('GROUP_SCOPE','关联组须一起返修');
@@ -210,9 +237,11 @@ function previousOf(d,packageIds){
   for(const candidateId of entry.candidateIds||[]){const candidate=d.candidates.find(c=>c.id===candidateId),op=d.operations.find(o=>o.attemptId===candidate?.attemptId);if(!op||identity(currentRequest(d,op))!==op.fingerprint)fail('STALE_ADOPTION','执行批次依赖的材料或前序末态已经变化');}
  }
  const rank=new Map(d.source.sourceRows.map((row,i)=>[row.id,i]));
- const units=entries.flatMap(a=>a.draft.units).sort((a,b)=>Math.min(...a.shots.flatMap(s=>s.sourceRefs.map(ref=>rank.get(ref)??Infinity)))-Math.min(...b.shots.flatMap(s=>s.sourceRefs.map(ref=>rank.get(ref)??Infinity))));
+ if(orderVersion!==null&&orderVersion!==ADOPTED_UNIT_ORDER_VERSION)fail('ADOPTED_ORDER_VERSION','未知的整编基稿顺序版本，保留原请求');
+ // Unversioned paid operations keep their exact legacy delta baseline.
+ const units=orderVersion===ADOPTED_UNIT_ORDER_VERSION?orderedAdoptedUnits(d,entries):entries.flatMap(a=>a.draft.units).sort((a,b)=>Math.min(...a.shots.flatMap(s=>s.sourceRefs.map(ref=>rank.get(ref)??Infinity)))-Math.min(...b.shots.flatMap(s=>s.sourceRefs.map(ref=>rank.get(ref)??Infinity))));
  const seen=new Set(),supplementalCandidates=[];
- for(const c of d.candidates.toReversed())if(['needs_repair','needs_dependency_repair'].includes(c.status)&&!c.resolvedBy&&overlap(c.packageIds,packageIds)&&c.packageIds.some(id=>packageIds.includes(id)&&!seen.has(id))){for(const id of c.packageIds)seen.add(id);supplementalCandidates.push({packageIds:c.packageIds,status:c.status,...(c.draft?{draft:c.draft}:rawCandidateInput(d,c))});}
+ for(const c of d.candidates.toReversed())if(['needs_repair','needs_dependency_repair'].includes(c.status)&&!candidateResolvedBy(d,c)&&overlap(c.packageIds,packageIds)&&c.packageIds.some(id=>packageIds.includes(id)&&!seen.has(id))){for(const id of c.packageIds)seen.add(id);supplementalCandidates.push({packageIds:c.packageIds,status:c.status,...(c.draft?{draft:c.draft}:rawCandidateInput(d,c))});}
  supplementalCandidates.reverse();
  if(entries.length){
   const draft={schemaVersion:VERSION,units,fantasyRealization:entries.flatMap(a=>a.draft.fantasyRealization),...(supplementalCandidates.length?{supplementalCandidates}:{})};
@@ -237,7 +266,7 @@ function adoptExecution(d,candidate,op,draft,opportunity){
  const combined=combinedExecutionDraft(d,manifest,{batchId:op.executionBatchId,draft});
  if(combined){
   const proposed=opportunity?{...d,plan:opportunity.plan}:d;
-  const full=requestOf(proposed,'author',op.packageIds,null),check=validateDraft({draft:combined,source:full.source,settings:{...d.settings,maxUnits:null},selection:full.selection,plan:proposed.plan,unitDirectionVersion:d.rulesSnapshot.unitDirectionVersion});
+  const full=requestOf(proposed,'author',op.packageIds,null),check=validateDraft({draft:combined,source:full.source,settings:{...d.settings,maxUnits:null},selection:full.selection,plan:proposed.plan,unitDirectionVersion:d.rulesSnapshot.unitDirectionVersion,generationTextVersion:d.rulesSnapshot.generationTextVersion});
   if(check.errors.length){candidate.validation=check;candidate.status='needs_repair';return;}
  }
  manifest.accepted[op.executionBatchId]=candidate.id;
@@ -248,7 +277,7 @@ function adoptExecution(d,candidate,op,draft,opportunity){
   d.adopted.push({packageIds:op.packageIds,draft:combined,candidateId:candidate.id,candidateIds:manifest.batches.map(b=>manifest.accepted[b.id]),executionManifestHash:manifest.hash,stage:'author'});
  }
 }
-function adopt(d,candidate,{recovery=false}={}){
+function adopt(d,candidate,{recovery=false,preserveCandidates=false,reviewProjection=null}={}){
  const op=d.operations.find(o=>o.attemptId===candidate.attemptId);
  if(op.epoch!==d.epoch&&!recovery){candidate.status='cancelled_late';return;}
  if(isDirectorRefinement(op)){prepareRefinementCandidate(d,candidate,op);return;}
@@ -273,13 +302,13 @@ function adopt(d,candidate,{recovery=false}={}){
   return;
  }
  try{
-  if(op.finishMode==='delta'&&baseDraftHash(op.executionProjectionVersion?previousBatch(d,op.executionBatch):previousOf(d,op.packageIds))!==op.baseDraftHash){candidate.status='stale';return;}
-  const output=op.finishMode==='delta'?applyDelta(op.previousDraft,candidate.output):candidate.output;
+  if(op.finishMode==='delta'&&baseDraftHash(op.executionProjectionVersion?previousBatch(d,op.executionBatch):previousOf(d,op.packageIds,op.previousDraftOrderVersion??null))!==op.baseDraftHash){candidate.status='stale';return;}
+  const output=reviewProjection?.draft??(op.finishMode==='delta'?applyDelta(op.previousDraft,candidate.output):candidate.output),qualitySource=reviewProjection?.source??actual.source;
   const opportunity=proposeOpportunityAppend({document:d,operation:op,candidate,request:actual,output,normalizePlan});
   const adoptionPlan=opportunity?.plan??d.plan,adoptionSelection=opportunity?.selection??actual.selection;
-  const {draft,changes}=normalizeDraft(output,actual.source,{plan:actual.plan,settings:actual.settings,unitPackingPolicy:d.rulesSnapshot.unitPackingPolicy,unitDirectionVersion:d.rulesSnapshot.unitDirectionVersion,fantasyTimingVersion:d.rulesSnapshot.fantasyTimingVersion,dialogueSourceLinkVersion:d.rulesSnapshot.dialogueSourceLinkVersion,stage:op.stage});candidate.draft=draft;candidate.normalizations=changes;
+  const {draft,changes}=normalizeDraft(output,qualitySource,{plan:actual.plan,settings:actual.settings,unitPackingPolicy:d.rulesSnapshot.unitPackingPolicy,unitDirectionVersion:d.rulesSnapshot.unitDirectionVersion,fantasyTimingVersion:d.rulesSnapshot.fantasyTimingVersion,dialogueSourceLinkVersion:d.rulesSnapshot.dialogueSourceLinkVersion,stage:op.stage});candidate.draft=draft;candidate.normalizations=changes;
   if(candidate.output?.fantasySupplements?.length)candidate.draft.fantasySupplements=structuredClone(candidate.output.fantasySupplements);
-  const check=validateDraft({draft,source:actual.source,settings:op.executionProjectionVersion?{...d.settings,maxUnits:null}:d.settings,selection:adoptionSelection,plan:adoptionPlan,unitDirectionVersion:d.rulesSnapshot.unitDirectionVersion});candidate.validation=check;
+  const check=validateDraft({draft,source:qualitySource,settings:op.executionProjectionVersion?{...d.settings,maxUnits:null}:d.settings,selection:adoptionSelection,plan:adoptionPlan,unitDirectionVersion:d.rulesSnapshot.unitDirectionVersion,generationTextVersion:d.rulesSnapshot.generationTextVersion});candidate.validation=check;
   if(check.errors.length){candidate.status='needs_repair';return;}
   if(isFeedbackResultVersion(op.productionSnapshot?.feedbackResultVersion)){
    const projection=projectResultFeedback({request:actual,feedback:candidate.productionFeedback,draft,candidateId:candidate.id,attemptId:candidate.attemptId,packageIds:candidate.packageIds,delta:op.finishMode==='delta'?candidate.output:null,factRefs:productionFeedbackFactRefs(actual)});
@@ -293,9 +322,10 @@ function adopt(d,candidate,{recovery=false}={}){
    // One transport scope must not weaken the original packages' dialogue or fantasy ownership.
    for(const group of next){
     const refs=new Set(d.plan.workPackages.filter(w=>group.packageIds.includes(w.id)).flatMap(w=>w.sourceRefs));
-    const source=sliceSource(actual.source,[...refs],actual.source.entryFacts.map(f=>f.id),actual.source.sourceRows.map(r=>r.id));
+    const originalSource=sliceSource(actual.source,[...refs],actual.source.entryFacts.map(f=>f.id),actual.source.sourceRows.map(r=>r.id));
+    const source=reviewProjection?withMappedDialogue(originalSource,reviewProjection.dialogue):originalSource;
     const selectedIds=adoptionSelection.selectedIds.filter(id=>adoptionPlan.fantasyCandidates.some(c=>c.id===id&&c.anchorRefs.some(ref=>refs.has(ref))));
-    check.errors.push(...validateDraft({draft:group.draft,source,settings:d.settings,selection:{...adoptionSelection,selectedIds},plan:adoptionPlan,unitDirectionVersion:d.rulesSnapshot.unitDirectionVersion}).errors);
+    check.errors.push(...validateDraft({draft:group.draft,source,settings:d.settings,selection:{...adoptionSelection,selectedIds},plan:adoptionPlan,unitDirectionVersion:d.rulesSnapshot.unitDirectionVersion,generationTextVersion:d.rulesSnapshot.generationTextVersion}).errors);
    }
    if(check.errors.length){candidate.status='needs_repair';return;}
   }
@@ -307,7 +337,7 @@ function adopt(d,candidate,{recovery=false}={}){
   d.adopted=d.adopted.filter(a=>!overlap(a.packageIds,op.packageIds));
   d.adopted.push(...next.map(n=>({...n,candidateId:candidate.id,stage:op.stage})));
   if(opportunity)commitOpportunity(d,candidate,op,opportunity);
-  for(const prior of d.candidates)if(prior!==candidate&&!prior.resolvedBy&&((prior.status==='needs_dependency_repair'&&prior.requiredPackageIds.every(id=>op.packageIds.includes(id)))||(prior.status==='needs_repair'&&prior.packageIds.every(id=>op.packageIds.includes(id)))))prior.resolvedBy=candidate.id;
+  if(!preserveCandidates)for(const prior of d.candidates)if(prior!==candidate&&!candidateResolvedBy(d,prior)&&!d.candidates.some(c=>c.referenceRoleReview?.candidateId===prior.id)&&((prior.status==='needs_dependency_repair'&&prior.requiredPackageIds.every(id=>op.packageIds.includes(id)))||(prior.status==='needs_repair'&&prior.packageIds.every(id=>op.packageIds.includes(id)))))prior.resolvedBy=candidate.id;
   candidate.status='adopted';d.status='drafting';refreshProductionState(d);
  }catch(e){candidate.status='needs_repair';candidate.errors=[errorRecord(e,'RESPONDED')];if(e.code==='PRODUCTION_ENTRY_EVIDENCE'&&d.production){d.production.entryEvidenceHold={candidateId:candidate.id,code:e.code,message:e.message};d.production.globalBlocking=true;d.production.blocking=true;}}
 }
@@ -326,7 +356,7 @@ function prepareRefinementCandidate(d,candidate,op){
   const output=applyDelta(op.previousDraft,linked.delta),normalized=normalizeDraft(output,actual.source,{plan:actual.plan,settings:d.settings,unitPackingPolicy:d.rulesSnapshot.unitPackingPolicy,unitDirectionVersion:d.rulesSnapshot.unitDirectionVersion,fantasyTimingVersion:d.rulesSnapshot.fantasyTimingVersion,dialogueSourceLinkVersion:d.rulesSnapshot.dialogueSourceLinkVersion,stage:'finish'});
   candidate.draft=normalized.draft;candidate.normalizations=[...linked.changes,...normalized.changes];
   assertDirectorRefinementDelta(op.previousDraft,candidate.output,op.refinement,candidate.draft);
-  candidate.validation=validateDraft({draft:candidate.draft,source:d.source,settings:d.settings,selection:resolveSelection(d.plan,d.choice),plan:d.plan,unitDirectionVersion:d.rulesSnapshot.unitDirectionVersion});
+  candidate.validation=validateDraft({draft:candidate.draft,source:d.source,settings:d.settings,selection:resolveSelection(d.plan,d.choice),plan:d.plan,unitDirectionVersion:d.rulesSnapshot.unitDirectionVersion,generationTextVersion:d.rulesSnapshot.generationTextVersion});
   if(candidate.validation.errors.length){candidate.status='refinement_invalid';return;}
   if(op.productionSnapshot){candidate.productionFeedbackValidationVersion=PRODUCTION_FEEDBACK_VALIDATION_VERSION;candidate.productionFeedback=validateProductionFeedback(candidate.output?.productionFeedback,actual);}
   candidate.previewText=renderResolved(d,candidate.draft);
@@ -433,11 +463,11 @@ function refreshProductionState(d){
   }
  }
  if(check?.status==='REPAIR_REQUIRED'&&first&&d.adopted.some(a=>a.packageIds.includes(first)))changed.add(first);
- for(const candidate of d.candidates.filter(c=>c.status==='needs_dependency_repair'&&!c.resolvedBy))
+ for(const candidate of d.candidates.filter(c=>c.status==='needs_dependency_repair'&&!candidateResolvedBy(d,c)))
   if(candidate.packageIds.some(id=>changed.has(id)))for(const id of candidate.requiredPackageIds||[])changed.add(id);
  // Dependencies that have never been authored have nothing to repair: their first
  // request will already read the new input. Keep paid adopted/raw scopes only.
- const repairable=new Set([...d.adopted.flatMap(a=>a.packageIds),...d.candidates.filter(c=>c.status==='needs_repair'&&c.raw&&!c.resolvedBy).flatMap(c=>c.packageIds)]);
+ const repairable=new Set([...d.adopted.flatMap(a=>a.packageIds),...d.candidates.filter(c=>c.status==='needs_repair'&&c.raw&&!candidateResolvedBy(d,c)).flatMap(c=>c.packageIds)]);
  // Repair direct consumers first. A later package is not stale merely because
  // its predecessor needs a local fix: adoption compares the actual revised tail
  // and expands only then. A unit spanning packages remains indivisible.
@@ -453,6 +483,22 @@ function refreshProductionState(d){
   return c.productionFeedback.conflicts.some(s=>!reviewed.has(s.key));
  });
  d.production.blocking=d.production.globalBlocking||needs.some(n=>n.blocking);
+}
+
+function assembleDocument(d){
+ if(!d.plan)fail('PLAN_REQUIRED','先完成计划');
+ if(d.operations.some(isUnresolvedOperation)||d.candidates.some(c=>c.status==='needs_dependency_repair'&&!candidateResolvedBy(d,c)))fail('ASSEMBLY_BUSY','仍有未结作业或需联修的依赖范围');
+ const all=new Set(d.plan.workPackages.map(w=>w.id)),covered=new Set(d.adopted.filter(a=>a.stage==='finish').flatMap(a=>a.packageIds));
+ if([...all].some(id=>!covered.has(id)))fail('FINISH_REQUIRED','全部工作包完成整编后才能汇总');
+ for(const a of d.adopted){
+  const operations=adoptionOperations(d,a);
+  try{if(!operations.length||operations.some(op=>identity(currentRequest(d,op))!==op.fingerprint))fail('STALE_ADOPTION','已采用稿依赖的材料或选择已变更');}
+  catch(e){if(e.code==='STALE_ADOPTION')throw e;fail('STALE_ADOPTION','已采用稿依赖的材料或选择已变更');}
+ }
+ const units=orderedAdoptedUnits(d,d.adopted),draft={schemaVersion:VERSION,units,fantasyRealization:d.adopted.flatMap(a=>a.draft.fantasyRealization)};
+ const check=validateDraft({draft,source:reviewedDialogueSource(d),settings:d.settings,selection:resolveSelection(d.plan,d.choice),plan:d.plan,unitDirectionVersion:d.rulesSnapshot.unitDirectionVersion,generationTextVersion:d.rulesSnapshot.generationTextVersion});
+ const postproductionText=renderPostproductionNotes({draft,source:d.source,generationTextVersion:d.rulesSnapshot.generationTextVersion});
+ d.assembly={draft,validation:check,text:renderResolved(d,draft),...(postproductionText?{postproductionText}:{})};d.status=check.errors.length?'needs_repair':'text_ready_for_review';return d;
 }
 
 export function createEngine({directory,modelRunner=runModel,runnerOptions={}}){
@@ -474,6 +520,32 @@ export function createEngine({directory,modelRunner=runModel,runnerOptions={}}){
   async create({id,source,settings,voiceReference=null,production=null}){const normalized=normalizeSource(source),effective=normalizeSettings(settings);if(normalized.diagnostics.length)fail('SOURCE_DIAGNOSTICS','源材料有未处理歧义');currentDocumentSourceResolutions({source:normalized,production,plan:null,candidates:[]});return store.create(id,{version:VERSION,id,source:normalized,settings:effective,voiceReference,rulesSnapshot:captureRules(),rulesHistory:[],plan:null,choice:defaultChoice(effective.fantasyMode),operations:[],candidates:[],adopted:[],epoch:0,status:'created',...(production?{production:structuredClone(production)}:{})});},
   read:id=>store.read(id),
   async resolveSource(id,value,approval){return store.update(id,d=>{
+   if(value?.kind===DIALOGUE_MAPPING_REVIEW_KIND){
+    const original=d.candidates.find(c=>c.id===value.candidateId),op=d.operations.find(o=>o.attemptId===original?.attemptId);
+    if(!canRecheckCandidate(d,original)||d.web?.stopped||d.web?.pauseRequested||d.web?.owner||d.web?.reserved||d.web?.reservedAttemptIds?.length
+     ||d.candidates.some(c=>c.dialogueMappingReview?.value?.candidateId===original?.id))fail('SOURCE_RESOLUTION_DIALOGUE_MAPPING','当前状态不允许保真免费映射恢复。');
+    const candidateId=randomUUID(),projection=projectDialogueMappingReview(d,original,op,value,approval,candidateId);
+    const derived={id:candidateId,attemptId:original.attemptId,stage:original.stage,packageIds:structuredClone(original.packageIds),raw:original.raw,output:structuredClone(original.output),modelOutput:structuredClone(original.output),status:'received',receipt:structuredClone(original.receipt),derivedFrom:original.id,dialogueMappingReview:projection.proof,...candidateExecutionFields(op)};
+    d.candidates.push(derived);invalidate(d,'rechecking');
+    adopt(d,derived,{recovery:op.recovery?.epoch===d.epoch||consumedResponseHashes(d,op).has(savedResponseHash(original)),preserveCandidates:true,reviewProjection:projection});
+    if(derived.status!=='adopted'||candidateResolvedBy(d,original)!==derived.id)fail('SOURCE_RESOLUTION_DIALOGUE_MAPPING','派生稿未通过完整校验，保留原候选与全部证据。');
+    assembleDocument(d);refreshProductionState(d);
+    if(d.status!=='text_ready_for_review'||d.production&&(d.production.blocking||d.production.globalBlocking||d.production.pendingRepair||!['MATCHED','NOT_CONSUMED','NOT_CONTINUOUS','NO_PREDECESSOR'].includes(d.production.boundaryCheck?.status)))fail('SOURCE_RESOLUTION_DIALOGUE_MAPPING','完整汇总或实际生产门未通过，原稿保留。');
+    return d;
+   }
+   if(value?.kind===REFERENCE_ROLE_REVIEW_KIND){
+    const original=d.candidates.find(c=>c.id===value.candidateId),op=d.operations.find(o=>o.attemptId===original?.attemptId);
+    if(!canRecheckCandidate(d,original)||d.web?.stopped||d.web?.pauseRequested||d.web?.owner||d.web?.reserved||d.web?.reservedAttemptIds?.length)fail('SOURCE_RESOLUTION_REFERENCE_REVIEW','候选或当前执行状态不允许零模型引用复核。');
+    const candidateId=randomUUID(),projection=projectReferenceRoleReview(d,original,op,value,approval,candidateId);
+    const derived={id:candidateId,attemptId:original.attemptId,stage:original.stage,packageIds:structuredClone(original.packageIds),raw:original.raw,output:projection.output,modelOutput:structuredClone(original.output),status:'received',receipt:structuredClone(original.receipt),derivedFrom:original.id,referenceRoleReview:projection.proof,...candidateExecutionFields(op)};
+    d.candidates.push(derived);invalidate(d,'rechecking');
+    adopt(d,derived,{recovery:op.recovery?.epoch===d.epoch||consumedResponseHashes(d,op).has(savedResponseHash(original)),preserveCandidates:true});
+    const productionReady=()=>!d.production||!d.production.blocking&&!d.production.globalBlocking&&!d.production.pendingRepair&&['MATCHED','NOT_CONSUMED','NOT_CONTINUOUS','NO_PREDECESSOR'].includes(d.production.boundaryCheck?.status);
+    if(derived.status!=='adopted'||candidateResolvedBy(d,original)!==derived.id||!productionReady())fail('SOURCE_RESOLUTION_REFERENCE_REVIEW','新引用投影未完整通过创作、依赖或生产质量门；原候选保留。');
+    assembleDocument(d);refreshProductionState(d);
+    if(d.status!=='text_ready_for_review'||!productionReady())fail('SOURCE_RESOLUTION_REFERENCE_REVIEW','完整本集汇总或实际承接尚未通过，原候选保留。');
+    return d;
+   }
    if(!d.production)fail('SOURCE_RESOLUTION','任务没有生产资料接收框架。');
    const resolution=recordSourceResolution(d,value,approval);
    if(!d.production.sourceResolutions?.some(r=>r.id===resolution.id))d.production.sourceResolutions=[...(d.production.sourceResolutions||[]),resolution];
@@ -497,27 +569,32 @@ export function createEngine({directory,modelRunner=runModel,runnerOptions={}}){
    d.production={...d.production,predecessorRevision:context.predecessorRevision??0,boundary:structuredClone(context.boundary??null),entryEvidenceContext:structuredClone(context.entryEvidenceContext??null),outgoingAgreements:structuredClone(context.outgoingAgreements||[]),materials:structuredClone(context.materials||[])};
    refreshProductionState(d);return d;
   });},
-  async execute(id,{stage,packageId,packageIds,attemptId=randomUUID(),issues=[],finishMode='full',feedbackCandidateId=null,purpose=null,refinementEventIds,refinementWorkOrder}={}){
+  async execute(id,{stage,packageId,packageIds,attemptId=randomUUID(),issues=[],finishMode='full',feedbackCandidateId=null,paidRepair=false,purpose=null,refinementEventIds,refinementWorkOrder}={}){
    if(!['plan','author','finish'].includes(stage))fail('STAGE','未知作业阶段');
    if(!['full','delta'].includes(finishMode))fail('FINISH_MODE','整编模式无效');
    if(!validAttempt(attemptId))fail('INVALID_ATTEMPT','作业编号无效');
    if(purpose!==null&&purpose!==DIRECTOR_REFINEMENT_PURPOSE)fail('PURPOSE','未知创作目的');
    if(purpose===DIRECTOR_REFINEMENT_PURPOSE&&(stage!=='finish'||finishMode!=='delta'||feedbackCandidateId))fail('REFINEMENT_REQUEST','导演精修只执行一次完整基稿差量请求。');
    const chosen=stage==='plan'?[]:packageIds||[packageId];let request;
-   await store.update(id,d=>{if(d.web?.stopped||d.web?.pauseRequested)throw Object.assign(new Error('任务已停止派发'),{code:'RUN_PAUSED',requestOutcome:'NOT_SENT'});if(d.operations.some(o=>o.attemptId===attemptId))fail('ATTEMPT_EXISTS','已有同编号作业');scopeCheck(d,stage,chosen,{freshAuthor:!feedbackCandidateId});
+   await store.update(id,d=>{if(d.web?.stopped||d.web?.pauseRequested)throw Object.assign(new Error('任务已停止派发'),{code:'RUN_PAUSED',requestOutcome:'NOT_SENT'});
+    if(d.adopted.some(a=>d.candidates.find(c=>c.id===a.candidateId)?.dialogueMappingReview)){reviewedDialogueSource(d);throw Object.assign(new Error('已采用保真映射稿仅允许免费汇总和导出；当前旧协议不接纳新的模型重做或精修，未派发。'),{code:'DIALOGUE_MAPPING_REVIEW_FROZEN',requestOutcome:'NOT_SENT'});}
+    if(d.operations.some(o=>o.attemptId===attemptId))fail('ATTEMPT_EXISTS','已有同编号作业');scopeCheck(d,stage,chosen,{freshAuthor:!feedbackCandidateId});
     if(feedbackCandidateId){
      const candidate=d.candidates.find(c=>c.id===feedbackCandidateId),original=candidate&&d.operations.find(o=>o.attemptId===candidate.attemptId);
-     if(!feedbackOnlyFailure(candidate)||candidate.resolvedBy||original.stage!==stage||digest(original.packageIds)!==digest(chosen))fail('FEEDBACK_REPAIR_INPUT','回执修复必须沿用未解决原稿的阶段与范围。');
+     if(!feedbackOnlyFailure(candidate)||candidateResolvedBy(d,candidate)||original.stage!==stage||digest(original.packageIds)!==digest(chosen))fail('FEEDBACK_REPAIR_INPUT','回执修复必须沿用未解决原稿的阶段与范围。');
      request=feedbackRequestFor(d,feedbackCandidateId,issues,CURRENT_FEEDBACK_REPAIR_VERSION);
-     invalidate(d,'running');d.operations.push({...structuredClone(original),attemptId,feedbackRepair:request.feedbackRepair,issues,fingerprint:identity(request),modelCoordinates:undefined,epoch:d.epoch,status:'running',createdAt:new Date().toISOString(),receipt:undefined,error:undefined,recovery:undefined,cancelAcknowledgement:undefined,cancelRequestedAt:undefined,localSettledAt:undefined});return d;
+     if(paidRepair)request.paidRepair=true;
+     invalidate(d,'running');d.operations.push({...structuredClone(original),...(paidRepair?{paidRepair:true}:{}),attemptId,feedbackRepair:request.feedbackRepair,issues,fingerprint:identity(request),modelCoordinates:undefined,epoch:d.epoch,status:'running',createdAt:new Date().toISOString(),receipt:undefined,error:undefined,recovery:undefined,cancelAcknowledgement:undefined,cancelRequestedAt:undefined,localSettledAt:undefined});return d;
     }
     const refinement=purpose===DIRECTOR_REFINEMENT_PURPOSE?freezeDirectorRefinement(d,chosen,refinementEventIds,refinementWorkOrder):null;
-    const previousPlan=stage==='plan'&&issues.length?d.candidates.findLast(c=>c.stage==='plan'&&c.status==='needs_repair'&&!c.resolvedBy&&c.raw):null;
+    const previousPlan=stage==='plan'&&issues.length?d.candidates.findLast(c=>c.stage==='plan'&&c.status==='needs_repair'&&!candidateResolvedBy(d,c)&&c.raw):null;
     const executionBatch=refinement?null:nextExecution(d,stage,chosen);
-    const previousDraft=refinement?structuredClone(d.assembly.draft):stage==='finish'?(executionBatch?previousBatch(d,executionBatch):previousOf(d,chosen)):previousPlan?{...rawCandidateInput(d,previousPlan),previousPlan:previousPlan.output}:null;
+    const previousDraftOrderVersion=stage==='finish'&&!refinement&&!executionBatch?ADOPTED_UNIT_ORDER_VERSION:null;
+    const previousDraft=refinement?structuredClone(d.assembly.draft):stage==='finish'?(executionBatch?previousBatch(d,executionBatch):previousOf(d,chosen,previousDraftOrderVersion)):previousPlan?{...rawCandidateInput(d,previousPlan),previousPlan:previousPlan.output}:null;
     request=requestOf(d,stage,chosen,previousDraft,issues,'continuity-v1',finishMode,executionBatch,undefined,undefined,refinement);
+    if(paidRepair)request.paidRepair=true;
     if(refinement)request=decorateDirectorRefinementRequest(request,refinement);else invalidate(d,'running');
-    d.operations.push({attemptId,stage,packageIds:chosen,previousDraft,issues,finishMode:request.finishMode,baseDraftHash:request.baseDraftHash||null,...(request.opportunityBasis?{opportunityBasis:structuredClone(request.opportunityBasis)}:{}),dependencyFormat:'continuity-v1',...(refinement?{purpose,refinement}:{}),...(request.modelCoordinates?{modelCoordinates:structuredClone(request.modelCoordinates)}:{}),...(stage!=='plan'&&acceptsContinuity(d)?{acceptedContinuityVersion:ACCEPTED_CONTINUITY_VERSION}:{}),...(request.productionSnapshot?{productionSnapshot:structuredClone(request.productionSnapshot)}:{}),fingerprint:identity(request),epoch:d.epoch,status:'running',createdAt:new Date().toISOString(),...executionFields(executionBatch)});return d;});
+    d.operations.push({attemptId,stage,packageIds:chosen,previousDraft,...(previousDraftOrderVersion?{previousDraftOrderVersion}:{}),issues,...(paidRepair?{paidRepair:true}:{}),finishMode:request.finishMode,baseDraftHash:request.baseDraftHash||null,...(request.opportunityBasis?{opportunityBasis:structuredClone(request.opportunityBasis)}:{}),dependencyFormat:'continuity-v1',...(refinement?{purpose,refinement}:{}),...(request.modelCoordinates?{modelCoordinates:structuredClone(request.modelCoordinates)}:{}),...(stage!=='plan'&&acceptsContinuity(d)?{acceptedContinuityVersion:ACCEPTED_CONTINUITY_VERSION}:{}),...(request.productionSnapshot?{productionSnapshot:structuredClone(request.productionSnapshot)}:{}),fingerprint:identity(request),epoch:d.epoch,status:'running',createdAt:new Date().toISOString(),...executionFields(executionBatch)});return d;});
    const controller=new AbortController();controllers.set(attemptId,controller);
    try{const result=await modelRunner(request,{directory,attemptId,runId:id,signal:controller.signal,...runnerOptions});return await settle(id,attemptId,result,null);}
    catch(error){await settle(id,attemptId,null,error);throw error;}
@@ -563,7 +640,7 @@ export function createEngine({directory,modelRunner=runModel,runnerOptions={}}){
     if(selected.partial){
      const normalized=normalizeDraft(applyDelta(op.previousDraft,selected.delta),d.source,{plan:d.plan,settings:d.settings,unitPackingPolicy:d.rulesSnapshot.unitPackingPolicy,unitDirectionVersion:d.rulesSnapshot.unitDirectionVersion,fantasyTimingVersion:d.rulesSnapshot.fantasyTimingVersion,dialogueSourceLinkVersion:d.rulesSnapshot.dialogueSourceLinkVersion,stage:'finish'});
      assertRefinementRetained(op.previousDraft,normalized.draft,selected.retainedUnitIds);assertRefinementSeams(op.previousDraft,normalized.draft,selected.retainedUnitIds);
-     const validation=validateDraft({draft:normalized.draft,source:d.source,settings:d.settings,selection:resolveSelection(d.plan,d.choice),plan:d.plan,unitDirectionVersion:d.rulesSnapshot.unitDirectionVersion});
+     const validation=validateDraft({draft:normalized.draft,source:d.source,settings:d.settings,selection:resolveSelection(d.plan,d.choice),plan:d.plan,unitDirectionVersion:d.rulesSnapshot.unitDirectionVersion,generationTextVersion:d.rulesSnapshot.generationTextVersion});
      if(validation.errors.length)fail('REFINEMENT_INVALID','选中修改组与保留基稿的完整校验未通过，基稿保留。');
      adoption={draft:normalized.draft,validation,text:renderResolved(d,normalized.draft),normalizations:normalized.changes};
     }
@@ -593,6 +670,6 @@ export function createEngine({directory,modelRunner=runModel,runnerOptions={}}){
    else if(['needs_repair','needs_dependency_repair'].includes(derived.status))d.status=derived.status;
    return d;
   });},
-  async assemble(id){return store.update(id,d=>{if(!d.plan)fail('PLAN_REQUIRED','先完成计划');if(d.operations.some(isUnresolvedOperation)||d.candidates.some(c=>c.status==='needs_dependency_repair'&&!c.resolvedBy))fail('ASSEMBLY_BUSY','仍有未结作业或需联修的依赖范围');const all=new Set(d.plan.workPackages.map(w=>w.id)),covered=new Set(d.adopted.filter(a=>a.stage==='finish').flatMap(a=>a.packageIds));if([...all].some(id=>!covered.has(id)))fail('FINISH_REQUIRED','全部工作包完成整编后才能汇总');for(const a of d.adopted){const operations=adoptionOperations(d,a);try{if(!operations.length||operations.some(op=>identity(currentRequest(d,op))!==op.fingerprint))fail('STALE_ADOPTION','已采用稿依赖的材料或选择已变更');}catch(e){if(e.code==='STALE_ADOPTION')throw e;fail('STALE_ADOPTION','已采用稿依赖的材料或选择已变更');}}const rank=new Map(d.source.sourceRows.map((r,i)=>[r.id,i]));const units=d.adopted.flatMap(a=>a.draft.units).sort((a,b)=>Math.min(...a.shots.flatMap(s=>s.sourceRefs.map(r=>rank.get(r)??Infinity)))-Math.min(...b.shots.flatMap(s=>s.sourceRefs.map(r=>rank.get(r)??Infinity))));const draft={schemaVersion:VERSION,units,fantasyRealization:d.adopted.flatMap(a=>a.draft.fantasyRealization)};const check=validateDraft({draft,source:d.source,settings:d.settings,selection:resolveSelection(d.plan,d.choice),plan:d.plan,unitDirectionVersion:d.rulesSnapshot.unitDirectionVersion});d.assembly={draft,validation:check,text:renderResolved(d,draft)};d.status=check.errors.length?'needs_repair':'text_ready_for_review';return d;});}
+  async assemble(id){return store.update(id,assembleDocument);}
  };
 }

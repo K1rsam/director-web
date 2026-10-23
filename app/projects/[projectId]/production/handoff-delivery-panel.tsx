@@ -1,5 +1,6 @@
 "use client";
 import {useState} from 'react';
+import {SeasonClosingForm} from './season-closing-form';
 import type {WorkflowSnapshot} from './types';
 import styles from './workspace.module.css';
 
@@ -16,6 +17,7 @@ export function HandoffDeliveryPanel({snapshot,endpoint,busy,onAction}:Props){
  const fileUrl=(name:string)=>`${endpoint}?workflowId=${encodeURIComponent(workflow.id)}&deliveryFile=${encodeURIComponent(name)}`;
  return <section className={styles.panel} aria-label="承接复核与文字导出"><h3>承接复核与文字导出</h3>
   <p className={styles.fine}>免费核对和导出，不调用模型。复核保留 SOURCE、锁约定、原回执和真实尾态；结构检查不等于文字、视听或用户验收。</p>
+  {workflow.season?<><p className={styles.fine}>本季原集：{workflow.season.scope.episodeNumbers.join('、')}；当前为{workflow.delivery?.seasonDelivery==='final'?'final整季最终声明':'preview部分预览'}，按真实逐镜秒数校验。</p>{snapshot.readiness.seasonTiming?<p className={styles.fine}>已采用镜头 {(snapshot.readiness.seasonTiming.actualSeconds/60).toFixed(2)} 分钟，加剩余估时后 {(snapshot.readiness.seasonTiming.projected.minSeconds/60).toFixed(1)}–{(snapshot.readiness.seasonTiming.projected.maxSeconds/60).toFixed(1)} 分钟。{snapshot.readiness.seasonTiming.requiresReview?'已停在未派发边界。':'此为文字分镜校准，尚非成片时长。'}</p>:null}<div className={styles.actions}><button className="quietButton" disabled={busy} onClick={()=>void onAction('configure-delivery',{enabled:workflow.delivery?.enabled??true,seasonDelivery:'preview'})}>部分预览</button><button className="quietButton" disabled={busy} onClick={()=>void onAction('configure-delivery',{enabled:workflow.delivery?.enabled??true,seasonDelivery:'final'})}>声明整季最终导出</button>{workflow.delivery?.result?<a className="quietButton" href={fileUrl('season-summary.json')}>本季范围与实际秒数</a>:null}</div></>:null}
   <label className={styles.check}><input type="checkbox" checked={savingDelivery??workflow.delivery?.enabled===true} disabled={busy||savingDelivery!==null} onChange={e=>void toggleDelivery(e.target.checked)}/>必要承接及首集核对完成后，自动导出采用稿并对账{savingDelivery!==null?'（正在保存）':''}</label>
   <div className={styles.actions}><button className="quietButton" type="button" disabled={busy||snapshot.nextAction.kind!=='COMPLETE'} onClick={()=>void onAction('export-delivery')}>导出并核对 · 不重创作</button>
    {workflow.delivery?.result?<><a className="quietButton" href={fileUrl('complete.md')}>下载合订文字稿</a><a className="quietButton" href={fileUrl('manifest.json')}>下载逐集哈希清单</a><a className="quietButton" href={fileUrl('usage.json')}>下载逐请求用量对账</a><a className="quietButton" href={fileUrl('report.md')}>下载报告</a></>:null}</div>
@@ -30,5 +32,6 @@ export function HandoffDeliveryPanel({snapshot,endpoint,busy,onAction}:Props){
     <button className="quietButton" type="button" disabled={busy||!checked||!note.trim()||!body.trim()} onClick={()=>void submit()}>登记这一次免费复核</button></>:null}
    {error?<p className={styles.error} role="alert">{error}</p>:null}
   </details>
+  {workflow.season?<SeasonClosingForm key={workflow.id} projectId={workflow.projectId} workflowId={workflow.id} disabled={busy}/>:null}
  </section>;
 }

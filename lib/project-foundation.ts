@@ -1,3 +1,4 @@
+import {requireSeasonProduction} from './season-scope-service';
 /** F1 understanding → F2 source identities → independent Q1 → atomic approved publication. */
 import { spawn, type ChildProcess } from "node:child_process";
 import crypto from "node:crypto";
@@ -187,6 +188,7 @@ export function foundationContinuationStamp(state: Awaited<ReturnType<typeof get
 async function queueStages(projectId: string, request: { singleStage?: FoundationStageCode; recovery?: FoundationRecoveryOptions; continuation?: boolean; expectedState?: string } = {}, execution?: FoundationQueueExecution) {
   if (execution && (!execution.db || typeof execution.stageRunner !== "function")) throw new Error("注入执行必须同时提供数据库与岗位执行器。");
   const db = execution?.db ?? prisma;
+  await requireSeasonProduction(projectId,undefined,'assets',db);
   const { singleStage, continuation } = request;
   let recovery = recoveryOptions(singleStage, request.recovery);
   await assertIdle(projectId, db, continuation);
@@ -631,6 +633,7 @@ async function writeEvidence(db: FoundationDb, runId: string, evidence: RunEvide
 }
 
 export async function executeProjectFoundation(projectId: string, batchToken: string, options: { stageRunner?: FoundationStageRunner; singleStage?: FoundationStageCode; db?: PrismaClient } = {}) {
+  await requireSeasonProduction(projectId,undefined,'assets',options.db??prisma);
   const db = options.db ?? prisma;
   if (options.singleStage) requireStage(options.singleStage);
   const batchRuns = (await db.pipelineRun.findMany({ where: { projectId, episodeId: null, inputSummary: { contains: batchToken } }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] }))

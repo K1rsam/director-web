@@ -9,7 +9,7 @@ import {sealUnsentProof,isVerifiedUnsent,sealPreparationProof,isVerifiedPreparat
 import {RUNTIME_MAINTENANCE_VERSION} from './production-maintenance-state.mjs';
 import {createProductionBudgetStore} from './production-budget.mjs';
 export {RUNTIME_MAINTENANCE_VERSION,runtimeMaintenanceState,assertRuntimeAdmission} from './production-maintenance-state.mjs';
-const final=new Set(['RESUMED','ABORTED']);
+const final=new Set(['RESUMED','ABORTED','ISSUE_STOPPED']);
 const now=()=>new Date().toISOString();
 const active=c=>c&&c.version===RUNTIME_MAINTENANCE_VERSION&&!final.has(c.phase);
 const controlRoot=dataRoot=>path.join(path.resolve(dataRoot),'runtime-maintenance');
@@ -45,11 +45,12 @@ export function createRuntimeMaintenance({workflowDirectory,dataRoot,budgetDirec
  const event=(c,phase,details={})=>({...c,...details,phase,updatedAt:now(),events:[...c.events,{phase,at:now()}]});
  async function change(fn){return controls.update('current',fn);}
  function assertContract(c,w){if(digest(contract(w))!==c.contractHash||w.runtimeMaintenance?.id!==c.id)fail('RUNTIME_MAINTENANCE_CHANGED','原授权、源稿、模型、停止线或维护归属已变化，保持维护门。');}
- async function assertUnchanged(c,{resuming=false}={}){
+ async function assertUnchanged(c,{resuming=false,releasing=false}={}){
   if(c.userPauseRequestedAt)fail('RUNTIME_MAINTENANCE_CANCELLED','用户在维护期间暂停，禁止自动恢复。');
   const w=await workflows.read(c.workflowId);assertContract(c,w);
   const b=await budgets.read(w.budgetId);if(digest({maxCalls:b.maxCalls,maxTokens:b.maxTokens,projectIds:b.projectIds})!==c.budgetContractHash||b.paused)fail('RUNTIME_MAINTENANCE_CHANGED','共享账本停止线或暂停状态已变化。');
-  if((w.paused!==true||w.parallel.enabled!==false)&&!(resuming&&c.phase==='RESUMING'&&['RESUMING','RESUMED'].includes(w.runtimeMaintenance.phase)&&w.paused===false&&w.parallel.enabled===true))fail('RUNTIME_MAINTENANCE_CHANGED','维护暂停状态已被外部改变。');
+  const released=releasing&&['RELEASING_ISSUES','ISSUE_STOPPED'].includes(c.phase)&&['RELEASING_ISSUES','ISSUE_STOPPED'].includes(w.runtimeMaintenance.phase)&&w.paused===false&&w.parallel.enabled===false&&w.parallel.lastStop==='WAIT_ISSUES';
+  if((w.paused!==true||w.parallel.enabled!==false)&&!released&&!(resuming&&c.phase==='RESUMING'&&['RESUMING','RESUMED'].includes(w.runtimeMaintenance.phase)&&w.paused===false&&w.parallel.enabled===true))fail('RUNTIME_MAINTENANCE_CHANGED','维护暂停状态已被外部改变。');
   return w;
  }
  async function unboundCreateProof(w,b){
@@ -159,9 +160,9 @@ export function createRuntimeMaintenance({workflowDirectory,dataRoot,budgetDirec
    if(c.phase!=='RETIRED'||pid===c.targetPid||c.loadingPid!==pid)fail('RUNTIME_MAINTENANCE_KERNEL','必须由安全冷加载的新进程证明，不能把HMR当重载。');
    return change(d=>event(d,'LOADED',{loadedPid:pid,kernel}));
   },
-  async requestResumeProof(){const c=await current();await assertUnchanged(c,{resuming:true});if(!['LOADED','RESUMING'].includes(c.phase))fail('RUNTIME_MAINTENANCE_NOT_LOADED','内核尚未加载');return change(d=>({...d,resumeProofNonce:randomUUID(),resumeProof:null,lastError:null}));},
+  async requestResumeProof(){const c=await current();await assertUnchanged(c,{resuming:true,releasing:true});if(!['LOADED','RESUMING','RELEASING_ISSUES'].includes(c.phase))fail('RUNTIME_MAINTENANCE_NOT_LOADED','内核尚未加载');return change(d=>({...d,resumeProofNonce:randomUUID(),resumeProof:null,lastError:null}));},
   async recordResumeProof({pid,nonce,proof}){
-   const c=await current(),w=await assertUnchanged(c,{resuming:true});
+   const c=await current(),w=await assertUnchanged(c,{resuming:true,releasing:true});
    if(pid!==c.loadedPid||nonce!==c.resumeProofNonce||proof?.authorization!==c.authorization||proof?.sourceVersion!==w.sourceVersion||proof?.actorVerified!==true)fail('RUNTIME_MAINTENANCE_UNVERIFIED','当前来源或原启动者权限未核验');
    return change(d=>{if(d.id!==c.id||d.resumeProofNonce!==nonce||d.userPauseRequestedAt)fail('RUNTIME_MAINTENANCE_CHANGED','恢复核验归属变化');return {...d,resumeProof:{...proof,pid,nonce,selectedRunsHash:digest(w.selectedRuns),at:now()}};});
   },
@@ -227,6 +228,35 @@ export function createRuntimeMaintenance({workflowDirectory,dataRoot,budgetDirec
     }
    }
    return change(d=>({...d,unsentRecoveries:[...(d.unsentRecoveries??[]),...recovered]}));
+  },
+  async releaseIssues(){
+   let c=await current();const w=await assertUnchanged(c,{releasing:true});
+   if(!c.issueStopProof||!['LOADED','RELEASING_ISSUES','ISSUE_STOPPED'].includes(c.phase)||w.status!=='READY'||w.activeAction||digest(w.selectedRuns)!==digest(c.baselineSelectedRuns))fail('RUNTIME_MAINTENANCE_CHANGED','仅可回到原问题停派，不能改变选择或自动续派。');
+   if(c.phase==='ISSUE_STOPPED')return c;
+   const p=c.resumeProof;
+   if(!p||p.pid!==c.loadedPid||p.nonce!==c.resumeProofNonce||p.selectedRunsHash!==digest(w.selectedRuns)||Date.now()-Date.parse(p.at)>30000)fail('RUNTIME_MAINTENANCE_UNVERIFIED','缺少当前双源、原启动者权限和选定版本证明。');
+   if(!(await this.status()).safeToRetire)fail('RUNTIME_MAINTENANCE_BUSY','仍有在途、执行权或控制变化。');
+   for(const id of Object.values(w.selectedRuns)){
+    const r=await runs.read(id),v=r.web;
+    if(!v||v.binding?.projectId!==w.projectId||v.binding.productionChain?.id!==w.id||v.binding.productionBudget?.id!==w.budgetId||v.stopped||v.sourceStale||v.pauseRequested&&v.runtimeMaintenance?.id!==c.id||v.runtimeMaintenance&&v.runtimeMaintenance.id!==c.id)fail('RUNTIME_MAINTENANCE_CHANGED','本集停止、暂停、源稿或维护归属已变化。');
+   }
+   if(c.phase==='LOADED')c=await change(d=>{if(d.id!==c.id||d.phase!=='LOADED'||d.userPauseRequestedAt)fail('RUNTIME_MAINTENANCE_CHANGED','释放前维护控制变化');return event(d,'RELEASING_ISSUES');});
+   for(const id of c.heldRunIds){
+    await runs.update(id,d=>{
+     const hold=d.web?.runtimeMaintenance;
+     if(d.web?.stopped||d.web?.sourceStale||hold&&hold.id!==c.id||!hold&&d.web?.pauseRequested)fail('RUNTIME_MAINTENANCE_CHANGED','本集控制已变化，保留释放中门禁。');
+     if(!hold)return d;
+     d.web.pauseRequested=hold.priorPauseRequested;delete d.web.runtimeMaintenance;if(d.web.progress==='paused')d.web.progress=d.status;return d;
+    });
+   }
+   // Keep admission closed across the two durable writes. No worker is started.
+   await controls.withLockedRead('current',async latest=>{
+    const fresh=await assertUnchanged(latest,{releasing:true});if(latest.phase!=='RELEASING_ISSUES')fail('RUNTIME_MAINTENANCE_CHANGED','释放阶段变化');
+    await workflows.update(w.id,d=>{assertContract(latest,d);if(d.revision!==fresh.revision||d.activeAction||d.status!=='READY'||digest(d.selectedRuns)!==digest(latest.baselineSelectedRuns))fail('RUNTIME_MAINTENANCE_CHANGED','释放前流程变化');d.paused=false;d.parallel.enabled=false;d.parallel.lastStop='WAIT_ISSUES';d.parallel.worker={...d.parallel.worker,status:'WAIT_ISSUES'};d.runtimeMaintenance.phase='RELEASING_ISSUES';d.revision++;d.updatedAt=now();return d;});
+   });
+   await workflows.update(w.id,d=>{assertContract(c,d);if(d.paused||d.parallel.enabled||d.parallel.lastStop!=='WAIT_ISSUES')fail('RUNTIME_MAINTENANCE_CHANGED','释放时用户控制变化');d.runtimeMaintenance.phase='ISSUE_STOPPED';return d;});
+   const issueStoppedWorkerHash=digest((await workflows.read(w.id)).parallel.worker);
+   return change(d=>{if(d.id!==c.id||d.phase!=='RELEASING_ISSUES'||d.userPauseRequestedAt)fail('RUNTIME_MAINTENANCE_CHANGED','释放时用户控制变化');return event(d,'ISSUE_STOPPED',{issueStoppedWorkerHash});});
   },
   async resume(){
    let c=await current();if(c.phase==='RESUMED'){const w=await workflows.read(c.workflowId);assertContract(c,w);if(c.userPauseRequestedAt||w.paused||!w.parallel.enabled)fail('RUNTIME_MAINTENANCE_CANCELLED','用户已改变恢复状态');return c;}

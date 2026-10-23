@@ -12,7 +12,7 @@ import {selectEpisodeEvidence} from '../runtime/episode-evidence.mjs';
 export type FoundationFact = {
   id: string; subjects: string[]; kind: 'IDENTITY' | 'RELATION' | 'STATE' | 'SETTING' | 'UTTERANCE' | 'CONTEXT' | 'FORMAT'; statement: string;
   evidence: { domain: 'EPISODE' | 'CONTEXT'; episode?: number; sectionKey?: string; start: number; end: number };
-  claim: 'SOURCE' | 'CHARACTER_CLAIM'; applicability: 'GLOBAL' | 'SUBJECT' | 'UNRESOLVED'; validity: { status: 'EXPLICIT' | 'UNKNOWN'; start?: number; end?: number };
+  claim: 'SOURCE' | 'CHARACTER_CLAIM' | 'GUIDANCE'; applicability: 'GLOBAL' | 'SUBJECT' | 'UNRESOLVED'; validity: { status: 'EXPLICIT' | 'UNKNOWN'; start?: number; end?: number };
   contextUse?: {kind:'EPISODE_OUTLINE';episode:number;heading:{quote:string;start:number;end:number}};
 };
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -43,7 +43,7 @@ export function isFoundationSourceFormatLine(text: string, start: number, end: n
 /** Includes every nonempty source line, regardless of whether an image asset exists. */
 export function buildFoundationFacts(index: SourceIndex, context: FoundationSourceContext, catalog: ProductionCatalog | null, options: { standard?: boolean; resolutions?:Record<number,PreparedStandardEpisode>; postColonCue?:boolean;syntax?:StandardScriptSyntax }&ScriptPerformanceOptions = {}) {
   const sourceTexts = [...context.background.map(s => s.text), ...index.episodes.map(e => e.content)];
-  const prepared = new Map(options.standard ? index.episodes.map(episode => [episode.number, prepareEpisodeScript(episode,catalog,options.resolutions?.[episode.number], { postColonCue: options.postColonCue,syntax:options.syntax,inlinePerformance:options.inlinePerformance,inlinePerformanceVersion:options.inlinePerformanceVersion })]) : []);
+  const prepared = new Map(options.standard ? index.episodes.map(episode => [episode.number, prepareEpisodeScript(episode,catalog,options.resolutions?.[episode.number], { postColonCue: options.postColonCue,syntax:options.syntax,inlinePerformance:options.inlinePerformance,inlinePerformanceVersion:options.inlinePerformanceVersion,sourceRegroupVersion:options.sourceRegroupVersion })]) : []);
   const typedRows = new Map([...prepared].map(([number, episode]) => [number, new Map(deriveStandardScriptLines(episode).map(row => [episode.index.units[row.line - 1].start, row]))]));
   const names = [...new Set([...(catalog?.assets ?? []).flatMap(a => [a.name, ...(options.standard ? [a.name.split(/[|｜]/)[0]] : []), ...a.aliases]),
     ...(options.standard ? [...prepared.values()].flatMap(episode => deriveStandardScriptLines(episode).flatMap(row => row.speakers ?? (row.speaker ? [row.speaker] : [])))
@@ -71,11 +71,11 @@ export function buildFoundationFacts(index: SourceIndex, context: FoundationSour
       // Modal words inside dialogue cannot promote a character claim to a world rule.
       // A global label is an explicit source declaration, not a keyword inference.
       const globalRule = !formatHeading && !speaker && origin.domain === 'CONTEXT' && EXPLICIT_RULE_LABEL.test(statement);
-      const kind = formatHeading ? 'FORMAT' : typed?.target === 'ANNOTATION' || typed?.target === 'UNRESOLVED' ? 'CONTEXT' : globalRule ? 'SETTING' : speaker ? 'UTTERANCE' : /受伤|伤口|绷带|骨折|换上|换下|脱下|穿着|痊愈|恢复|交给|递给|归还/.test(statement) ? 'STATE'
+      const kind = formatHeading ? 'FORMAT' : typed?.kind==='SOURCE_REGROUP'||typed?.target === 'ANNOTATION' || typed?.target === 'UNRESOLVED' ? 'CONTEXT' : globalRule ? 'SETTING' : speaker ? 'UTTERANCE' : /受伤|伤口|绷带|骨折|换上|换下|脱下|穿着|痊愈|恢复|交给|递给|归还/.test(statement) ? 'STATE'
         : /父亲|母亲|兄弟|姐妹|夫妻|师父|师徒|父子|母子/.test(statement) ? 'RELATION' : origin.domain === 'CONTEXT' ? 'CONTEXT' : 'SETTING';
       const evidence = { ...origin, start, end };
       facts.push({ id: digest([index.version, context.version, evidence]), subjects, kind, statement, evidence,
-        claim: speaker ? 'CHARACTER_CLAIM' : 'SOURCE', applicability: globalRule ? 'GLOBAL' : subjects.length ? 'SUBJECT' : 'UNRESOLVED', validity: { status: 'UNKNOWN' },...(contextUse?{contextUse}:{}) });
+        claim: typed?.kind==='SOURCE_REGROUP'?'GUIDANCE':speaker ? 'CHARACTER_CLAIM' : 'SOURCE', applicability: globalRule ? 'GLOBAL' : subjects.length ? 'SUBJECT' : 'UNRESOLVED', validity: { status: 'UNKNOWN' },...(contextUse?{contextUse}:{}) });
     }
   };
   for (const section of context.background) scan(section.text, { domain: 'CONTEXT', sectionKey: section.key });

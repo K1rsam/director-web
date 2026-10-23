@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {createEngine} from './pipeline.mjs';
+import {createEngine,rebuildFrozenRequest} from './pipeline.mjs';
 import {createStore} from './store.mjs';
 import {buildRequest} from './core.mjs';
 import {digest} from './shared.mjs';
@@ -12,10 +12,16 @@ import {tailFixture,tailDraft} from './author-call-group-test-fixtures.mjs';
 import * as resolution from './source-resolution.mjs';
 
 const approval={actorId:'human-reviewer',reference:'user-answer-123',answer:'保留原话，夜景到出水段切日景，不补写跨夜过程。'};
-async function setup(t){
+async function setup(t,{quantity=false}={}){
  const directory=await mkdtemp(path.join(tmpdir(),'source-decision-'));
  t.after(()=>rm(directory,{recursive:true,force:true}));
  const f=tailFixture(),seen=[],feedback={relation:'TIME_JUMP',entry:[],exit:[],sharedChoices:[],usedMaterialIds:[],needs:[{stage:1,target:'scene/time',purpose:'夜与阳光待裁定',packageIds:['p1'],sourceRefs:['s1','s2'],blocking:true}],conflicts:[{key:'scene/time',problem:'场头夜而出水阳光',sourceRefs:['s1','s2']}]};
+ if(quantity){
+  f.source.sourceRows[0].text='甲：装上二十吨。';f.source.sourceRows[1].text='甲：撑住二十吨。';
+  f.source.assets=[{key:'crate',name:'运载弹箱',type:'PROP',episodes:[56],relationNote:'本批三十吨弹箱。',preparation:{mode:'REFERENCE',note:'本批三十吨，不沿用二十吨。'}}];
+  feedback.conflicts=[{key:'crate/本集装载量',problem:'本集二十吨与目录三十吨矛盾，保留箱体身份。',sourceRefs:['s1','s2']}];
+  feedback.needs[0].target='crate/本集装载量';feedback.needs[0].purpose='装载量需人类裁定';
+ }
  const seed={schema:'EPISODE_BOUNDARY_SEED_V1',fromEpisode:null,toEpisode:1,adjacentEpisode:false,currentOpening:{text:'原文',sourceTextHash:'current'},previousSource:null};
  const boundary={version:'episode-boundary-v1',versionId:'boundary-1',seed,agreements:[],actual:null};
  const store=createStore(directory),engine=createEngine({directory,modelRunner:async request=>{
@@ -111,4 +117,49 @@ test('a confirmed future-episode correction is available before its first paid r
  const created=await engine.create({id:'future',source:before.source,settings:before.settings,production:{boundary:before.production.boundary,materials:[],sourceResolutions:readings}});
  const request=buildRequest({stage:'plan',source:created.source,settings:created.settings,rulesSnapshot:created.rulesSnapshot,productionSnapshot:{version:'production-feedback-v1',touchesOpening:true,touchesEnding:false,materials:[],sourceResolutions:readings}});
  assert.match(request.prompt,/"speaker":"乙"/);assert.equal(created.source.dialogue[0].speaker,'甲');
+});
+
+async function quantitySetup(t){
+ const f=await setup(t,{quantity:true}),candidate=f.before.candidates.at(-1),asset=f.before.source.assets[0];
+ f.value={...f.value,kind:'ASSET_QUANTITY_SOURCE_PRIORITY',instruction:'仅本集装载量采用原文二十吨；复用原箱体身份，不采用目录三十吨，不改变其他集或授权生图。',assetBinding:{assetKey:asset.key,assetHash:digest(asset),sourceQuantity:'二十吨',catalogueQuantity:'三十吨',planHash:digest(f.before.plan),feedbackHash:digest(candidate.productionFeedback)}};
+ return f;
+}
+
+test('episode-only source quantity decision preserves the catalog, plan and native candidate while supplying new requests',async t=>{
+ const {engine,before,seen,value}=await quantitySetup(t),request=rebuildFrozenRequest(before,before.operations[0]);
+ const after=await engine.resolveSource('resolution',value,{...approval,answer:'允许本集按原文裁决'});
+ assert.equal(after.production.blocking,false);assert.equal(after.production.globalBlocking,false);assert.equal(after.production.needs[0].resolved,true);
+ for(const key of ['source','plan','choice','rulesSnapshot','candidates','operations','adopted','status'])assert.deepEqual(after[key],before[key],key);
+ assert.equal(seen.length,1);assert.deepEqual(rebuildFrozenRequest(after,after.operations[0]),request);
+ assert.equal(after.production.sourceResolutions[0].assetBinding.assetHash,digest(before.source.assets[0]));
+ await engine.execute('resolution',{stage:'author',packageId:'p1',attemptId:'new-author'});
+ assert.match(seen.at(-1).prompt,/ASSET_QUANTITY_SOURCE_PRIORITY/);assert.match(seen.at(-1).prompt,/二十吨/);
+ assert.deepEqual(seen.at(-1).source.assets,before.source.assets);assert.deepEqual(seen[0],request);
+ assert.deepEqual((await engine.read('resolution')).candidates[0],before.candidates[0]);
+});
+
+test('quantity review rejects stale asset/plan/feedback, unsupported quantities, unrelated scope, locks and paid body',async t=>{
+ for(const mode of ['assetHash','planHash','feedbackHash','wrongSourceQuantity','wrongCatalogQuantity','wrongAsset','otherKind','noConflict','unrelatedNeed','lock','paidBody']){
+  const {engine,store,before,value}=await quantitySetup(t),raw=structuredClone(value);
+  if(['assetHash','planHash','feedbackHash'].includes(mode))raw.assetBinding[mode]='0'.repeat(64);
+  if(mode==='wrongSourceQuantity')raw.assetBinding.sourceQuantity='四十吨';
+  if(mode==='wrongCatalogQuantity')raw.assetBinding.catalogueQuantity='五十吨';
+  if(mode==='wrongAsset')raw.assetBinding.assetKey='other';
+  if(mode==='otherKind')raw.kind='TIME_LIGHTING_SPLIT';
+  if(mode==='noConflict')raw.conflicts=[];
+  if(mode==='unrelatedNeed')await store.update('resolution',d=>{d.candidates[0].productionFeedback.needs[0].target='不同资产';return d;});
+  if(mode==='lock')await store.update('resolution',d=>{d.production.boundary.agreements.push({key:'crate/本集装载量',value:'锁定三十吨'});return d;});
+  if(mode==='paidBody')await store.update('resolution',d=>{d.candidates.push({id:'paid-body',stage:'author',raw:'已有付费正文'});return d;});
+  const unchanged=await engine.read('resolution');
+  await assert.rejects(engine.resolveSource('resolution',raw,{...approval,answer:'允许本集按原文裁决'}),e=>/^SOURCE_RESOLUTION/.test(e.code),mode);
+  assert.deepEqual(await engine.read('resolution'),unchanged,mode);assert.equal(before.source.assets[0].key,'crate');
+ }
+});
+
+test('a quantity receipt fails closed when the original catalogue changes after approval',async t=>{
+ const {engine,store,value}=await quantitySetup(t);await engine.resolveSource('resolution',value,approval);
+ await store.update('resolution',d=>{d.source.assets[0].relationNote+='目录已变化';return d;});
+ const before=await engine.read('resolution');
+ await assert.rejects(engine.execute('resolution',{stage:'author',packageId:'p1',attemptId:'stale-author'}),{code:'SOURCE_RESOLUTION_STALE'});
+ assert.deepEqual(await engine.read('resolution'),before);
 });

@@ -17,7 +17,7 @@ export type BoundarySeedOptions = { resolutions?: Record<number, PreparedStandar
 const sourceTextHash=(text:string)=>createHash('sha256').update(text).digest('hex');
 function sourceEvidence(index: SourceIndex, number: number, scenes: LightScene[], side: 'previous' | 'current', options: BoundarySeedOptions, fullEpisode=false): BoundarySourceEvidence {
   const episode = index.episodes.find(e => e.number === number)!;
-  const prepared = prepareEpisodeScript(episode,null,options.resolutions?.[number],{knownSpeakers:options.knownSpeakers,syntax:options.syntax,inlinePerformance:options.inlinePerformance,inlinePerformanceVersion:options.inlinePerformanceVersion});
+  const prepared = prepareEpisodeScript(episode,null,options.resolutions?.[number],{knownSpeakers:options.knownSpeakers,syntax:options.syntax,inlinePerformance:options.inlinePerformance,inlinePerformanceVersion:options.inlinePerformanceVersion,sourceRegroupVersion:options.sourceRegroupVersion});
   if (prepared.index.text !== episode.content || prepared.index.sourceId !== `episode-${number}`) throw new Error('边界解析决定与当前集原文不匹配。');
   const units = prepared.index.units, unitMap = new Map(units.map((unit, i) => [unit.id, { unit, line: i + 1 }])), byUnit = new Map(prepared.plan.entries.flatMap(entry => entry.unitIds.map(id => [id, entry] as const)));
   const seen = new Set<string>(), nodes: BoundaryNode[] = [];
@@ -27,7 +27,7 @@ function sourceEvidence(index: SourceIndex, number: number, scenes: LightScene[]
     seen.add(id);
     const members = entry ? entry.unitIds.map(id => unitMap.get(id)!.unit).sort((a, b) => a.start - b.start) : [unit];
     const start = members[0]?.start ?? unit.start, end = members.at(-1)?.end ?? unit.end;
-    nodes.push({ id, target: entry?.target ?? 'UNRESOLVED', kind: entry ? entry.target === 'EXCLUDE' ? entry.category : entry.kind : 'UNRESOLVED',
+    nodes.push({ id, target:entry?.target==='BODY'&&entry.kind==='SOURCE_REGROUP'?'ANNOTATION':entry?.target ?? 'UNRESOLVED', kind: entry ? entry.target === 'EXCLUDE' ? entry.category : entry.kind : 'UNRESOLVED',
       sourceUnitIds: members.map(u => u.id), sourceRange: { start, end }, startLine: i + 1, endLine: unitMap.get(members.at(-1)!.id)!.line });
   }
   const stored = scenes.filter(s => s.episode === number).sort((a, b) => a.sourceRange.start - b.sourceRange.start);

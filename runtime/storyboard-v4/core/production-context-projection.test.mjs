@@ -112,6 +112,7 @@ test('frozen production-context-v2 requests retain their exact prompt, input and
  delete rules.rhythmContractVersion;
  delete rules.fantasyTimingVersion;
  delete rules.visualSubjectsVersion;
+ delete rules.generationTextVersion;
  const observed=[];
  for(const historical of [false,true])for(const stage of ['plan','author','finish','delta']){
   const r=request(stage,historical?withHistorical():payload(),rules);observed.push([historical,stage,r.promptHash,r.inputHash,r.prompt.length,JSON.stringify(r.schema).length]);
@@ -251,7 +252,7 @@ test('retrieval-facts-v1 frozen snapshot keeps the four stage prompt and input b
  const rules=captureRules();Object.assign(rules,{modelProjectionVersion:'retrieval-facts-v1',instructions:'固定指令',planHint:'固定计划',draftHint:'固定主创',deltaHint:'固定差异'});rules.files=Object.fromEntries(Object.keys(rules.files).map(p=>[p,'固定方法 '+p]));
  // This fixture models a saved old snapshot, not today's newly captured rules/defaults.
  rules.creativeRevision='expressive-cadence-v1';
- for(const key of ['unitDirectionVersion','seedanceExportVersion','sourceProjection','inputProjectionVersion','sourceExpressionMethodsVersion','authorCallGroupingVersion','schemaProjectionVersion','acceptedContinuityVersion','rhythmContractVersion','fantasyTimingVersion','visualSubjectsVersion'])delete rules[key];
+ for(const key of ['unitDirectionVersion','seedanceExportVersion','sourceProjection','inputProjectionVersion','sourceExpressionMethodsVersion','authorCallGroupingVersion','schemaProjectionVersion','acceptedContinuityVersion','rhythmContractVersion','fantasyTimingVersion','visualSubjectsVersion','generationTextVersion'])delete rules[key];
  const observed=['plan','author','finish','delta'].map(stage=>{const r=request(stage,payload(),rules);return [stage,r.promptHash,r.inputHash,r.prompt.length,JSON.stringify(r.schema).length];});
  assert.deepEqual(observed,[
   ['plan','8c0617d110290588778962b61bc8aa987164d9902d69338f0fc4a268a940f29b','2c474c7a2cc2ac238c2eee1287ad40609687143221b3c84e1d0c8147f4c228fc',3517,4194],

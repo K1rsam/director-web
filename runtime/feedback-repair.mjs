@@ -2,6 +2,7 @@ import {digest,fail} from './storyboard-v4/core/shared.mjs';
 import {productionFeedbackSchema,boundaryEvidenceRows,productionFeedbackDesignHint,PRODUCTION_FEEDBACK_VALIDATION_VERSION} from './episode-boundary.mjs';
 import {PRODUCTION_SUPPLY_VERSION} from './production-supply.mjs';
 import {projectOutputSchema} from './storyboard-v4/core/schema-references.mjs';
+import {candidateResolvedBy} from './storyboard-v4/core/reference-role-review.mjs';
 
 export const FEEDBACK_REPAIR_VERSION='production-feedback-repair-v1';
 export const DESIGN_FEEDBACK_REPAIR_VERSION='production-feedback-repair-v2';
@@ -12,7 +13,7 @@ export function feedbackOnlyFailure(candidate){
 }
 export const repairProblemKey=errors=>digest((errors||[]).map(e=>({code:e.code,coordinate:e.coordinate||e.at||null,message:e.message||e.detail||''})).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
 export function repairControl(d){
- const candidate=d.candidates?.findLast(c=>['needs_repair','needs_dependency_repair'].includes(c.status)&&!c.resolvedBy);
+ const candidate=d.candidates?.findLast(c=>['needs_repair','needs_dependency_repair'].includes(c.status)&&!candidateResolvedBy(d,c));
  if(!candidate)return null;
  const issues=candidate.validation?.errors?.length?candidate.validation.errors:candidate.errors||[],prior=d.operations?.find(o=>o.attemptId===candidate.attemptId);
  const needsRecheck=Boolean(feedbackOnlyFailure(candidate)&&candidate.productionFeedbackValidationVersion!==PRODUCTION_FEEDBACK_VALIDATION_VERSION);

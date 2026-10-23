@@ -2,6 +2,7 @@ import {spawn} from 'node:child_process';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {prisma} from './prisma';
+import {requireSeasonProduction} from './season-scope-service';
 import type {AssetProductionScope} from './asset-visual-facts-planner';
 export const AUTOMATION_KEY='ASSET_PROMPT_AUTOMATION_V1';
 export type AssetPromptAutomation={id:string;sourceVersion:string;mode?:'FACTS'|'PROMPTS';scope?:AssetProductionScope;status:'RUNNING'|'COMPLETE'|'STOPPED'|'FAILED';done:number;failed:number;total:number;error:string;updatedAt:string;workerPid?:number};
@@ -29,6 +30,9 @@ export async function stopAssetPromptAutomation(projectId:string,db:Pick<typeof 
 export async function launchAssetPromptAutomation(projectId:string,sourceVersion:string,deps={db:prisma,spawnWorker:(rowId:string,token:string)=>{
  const child=spawn(process.execPath,['--import','tsx',path.join(process.cwd(),'scripts/asset-prompt-worker.ts'),projectId,rowId,token],{cwd:process.cwd(),env:process.env,detached:true,windowsHide:true,stdio:'ignore'});child.unref();return child;
 }},mode:'FACTS'|'PROMPTS'='FACTS',scope?:AssetProductionScope){
+ const season=await requireSeasonProduction(projectId,scope?.episodeNumbers,'assets',deps.db);
+ const checkSeason=async()=>{const current=await requireSeasonProduction(projectId,scope?.episodeNumbers,'assets',deps.db);if((current?.scopeHash??null)!==(season?.scopeHash??null))throw Object.assign(new Error('自动化冻结季范围已变化，未启动后续任务。'),{code:'SEASON_CHANGED',requestOutcome:'NOT_SENT'});};
+ if(season&&!scope)scope={episodeNumbers:[...season.scope.episodeNumbers]};
  const rowId='apjob_'+createHash('sha256').update(projectId).digest('hex').slice(0,40);
  const existing=await deps.db.sceneSnapshot.findUnique({where:{id:rowId}});
  const legacy=existing??await deps.db.sceneSnapshot.findFirst({where:{projectId,sceneKey:AUTOMATION_KEY},orderBy:{createdAt:'desc'}});
@@ -38,8 +42,10 @@ export async function launchAssetPromptAutomation(projectId:string,sourceVersion
  }
  const state:AssetPromptAutomation={id:randomUUID(),sourceVersion,mode,...(scope?{scope}:{}),status:'RUNNING',done:0,failed:0,total:0,error:'',updatedAt:new Date().toISOString()};
  const content=JSON.stringify(state);
+ await checkSeason();
  if(existing){const won=await deps.db.sceneSnapshot.updateMany({where:{id:rowId,content:existing.content},data:{content}});if(won.count!==1)return;}
  else{try{await deps.db.sceneSnapshot.create({data:{id:rowId,projectId,sceneKey:AUTOMATION_KEY,title:'P3 后的独立资产任务',content}});}catch(error){if((error as {code?:string}).code==='P2002')return;throw error;}}
  const fail=async(error:Error)=>{await deps.db.sceneSnapshot.updateMany({where:{id:rowId,content},data:{content:JSON.stringify({...state,status:'FAILED',error:error.message,updatedAt:new Date().toISOString()})}});};
+ try{await checkSeason();}catch(error){await fail(error as Error);throw error;}
  try{const child=deps.spawnWorker(rowId,state.id);child.once('error',error=>{void fail(error).catch(()=>{});});}catch(error){await fail(error as Error);}
 }

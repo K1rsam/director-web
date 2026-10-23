@@ -6,11 +6,13 @@ import {validateEpisodeSourceContext} from './source-context.mjs';
 import {canRecheckCandidate,hasPendingSavedResponse} from './core/pipeline.mjs';
 import {repairControl} from '../feedback-repair.mjs';
 import {standardPackageSource,STANDARD_EPISODE_PROTOCOL} from './core/standard-source.mjs';
+export {SOURCE_REGROUP_VERSION} from '../source-regroup.mjs';
 import {DIRECTOR_REFINEMENT_VERSION,DIRECTOR_REFINEMENT_VERSIONS,targetedDirectorRefinement,isDirectorRefinement,refinementAssemblyHash} from './core/director-refinement.mjs';
 import {refinementScope} from './core/refinement-scope.mjs';
 import {getRefinementBase,getRefinementComparison} from './core/refinement-comparison.mjs';
 import {getRefinementAcceptanceGroups,getRefinementPartialAdoptionBlock,REFINEMENT_SELECTION_VERSION} from './core/refinement-adoption.mjs';
 import {getRefinementConflictReview} from './core/refinement-source-resolution.mjs';
+import {candidateResolvedBy} from './core/reference-role-review.mjs';
 import {isVerifiedUnsent} from './core/pre-dispatch-evidence.mjs';
 import {readSystemPresentationProjection} from './system-presentation.mjs';
 export {STANDARD_EPISODE_PROTOCOL};
@@ -233,7 +235,7 @@ function withUpstreamMaterials(base,packet,episode,project){
  return {...base,source,sourceVersion};
 }
 
-export function makeEpisodeInput({episode,project,handoff=null,notes='',independentSource=null,inputProtocol}){
+export function makeEpisodeInput({episode,project,handoff=null,notes='',independentSource=null,inputProtocol,sourceRegroupVersion}){
  if(inputProtocol!==undefined&&!['legacy',STANDARD_EPISODE_PROTOCOL,UPSTREAM_MATERIAL_PROTOCOL].includes(inputProtocol))fail('SOURCE_PROTOCOL','未知正文输入协议');
  if(!episode?.id||!episode.content?.trim()||episode.projectId!==project?.id)fail('SOURCE_EMPTY','本集没有可用原文或项目归属不符');
  if(typeof notes!=='string'||notes.length>4000)fail('NOTES_LIMIT','导演要求最多4000字');
@@ -247,14 +249,14 @@ export function makeEpisodeInput({episode,project,handoff=null,notes='',independ
  }
  warnings.push(...(packet?.warnings||[]));
  const previous=packet?.boundaryContext?.previousSource;
- const contextRows=independent?independent.contextRows:previous?.text?previous.text.split(/\r\n|\n|\r/).map((text,i)=>({id:`previous-${previous.episode}:excerpt-${i+1}`,text,kind:'context'})):[];
+ const contextRows=independent?independent.contextRows:previous?.text?previous.text.split(/\r\n|\n|\r/).map((text,i)=>({id:`previous-${previous.episode}:excerpt-${i+1}`,text,kind:'context',...(previous.nodes?.some(node=>node.kind==='SOURCE_REGROUP'&&node.startLine<=previous.startLine+i&&node.endLine>=previous.startLine+i)?{evidenceRole:'guidance'}:{})})):[];
  const assets=packet?.assets||[];
  const continuity={previousSource:previous?{...previous,text:undefined}:null,priorStates:packet?.boundaryContext?.priorStates||[],gaps:packet?.boundaryContext?.gaps||[],rule:'前情与资产是有来源的线索，不无条件继承状态；以本集原文的最新变化为准。'};
  const context={projectStyle:project.style||null,aspectRatio:project.aspectRatio||'16:9',directorNotes:notes,scenes:packet?.scenes||[],continuity,followUps:packet?.followUps||[],sourceWarnings:[...new Set(warnings)],materialDependencies:packet?.materialDependencies||[],
   retrievalFacts:packet?.facts||null,confirmedDecisions:packet?.decisions||[],sourceContextVersion:packet?.sourceContextVersion??null,documentRevision:packet?.documentRevision??null,
   retrievalFactsRule:'retrievalFacts是带来源的检索证据，不是已语义确认的入口事实；角色主张、历史状态与未关联背景须核对本集适用性，不直接转成entryFacts。',
   ...(independent?{independentFragment:true,sourceOrigin:independent.origin,creationScope:'仅本集sourceRows是当前制作正文；contextRows只是此前已发生的原文依据，不补拍前情，不接续测试项目的相邻集。'}:{})};
- const parsed=packet?.scriptReception?normalizeSource(standardPackageSource(packet.standardScript,{key:episode.id,title:episode.title||`第${episode.number}集`,context,contextRows,sourceText:episode.content})):parseScript(episode.content,{key:episode.id,title:episode.title||`第${episode.number}集`,context,contextRows});
+ const parsed=packet?.scriptReception?normalizeSource(standardPackageSource(packet.standardScript,{key:episode.id,title:episode.title||`第${episode.number}集`,context,contextRows,sourceText:episode.content,sourceRegroupVersion})):parseScript(episode.content,{key:episode.id,title:episode.title||`第${episode.number}集`,context,contextRows});
  const source=independent?normalizeSource({...parsed,entryFacts:independent.entryFacts}):parsed;
  source.assets=assets;
  const sourceVersion=digest({content:episode.content,style:project.style,aspectRatio:project.aspectRatio,assets,contextRows,scenes:context.scenes,continuity,followUps:context.followUps,materialDependencies:context.materialDependencies,retrievalFacts:context.retrievalFacts,confirmedDecisions:context.confirmedDecisions,sourceContextVersion:context.sourceContextVersion,documentRevision:context.documentRevision,...(independent?{independentSource:independent}:{}),...(packet?.scriptReception?{sourceProtocol:STANDARD_EPISODE_PROTOCOL,standardPackageId:packet.standardScript.packageId}:{})});
@@ -313,7 +315,7 @@ export function publicRun(d,{active=false,sourceStale=false,cancellations=[],exe
  let selection=null,selectionError=null;
  if(d.plan)try{selection=resolveSelection(d.plan,d.choice);}catch(e){selectionError={code:e.code,message:e.message};}
  const plan=d.plan?Object.fromEntries(Object.entries(d.plan).filter(([k])=>k!=='sourceFingerprints')):null;
- const lastFailure=candidates.findLast(c=>['needs_repair','needs_dependency_repair','stale'].includes(c.status)&&!c.resolvedBy);
+ const lastFailure=candidates.findLast(c=>['needs_repair','needs_dependency_repair','stale'].includes(c.status)&&!candidateResolvedBy(d,c));
  const problems=[...(lastFailure?.errors||[]),...(lastFailure?.validation?.errors||[])];
  const problemMessages=[...new Set(problems.map(problem=>typeof problem==='string'?problem:[problem?.at,problem?.message,typeof problem?.detail==='object'?JSON.stringify(problem.detail):problem?.detail].filter(Boolean).join('：')||problem?.code||'候选校验未通过'))];
  const candidateError=lastFailure?{code:problems[0]?.code||'CANDIDATE_VALIDATION',message:problemMessages.slice(0,3).map(message=>message.slice(0,600)).join('；')||'已保存的候选未通过校验，请查看候选历史。'}:null;
@@ -338,7 +340,7 @@ export function publicRun(d,{active=false,sourceStale=false,cancellations=[],exe
    return {attemptId,stage,packageIds,status,finishMode,createdAt,error,cancelAcknowledgement,localSettledAt,cancelRequestedAt,recoveryAt:recovery?.at||null,requestOutcome:receipt?.requestOutcome||op.receipt?.requestOutcome||error?.requestOutcome||null,localVerifiedOutcome:isVerifiedUnsent(op)?'NOT_SENT':null,
     ...(isDirectorRefinement(op)?{purpose:'director_refinement',refinement:publicRefinement(op.refinement)}:{}),
     ...(op.feedbackRepair?{feedbackRepair:true}:{}),...(Number.isFinite(durationMs)&&durationMs>=0?{durationMs}:{}),execution:executionByAttempt.get(attemptId),canRecoverSaved:hasPendingSavedResponse(d,op),usage:perAttempt.get(attemptId)||null};}),
-  candidates:candidates.map(c=>{const {id,attemptId,stage,packageIds,status,errors,requiredPackageIds,resolvedBy,derivedFrom}=c;const validation=c.adoptedRefinement?.version===REFINEMENT_SELECTION_VERSION?c.adoptedRefinement.validation:c.validation;return {id,attemptId,stage,packageIds,status,errors,validation,requiredPackageIds,resolvedBy,...(typeof derivedFrom==='string'?{derivedFrom}:{}),
+  candidates:candidates.map(c=>{const {id,attemptId,stage,packageIds,status,errors,requiredPackageIds,derivedFrom}=c;const validation=c.adoptedRefinement?.version===REFINEMENT_SELECTION_VERSION?c.adoptedRefinement.validation:c.validation;return {id,attemptId,stage,packageIds,status,errors,validation,requiredPackageIds,resolvedBy:candidateResolvedBy(d,c),...(typeof derivedFrom==='string'?{derivedFrom}:{}),
    ...(isDirectorRefinement(c)?publicRefinementCandidate(d,c):{}),
    canRecheck:!active&&!sourceStale&&canRecheckCandidate(d,c)};}),
   assembly:d.assembly?{text:d.assembly.text,...d.assembly.validation,draft:d.assembly.draft?{units:d.assembly.draft.units,fantasyRealization:d.assembly.draft.fantasyRealization}:null}:null,usage,cancellations,budget:{...d.web?.budget,maxRepairs:2},phase:d.web?.progress||null,lastCandidateId:lastFailure?.id||null};

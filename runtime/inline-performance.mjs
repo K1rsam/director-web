@@ -41,6 +41,40 @@ export function sourceHeadPrefix(source,speaker,cue,channelSource){
  }
  return source.slice(speaker.parts[0].start,end);
 }
+/** A single literal OS/VO inside one bracket can separate two exact cue slices.
+ * Keep the original first separator; the other separator stays in layout. */
+export function sourceSplitCueRanges(source,channel){
+ if(!channel||![channel.start,channel.end].every(Number.isSafeInteger)||channel.start<0||channel.end>source.length||!/^(OS|VO)$/iu.test(source.slice(channel.start,channel.end)))return null;
+ const before=source.slice(0,channel.start),open=Math.max(before.lastIndexOf('（'),before.lastIndexOf('('));
+ if(open<0)return null;
+ const close=source.indexOf(source[open]==='（'?'）':')',channel.end),inside=source.slice(open+1,close);
+ if(close<0||/[()（）\r\n:：△▲“”「」]/u.test(inside))return null;
+ const tokens=[...inside.matchAll(/[^,， \t]+/g)].map(token=>({text:token[0],start:open+1+token.index,end:open+1+token.index+token[0].length}));
+ const channels=tokens.filter(token=>/^(OS|VO)$/iu.test(token.text));
+ if(channels.length!==1||channels[0].start!==channel.start||channels[0].end!==channel.end)return null;
+ const left=tokens.filter(token=>token.end<=channel.start),right=tokens.filter(token=>token.start>=channel.end);
+ if(!left.length||!right.length||tokens.some(token=>!/^(OS|VO)$/iu.test(token.text)&&/\b(?:OS|VO)\b|\b(?:O\.S\.?|V\.O\.?)|旁白|画外音|内心独白|系统音/iu.test(token.text)))return null;
+ return [{start:left[0].start,end:channel.start},{start:right[0].start,end:right.at(-1).end}];
+}
+export function sourceSplitCueParts(source,cue,channel){
+ const ranges=Array.isArray(channel)&&channel.length===1?sourceSplitCueRanges(source,channel[0]):null;
+ return Boolean(ranges&&Array.isArray(cue)&&cue.length===ranges.length&&cue.every((part,i)=>part&&part.unitId===channel[0].unitId&&part.kind==='SOURCE_SLICE'&&part.start===ranges[i].start&&part.end===ranges[i].end));
+}
+/** Read the original head even when a submitted plan omitted channelSource. */
+export function sourceSplitCueFields(source,speaker,cue,channelSource,channel){
+ if(!speaker?.parts?.length)return true;
+ const start=speaker.parts[0].start;
+ const head=/^[^:：()（）\r\n]+?[\t \u00a0\u3000]*([:：]?)[\t \u00a0\u3000]*(?:（([^()（）\r\n]*)）|\(([^()（）\r\n]*)\))([\t \u00a0\u3000]*(?:[:：]|\r\n|\r|\n))?/du.exec(source.slice(start));
+ if(!head||!head[1]&&!head[4])return true;
+ const slot=head[2]===undefined?3:2,offset=start+head.indices[slot][0];
+ const tokens=[...head[slot].matchAll(/[^,， \t]+/g)].map(token=>({text:token[0],start:offset+token.index,end:offset+token.index+token[0].length}));
+ const channels=tokens.filter(token=>/^(OS|VO)$/iu.test(token.text));
+ if(!channels.some(token=>token.start>tokens[0].start&&token.end<tokens.at(-1).end))return true;
+ const token=channels[0];
+ return Boolean(channels.length===1&&channelSource?.text===token.text&&channel===token.text.toUpperCase()
+  &&channelSource.parts?.length===1&&channelSource.parts[0].start===token.start&&channelSource.parts[0].end===token.end
+  &&sourceSplitCueParts(source,cue?.parts,channelSource.parts));
+}
 // Explicit explanation predicates, system properties and voiced clause
 // readings are not second speakers. Arbitrary labels do not gain this exception.
 // Keep the colon and value in the original utterance, never as a world rule.
@@ -50,6 +84,7 @@ export function sourceUtteranceProperty(speaker,label,cue=''){
  // A finite explanation predicate is spoken syntax, not a character or a
  // world rule. All original words and the colon remain in the utterance.
  return /^[\p{L}\p{N}]{1,16}(?:老样子|如下|很简单|是这样|有旨)$/u.test(label)
+  || /^(?:(?:换|改|重签|再签)(?:新约|合同|协议)|(?:工种|岗位|职务|分工|任务)(?:变更|调整)|[一二三四五六七八九十百两\d]+件事|(?:先|再)(?:看清|听清|听好|记住|算(?:清)?(?:费用|价钱|报酬)))$/u.test(label)
   || /^(?:系统|系统音|系统窗口|系统提示窗口)$/u.test(speaker)&&/^(?:触发(?:终极)?(?:主线|支线)?任务|任务目标|任务奖励|解锁(?:全新)?(?:建筑|技能)|[\p{L}\p{N}]{1,16}(?:状态|评估完成))$/u.test(label)
   || read.test(cue)&&!silent.test(cue)&&/^(?:条款|条目)[一二三四五六七八九十百\d]+$/u.test(label);
 }

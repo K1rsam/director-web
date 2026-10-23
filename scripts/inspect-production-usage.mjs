@@ -4,6 +4,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createProductionBudgetStore} from '../runtime/production-budget.mjs';
 import {isVerifiedUnsent} from '../runtime/storyboard-v4/core/pre-dispatch-evidence.mjs';
+import {candidateResolvedBy} from '../runtime/storyboard-v4/core/reference-role-review.mjs';
 
 const chars=value=>value===undefined?0:JSON.stringify(value).length;
 const nonnegative=n=>Number.isSafeInteger(n)&&n>=0;
@@ -74,7 +75,7 @@ export function summarizeRun(run,attempts){
  const elapsedMs=calls.length&&!inFlight&&starts.every(Number.isFinite)&&ends.every(Number.isFinite)&&Math.max(...ends)>=Math.min(...starts)?Math.max(...ends)-Math.min(...starts):null;
  const codes=errors=>(Array.isArray(errors)?errors:[]).map(error=>typeof error?.code==='string'?error.code:null);
  const candidateErrors=(run.candidates??[]).filter(c=>c.errors?.length||c.validation?.errors?.length).map(c=>({
-  candidateId:c.id??null,attemptId:c.attemptId??null,stage:c.stage??null,status:c.status??null,resolvedBy:c.resolvedBy??null,
+  candidateId:c.id??null,attemptId:c.attemptId??null,stage:c.stage??null,status:c.status??null,resolvedBy:candidateResolvedBy(run,c),
   errorCodes:codes(c.errors),validationErrorCodes:codes(c.validation?.errors)
  }));
  return {runId:run.id,status:run.status,sourceTextChars:run.source?.sourceRows?.reduce((n,r)=>n+(r.text??'').length,0)??null,

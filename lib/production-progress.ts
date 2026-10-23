@@ -1,4 +1,5 @@
 /** Read-only evidence projection. No state names, dispatch counts or highest episode number imply adoption. */
+import {effectiveEditorialCoverage} from './source-interpretation-adoption-proof';
 type Row = Record<string, any>;
 export function productionProgress(workflow: Row, foundation: Row, runs: Record<string, Row>, assets: { total: number; ready: number; adopted: number } | null) {
   const scope: number[] = [...new Set<number>(workflow.episodeNumbers)];
@@ -14,7 +15,7 @@ export function productionProgress(workflow: Row, foundation: Row, runs: Record<
     version: 'production-visible-progress-v1' as const,
     scopeKey: JSON.stringify([workflow.id, workflow.sourceVersion, scope]), scopeTotal: scope.length,
     sourceRead: coverage(foundation.document?.f2?.coverage),
-    foundationReviewed: foundation.needsContextEdit ? null : coverage(foundation.document?.editorialCoverage),
+    foundationReviewed: foundation.needsContextEdit ? null : coverage(foundation.effectiveEditorialCoverage??effectiveEditorialCoverage(foundation.document)),
     // Q1 catalogue editing is not evidence of full narrative-navigation or per-episode independent review.
     navigationReviewed: null, independentReviewed: null,
     assets, textAdopted: text.length, strictComplete: text.filter(run => run.complete === true).length,

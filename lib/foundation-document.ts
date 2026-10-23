@@ -9,6 +9,7 @@ import { loadFoundationChoices } from './foundation-choice-store';
 import { mergeHumanChoices } from './foundation-human-choices';
 import { buildNumberedSource, buildSourceIndex, isRecord, requireF1Output, type F1Output, type F2Asset, type SourceIndex } from './project-foundation-contracts';
 import { applyProductionOptimizations, isProductionCatalog, mergeProductionCatalogs, projectProductionCatalog, requireProductionCatalog, requireProductionCatalogAuthor, requireProductionOptimization, type ProductionCatalog, type ProductionOptimization, type SceneFieldPatch, type Unresolved } from './foundation-production-contracts';
+import type {SourceInterpretationAdoption} from './source-interpretation-adoption-proof';
 
 export type FoundationDocument = {
   schema: 'FOUNDATION_DOCUMENT_V1'; revision: string; sourceVersion: string; sourceContextVersion: string;
@@ -22,6 +23,7 @@ export type FoundationDocument = {
   identityHistory?: { sourceVersion: string; assets: (F2Asset & { role?: string; relationNote?: string; variants?: { key: string; name: string }[] })[] }[];
   workflow?: 'LIGHT_STAGE1_V1'; assetMethodVersion?: string; scenePatches?: SceneFieldPatch[];
   fragmentProgress?: { sourceVersion: string; q1Basis?: string; q1Dependencies?:Record<string,string>; f2: { fragment: FoundationFragment; output: ProductionCatalog; runId: string }[]; q1: string[] };
+  sourceInterpretationAdoptions?:SourceInterpretationAdoption[];sourceInterpretationConditionsFingerprint?:string;
   origins: { stage: 'F1' | 'F2' | 'Q1'; runId: string; snapshotId?: string; scope: number[]; kind: 'snapshot' | 'response' | 'delivery' }[];
 };
 type Input = Pick<Awaited<ReturnType<typeof loadFoundationInputs>>, 'sourceVersion' | 'sourceIndex' | 'sourceContext' | 'projectConditions' | 'scriptInterpretationVersions' | 'interpretationAware'>;
@@ -134,7 +136,7 @@ export async function loadLatestStoredFoundationDocument(db: Pick<Db, 'sceneSnap
   const row = await db.sceneSnapshot.findFirst({ where: { projectId, sceneKey: 'FOUNDATION_DOCUMENT' }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
   return row ? documentBody(json(row.content)) : null;
 }
-function migrate(previous: FoundationDocument, input: Input): FoundationDocument {
+export function migrateFoundationDocument(previous: FoundationDocument, input: Input): FoundationDocument {
   const next = createEmptyDocument(input), stable = Object.keys(next.sourceHashes).filter(n => next.sourceHashes[n] === previous.sourceHashes[n]).map(Number);
   if (previous.workflow !== undefined) next.workflow = previous.workflow;
   if (previous.assetMethodVersion !== undefined) next.assetMethodVersion = previous.assetMethodVersion;
@@ -174,6 +176,7 @@ function migrate(previous: FoundationDocument, input: Input): FoundationDocument
   next.notes.push(`原文或解析归属已变动；导航待更新集：${input.sourceIndex.episodes.filter(e => !f1Scope.includes(e.number)).map(e => e.number).join(',')}；目录待更新集：${input.sourceIndex.episodes.filter(e => !next.f2?.coverage.includes(e.number)).map(e => e.number).join(',')}。旧修订保留可读。`);
   return seed(next);
 }
+const migrate=migrateFoundationDocument;
 
 async function readDocument(db: Db, projectId: string, input: Input, includePrevious: boolean): Promise<{ document: FoundationDocument; previousDocument: FoundationDocument | null; sourceChanged: boolean; needsContextEdit: boolean }> {
   // Current working revisions are authoritative; old paid evidence is needed only
@@ -380,7 +383,7 @@ async function readDocument(db: Db, projectId: string, input: Input, includePrev
 }
 export function loadFoundationDocument(db: Db, projectId: string, input: Input) { return readDocument(db, projectId, input, true); }
 
-export async function saveFoundationDocument(db: PrismaClient, projectId: string, expectedRevision: string, document: FoundationDocument, reason: string, beforeSave?: (tx: Prisma.TransactionClient) => Promise<void>): Promise<FoundationDocument> {
+export async function saveFoundationDocument(db: PrismaClient, projectId: string, expectedRevision: string, document: FoundationDocument, reason: string, beforeSave?: (tx: Prisma.TransactionClient) => Promise<void>,afterSave?: (tx:Prisma.TransactionClient,saved:FoundationDocument)=>Promise<void>): Promise<FoundationDocument> {
   return db.$transaction(async tx => {
     await beforeSave?.(tx);
     const project = await tx.project.findUnique({ where: { id: projectId }, include: { episodes: { orderBy: { number: 'asc' } } } });
@@ -401,6 +404,7 @@ export async function saveFoundationDocument(db: PrismaClient, projectId: string
     await tx.sceneSnapshot.create({ data: { id: `foundation-document-${digest([projectId, expectedRevision])}`, projectId, sceneKey: 'FOUNDATION_DOCUMENT',
       title: '基础资料工作稿', content: JSON.stringify(saved), metadata: JSON.stringify({ schema: 'FOUNDATION_DOCUMENT_REVISION_V1', expectedRevision, reason }),
       createdAt: new Date(Math.max(Date.now(), (last?.createdAt.getTime() ?? 0) + 1)) } });
+    await afterSave?.(tx,saved);
     return saved;
   }, { maxWait: 10_000, timeout: 20_000 });
 }

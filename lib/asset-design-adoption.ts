@@ -4,6 +4,8 @@ import path from 'node:path';
 import type {Prisma} from '@prisma/client';
 import {prisma, isSqliteBusyError} from './prisma';
 import {loadAssetPromptWorkspace} from './asset-prompt-service';
+import {requireSeasonProduction} from './season-scope-service';
+import {seasonAssetAllowed} from '../runtime/season-scope.mjs';
 import {promptNeedsReview, type PromptAsset, type PromptWorkspace} from './asset-prompt-contract';
 import type {AssetReferenceImage} from './asset-image-options';
 
@@ -88,7 +90,9 @@ async function readState(projectId: string, suppliedWorkspace?: PromptWorkspace)
     else if (value.schema === HISTORY_KEY) histories.set(value.assetKey, [...histories.get(value.assetKey) ?? [], value]);
   }
   const assets: Record<string, AssetDesignAdoptionView> = {};
+  const season=await requireSeasonProduction(projectId,undefined,'assets');
   for (const key of new Set([...workspace.assets.map(asset => asset.key), ...pointers.keys()])) {
+    if(season&&!workspace.assets.some(asset=>asset.key===key&&seasonAssetAllowed(season.scope,asset,season.basis)))continue;
     const asset = workspace.assets.find(item => item.key === key), pointer = pointers.get(key), history = (histories.get(key) ?? []).sort((a, b) => a.version - b.version);
     const current = history.find((item): item is AssetDesignRecord => item.action === 'ADOPT' && item.version === pointer?.currentVersion) ?? null;
     const references = workspace.imageOptions?.[key]?.references ?? [], reason = readyReason(workspace, asset), material = asset ? materialFor(workspace, asset, pointers) : null;
@@ -124,6 +128,8 @@ async function writeEvent(projectId: string, actorId: string, input: {assetKey: 
   try {
     await prisma.$transaction(async tx => {
       await membership(projectId, actorId, true, tx);
+      const season=await requireSeasonProduction(projectId,undefined,'assets',tx);
+      if(season){const latest=await tx.sceneSnapshot.findFirst({where:{projectId,sceneKey:'FOUNDATION_DOCUMENT'},orderBy:{createdAt:'desc'}});const catalog=latest?JSON.parse(latest.content).f2?.assets??[]:[];const asset=catalog.flatMap((base:any)=>[base,...base.variants??[]]).find((item:any)=>item.key===input.assetKey);if(!asset||!seasonAssetAllowed(season.scope,asset,season.basis))throw new AssetDesignAdoptionError('此形象没有本季实际集场用途，不能采用或恢复为本季设计。');}
       const row = await tx.sceneSnapshot.findUnique({where: {id}}), pointer = row ? JSON.parse(row.content) as Pointer : null;
       if ((pointer?.revision ?? 0) !== input.expectedRevision) throw new AssetDesignAdoptionError('另一窗口已更新采用记录；请刷新后重试，你的简述会保留。');
       if (event.action === 'ADOPT' && workspace) {
@@ -158,6 +164,7 @@ async function writeEvent(projectId: string, actorId: string, input: {assetKey: 
   }
 }
 async function adopt(projectId: string, actorId: string, input: AdoptAssetDesignInput, restoreVersion?: number) {
+  await requireSeasonProduction(projectId,undefined,'assets');
   validateIdentity(input);
   const {actor} = await membership(projectId, actorId, true);
   if (typeof input.brief !== 'string' || !input.brief.trim() || [...input.brief.trim()].length > 600) throw new AssetDesignAdoptionError('请先核对并填写1–600字的分镜简述，不会自动截断完整提示词。', 400);
@@ -179,6 +186,7 @@ async function adopt(projectId: string, actorId: string, input: AdoptAssetDesign
 export function adoptAssetDesign(projectId: string, actorId: string, input: AdoptAssetDesignInput) { return adopt(projectId, actorId, input); }
 export function restoreAssetDesign(projectId: string, actorId: string, input: AdoptAssetDesignInput & {version: number}) { return adopt(projectId, actorId, input, input.version); }
 export async function revokeAssetDesign(projectId: string, actorId: string, input: {assetKey: string; expectedRevision: number}) {
+  await requireSeasonProduction(projectId,undefined,'assets');
   validateIdentity(input);
   const {actor} = await membership(projectId, actorId, true), state = await readState(projectId), view = state.assets[input.assetKey];
   if (!view?.current) throw new AssetDesignAdoptionError('此资产当前没有采用中的设计。');

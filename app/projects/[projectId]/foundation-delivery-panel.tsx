@@ -1,4 +1,5 @@
 "use client";
+import {scriptReceptionIssueLink} from '@/lib/script-reception-link';
 
 import { useEffect, useState } from "react";
 import { useFormStatus } from "react-dom";
@@ -8,7 +9,7 @@ import { WorkflowGlassRail, WorkflowGlassCard, workflowGlassStyles as glass, typ
 import type { FoundationDeliveryState } from "@/lib/foundation-delivery-types";
 import styles from "./foundation-delivery.module.css";
 
-type PanelState = Pick<FoundationDeliveryState, "task" | "totalEpisodes" | "availableEpisodes" | "editedEpisodes" | "busy" | "complete" | "needsContextEdit" | "action" | "expectedState" | "suggestionsCount" | "continuationBlocker" | "methodUpdateAvailable" | "activeCallStartedAt">;
+type PanelState = Pick<FoundationDeliveryState, "task" | "totalEpisodes" | "availableEpisodes" | "editedEpisodes" | "busy" | "complete" | "needsContextEdit" | "action" | "expectedState" | "suggestionsCount" | "continuationBlocker" | "methodUpdateAvailable" | "activeCallStartedAt"> & Partial<Pick<FoundationDeliveryState, "issues">>;
 
 function deliveryActive(state: PanelState) {
   return state.busy && !state.complete && state.action !== "UNKNOWN_CONFIRM" &&
@@ -223,6 +224,7 @@ export function FoundationWorkflowStatus({ projectId, state, sourceReady, sceneC
     {state.task ? <p className={styles.operationMessage}><FoundationTaskElapsed task={state.task} active={live} activeCallStartedAt={state.activeCallStartedAt} /></p> : null}
     {live || state.complete ? <p className={styles.operationMessage} role="status" aria-live="polite"><strong>当前工作：{currentWork(state)}</strong>{live ? ` · 处理范围：${episodeScope(state.task?.scope ?? [])}` : null}</p> : null}
     {blocked ? <p className={styles.operationError} role="status"><strong>{pausedWork(state)} · 系统处理问题</strong>。不是待填写的创作选择，无需修改来源范围或原文来绕过；请查看下方处理记录。</p> : null}
+    {(state.issues??[]).flatMap(issue=>{const link=scriptReceptionIssueLink(projectId,issue.coordinate);return link?[<p className={styles.operationMessage} key={issue.coordinate}>第{link.episode}集第{link.line}行是原文解析边界；可先查看原句与解释对照，保留原件及已付目录。<a href={link.href}>免费核对这一处解析</a>（零模型，不修改任务归属或自动继续）</p>]:[];})}
     <p className={styles.operationMessage}>已保存 {state.availableEpisodes} / {state.totalEpisodes} 集 · 已核对 {state.editedEpisodes} / {state.totalEpisodes} 集</p>
     <p className={styles.operationMessage} role="status" aria-live="polite">{message}</p>
     {state.task ? <p className={styles.operationMessage}>任务最近记录：<time dateTime={state.task.updatedAt}>{new Date(state.task.updatedAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</time>（北京时间）</p> : null}

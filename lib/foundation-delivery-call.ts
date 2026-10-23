@@ -26,6 +26,7 @@ export type DeliveryAttempt = {
   response?: Partial<RoleRunResult>;
   error?: string;
   issues?: FoundationIssue[];
+  recoveryPolicy?: FoundationContractError['recoveryPolicy'];
   /** Program-derived candidate, separate from the unmodified provider response. */
   repairBase?: { version: 1; stage: FoundationStageCode; sourceVersion: string; inputVersion: string;
     response: Partial<RoleRunResult>; data: unknown; issues: FoundationIssue[]; paths: string[]; mode?: "LOCAL_OBJECT"; localPlan?: SavedLocalRepairPlan };
@@ -223,7 +224,7 @@ function localPlanFor(planner: DeliveryRepairPlanner | undefined, candidate: unk
 
 /** Paid evidence can receive one mechanical field or program-planned local correction. */
 export function hasSafeDeliveryFormatRepair(attempt: DeliveryAttempt, stage: FoundationStageCode, repairPlan?: DeliveryRepairPlanner): boolean {
-  if (attempt.requestOutcome !== 'RESPONDED' || !attempt.response) return false;
+  if (attempt.requestOutcome !== 'RESPONDED' || !attempt.response || attempt.recoveryPolicy === 'LOCAL_ONLY') return false;
   let candidate: unknown;
   try { candidate = savedCandidate(attempt); } catch { return false; }
   if (attempt.kind === 'FORMAT_REPAIR') return false;
@@ -303,6 +304,7 @@ export async function runFoundationDeliveryCall<T>(input: {
   const persist = async () => { await check(); await input.onAttempt?.(structuredClone(current!)); await check(); };
   const finishFailure = async (error: unknown, issues: FoundationIssue[] = []) => {
     current!.status = "FAILED"; current!.finishedAt = new Date().toISOString(); current!.error = message(error); current!.issues = structuredClone(issues);
+    if (error instanceof FoundationContractError) current!.recoveryPolicy = error.recoveryPolicy;
     await persist();
   };
   const fail = () => new DeliveryCallError(current?.error ?? "基础资料调用未完成。", current?.requestOutcome ?? "NOT_SENT", structuredClone(attempts), structuredClone(current?.issues ?? []));
@@ -330,7 +332,7 @@ export async function runFoundationDeliveryCall<T>(input: {
         return { output, response: resultResponse(saved.response, candidate), attempts: [] };
       } catch (error) { failure = error instanceof SyntaxError ? new Error('JSON损坏且无法安全机械解析；已保留原响应并停止，禁止截断或补造内容。') : error; }
       const issues = failure instanceof FoundationContractError ? failure.issues : [formatIssue(message(failure))];
-      const repairable = candidate !== undefined && failure instanceof FoundationContractError;
+      const repairable = candidate !== undefined && failure instanceof FoundationContractError && failure.recoveryPolicy !== 'LOCAL_ONLY' && saved.recoveryPolicy !== 'LOCAL_ONLY';
       if (saved.kind === 'FORMAT_REPAIR') throw new DeliveryCallError(message(failure), 'RESPONDED', [], issues);
       if (repairable) localPlan = localPlanFor(input.repairPlan, candidate, issues, input.stage);
       const repairIssues = mechanicalRepairIssues(issues, candidate).filter(issue => candidate === undefined || safeRepairPath(issue, candidate, input.stage) !== null);
@@ -417,7 +419,7 @@ export async function runFoundationDeliveryCall<T>(input: {
       const issues = validationError instanceof FoundationContractError ? validationError.issues : [formatIssue(message(validationError))];
       await finishFailure(validationError, issues);
       const content = current.response?.rawOutput?.trim() || (Object.hasOwn(current.response ?? {}, "data") ? JSON.stringify(current.response!.data) : "");
-      const repairable = candidate !== undefined && validationError instanceof FoundationContractError;
+      const repairable = candidate !== undefined && validationError instanceof FoundationContractError && validationError.recoveryPolicy !== 'LOCAL_ONLY';
       if (!repairable || index >= maximum || !content || !input.takeRepairBudget) throw fail();
       const repairIssues = mechanicalRepairIssues(issues, candidate).filter(issue => candidate === undefined || safeRepairPath(issue, candidate, input.stage) !== null);
       localPlan = localPlanFor(input.repairPlan, candidate, issues, input.stage);

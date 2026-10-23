@@ -1,3 +1,5 @@
+import {requireSeasonProduction} from './season-scope-service';
+import {seasonAssetAllowed} from '../runtime/season-scope.mjs';
 import {createHash,randomUUID} from 'node:crypto';
 import {PRODUCTION_CLI_MODEL,PRODUCTION_CLI_REASONING} from './production-model';
 import {readFile} from 'node:fs/promises';
@@ -21,7 +23,10 @@ class MissingCatalogue extends Error {}
 async function currentBasis(projectId:string,requestedScope?:AssetProductionScope){
  const [input,document,extractSkill]=await Promise.all([loadFoundationInputs(projectId),loadLatestStoredFoundationDocument(prisma,projectId),readFile(path.join(process.cwd(),'prompts/asset-visual-extract-v1.md'),'utf8')]);
  if(!document?.f2)throw new MissingCatalogue('请先完成 P3 资产名称目录，再整理资产外观事实。');
- const identities=document.f2.assets.map(a=>({key:a.key,name:a.name,type:a.type,baseVersion:{key:a.key,name:a.name},aliases:[...a.aliases].sort(),usageEpisodes:[...a.usageEpisodes].sort((a,b)=>a-b),variants:a.variants.map(v=>({key:v.key,name:v.name,episodes:[...v.episodes].sort((a,b)=>a-b)})).sort((a,b)=>a.key.localeCompare(b.key))})).sort((a,b)=>a.key.localeCompare(b.key));
+ const season=input.season??null;
+ const allowed=document.f2.assets.filter(a=>!season||seasonAssetAllowed(season.scope,a,season.basis));
+ const identities=allowed.map(a=>({key:a.key,name:a.name,type:a.type,baseVersion:{key:a.key,name:a.name},aliases:[...a.aliases].sort(),usageEpisodes:[...a.usageEpisodes].filter(n=>!season||season.scope.episodeNumbers.includes(n)).sort((a,b)=>a-b),variants:a.variants.filter(v=>!season||seasonAssetAllowed(season.scope,v,season.basis)).map(v=>({key:v.key,name:v.name,episodes:[...v.episodes].filter(n=>!season||season.scope.episodeNumbers.includes(n)).sort((a,b)=>a-b)})).sort((a,b)=>a.key.localeCompare(b.key))})).sort((a,b)=>a.key.localeCompare(b.key));
+ requestedScope??=season?{episodeNumbers:season.scope.episodeNumbers}:undefined;
  const productionScope=requestedScope?await readProductionScope(projectId):undefined;
  const scope=requestedScope?normalizeAssetProductionScope(requestedScope,input.sourceIndex.episodes.filter(e=>isProductionEpisodeNumber(e.number,productionScope!)).map(e=>e.number)):undefined;
  const scopedIdentities=scope?scopedVisualIdentities(identities,scope):identities;
@@ -81,8 +86,10 @@ export async function readAssetVisualFacts(projectId:string,allowPartial=false,s
 
 /** Preserve per-chunk cache/ownership while packing missing work into bounded single-pass requests. */
 export async function ensureAssetVisualFacts(projectId:string,runner=runRoleByProvider,control:VisualFactsControl={}):Promise<AssetVisualFacts>{
+ const season=await requireSeasonProduction(projectId,control.scope?.episodeNumbers,'assets');
  const basis=await currentBasis(projectId,control.scope),results=new Map<string,VisualBatchResult>(),pending:Batch[]=[];
- const checkContinue=async()=>{if(control.shouldContinue&&!await control.shouldContinue())throw new Error('外观事实任务已停止，已完成的提取缓存仍保留，可稍后继续。');};
+ const checkSeason=async()=>{const current=await requireSeasonProduction(projectId,control.scope?.episodeNumbers,'assets');if((current?.scopeHash??null)!==(season?.scopeHash??null))throw Object.assign(new Error('外观事实冻结季范围已变化，未继续派发。'),{code:'SEASON_CHANGED',requestOutcome:'NOT_SENT'});};
+ const checkContinue=async()=>{if(control.shouldContinue&&!await control.shouldContinue())throw new Error('外观事实任务已停止，已完成的提取缓存仍保留，可稍后继续。');await checkSeason();};
  const progress=()=>control.onProgress?.(results.size,basis.batches.length);
  await progress();
  for(const batch of episodeFirst(basis.batches)){
@@ -98,6 +105,7 @@ export async function ensureAssetVisualFacts(projectId:string,runner=runRoleByPr
   await prisma.sceneSnapshot.create({data:{id,projectId,sceneKey:VISUAL_FACT_CALL_KEY,title:code,content:JSON.stringify(audit)}});
   let result:RoleRunResult|undefined;
   try{
+   await checkSeason();
    result=await runner({projectId,provider:resolveProvider(basis.input.project.executionMode),role:{code,skill:'',systemPrompt,model:PRODUCTION_CLI_MODEL,reasoningEffort:PRODUCTION_CLI_REASONING},sessionMode:'ephemeral',prompt});
    audit.output=result.rawOutput??result.data;audit.outputChars=(result.rawOutput??JSON.stringify(result.data)).length;audit.usage=reportedUsage(result.stdout);
    let valid:Map<string,VisualBatchResult>;try{valid=validatePackage(result.data,batches,basis.identities);}catch(error){throw new Error(`模型处理包校验未通过，原始结果已保存，不会自动重复调用：${(error as Error).message}`,{cause:error});}audit.status='READY';return valid;

@@ -1,3 +1,4 @@
+import {SEASON_SCOPE_VERSION,assertSeasonEpisodes,assertSeasonBinding} from '../season-scope.mjs';
 import {randomUUID} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {mkdir,open,readFile,readdir,rename,unlink} from 'node:fs/promises';
@@ -15,9 +16,11 @@ import {feedbackOnlyFailure,repairProblemKey as problemKey} from '../feedback-re
 import {PRODUCTION_FEEDBACK_VALIDATION_VERSION,PRODUCTION_FEEDBACK_INHERITANCE_VERSION} from '../episode-boundary.mjs';
 import {EPISODE_HISTORY_POLICY_VERSION} from '../episode-evidence.mjs';
 import {DIRECTOR_REFINEMENT_PURPOSE,freezeDirectorRefinement,assertDirectorRefinementBase,refinementAssemblyHash} from './core/director-refinement.mjs';
-import {DEFAULT_EPISODE_BUDGET} from '../production-policy.mjs';
+import {DEFAULT_EPISODE_BUDGET,PRODUCTION_PARALLEL_VERSION,productionParallelLaneCount} from '../production-policy.mjs';
 import {assertRuntimeAdmission,RUNTIME_MAINTENANCE_VERSION} from '../production-maintenance-state.mjs';
 import {isVerifiedUnsent,isVerifiedPreparationFailure} from './core/pre-dispatch-evidence.mjs';
+import {REFERENCE_ROLE_REVIEW_KIND,candidateResolvedBy} from './core/reference-role-review.mjs';
+import {DIALOGUE_MAPPING_REVIEW_KIND} from './core/dialogue-mapping-review.mjs';
 import {ADOPTED_DESIGN_TEXT_VERSION} from './input.mjs';
 
 const shared=globalThis[Symbol.for('storyboard-v4.coordinator')]??={owners:new Map(),leaseTokens:new Map(),leaseClaims:new Map(),inFlight:0,queued:[]};
@@ -28,6 +31,7 @@ const inFlightByRun=shared.inFlightByRun??=new Map(),inFlightByEpisode=shared.in
 const defaults=DEFAULT_EPISODE_BUDGET;
 export function freePreparationRecoveryCause(d){
  if(d.web?.progress!=='failed')return false;
+ if(d.web.error?.code==='PAID_REPAIR_NOT_AUTHORIZED')return false;
  if(isVerifiedUnsent(d.operations?.at(-1)))return true;
  if(isVerifiedPreparationFailure(d))return true;
  if(d.web.error?.retryableRead===true&&d.web.error.requestOutcome==='NOT_SENT'&&['P2028','SQLITE_BUSY','SQLITE_LOCKED','DATABASE_READ_UNAVAILABLE'].includes(d.web.error.code))return true;
@@ -42,7 +46,7 @@ function budgetOf(value={}){
  return b;
 }
 const episodeKey=(root,b)=>`${path.resolve(root)}:${b.projectId}:${b.episodeId}`;
-const unresolved=d=>d.candidates.filter(c=>['needs_repair','needs_dependency_repair'].includes(c.status)&&!c.resolvedBy);
+const unresolved=d=>d.candidates.filter(c=>['needs_repair','needs_dependency_repair'].includes(c.status)&&!candidateResolvedBy(d,c));
 const covered=(d,stage)=>new Set(d.adopted.filter(a=>a.stage===stage).flatMap(a=>a.packageIds));
 function hasEpisodeFinish(d){
  const packages=new Set(d.plan.workPackages.map(w=>w.id));
@@ -143,14 +147,17 @@ async function releaseLease(directory,record){
  await record.releasing;
 }
 
-export function createCoordinator({dataRoot,modelRunner=runModel,executable,maxConcurrent=4,beforeExecute=async()=>true,beforeAuthorAdmission=null,loadProductionContext=null,onSettled=null,preflightTimeoutMs=45000}={}){
- if(typeof dataRoot!=='string'||!dataRoot||!Number.isSafeInteger(maxConcurrent)||maxConcurrent<1||maxConcurrent>4)fail('COORDINATOR_CONFIG','调度配置无效');
+export function createCoordinator({dataRoot,modelRunner=runModel,executable,maxConcurrent=4,beforeExecute=async()=>true,beforeAuthorAdmission=null,beforePaidRepair=null,loadProductionContext=null,onSettled=null,preflightTimeoutMs=45000}={}){
+ if(typeof dataRoot!=='string'||!dataRoot||!Number.isSafeInteger(maxConcurrent)||maxConcurrent<1||maxConcurrent>6)fail('COORDINATOR_CONFIG','调度配置无效');
  if(!Number.isSafeInteger(preflightTimeoutMs)||preflightTimeoutMs<1||preflightTimeoutMs>120000)fail('COORDINATOR_CONFIG','前置核验时限无效');
  const directory=path.resolve(dataRoot),store=createStore(directory,{trackRevision:true}),activeRuns=new Map(),maxPerEpisode=1;
+ const limitsByRun=new Map();
+ const bindingLimit=binding=>Math.min(maxConcurrent,productionParallelLaneCount(binding?.productionChain?.parallelism));
  const pendingWrites=new Set(),currentAttempts=new Map(),executingAttempts=new Set();
  const preflights=new Map();
  const cancelPreflights=(id,code='PAUSED')=>{for(const controller of preflights.get(id)||[])controller.abort(Object.assign(new Error('前置核验已取消，未发送模型请求'),{code,requestOutcome:'NOT_SENT'}));};
  async function checkSource(id,binding){
+  if(binding.season)assertSeasonBinding(binding.season.scope,binding.season,[binding.episodeNumber]);
   if(closed)throw Object.assign(new Error('调度已关闭'),{code:'SHUTDOWN',requestOutcome:'NOT_SENT'});
   const controller=new AbortController(),checks=preflights.get(id)||new Set();checks.add(controller);preflights.set(id,checks);
   const timer=setTimeout(()=>controller.abort(Object.assign(new Error('读取原文/前情的核验未及时完成；未发送模型请求，可检查资料后继续。'),{code:'PREFLIGHT_TIMEOUT',requestOutcome:'NOT_SENT'})),preflightTimeoutMs);
@@ -165,8 +172,8 @@ export function createCoordinator({dataRoot,modelRunner=runModel,executable,maxC
  const cancelled=new Set(),heldSlots=new Map();
  const pauseKey=id=>`${directory}:${id}`;
  const limitedRunner=async(request,options)=>{
-  let groupKey;
-  try{if(!leaseRef)fail('LEASE_LOST','尚未持有执行锁');leaseRef.lease.assertHeld();groupKey=episodeKey(directory,(await read(options.runId)).web.binding);}catch(error){throw Object.assign(error,{requestOutcome:'NOT_SENT'});}
+  let groupKey,limit;
+  try{if(!leaseRef)fail('LEASE_LOST','尚未持有执行锁');leaseRef.lease.assertHeld();const binding=(await read(options.runId)).web.binding;groupKey=episodeKey(directory,binding);limit=bindingLimit(binding);}catch(error){throw Object.assign(error,{requestOutcome:'NOT_SENT'});}
   const key=pauseKey(options.runId),shouldDispatch=()=>{try{leaseRef.lease.assertHeld();
    if(closed||pausedRuns.has(key)||cancelled.has(options.attemptId))return false;
    // The runner calls this synchronously again after local preparation, immediately before sending.
@@ -175,12 +182,13 @@ export function createCoordinator({dataRoot,modelRunner=runModel,executable,maxC
    return !dispatchBlock(current,request.stage,options.attemptId,request.packageIds,request.feedbackRepair?.candidateId);
   }catch{return false;}};
   if(!shouldDispatch()||options.signal?.aborted)throw Object.assign(new Error('未派发请求已撤回'),{code:'PAUSED',requestOutcome:'NOT_SENT'});
-  await new Promise((resolve,reject)=>{const item={resolve,reject,signal:options.signal,limit:maxConcurrent,episodeLimit:maxPerEpisode,key,groupKey,attemptId:options.attemptId};
+  await new Promise((resolve,reject)=>{const item={resolve,reject,signal:options.signal,limit,episodeLimit:maxPerEpisode,key,groupKey,attemptId:options.attemptId};
    const abort=()=>{const index=queued.indexOf(item);if(index>=0){queued.splice(index,1);reject(Object.assign(new Error('已取消'),{code:'ABORTED',requestOutcome:'NOT_SENT'}));}};
    item.abort=abort;options.signal?.addEventListener('abort',abort,{once:true});queued.push(item);pump();});
   // Keep the slot through engine settlement so a response's new boundary is visible before pumping.
   heldSlots.set(options.attemptId,{key,groupKey});
   if(!shouldDispatch()||options.signal?.aborted)throw Object.assign(new Error('未派发请求已撤回'),{code:'PAUSED',requestOutcome:'NOT_SENT'});
+  const seasonalRun=await read(options.runId);if(seasonalRun.web.binding.season&&!(await checkSource(options.runId,seasonalRun.web.binding)))fail('SEASON_CHANGED','季范围核验未通过，未派发。');
   executingAttempts.add(options.attemptId);
   try{return await modelRunner(request,{...options,shouldDispatch,...(executable?{executable}:{})});}
   finally{executingAttempts.delete(options.attemptId);}
@@ -198,7 +206,7 @@ export function createCoordinator({dataRoot,modelRunner=runModel,executable,maxC
  function withdrawQueued(id){const key=pauseKey(id);for(let i=queued.length-1;i>=0;i--){const item=queued[i];if(item.key!==key)continue;queued.splice(i,1);item.signal?.removeEventListener('abort',item.abort);item.reject(Object.assign(new Error('暂停前尚未派发'),{code:'PAUSED',requestOutcome:'NOT_SENT'}));}}
  const engine=createEngine({directory,modelRunner:limitedRunner});
  const update=(id,fn)=>store.update(id,fn);
- const read=id=>engine.read(id);
+ const read=async id=>{const d=await engine.read(id);limitsByRun.set(id,bindingLimit(d.web?.binding));return d;};
  async function assertEpisodeResolved(id,binding){
   const names=await readdir(path.join(directory,'documents')).catch(error=>error.code==='ENOENT'?[]:Promise.reject(error));
   for(const name of names){if(!name.endsWith('.json')||name===`${id}.json`)continue;
@@ -224,6 +232,9 @@ export function createCoordinator({dataRoot,modelRunner=runModel,executable,maxC
  function markBlock(d,blocked){if(blocked==='usage_review'){d.web.progress=blocked;d.web.error={code:'USAGE_UNKNOWN',message:'已有回包已保存，但用量未完整返回。请核对下方用量确认；不重跑已完成步骤，未知费用不会记成零。'};}else if(blocked==='upstream_review'){d.web.progress=blocked;d.web.error={code:'PRODUCTION_DEPENDENCY',message:'当前创作范围有带坐标的材料缺口或硬约束冲突；在首个受阻包前暂停，已有稿件保留。'};}else if(blocked==='budget_stop')d.web.progress=blocked;return d;}
  async function dispatch(id,stage,packageIds=[],issues=[],finishMode='full',feedbackCandidateId=null,executeOptions={}){
   let d=await read(id);if(atRunBoundary(d)||(stage==='author'&&unresolved(d).length&&!feedbackCandidateId))return d;
+  // Consent precedes local attempt/reservation creation; an ordinary final delta has no repair issues.
+  if((executeOptions.paidRepair||issues.length||feedbackCandidateId)&&beforePaidRepair&&await beforePaidRepair(d.web.binding,d)===false)
+   throw Object.assign(new Error('已有回包保留；额外付费补正尚未单独授权，未创建或派发新请求。'),{code:'PAID_REPAIR_NOT_AUTHORIZED',requestOutcome:'NOT_SENT'});
   const attemptId=randomUUID();let admitted=false;
   try{
   if(!(await checkSource(id,d.web.binding))){await changeState(id,{sourceStale:true,progress:'source_stale'});return read(id);}
@@ -261,7 +272,7 @@ export function createCoordinator({dataRoot,modelRunner=runModel,executable,maxC
     if(prior?.issues?.some(issue=>issue.productionVersion===pending.versionId)&&prior.status==='completed'){
      await changeState(id,{progress:'continuity_review',error:{code:'CONTINUITY_NO_PROGRESS',message:'局部核对后仍有承接差异，已停止重复调用，请核对具体依赖。'}});return read(id);
     }
-    await dispatch(id,'finish',pending.packageIds,[{code:pending.reason,scope:pending.packageIds,changedKeys:pending.changedKeys,productionVersion:pending.versionId,problem:'仅核对并修正所消费的跨集入口或材料变化。原文与锁定约定优先，未影响单元完整保留。'}],'delta');
+    await dispatch(id,'finish',pending.packageIds,[{code:pending.reason,scope:pending.packageIds,changedKeys:pending.changedKeys,productionVersion:pending.versionId,problem:'仅核对并修正所消费的跨集入口或材料变化。原文与锁定约定优先，未影响单元完整保留。'}],'delta',null,{paidRepair:true});
     if(mode==='next')return read(id);continue;
    }
    if(d.assembly?.validation?.errors?.length===0)return d;
@@ -290,7 +301,7 @@ export function createCoordinator({dataRoot,modelRunner=runModel,executable,maxC
      await changeState(id,{progress:'needs_repair',error:{code:repeated?'REPAIR_NO_PROGRESS':'REPAIR_LIMIT',message:repeated?'定向修复仍出现相同问题，已停止重复调用；已有规划保留。'+(problems[0]?.message||''):'已达到定向返修次数，已有规划保留。'}});return read(id);
     }
     const count=d.operations.length;
-    await dispatch(id,'plan',[],badPlan?problems:[],'full',feedbackOnlyFailure(badPlan)?badPlan.id:null);d=await read(id);
+    await dispatch(id,'plan',[],badPlan?problems:[],'full',feedbackOnlyFailure(badPlan)?badPlan.id:null,badPlan?{paidRepair:true}:{});d=await read(id);
     if(badPlan&&d.operations.slice(count).some(op=>op.receipt?.requestOutcome!=='NOT_SENT')){await changeState(id,{autoRepairs:(d.web.autoRepairs||0)+1});d=await read(id);}
     if(mode==='next'||(!d.plan&&d.status!=='needs_repair')||['budget_stop','usage_review','failed','unknown'].includes(d.web.progress))return d;
     continue;
@@ -305,8 +316,8 @@ export function createCoordinator({dataRoot,modelRunner=runModel,executable,maxC
     if(retries>=2||repeated){await changeState(id,{progress:'needs_repair',error:{code:repeated?'REPAIR_NO_PROGRESS':'REPAIR_LIMIT',message:repeated?'定向返修仍是同一问题，已停止重复调用；原稿保留，请核对具体问题后再决定。':'已达到定向返修上限；已有稿件保留。'}});return read(id);}
     const ids=candidate.requiredPackageIds||candidate.packageIds;
     const count=d.operations.length;
-    if(feedbackOnlyFailure(candidate))await dispatch(id,candidate.stage,candidate.packageIds,problems,prior.finishMode||'full',candidate.id);
-    else await dispatch(id,'finish',ids,problems,'delta');
+    if(feedbackOnlyFailure(candidate))await dispatch(id,candidate.stage,candidate.packageIds,problems,prior.finishMode||'full',candidate.id,{paidRepair:true});
+    else await dispatch(id,'finish',ids,problems,'delta',null,{paidRepair:true});
     d=await read(id);if(d.operations.slice(count).some(op=>op.receipt?.requestOutcome!=='NOT_SENT'))await changeState(id,{autoRepairs:retries+1});
     if(mode==='next')return read(id);continue;
    }
@@ -440,7 +451,7 @@ export function createCoordinator({dataRoot,modelRunner=runModel,executable,maxC
  const api={
   async prepareWrite(){await holdLease();},
   async withPreparation(callback){if(typeof callback!=='function')fail('PREPARATION','缺少准备回调');await holdLease();return callback();},
-  async create({source,settings,binding,budget,title,voiceReference=null,production=null}){if(!binding?.projectId||!binding?.episodeId||!binding?.sourceVersion)fail('BINDING','缺少源版本绑定');await holdLease();const id=randomUUID();await engine.create({id,source,settings,voiceReference,production});return update(id,d=>{d.web={binding,title:title||d.source.title||'',createdAt:new Date().toISOString(),budget:budgetOf(budget),reserved:0,reservedAttemptIds:[],autoRepairs:0,progress:'created',stopped:false,pauseRequested:false,sourceStale:false,owner:null,archives:[],error:null};return d;});},
+  async create({source,settings,binding,budget,title,voiceReference=null,production=null}){if(binding?.season)assertSeasonBinding(binding.season.scope,binding.season,[binding.episodeNumber]);if(!binding?.projectId||!binding?.episodeId||!binding?.sourceVersion)fail('BINDING','缺少源版本绑定');await holdLease();const id=randomUUID();await engine.create({id,source,settings,voiceReference,production});return update(id,d=>{d.web={binding,title:title||d.source.title||'',createdAt:new Date().toISOString(),budget:budgetOf(budget),reserved:0,reservedAttemptIds:[],autoRepairs:0,progress:'created',stopped:false,pauseRequested:false,sourceStale:false,owner:null,archives:[],error:null};return d;});},
   async refreshProduction(id,context){await holdLease();return engine.refreshProduction(id,context);},
   async reviewBoundary(id,review){return withIdleLease(id,async current=>{
    if(current.web.sourceStale||!(await checkSource(id,current.web.binding)))fail('SOURCE_STALE','来源已变化，未登记旧边界复核。');
@@ -448,7 +459,10 @@ export function createCoordinator({dataRoot,modelRunner=runModel,executable,maxC
   });},
   async resolveSource(id,value,approval){return withIdleLease(id,async current=>{
    if(current.web.sourceStale||!(await checkSource(id,current.web.binding)))fail('SOURCE_STALE','来源已变化，未登记旧制作解释。');
-   await syncProduction(id);return engine.resolveSource(id,value,approval);
+   await syncProduction(id);const result=await engine.resolveSource(id,value,approval);
+   if(!result.production?.blocking&&!result.production?.pendingRepair&&(([REFERENCE_ROLE_REVIEW_KIND,DIALOGUE_MAPPING_REVIEW_KIND].includes(value?.kind)&&result.status==='text_ready_for_review'&&current.web.error?.code==='PAID_REPAIR_NOT_AUTHORIZED')
+    ||value?.kind==='ASSET_QUANTITY_SOURCE_PRIORITY'&&current.web.error?.code==='PRODUCTION_DEPENDENCY'))return changeState(id,{progress:result.status,error:null});
+   return result;
   });},
   async configureInputPolicy(id,{historyPolicy,feedbackInheritanceVersion,note}){
    ensureIdle(id);await holdLease();
@@ -580,9 +594,10 @@ export function createCoordinator({dataRoot,modelRunner=runModel,executable,maxC
   async exportDraft(id){const d=await read(id);return d.assembly?.text||null;},
   active:id=>activeRuns.has(id),
   executionState(id,attemptId){if(!activeRuns.has(id)||currentAttempts.get(attemptId)!==id)return null;if(queued.some(item=>item.key===pauseKey(id)&&item.attemptId===attemptId))return 'queued';return executingAttempts.has(attemptId)?'executing':'preparing';},
-  scheduling:id=>({maxConcurrent,maxPerEpisode,inFlight:inFlightByRun.get(pauseKey(id))||0,queued:queued.filter(item=>item.key===pauseKey(id)).length}),
+  scheduling:id=>({maxConcurrent:limitsByRun.get(id)??Math.min(maxConcurrent,4),maxPerEpisode,inFlight:inFlightByRun.get(pauseKey(id))||0,queued:queued.filter(item=>item.key===pauseKey(id)).length}),
+  parallelismVersion:()=>PRODUCTION_PARALLEL_VERSION,
   wait:idle,
-  runtimeIdentity:()=>{const rules=captureRules();return {maintenanceVersion:RUNTIME_MAINTENANCE_VERSION,seedanceExportVersion:rules.seedanceExportVersion,adoptedDesignTextVersion:ADOPTED_DESIGN_TEXT_VERSION,commonContractHash:digest(rules.files['references/common-contract.md']),productionFeedbackResultVersion:rules.productionFeedbackResultVersion,productionEntryReviewVersion:rules.productionEntryReviewVersion,modelCoordinateVersion:rules.modelCoordinateVersion,modelProjectionVersion:rules.modelProjectionVersion,dialogueSourceLinkVersion:rules.dialogueSourceLinkVersion,coordinatorModule:import.meta.url,coreRoot,pid:process.pid};},
+  runtimeIdentity:()=>{const rules=captureRules();return {seasonScopeVersion:SEASON_SCOPE_VERSION,maintenanceVersion:RUNTIME_MAINTENANCE_VERSION,paidRepairConsentVersion:'paid-repair-consent-v1',seedanceExportVersion:rules.seedanceExportVersion,editingHandoffVersion:rules.editingHandoffVersion,generationTextVersion:rules.generationTextVersion,adoptedDesignTextVersion:ADOPTED_DESIGN_TEXT_VERSION,commonContractHash:digest(rules.files['references/common-contract.md']),productionFeedbackResultVersion:rules.productionFeedbackResultVersion,productionEntryReviewVersion:rules.productionEntryReviewVersion,modelCoordinateVersion:rules.modelCoordinateVersion,modelProjectionVersion:rules.modelProjectionVersion,dialogueSourceLinkVersion:rules.dialogueSourceLinkVersion,coordinatorModule:import.meta.url,coreRoot,pid:process.pid};},
   async drain(){
    while(activeRuns.size||pendingWrites.size){await Promise.allSettled([...activeRuns.values(),...pendingWrites]);}
    if(preflights.size||queued.some(item=>item.key.startsWith(directory+':'))||[...inFlightByRun].some(([key,n])=>key.startsWith(directory+':')&&n))fail('RUN_ACTIVE','本机仍有准备、队列或执行槽位，未排空。');

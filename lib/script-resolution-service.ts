@@ -8,6 +8,7 @@ import {createSourceIndex} from './standard-script';
 import {deriveStandardScriptLines, type PreparedStandardEpisode} from './standard-script-plan';
 import {applyScriptResolutions, readResolutionChoice, resolutionError, RESOLUTION_TYPES, type ScriptResolutionChoice} from './script-resolution-plan';
 import type {runRoleByProvider, RoleRunResult} from './role-runner';
+import type {SourceRegroupApproval} from '../runtime/source-regroup.mjs';
 
 const CURRENT='SCRIPT_RESOLUTION_CURRENT_V1',HISTORY='SCRIPT_RESOLUTION_HISTORY_V1',ASSIST='SCRIPT_RESOLUTION_ASSIST_V1';
 const ASSIST_CURRENT='SCRIPT_RESOLUTION_ASSIST_CURRENT_V1',ASSIST_START='SCRIPT_RESOLUTION_ASSIST_ATTEMPT_V1';
@@ -16,11 +17,11 @@ const hash=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).d
 const currentId=(projectId:string,episode:number)=>`script_resolution_${hash([projectId,episode]).slice(0,40)}`;
 type Db=Pick<Prisma.TransactionClient,'project'|'projectRole'|'episode'|'sceneSnapshot'>;
 type Options={db?:PrismaClient};
-export type SavedScriptResolution=ScriptResolutionChoice&{id:string;actorId:string;confirmedAt:string};
+export type SavedScriptResolution=ScriptResolutionChoice&{id:string;actorId:string;confirmedAt:string;approval?:SourceRegroupApproval};
 type Revision={schema:typeof HISTORY;projectId:string;episode:number;sourceVersion:string;revision:number;actorId:string;createdAt:string;action:'CONFIRM'|'REVOKE';decisions:SavedScriptResolution[];plan:PreparedStandardEpisode['plan']};
 type Pointer={schema:typeof CURRENT;projectId:string;episode:number;sourceVersion:string;revision:number;historyId:string};
 export type ScriptReceptionView={projectId:string;title:string;canConfirm:boolean;assistProviders?:{project:'CLI'|'API';jevConfigured:boolean};episodes:Array<{number:number;title:string|null}>;selected:null|{
- number:number;title:string|null;sourceVersion:string;revision:number;status:'NONE'|'CURRENT'|'STALE';sourceText:string;readingText:string|null;ready:boolean;
+ number:number;title:string|null;sourceVersion:string;revision:number;status:'NONE'|'CURRENT'|'STALE';sourceText:string;readingText:string|null;ready:boolean;documentRevision?:string;paidCatalogCoverage?:number[];
  lines:ReturnType<typeof deriveStandardScriptLines>;diagnostics:PreparedStandardEpisode['diagnostics'];decisions:SavedScriptResolution[];
  history:Array<{revision:number;createdAt:string;action:string;decisionCount:number;stale:boolean}>;
  assistance?:ScriptResolutionSuggestion[];
@@ -55,7 +56,16 @@ async function access(db:Db,projectId:string,actorId:string,write=false){
 async function requireProductionEpisode(db:Db,projectId:string,episode:number){
  if(!isProductionEpisodeNumber(episode,await readProductionScope(projectId,db)))resolutionError('NON_PRODUCTION_SOURCE','此编号不是当前可制作正文集；作者资料或未决来源请到原文来源页核对。',400);
 }
-const choiceOf=({id,startLine,endLine,type,speaker,channel}:SavedScriptResolution):ScriptResolutionChoice=>({id,startLine,endLine,type,...(type==='DIALOGUE'?{speaker,channel}:{})});
+export const scriptResolutionChoiceOf=(value:SavedScriptResolution):ScriptResolutionChoice=>{
+ const {id,startLine,endLine,type,speaker,channel}=value;
+ return type==='SOURCE_REGROUP'?{id,startLine,endLine,type,version:value.version,children:structuredClone(value.children),layout:structuredClone(value.layout)}:{id,startLine,endLine,type,...(type==='DIALOGUE'?{speaker,channel}:{})};
+};
+const choiceOf=scriptResolutionChoiceOf;
+export const scriptResolutionApprovals=(decisions:SavedScriptResolution[])=>Object.fromEntries(decisions.filter(decision=>decision.approval).map(decision=>[decision.id,decision.approval!]));
+export function scriptResolutionInterpretationHash(sourceVersion:string,decisions:ScriptResolutionChoice[]){
+ const semantics=decisions.map(choice=>choice.type==='SOURCE_REGROUP'?{startLine:choice.startLine,endLine:choice.endLine,type:choice.type,version:choice.version,children:choice.children,layout:choice.layout}:{startLine:choice.startLine,endLine:choice.endLine,type:choice.type,...(choice.type==='DIALOGUE'?{speaker:choice.speaker,channel:choice.channel}:{})}).sort((a,b)=>a.startLine-b.startLine);
+ return hash({sourceVersion,decisions:semantics});
+}
 /** Exact source-header syntax candidates only; historical names never import identity or state claims. */
 export async function readScriptResolutionSpeakers(projectId:string,db:Db=prisma){
  const document=await loadLatestStoredFoundationDocument(db,projectId);
@@ -94,9 +104,8 @@ export async function readCurrentResolvedPlans(projectId:string,episodes:Readonl
   const history=histories.find(item=>item.id===pointer.historyId);
   if(row.id!==currentId(projectId,episode.number)||!history)resolutionError('SNAPSHOT','本集核对指针与历史不匹配。');
   const revision=revisionOf(history.content,pointer,projectId,episode.number);if(!revision.decisions.length)continue;
-  const prepared=applyScriptResolutions(episode.content,`episode-${episode.number}`,revision.decisions.map(choiceOf),knownSpeakers);
-  const semantics=revision.decisions.map(({startLine,endLine,type,speaker,channel})=>({startLine,endLine,type,...(type==='DIALOGUE'?{speaker,channel}:{})})).sort((a,b)=>a.startLine-b.startLine);
-  result.set(episode.number,{prepared,effectiveRevision:revision.revision,hash:hash({sourceVersion:version,decisions:semantics})});
+  const prepared=applyScriptResolutions(episode.content,`episode-${episode.number}`,revision.decisions.map(choiceOf),knownSpeakers,{approvals:scriptResolutionApprovals(revision.decisions)});
+  result.set(episode.number,{prepared,effectiveRevision:revision.revision,hash:scriptResolutionInterpretationHash(version,revision.decisions)});
  }
  return result;
 }
@@ -117,18 +126,18 @@ export async function readScriptReception(projectId:string,actorId:string,episod
  const episode=await db.episode.findFirst({where:{projectId,number}});if(!episode)resolutionError('EPISODE','本项目没有该集。',404);
  const state=await current(db,projectId,number),sourceVersion=createSourceIndex(episode.content,`episode-${number}`).sourceVersion;
  const active=state.revision?.sourceVersion===sourceVersion,decisions=active?state.revision!.decisions:[];
- const prepared=applyScriptResolutions(episode.content,`episode-${number}`,decisions.map(choiceOf),await readScriptResolutionSpeakers(projectId,db));
+ const prepared=applyScriptResolutions(episode.content,`episode-${number}`,decisions.map(choiceOf),await readScriptResolutionSpeakers(projectId,db),{approvals:scriptResolutionApprovals(decisions)});
  const diagnostics=[...prepared.diagnostics],hasBody=Boolean(prepared.compiled?.package.script.entries.some(entry=>entry.target==='BODY'));
  if(!diagnostics.length&&!hasBody)diagnostics.push({line:1,code:'EMPTY_BODY',message:'只有标题或辅助资料，没有可制作正文；请核对来源，不把空白当正文通过。'});
  const rows=await db.sceneSnapshot.findMany({where:{projectId,sceneKey:HISTORY,title:String(number)},orderBy:[{createdAt:'desc'},{id:'desc'}],take:20});
  const history=rows.map(row=>{const value=JSON.parse(row.content) as Revision;return {revision:value.revision,createdAt:value.createdAt,action:value.action,decisionCount:value.decisions.length,stale:value.sourceVersion!==sourceVersion};});
  const assistance=await readScriptAssistanceRecords(db,projectId,number,sourceVersion,state.pointer?.revision??0);
+ const storedDocument=await loadLatestStoredFoundationDocument(db,projectId);
  return {projectId,title:project.title,canConfirm,assistProviders,episodes,selected:{number,title:episode.title,sourceVersion,revision:state.pointer?.revision??0,status:!state.pointer?'NONE':active?'CURRENT':'STALE',sourceText:episode.content,
-  readingText:prepared.compiled?.readingText??null,ready:hasBody&&diagnostics.length===0,lines:deriveStandardScriptLines(prepared),diagnostics,decisions,history,assistance}};
+  readingText:prepared.compiled?.readingText??null,ready:hasBody&&diagnostics.length===0,lines:deriveStandardScriptLines(prepared),diagnostics,decisions,history,assistance,...(storedDocument?{documentRevision:storedDocument.revision,paidCatalogCoverage:[...(storedDocument.f2?.coverage??[])]}:{})}};
 }
 
-async function writeRevision(projectId:string,actorId:string,input:SourceRequest,action:'CONFIRM'|'REVOKE',choice:ScriptResolutionChoice|null,decisionId:string|undefined,db:PrismaClient){
- await db.$transaction(async tx=>{
+export async function prepareScriptResolutionChange(projectId:string,actorId:string,input:SourceRequest,action:'CONFIRM'|'REVOKE',choice:ScriptResolutionChoice|null,decisionId:string|undefined,tx:Db,approval?:SourceRegroupApproval){
   await access(tx,projectId,actorId,true);
   await requireProductionEpisode(tx,projectId,input.episode);
   const episode=await tx.episode.findFirst({where:{projectId,number:input.episode}});if(!episode)resolutionError('EPISODE','本项目没有该集。',404);
@@ -140,13 +149,23 @@ async function writeRevision(projectId:string,actorId:string,input:SourceRequest
   const targetId=action==='REVOKE'?decisionId:choice?.id;
   if(targetId&&!decisions.some(item=>item.id===targetId))resolutionError('DECISION','要修改或撤销的核对项已不在当前版本。');
   const next=decisions.filter(item=>item.id!==targetId),createdAt=new Date().toISOString();
-  if(choice)next.push({...choice,id:choice.id??randomUUID(),actorId,confirmedAt:createdAt});
-  const prepared=applyScriptResolutions(episode.content,`episode-${episode.number}`,next.map(choiceOf),await readScriptResolutionSpeakers(projectId,tx));
+  if(choice)next.push({...choice,id:choice.id??`resolution-${hash([projectId,input.episode,input.expectedRevision,choice,approval?.ref??null]).slice(0,40)}`,actorId,confirmedAt:createdAt,...(approval?{approval}:{})});
+  const prepared=applyScriptResolutions(episode.content,`episode-${episode.number}`,next.map(choiceOf),await readScriptResolutionSpeakers(projectId,tx),{approvals:scriptResolutionApprovals(next)});
   const revision:Revision={schema:HISTORY,projectId,episode:episode.number,sourceVersion,revision:input.expectedRevision+1,actorId,createdAt,action,decisions:next,plan:prepared.plan};
   const historyId=randomUUID(),pointer:Pointer={schema:CURRENT,projectId,episode:episode.number,sourceVersion,revision:revision.revision,historyId};
+  return {projectId,episode,state,revision,pointer,historyId,prepared,interpretationHash:next.length?scriptResolutionInterpretationHash(sourceVersion,next):null};
+}
+export async function persistScriptResolutionChange(tx:Db,change:Awaited<ReturnType<typeof prepareScriptResolutionChange>>){
+  const {projectId,episode,state,revision,pointer,historyId}=change;
   await tx.sceneSnapshot.create({data:{id:historyId,projectId,episodeId:episode.id,sceneKey:HISTORY,title:String(episode.number),content:JSON.stringify(revision)}});
   if(state.row){const changed=await tx.sceneSnapshot.updateMany({where:{id:state.row.id,projectId,content:state.row.content},data:{content:JSON.stringify(pointer)}});if(changed.count!==1)resolutionError('CONFLICT','核对版本刚被更新，本次未覆盖。');}
   else await tx.sceneSnapshot.create({data:{id:currentId(projectId,episode.number),projectId,episodeId:episode.id,sceneKey:CURRENT,title:String(episode.number),content:JSON.stringify(pointer)}});
+}
+async function writeRevision(projectId:string,actorId:string,input:SourceRequest,action:'CONFIRM'|'REVOKE',choice:ScriptResolutionChoice|null,decisionId:string|undefined,db:PrismaClient){
+ await db.$transaction(async tx=>{
+  const change=await prepareScriptResolutionChange(projectId,actorId,input,action,choice,decisionId,tx);
+  if(choice?.type==='SOURCE_REGROUP'||change.state.revision?.decisions.some(decision=>decision.id===decisionId&&decision.approval))resolutionError('SOURCE_REGROUP_ADOPTION_REQUIRED','此项请先免费预览，再采用或撤销并保留已付目录。');
+  await persistScriptResolutionChange(tx,change);
  });
  return readScriptReception(projectId,actorId,input.episode,{db});
 }
@@ -287,7 +306,7 @@ export async function assistScriptResolution(projectId:string,actorId:string,val
   if(output.choice===null){const status=outcome==='NOT_SENT'?'NOT_SENT':outcome==='UNKNOWN'?'UNKNOWN':['failed','unavailable'].includes(String(usage?.status))?'ERROR':'NO_SUGGESTION';suggestion={...suggestion,status,choice:null};}
   else{
    const choice=readResolutionChoice({...object(output.choice,['type','speaker','channel']),startLine:value.startLine,endLine:value.endLine});
-   applyScriptResolutions(selected.sourceText,`episode-${input.episode}`,[...selected.decisions.map(choiceOf),choice],await readScriptResolutionSpeakers(projectId,db));
+   applyScriptResolutions(selected.sourceText,`episode-${input.episode}`,[...selected.decisions.map(choiceOf),choice],await readScriptResolutionSpeakers(projectId,db),{approvals:scriptResolutionApprovals(selected.decisions)});
    suggestion={...suggestion,status:'CANDIDATE',choice};
   }
  }catch(error){

@@ -1,3 +1,4 @@
+import {readSeasonState,requireSeasonProduction} from './season-scope-service';
 import { readApplicationScope, scopeApplies } from './foundation-application-scope';
 import { loadFoundationChoices } from './foundation-choice-store';
 import { selectFoundationFacts } from './foundation-facts';
@@ -17,6 +18,8 @@ import { buildEpisodeBoundarySeed, type EpisodeBoundarySeed } from './episode-bo
 type Db = Prisma.TransactionClient;
 class LightSceneSourceError extends Error {}
 export async function loadLightScenes(projectId: string, db: Db, scope?: number[]) {
+  const seasonal=await readSeasonState(projectId,db,{fastLegacy:true});
+  if(seasonal.mode==='season'&&seasonal.status==='locked'&&!seasonal.sourceStale){const locked=await requireSeasonProduction(projectId,scope,'assets',db);scope=scope??locked!.scope.episodeNumbers;}
   const rows = await db.scriptScene.findMany({ where: { episode: { projectId, ...(scope ? { number: { in: scope } } : {}) } }, include: { episode: { select: { number: true, content: true } } }, orderBy: [{ episode: { number: 'asc' } }, { sortOrder: 'asc' }] });
   const cursors = new Map<number, number>();
   const scenes = rows.map(row => {
@@ -117,7 +120,7 @@ export async function buildLightEpisodePackets(projectId: string, document: Foun
   const legacy = options.protocol === 'legacy';
   const postColonCue = options.protocol !== 'standard-episode-v1';
   const syntax=options.protocol==='standard-episode-v1'?'legacy':'current';
-  const factStore = cachedFoundationFacts(index, sourceContext, document.f2, {standard: !legacy, resolutions: input?.scriptResolutions, postColonCue,syntax,inlinePerformance:options.inlinePerformance,inlinePerformanceVersion:options.inlinePerformanceVersion});
+  const factStore = cachedFoundationFacts(index, sourceContext, document.f2, {standard: !legacy, resolutions: input?.scriptResolutions, postColonCue,syntax,inlinePerformance:options.inlinePerformance,inlinePerformanceVersion:options.inlinePerformanceVersion,sourceRegroupVersion:options.sourceRegroupVersion});
   const choices = await loadFoundationChoices(db, projectId, index.version);
   if (document.editorialTodos.some(todo=>todo.applicationScope || todo.evidenceRefs?.length)) {
     const sceneRefs = await db.scriptScene.findMany({where:{episode:{projectId}},select:{sceneKey:true,episode:{select:{number:true}}}});
@@ -135,7 +138,7 @@ export async function buildLightEpisodePackets(projectId: string, document: Foun
     const previous = episodes.filter(other => other.number < episode.number).at(-1);
     const [currentScenes, previousScenes] = await Promise.all([readScenes(episode.number), previous ? readScenes(previous.number) : Promise.resolve({ scenes: [], gaps: [] })]);
     const boundaryScenes = [...previousScenes.scenes, ...currentScenes.scenes];
-    const episodeBoundary = buildEpisodeBoundarySeed(index, boundaryScenes, episode.number, { resolutions: input?.scriptResolutions, knownSpeakers: knownScriptSpeakers(document.f2), syntax,inlinePerformance:options.inlinePerformance,inlinePerformanceVersion:options.inlinePerformanceVersion });
+    const episodeBoundary = buildEpisodeBoundarySeed(index, boundaryScenes, episode.number, { resolutions: input?.scriptResolutions, knownSpeakers: knownScriptSpeakers(document.f2), syntax,inlinePerformance:options.inlinePerformance,inlinePerformanceVersion:options.inlinePerformanceVersion,sourceRegroupVersion:options.sourceRegroupVersion });
     episodeBoundary.unknowns.push(...previousScenes.gaps, ...currentScenes.gaps);
     const boundaryContext = buildLightBoundaryContext(index, document.f2, boundaryScenes, [episode.number], {legacy, episodeBoundary});
     if (boundaryContext) boundaryContext.gaps.push(...previousScenes.gaps);
@@ -160,7 +163,7 @@ export async function buildLightEpisodePackets(projectId: string, document: Foun
     };
     for (const key of currentKeys) visit(key);
     return { schema: 'LIGHT_EPISODE_SUPPLY_V2' as const, documentRevision: document.revision, sourceVersion: document.sourceVersion,
-      ...(!legacy ? prepareEpisodeReception(episode, document.f2, input?.scriptResolutions?.[episode.number], {postColonCue,syntax,inlinePerformance:options.inlinePerformance,inlinePerformanceVersion:options.inlinePerformanceVersion}) : {}),
+      ...(!legacy ? prepareEpisodeReception(episode, document.f2, input?.scriptResolutions?.[episode.number], {postColonCue,syntax,inlinePerformance:options.inlinePerformance,inlinePerformanceVersion:options.inlinePerformanceVersion,sourceRegroupVersion:options.sourceRegroupVersion}) : {}),
       episode: episode.number, title: episode.title, sourceText: episode.content,
       ...(options.episodeEvidenceVersion ? {episodeEvidenceVersion: options.episodeEvidenceVersion,
         historicalSourceDirectory: index.episodes.filter(e=>e.number<episode.number).map(e=>[e.number,e.title??'',e.content.length])} : {}),

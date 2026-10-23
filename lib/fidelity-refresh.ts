@@ -17,9 +17,11 @@ export async function refreshFidelitySource(projectId:string, db:PrismaClient, o
  if(!current){if(options.expectedReceiptId||options.expectedSourceId)throw new Error('来源凭据已变化，未保存旧判断。');return {changed:false};}
  if(options.expectedReceiptId&&current.snapshot.id!==options.expectedReceiptId||options.expectedSourceId&&current.sourceSnapshot?.id!==options.expectedSourceId)throw new Error('来源或决定已变化，未保存旧判断。');
  if(!current.sourceSnapshot || current.receipt.sourceImportId && current.receipt.sourceImportId!==current.sourceSnapshot.id)throw new Error('保真来源与凭据版本不一致，未覆盖原文。');
- // Finish a checkpointed review against its pinned input before upgrading the
- // parser. Rebuilding here would change pending paid-response fingerprints.
- if(!options.decisions&&!options.p1Review&&current.receipt.p1Review?.status==='PENDING'&&current.receipt.p1Review.completedRanges?.length)return {changed:false};
+ // Pin attempted reviews too: a paid first response can precede the first
+ // completed checkpoint. NOT_SENT/unknown attempts retain their bound identity;
+ // explicit review materialization below is still the safe upgrade path.
+ if(!options.decisions&&!options.p1Review&&current.receipt.p1Review?.status==='PENDING'
+  &&(current.receipt.p1Review.completedRanges?.length||await db.pipelineRun.count({where:{projectId,stageCode:'F1'}})))return {changed:false};
  const retryLeadingBoundary=current.receipt.result.validation.issues.some(issue=>issue.code==='BOUNDARY_UNCONFIRMED'&&issue.start===0);
  if(current.receipt.result.contractVersion===CONTRACT_VERSION&&!options.decisions&&!options.p1Review&&!retryLeadingBoundary)return {changed:false};
  const original=projectPinnedFidelitySource(JSON.parse(current.sourceSnapshot.content),current.receipt);

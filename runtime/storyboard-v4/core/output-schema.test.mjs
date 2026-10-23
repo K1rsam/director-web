@@ -60,7 +60,7 @@ test('author and full finish schemas preserve every creative field and close eve
   assert.deepEqual(r.schema.properties.schemaVersion.enum,[VERSION]);
   const unit=r.schema.properties.units.items,frame=shot(r.schema),part=frame.properties.dialogueParts.items;
   assert.deepEqual(unit.required,['id','eventId','boundaryBefore','title','unitDirection','intent','scene','props','participants','visualSubjects','lighting','initialState','exitState','shots']);
-  assert.deepEqual(frame.required,['id','duration','camera','picture','lighting','sound','dialogueParts','transition','sourceRefs','contextRefs']);
+  assert.deepEqual(frame.required,['id','duration','camera','picture','lighting','sound','dialogueParts','transition','sourceRefs','contextRefs','postproductionNotes']);
   assert.deepEqual(part.required,['lineId','text','presentation','delivery','voiceStart','voiceEnd']);
   for(const field of ['camera','picture','lighting','sound','transition'])assert.deepEqual(frame.properties[field],{type:'string'});
   assert.deepEqual(part.properties.text,{type:'string'});assert.deepEqual(part.properties.delivery,{type:'string'});

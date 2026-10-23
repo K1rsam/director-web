@@ -9,6 +9,7 @@ import { workingReadiness } from './foundation-delivery-assets';
 import { unresolvedOwner, unresolvedEpisodeScope } from './foundation-production-contracts';
 import { buildLightEpisodePackets, collectLightSceneIssues, resolveLightAsset } from './light-foundation-supply';
 import type { ScriptInputProtocol,ScriptPerformanceOptions } from './standard-script-reception';
+import {effectiveEditorialCoverage} from './source-interpretation-adoption-proof';
 
 export async function readLightEpisodeFoundation(projectId: string, episodeNumber: number, db: Prisma.TransactionClient = prisma, options: {protocol?: ScriptInputProtocol; episodeEvidenceVersion?: 'episode-evidence-v1' | null}&ScriptPerformanceOptions = {}) {
   if (!Number.isSafeInteger(episodeNumber) || episodeNumber < 0) throw new Error('无效的交接集号。');
@@ -37,7 +38,7 @@ export async function readLightEpisodeFoundation(projectId: string, episodeNumbe
     // A bounded excerpt is intentional; missing or nonadjacent source is a real handoff gap.
     ...(packet.boundaryContext && (!packet.boundaryContext.previousSource.sceneKey || !packet.boundaryContext.previousSource.adjacentEpisode) ? packet.boundaryContext.gaps : []),
     ...(!document.f2?.coverage.includes(episodeNumber) ? ['本集资产尚未编目。'] : []),
-    ...(!document.editorialCoverage.includes(episodeNumber) ? ['本集尚未完成资料编辑。'] : []),
+    ...(!effectiveEditorialCoverage(document,input).includes(episodeNumber) ? ['本集尚未完成资料编辑。'] : []),
     ...(document.workflow !== 'LIGHT_STAGE1_V1' ? ['旧版工作稿尚未完成当前资料整理。'] : []),
     ...(contextPending ? ['来源或制作条件仍有待处理内容。'] : []),
     ...outstanding.filter(choice => choice.episodes.includes(episodeNumber)).map(choice => `尚未采用或处理：${choice.question}`),

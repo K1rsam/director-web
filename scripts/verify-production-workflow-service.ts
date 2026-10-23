@@ -84,6 +84,8 @@ async function main(){
   const pausedBefore=await workflowStore.read(id);
   const reconnected=await post({action:'reconnect-parallel',workflowId:id,expectedAuthorization:'paused-authorization'});assert.equal(reconnected.status,200);
   assert.deepEqual(await workflowStore.read(id),pausedBefore,'a reconnect POST must not unpause, reauthorize or change a paused workflow');
+  assert.equal((await post({action:'reconnect-parallel',workflowId:id,expectedAuthorization:'paused-authorization',expectedRevision:pausedBefore.revision,resumeReadyIssues:true})).status,409,'explicit issue recovery cannot cross a human pause');
+  assert.deepEqual(await workflowStore.read(id),pausedBefore);
   assert.deepEqual(await counts(),before);
   await workflowStore.update(id,(d:any)=>({...d,paused:false}));
   await service.assertParallelDispatchAuthorized({projectId:project.id,episodeNumber:1,productionChain:{id}},'old-manual-task');
@@ -97,6 +99,27 @@ async function main(){
   assert.equal((await workflowStore.read(id)).parallel.enabled,false,'重启不能借用仍有权限的创建人绕过启动者权限撤销');
   await workflowStore.update(id,(d:any)=>({...d,parallel:{...d.parallel,enabled:true,authorizedBy:user.id}}));
   await service.assertParallelDispatchAuthorized(binding,'saved');
+  await assert.rejects(()=>service.assertParallelDispatchAuthorized(binding,'saved',{issues:[{code:'CHANNEL'}]}),(error:any)=>error.code==='PAID_REPAIR_NOT_AUTHORIZED');
+  await assert.rejects(()=>service.assertParallelDispatchAuthorized(binding,'saved',{feedbackRepair:{candidateId:'saved'}}),(error:any)=>error.code==='PAID_REPAIR_NOT_AUTHORIZED');
+  let repairView=await (await post({action:'configure-repair-policy',workflowId:id,expectedRevision:(await workflowStore.read(id)).revision,automatic:false})).json();
+  assert.equal(repairView.workflow.paidRepairPolicy.automatic,false);assert.equal(repairView.budget.summary.calls,0);
+  const repairRejected=await post({action:'configure-repair-policy',workflowId:id,expectedRevision:repairView.workflow.revision,automatic:true});assert.equal(repairRejected.status,409);
+  repairView=await (await post({action:'configure-repair-policy',workflowId:id,expectedRevision:repairView.workflow.revision,automatic:true,costAcknowledged:true})).json();
+  assert.equal(repairView.workflow.paidRepairPolicy.automatic,true);
+  await service.assertParallelDispatchAuthorized(binding,'saved',{issues:[{code:'CHANNEL'}]});
+  await service.assertParallelDispatchAuthorized(binding,'saved',{paidRepair:true,issues:[]});
+  assert.equal(service.paidRepairDispatchAllowed(binding,'saved',{paidRepair:true},'synthetic-authorization'),true);
+  let releasePreparation!:()=>void,sent=0;
+  const preparation=new Promise<void>(resolve=>{releasePreparation=resolve;});
+  const pendingSend=(async()=>{await preparation;if(service.paidRepairDispatchAllowed(binding,'saved',{paidRepair:true},'synthetic-authorization'))sent++;})();
+  repairView=await (await post({action:'configure-repair-policy',workflowId:id,expectedRevision:repairView.workflow.revision,automatic:false})).json();
+  releasePreparation();await pendingSend;assert.equal(sent,0,'revocation after admission must stop a not-yet-sent repair');
+  assert.equal(service.paidRepairDispatchAllowed(binding,'saved',{stage:'finish',finishMode:'delta',issues:[]},'synthetic-authorization'),true,'normal final delta is not a paid repair');
+  assert.equal(service.paidRepairDispatchAllowed({...binding,productionChain:{id:'missing',selectionProtocol:'per-episode-selection-v1'}},'saved',{paidRepair:true}),false);
+  assert.equal(service.paidRepairDispatchAllowed({...binding,productionChain:{id:'missing'}},'saved',{paidRepair:true}),false,'a missing old chain is not standalone consent');
+  await assert.rejects(service.assertParallelDispatchAuthorized({...binding,productionChain:{id:'missing'}},'saved',{paidRepair:true}),(error:any)=>error.code==='PAID_REPAIR_NOT_AUTHORIZED');
+  assert.equal(service.paidRepairDispatchAllowed({projectId:project.id},'manual',{paidRepair:true}),true,'standalone tasks retain their separate explicit entry');
+  assert.equal((await workflowStore.read(id)).parallel.authorizedAt,'synthetic-authorization');
   await workflowStore.update(id,(d:any)=>({...d,runtimeMaintenance:{id:'synthetic-maintenance'}}));
   const maintenanceControl={id:'synthetic-maintenance',workflowId:id,projectId:project.id,authorization:'synthetic-authorization'};
   assert.equal((await service.verifyOriginalProductionForMaintenance(maintenanceControl)).actorVerified,true,'冷加载恢复必须从真实临时DB核当前成员和来源');
@@ -121,6 +144,32 @@ async function main(){
   await prisma.sceneSnapshot.create({data:{projectId:episodeZero.id,sceneKey:'SOURCE_IMPORT',metadata:JSON.stringify({schema:'IMPORTED_SOURCE_TEXT_V2'}),content:JSON.stringify({sourceText:ep0Text,sourceStructure:{version:'SOURCE_STRUCTURE_V1',issues:[],sections:[{key:'ep0',kind:'EPISODE',episodeNumber:0,start:0,end:ep0Text.length}]}})}});
   const explicitZero=await service.mutateProductionWorkflow(episodeZero.id,user.id,{action:'create',episodeNumbers:[0]});
   assert.deepEqual(explicitZero.workflow.episodeNumbers,[0]);assert.equal(explicitZero.budget.summary.calls,0);assert.equal(explicitZero.nextAction.kind,'WAIT_COST_CONFIRM');
+  const six=await service.mutateProductionWorkflow(project.id,user.id,{action:'create',episodeNumbers:[1],maxCalls:2,maxTokens:100});
+  const sixId=six.workflow.id;
+  const configured=await service.mutateProductionWorkflow(project.id,user.id,{action:'configure-parallel',workflowId:sixId,expectedRevision:six.workflow.revision,laneCount:6});
+  assert.equal(configured.parallel.maxConcurrent,6);assert.equal(configured.parallel.enabled,false);assert.equal(configured.budget.summary.calls,0);
+  assert.deepEqual((await service.getProductionChain(sixId,project.id)).parallelism,{version:'production-parallel-v2',laneCount:6});
+  await assert.rejects(service.mutateProductionWorkflow(project.id,user.id,{action:'start-parallel',workflowId:sixId,expectedRevision:configured.workflow.revision,laneCount:4,costAcknowledged:true}),(e:any)=>e.code==='WORKFLOW_PARALLEL_FROZEN');
+  for(const count of [null,'6',5,7])await assert.rejects(service.mutateProductionWorkflow(project.id,user.id,{action:'configure-parallel',workflowId:sixId,expectedRevision:configured.workflow.revision,laneCount:count}),(e:any)=>e.code==='WORKFLOW_PARALLEL_CONFIG');
+  const sixBinding={projectId:project.id,episodeNumber:1,productionChain:await service.getProductionChain(sixId,project.id)};
+  // Exercise the real adapter, with paid entrypoints replaced by local sentinels.
+  const input={sourceIndex:{episodes:[{number:1,content:text}],version:'synthetic'},standardScript:{}} as any;
+  let createdCommand:any;let starts=0;
+  const adapter=service.createProductionWorkflowAdapters(user.id,{
+   readInputs:async()=>input,episode:async()=>({id:'synthetic-episode',projectId:project.id,number:1}),
+   createStoryboard:async(_episode:any,command:any)=>{createdCommand=command;return {id:'manual-synthetic'};},
+   startStoryboard:async()=>{starts++;},
+  } as any);
+  const manualWorkflow={...configured.workflow,sourceVersion:service.productionWorkflowSourceVersion(input)};
+  await adapter.run({kind:'STORYBOARD_CREATE',episodeNumber:1},manualWorkflow,{bind:async()=>{},budget:{id:configured.workflow.budgetId,directory:process.env.DIRECTOR_PRODUCTION_BUDGET_DIR!},isPaused:async()=>false} as any);
+  assert.equal(starts,1);assert.equal(createdCommand.productionChain.parallelism,undefined);
+  await service.assertParallelDispatchAuthorized({projectId:project.id,episodeNumber:1,productionChain:createdCommand.productionChain},'manual-synthetic');
+  await assert.rejects(service.assertParallelDispatchAuthorized(sixBinding,'unregistered'),(e:any)=>e.code==='WORKFLOW_PARALLEL_FROZEN');
+  await workflowStore.update(sixId,(d:any)=>({...d,selectedRuns:{1:'six-run'},parallel:{...d.parallel,enabled:true,participatingRuns:['six-run'],authorizedBy:user.id,authorizedAt:'synthetic-six'}}));
+  await service.assertParallelDispatchAuthorized(sixBinding,'six-run');
+  await assert.rejects(service.assertParallelDispatchAuthorized({...sixBinding,productionChain:{...sixBinding.productionChain,parallelism:{version:'production-parallel-v2',laneCount:4}}},'six-run'),(e:any)=>e.code==='WORKFLOW_PARALLEL_FROZEN');
+  await workflowStore.update(sixId,(d:any)=>({...d,parallel:{...d.parallel,enabled:false}}));
+  assert.equal((await service.getProductionWorkflow(project.id,user.id,sixId)).budget.summary.calls,0);
   console.log('PASS production workflow service/API: real temporary DB membership, CSRF, server-owned identity, immutable smaller budget, read-only GET, blocked advance, CAS pause/resume, read-only chain; zero real model/network/production DB writes');
  }finally{
   await prisma.$disconnect();globalThis.fetch=fetchBefore;

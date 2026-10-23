@@ -30,6 +30,8 @@ function couldBeComplete(rows: ProjectionRow[], episodeNumbers: number[]): boole
     if (body.f2Type === 'null') return false;
     if (body.f2Type !== 'object' || !numbers(body.coverage) || !numbers(body.editorialCoverage)) return true;
     if (body.f2Format !== 'ASSET_CATALOG_V2') return false;
+    // Only the authoritative reader can validate a source-adoption proof and its current dependencies.
+    if(typeof body.sourceInterpretationAdoptionCount==='number'&&body.sourceInterpretationAdoptionCount>0)return true;
     const coverage = body.coverage, edited = body.editorialCoverage;
     return episodeNumbers.every(number => coverage.includes(number) && edited.includes(number));
   });
@@ -65,7 +67,8 @@ export async function readProjectLibrarySummaries(userId: string, projectIds: re
         THEN json_object(
           'schema', json_extract(content, '$.schema'), 'workflow', json_extract(content, '$.workflow'),
           'f2Type', json_type(content, '$.f2'), 'f2Format', json_extract(content, '$.f2.format'),
-          'coverage', json_extract(content, '$.f2.coverage'), 'editorialCoverage', json_extract(content, '$.editorialCoverage')) ELSE NULL END ELSE NULL END AS projection
+          'coverage', json_extract(content, '$.f2.coverage'), 'editorialCoverage', json_extract(content, '$.editorialCoverage'),
+          'sourceInterpretationAdoptionCount',json_array_length(content,'$.sourceInterpretationAdoptions')) ELSE NULL END ELSE NULL END AS projection
       FROM SceneSnapshot WHERE projectId IN (${selected}) AND sceneKey = 'FOUNDATION_DOCUMENT'`)
   ]);
   const sourceByProject = new Map(sources.map(row => [row.projectId, row]));

@@ -8,7 +8,7 @@ import {createProductionBudgetStore,withProductionBudget} from './production-bud
 import {digest} from './storyboard-v4/core/shared.mjs';
 const workerModule=await import('./production-parallel.mjs').catch(e=>e.code==='ERR_MODULE_NOT_FOUND'?{}:Promise.reject(e));
 
-async function fixture(t,episodeCount=8){
+async function fixture(t,episodeCount=8,laneCount){
  const directory=await mkdtemp(path.join(tmpdir(),'production-parallel-')),starts=[],runs={};
  const adapters={inspect:async()=>({sourceVersion:'source',availableEpisodes:Array.from({length:episodeCount},(_,i)=>i+1),stage1:{ready:true},standard:{ready:true},direction:{status:'CONFIRMED'},assets:{missingCandidateKeys:[],missingCriticalKeys:[]},runs:structuredClone(runs)}),
   readRun:async id=>runs[id],withBudget:async(_context,action)=>action(),run:async(action,workflow,context)=>{
@@ -18,16 +18,75 @@ async function fixture(t,episodeCount=8){
   }};
  const makeService=async()=>createProductionWorkflowService({directory,budgetDirectory:path.join(directory,'budget'),adapters});
  const service=await makeService();let v=await service.create({projectId:'p',actorId:'u',episodeNumbers:Array.from({length:episodeCount},(_,i)=>i+1)});
- v=await service.configureParallel(v.workflow.id,{expectedRevision:v.workflow.revision,actorId:'u'});
+ v=await service.configureParallel(v.workflow.id,{expectedRevision:v.workflow.revision,actorId:'u',...(laneCount?{laneCount}:{})});
  assert.equal(typeof workerModule.createParallelProductionWorker,'function','缺少服务端四路续派，不应依赖网页轮询');
  const worker=workerModule.createParallelProductionWorker({directory,makeService,intervalMs:20});
  t.after(async()=>{await worker.stop(v.workflow.id);await rm(directory,{recursive:true,force:true});});
  return {directory,service,makeService,worker,starts,runs,adapters,id:v.workflow.id,view:v};
 }
 async function until(check,timeout=4000){const end=Date.now()+timeout;while(Date.now()<end){if(await check())return;await new Promise(r=>setTimeout(r,15));}assert.fail('免费队列未到达预期状态');}
+async function stoppedIssues(t){
+ const f=await fixture(t,12,6),started=await f.service.startParallel(f.id,{expectedRevision:f.view.workflow.revision,actorId:'u',costAcknowledged:true});
+ const d=started.workflow;
+ for(const n of [1,3,5,7,9,11]){
+  const id=`run-${n}`;d.selectedRuns[n]=id;
+  f.runs[id]={id,projectId:'p',episodeNumber:n,busy:false,complete:n===9,blocked:![5,9].includes(n),fingerprint:`fp-${n}`,productionChain:{id:f.id,mode:d.mode},productionBudget:{id:d.budgetId,directory:path.join(f.directory,'budget')}};
+ }
+ d.parallel.enabled=false;d.parallel.lastStop='WAIT_ISSUES';d.parallel.worker={status:'WAIT_ISSUES',pid:123,authorization:d.parallel.authorizedAt};
+ await writeFile(path.join(f.directory,'documents',f.id+'.json'),JSON.stringify(d));
+ return {...f,before:structuredClone(d),command:{expectedAuthorization:d.parallel.authorizedAt,expectedRevision:d.revision,actorId:'u',resumeReadyIssues:true}};
+}
+test('explicit ready-lane recovery keeps original authority, holds blocked lanes and starts only ready normal work',async t=>{
+ const f=await stoppedIssues(t);
+ await f.service.reconnectParallel(f.id,{expectedAuthorization:f.before.parallel.authorizedAt});
+ assert.deepEqual(await f.service.read(f.id),f.before,'ordinary reconnect stays read-only');
+ const view=await f.service.reconnectParallel(f.id,f.command);
+ assert.equal(view.parallel.enabled,true,'eligible original queue remains disabled after source review');
+ assert.equal(view.workflow.parallel.authorizedAt,f.before.parallel.authorizedAt);assert.equal(view.workflow.parallel.authorizedBy,f.before.parallel.authorizedBy);
+ assert.deepEqual(view.workflow.selectedRuns,f.before.selectedRuns);assert.deepEqual(view.workflow.budgetPolicy,f.before.budgetPolicy);
+ assert.deepEqual(view.workflow.parallel.modelSelection,f.before.parallel.modelSelection);assert.deepEqual(view.workflow.paidRepairPolicy,f.before.paidRepairPolicy);
+ assert.deepEqual(view.workflow.parallel.readyIssueRecovery.ready.map(x=>x.episodeNumber),[5,10]);assert.deepEqual(f.starts,[],'rearm itself is free');
+ await f.worker.start(f.id,{expectedAuthorization:f.command.expectedAuthorization});await until(()=>f.starts.length===2);
+ assert.deepEqual(f.starts,[5,10]);assert.deepEqual([1,3,7,11].map(n=>f.runs[`run-${n}`].blocked),[true,true,true,true]);
+});
+test('ready-lane recovery rejects manual pause, changed authority/revision, source/unknown budget and zero eligible lanes',async t=>{
+ for(const kind of ['pause','authority','revision','source','unknown','no-ready','actor']){
+  await t.test(kind,async t=>{
+   const f=await stoppedIssues(t),command={...f.command};
+   if(kind==='authority')command.expectedAuthorization='wrong';
+   if(kind==='actor')command.actorId='another-member';
+   if(kind==='revision')command.expectedRevision--;
+   if(kind==='pause')await f.service.pause(f.id,{expectedRevision:f.before.revision,actorId:'u'});
+   if(kind==='source'){const inspect=f.adapters.inspect;f.adapters.inspect=async w=>({...await inspect(w),sourceVersion:'changed'});}
+   if(kind==='no-ready'){f.runs['run-5'].blocked=true;f.runs['run-9'].complete=false;f.runs['run-9'].blocked=true;}
+   if(kind==='unknown'){const ledger=createProductionBudgetStore(path.join(f.directory,'budget')),attempt=await ledger.reserve(f.before.budgetId,{projectId:'p',stage:'author',provider:'CLI'});await ledger.settle(f.before.budgetId,attempt,{outcome:'UNKNOWN'});}
+   const before=await f.service.read(f.id);await assert.rejects(f.service.reconnectParallel(f.id,command));
+   assert.deepEqual(await f.service.read(f.id),before);assert.deepEqual(f.starts,[]);
+  });
+ }
+});
+test('ready-lane recovery returns its verified projection without a post-commit read that can strand an enabled queue',async t=>{
+ const f=await stoppedIssues(t),inspect=f.adapters.inspect;let calls=0;
+ f.adapters.inspect=async w=>{if(++calls>1)throw Object.assign(new Error('read unavailable'),{code:'DATABASE_READ_UNAVAILABLE'});return inspect(w);};
+ const view=await f.service.reconnectParallel(f.id,f.command);
+ assert.equal(view.parallel.enabled,true);assert.equal(view.workflow.parallel.authorizedAt,f.command.expectedAuthorization);assert.equal(calls,1);
+});
 test('a disabled configuration cannot start a background worker',async t=>{
  const f=await fixture(t);await f.worker.start(f.id);await new Promise(r=>setTimeout(r,50));
  assert.deepEqual(f.starts,[]);assert.equal((await f.service.read(f.id)).parallel.enabled,false);
+});
+test('six-lane worker refills without browser reads and cannot reconnect through human pause',async t=>{
+ const f=await fixture(t,12,6);
+ const started=await f.service.startParallel(f.id,{expectedRevision:f.view.workflow.revision,actorId:'u',costAcknowledged:true});
+ await Promise.all([f.worker.start(f.id),f.worker.start(f.id)]);
+ await until(()=>f.starts.length===6);assert.deepEqual(f.starts,[1,3,5,7,9,11]);
+ Object.assign(f.runs['run-9'],{busy:false,complete:true});
+ await until(()=>f.starts.length===7);assert.equal(f.starts.at(-1),10);
+ let v=await f.service.inspect(f.id);v=await f.service.pause(f.id,{expectedRevision:v.workflow.revision,expectedAuthorization:started.workflow.parallel.authorizedAt,actorId:'u'});
+ for(const run of Object.values(f.runs))Object.assign(run,{busy:false,complete:true});
+ await f.service.reconnectParallel(f.id,{expectedAuthorization:started.workflow.parallel.authorizedAt});
+ await f.worker.start(f.id);await new Promise(r=>setTimeout(r,70));
+ assert.equal(f.starts.length,7);assert.equal(new Set(f.starts).size,7);assert.equal((await f.service.read(f.id)).paused,true);
 });
 test('authorized restart archives a dead document owner before recording its worker; disabled histories stay untouched',async t=>{
  const f=await fixture(t,1),lock=path.join(f.directory,'documents',f.id+'.lock');

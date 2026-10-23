@@ -6,8 +6,26 @@ export const SOURCE_RESOLUTION_VERSION='production-source-resolution-v1';
 const text=x=>typeof x==='string'&&Boolean(x.trim())&&!x.includes('\0');
 const exact=(x,keys)=>x&&typeof x==='object'&&!Array.isArray(x)&&Object.keys(x).every(k=>keys.includes(k));
 const basis=source=>digest({sourceRows:source.sourceRows,dialogue:source.dialogue});
-const payload=r=>({version:r.version,sourceHash:r.sourceHash,kind:r.kind,sourceRefs:r.sourceRefs,instruction:r.instruction,conflicts:r.conflicts,...(r.speaker?{speaker:r.speaker}:{}),...(r.boundaryBinding?{boundaryBinding:r.boundaryBinding}:{}),approval:r.approval});
+const payload=r=>({version:r.version,sourceHash:r.sourceHash,kind:r.kind,sourceRefs:r.sourceRefs,instruction:r.instruction,conflicts:r.conflicts,...(r.speaker?{speaker:r.speaker}:{}),...(r.boundaryBinding?{boundaryBinding:r.boundaryBinding}:{}),...(r.assetBinding?{assetBinding:r.assetBinding}:{}),approval:r.approval});
 const recapBinding=(d,c)=>({contextHash:digest(d.production.boundary),contextRowsHash:digest(d.source.contextRows),planHash:digest(d.plan),feedbackHash:digest(c.productionFeedback)});
+
+function assertAssetQuantitySource(source,value,bad){
+ const b=value.assetBinding,keys=['assetKey','assetHash','sourceQuantity','catalogueQuantity','planHash','feedbackHash'];
+ if(!exact(b,keys)||!keys.every(k=>text(b[k]))||['assetHash','planHash','feedbackHash'].some(k=>!/^[a-f0-9]{64}$/.test(b[k]))
+  ||b.assetKey.length>150||b.sourceQuantity.length>60||b.catalogueQuantity.length>60||b.sourceQuantity===b.catalogueQuantity)bad('资产装载量裁决须绑定原资产、原计划回执及两个不同的精确数量原句。');
+ const assets=source.assets?.filter(a=>a.key===b.assetKey)||[],rows=value.sourceRefs.map(id=>source.sourceRows.find(r=>r.id===id));
+ if(assets.length!==1||digest(assets[0])!==b.assetHash||!rows.length||rows.some(r=>!r||r.evidenceRole==='guidance'||!r.text.includes(b.sourceQuantity))
+  ||![assets[0].relationNote,assets[0].preparation?.note].some(s=>typeof s==='string'&&s.includes(b.catalogueQuantity)))bad('本集原文数量或原资产目录证据已变化，不能套用旧装载量裁决。');
+}
+function assertAssetQuantity(d,value,bad){
+ assertAssetQuantitySource(d.source,value,bad);
+ const item=value.conflicts?.[0],candidate=d.candidates?.find(c=>c.id===item?.candidateId),feedback=candidate?.productionFeedback;
+ const conflict=feedback?.conflicts?.find(c=>digest(c)===item.conflictHash),b=value.assetBinding;
+ if(value.conflicts?.length!==1||candidate?.stage!=='plan'||candidate.status!=='adopted'||d.candidates.findLast(c=>c.stage==='plan'&&c.status==='adopted')?.id!==candidate.id
+  ||!conflict||conflict.key!==b.assetKey+'/本集装载量'||digest(d.plan)!==b.planHash||digest(feedback)!==b.feedbackHash
+  ||conflict.sourceRefs.length!==value.sourceRefs.length||conflict.sourceRefs.some(id=>!value.sourceRefs.includes(id)))bad('装载量解释仅可解决当前本集采用计划中的单个精确资产数量冲突。');
+ if(!Array.isArray(item.needHashes)||item.needHashes.some(hash=>feedback.needs.find(n=>digest(n)===hash)?.target!==conflict.key))bad('装载量裁决不能核销无关资产或设计需求。');
+}
 
 // A recap interprets one repeated action; it never changes an entry, actual tail or lock.
 function assertActionRecap(d,value,bad){
@@ -41,8 +59,8 @@ export function recordSourceResolution(d,value,approval){
  if(d.web?.sourceStale||d.operations.some(o=>o.status==='running'||o.status==='unknown'&&o.cancelAcknowledgement?.acceptUnknownUsage!==true))bad('先核对原文及未结请求，不能在派单中修改制作取舍。');
  if(d.adopted?.length||d.candidates.some(c=>c.stage!=='plan'&&(c.raw?.trim()||c.output!=null)))bad('已有付费正文须先定位局部返修，不能直接改其制作解释。');
  if(!exact(approval,['actorId','reference','answer'])||!['actorId','reference','answer'].every(k=>text(approval[k]))||approval.reference.length>500||approval.answer.length>2000)bad('缺少独立的人类明确决定及可追溯引用。');
- if(!exact(value,['sourceHash','kind','sourceRefs','instruction','conflicts','speaker','boundaryBinding'])||value.sourceHash!==basis(d.source)
-  ||!['TIME_LIGHTING_SPLIT','DELAYED_BROADCAST','SPEAKER_CORRECTION','BOUNDARY_ACTION_RECAP'].includes(value.kind)||!text(value.instruction)||value.instruction.length>1800
+ if(!exact(value,['sourceHash','kind','sourceRefs','instruction','conflicts','speaker','boundaryBinding','assetBinding'])||value.sourceHash!==basis(d.source)
+  ||!['TIME_LIGHTING_SPLIT','DELAYED_BROADCAST','SPEAKER_CORRECTION','BOUNDARY_ACTION_RECAP','ASSET_QUANTITY_SOURCE_PRIORITY'].includes(value.kind)||!text(value.instruction)||value.instruction.length>1800
   ||!Array.isArray(value.sourceRefs)||!value.sourceRefs.length||new Set(value.sourceRefs).size!==value.sourceRefs.length||!Array.isArray(value.conflicts))bad('制作解释须绑定当前完整原文、明确类型与有限坐标。');
  const recap=value.kind==='BOUNDARY_ACTION_RECAP';
  if(recap){
@@ -51,6 +69,10 @@ export function recordSourceResolution(d,value,approval){
  }else if(value.boundaryBinding!==undefined)bad('源内制作解释不能夹带跨集核销权限。');
  const refs=new Set(d.source.sourceRows.map(r=>r.id));
  if(!recap&&value.sourceRefs.some(id=>!refs.has(id)))bad('不能把前情、路径或未知坐标当作本集修改范围。');
+ if(value.kind==='ASSET_QUANTITY_SOURCE_PRIORITY'){
+  if(d.web?.stopped||d.web?.pauseRequested||d.operations.some(o=>o.stage!=='plan'))bad('装载量裁决只在本集首个作者派发前接收，不能越过停止或人工暂停。');
+  assertAssetQuantity(d,value,bad);
+ }else if(value.assetBinding!==undefined)bad('非装载量解释不能夹带资产备注裁决。');
  if(value.kind==='SPEAKER_CORRECTION'){
   const q=d.source.dialogue.find(q=>q.id===value.speaker?.lineId);
   if(!exact(value.speaker,['lineId','from','to'])||!q||q.speaker!==value.speaker.from||!text(value.speaker.to)||value.speaker.to.length>60||value.speaker.to===q.speaker||!value.sourceRefs.includes(q.rowId))bad('说话人修正须精确绑定原对白，保留原句、声道和表演提示。');
@@ -73,12 +95,18 @@ export function recordSourceResolution(d,value,approval){
 }
 
 export function currentSourceResolutions(source,resolutions=[]){
- for(const r of resolutions)if(r.version!==SOURCE_RESOLUTION_VERSION||r.id!==digest(payload(r))||r.sourceHash!==basis(source))fail('SOURCE_RESOLUTION_STALE','已确认制作解释与当前原文或批准记录不匹配，不能静默忽略。');
+ for(const r of resolutions){
+  if(r.version!==SOURCE_RESOLUTION_VERSION||r.id!==digest(payload(r))||r.sourceHash!==basis(source))fail('SOURCE_RESOLUTION_STALE','已确认制作解释与当前原文或批准记录不匹配，不能静默忽略。');
+  if(r.kind==='ASSET_QUANTITY_SOURCE_PRIORITY')assertAssetQuantitySource(source,r,message=>fail('SOURCE_RESOLUTION_STALE',message));
+ }
  return resolutions;
 }
 export function currentDocumentSourceResolutions(d){
  const resolutions=currentSourceResolutions(d.source,d.production?.sourceResolutions);
- for(const r of resolutions)if(r.kind==='BOUNDARY_ACTION_RECAP')assertActionRecap(d,r,message=>fail('SOURCE_RESOLUTION_STALE',message));
+ for(const r of resolutions){
+  if(r.kind==='BOUNDARY_ACTION_RECAP')assertActionRecap(d,r,message=>fail('SOURCE_RESOLUTION_STALE',message));
+  if(r.kind==='ASSET_QUANTITY_SOURCE_PRIORITY')assertAssetQuantity(d,r,message=>fail('SOURCE_RESOLUTION_STALE',message));
+ }
  return resolutions;
 }
 export function sourceResolutionFeedback(d,candidate){

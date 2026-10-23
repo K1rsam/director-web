@@ -12,7 +12,7 @@ import type {ImportedScript} from '../lib/import-script';
 const [databasePath,runId]=process.argv.slice(2);
 if(!databasePath||!runId)throw new Error('用法：node --import tsx scripts/inspect-p1-saved-response.ts <隔离DB绝对路径> <已保存F1 runId>');
 const hash=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
-type NormalizedField={assignment:number;field:string;from:unknown;action:'RAW_HINT_ONLY'|'EXACT_DECIMAL';to:number|null};
+type NormalizedField={assignment:number;field:string;from:unknown;action:'RAW_HINT_ONLY'|'EXACT_DECIMAL'|'EXACT_CHINESE';to:number|null};
 const db=new DatabaseSync(databasePath,{readOnly:true});
 try{
  const run=db.prepare('SELECT * FROM PipelineRun WHERE id=? AND stageCode=?').get(runId,'F1') as {projectId:string;inputSummary:string;log:string;status:string}|undefined;
@@ -39,10 +39,10 @@ try{
  const request=restoreP1ReviewRequest(wire,original.sourceText);assert.equal(request.sourceVersion,sourceInputVersion);
  const value=saved.response!.data??JSON.parse(saved.response!.rawOutput??'null'),before=JSON.stringify(value),proposal=validateP1ReviewPlan(value,request);
  const continuity=reconcileP1BatchContinuityDecisions(original.sourceText,{manualDecisions:receipt.decisions,pendingDecisions:[...(receipt.p1Review?.pendingDecisions??[]),...proposal.decisions],completedRanges:receipt.p1Review?.completedRanges??[],...(!request.repairAttempt?{currentBatch:{start:request.sections[0].start,end:request.sections.at(-1)!.end}}:{})});
- const decisions=reconcileP1OwnershipDecisions(original.sourceText,coalesceFidelityDecisions(original.sourceText,[...receipt.decisions,...continuity.decisions])).decisions;
+ const decisions=reconcileP1OwnershipDecisions(original.sourceText,coalesceFidelityDecisions(original.sourceText,[...receipt.decisions,...continuity.decisions]),{ownershipDecisions:[...(receipt.p1Review?.pendingDecisions??[]),...proposal.decisions],protectedRanges:receipt.sourceBranchDecisions??[]}).decisions;
  const checked=prepareFidelityReading(original,receipt.mode,decisions,receipt.originalHash,undefined,receipt.sourceBranchDecisions??[]);
  assert.equal(checked.receipt.result.source.text,original.sourceText);assert.equal(checked.receipt.readingHash,receipt.readingHash);assert.equal(JSON.stringify(value),before,'不得修改历史模型响应');
- const normalizedFields=(value.assignments as Array<Record<string,unknown>>).flatMap((row,index)=>['episodeNumber','sceneNumber'].flatMap<NormalizedField>(field=>row.kind==='context'&&row[field]!==undefined?[{assignment:index,field,from:row[field],action:'RAW_HINT_ONLY',to:null}]:typeof row[field]==='string'?[{assignment:index,field,from:row[field],action:'EXACT_DECIMAL',to:Number(row[field])}]:[]));
+ const normalizedFields=(value.assignments as Array<Record<string,unknown>>).flatMap((row,index)=>['episodeNumber','sceneNumber'].flatMap<NormalizedField>(field=>row.kind==='context'&&row[field]!==undefined?[{assignment:index,field,from:row[field],action:'RAW_HINT_ONLY',to:null}]:typeof row[field]==='string'?[{assignment:index,field,from:row[field],action:/^(0|[1-9]\d*)$/.test(row[field] as string)?'EXACT_DECIMAL':'EXACT_CHINESE',to:(field==='episodeNumber'?proposal.decisions[index].episodeNumber:proposal.decisions[index].sceneNumber)??null}]:[]));
  console.log(JSON.stringify({readOnly:true,providerCalls:0,runId,originalRunStatus:run.status,sourceInputVersion,reviewed:request.batch,normalizedFields,
   acceptance:'VALID_UNCOMMITTED',sourcePreserved:true,programIssues:checked.receipt.result.validation.issues.length,technicalIssues:checked.receipt.result.validation.issues.filter(i=>!isFidelitySourceBranchIssue(i)),sourceOwnershipChoices:checked.receipt.sourceEpisodeBranches??[],
   episodeNumbering:checked.receipt.episodeNumbering,materializedEpisodeNumbers:checked.imported.episodes.map(e=>e.number),batchContinuityCorrections:continuity.corrections,batchContinuityUnresolved:continuity.diagnostics.filter(i=>i.status==='UNRESOLVED'),

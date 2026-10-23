@@ -1,3 +1,4 @@
+import {readSeasonState,requireSeasonProduction} from './season-scope-service';
 /** Current-version reads and deterministic episode supply. No model calls or publication. */
 import crypto from "node:crypto";
 import { readFidelityReviewCandidates } from './fidelity-store';
@@ -90,10 +91,14 @@ export function foundationJson(value: string | null | undefined): Record<string,
 }
 
 export async function loadFoundationInputs(projectId: string, db: FoundationDb = prisma, options: {includeResolutions?:boolean} = {}) {
-  const project = await db.project.findUnique({ where: { id: projectId }, include: { episodes: { orderBy: { number: "asc" } } } });
+  let project = await db.project.findUnique({ where: { id: projectId }, include: { episodes: { orderBy: { number: "asc" } } } });
   if (!project) throw new Error("没有找到项目。");
   const sourceContext = await loadFoundationSourceContext(projectId, db);
+  const seasonState=await readSeasonState(projectId,db,{fastLegacy:true});
+  const season=seasonState.mode==='season'&&seasonState.status==='locked'&&!seasonState.sourceStale?await requireSeasonProduction(projectId,undefined,'foundation',db):null;
+  if(season)project={...project,episodes:season.scope.episodeNumbers.map((n:number)=>project!.episodes.find(e=>e.number===n)!)};
   const sourceIndex = buildSourceIndex(project.episodes);
+  if(season){sourceIndex.episodes=project.episodes.map(e=>sourceIndex.episodes.find(r=>r.number===e.number)!);sourceIndex.version=hashFoundationPrompt(JSON.stringify(sourceIndex.episodes.map(({number,title,content})=>({number,title,content}))));}
   const resolved = options.includeResolutions === false ? new Map() : await readCurrentResolvedPlans(projectId, project.episodes, db);
   const scriptResolutions = Object.fromEntries([...resolved].map(([number, value]) => [number, value.prepared]));
   const scriptInterpretationVersions = Object.fromEntries([...resolved].map(([number, value]) => [number, value.hash]));
@@ -113,14 +118,14 @@ export async function loadFoundationInputs(projectId: string, db: FoundationDb =
   const promptHashes = Object.fromEntries(PROJECT_FOUNDATION_STAGES.map((stage) => [stage.code, hashFoundationPrompt(systemPrompts[stage.code])]));
   const taskContract = FOUNDATION_TASK_CONTRACT;
   const sharedProductionContract = { version: PRODUCTION_TASK_CONTRACT.version, purpose: PRODUCTION_TASK_CONTRACT.purpose };
-  const inputVersion = crypto.createHash("sha256").update(JSON.stringify({ sourceVersion: sourceIndex.version, projectConditions, presentationConditions, presentationScopeVersions, taskContract,
+  const inputVersion = crypto.createHash("sha256").update(JSON.stringify({ sourceVersion: sourceIndex.version, ...(season?{seasonScopeHash:season.scopeHash}:{}), projectConditions, presentationConditions, presentationScopeVersions, taskContract,
     productionContract: sharedProductionContract, sourceContextVersion: sourceContext.version, ...(sourceReviewCandidates.length?{sourceReviewCandidates}:{}),
     ...(resolved.size ? {scriptInterpretationVersions} : {}) })).digest("hex");
   const methodVersions = Object.fromEntries(PROJECT_FOUNDATION_STAGES.map(({ code }) => [code, hashFoundationPrompt(JSON.stringify({
     systemPrompt: promptHashes[code], task: PRODUCTION_TASK_CONTRACT[code], schema: PRODUCTION_OUTPUT_SCHEMAS[code],
     cliInstructionProfile: FOUNDATION_CLI_INSTRUCTION_PROFILE
   }))])) as Record<FoundationStageCode, string>;
-  return { project, sourceIndex, sourceContext, sourceVersion: sourceIndex.version, inputVersion, methodVersions, projectConditions, presentationConditions, choiceRegistry: choices.registry, systemPrompts, promptHashes, taskContract, sourceReviewCandidates,
+  return { project, sourceIndex, sourceContext, seasonMode:seasonState.mode, ...(season?{season}:{}), sourceVersion: sourceIndex.version, inputVersion, methodVersions, projectConditions, presentationConditions, choiceRegistry: choices.registry, systemPrompts, promptHashes, taskContract, sourceReviewCandidates,
     ...(resolved.size ? {scriptResolutions,scriptInterpretationVersions} : {}), ...(options.includeResolutions === false ? {interpretationAware:false as const} : {}) };
 }
 

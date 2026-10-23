@@ -2,6 +2,7 @@ import {getCurrentUser} from '@/lib/auth';
 import {hasSameLocalOrigin,readLocalJsonObject} from '@/lib/local-json-request';
 import {readScriptReception,confirmScriptResolution,revokeScriptResolution,assistScriptResolution} from '@/lib/script-resolution-service';
 import {createScriptResolutionJudgment} from '@/lib/script-resolution-judgment';
+import {previewSourceInterpretationAdoption,adoptSourceInterpretationAdoption} from '@/lib/source-interpretation-adoption';
 
 export const dynamic='force-dynamic';
 type Context={params:Promise<{projectId:string}>};
@@ -15,8 +16,10 @@ export async function POST(request:Request,{params}:Context){
  const user=await getCurrentUser();if(!user)return Response.json({error:'请先登录。'},{status:401,headers});
  if(!hasSameLocalOrigin(request))return Response.json({error:'请从当前工作台提交。'},{status:403,headers});
  try{
-  const {projectId}=await params,parsed=await readLocalJsonObject(request,8000);
+  const {projectId}=await params,parsed=await readLocalJsonObject(request,64000);
   const {action,...input}=parsed;
+  if(action==='preview-source')return Response.json(await previewSourceInterpretationAdoption(projectId,user.id,input),{headers});
+  if(action==='adopt-source')return Response.json(await adoptSourceInterpretationAdoption(projectId,user.id,input),{headers});
   if(action==='confirm')return Response.json(await confirmScriptResolution(projectId,user.id,input),{headers});
   if(action==='revoke')return Response.json(await revokeScriptResolution(projectId,user.id,input),{headers});
   if(action==='assist')return Response.json(await assistScriptResolution(projectId,user.id,input,input.judgmentProvider==='JEV'?{judge:createScriptResolutionJudgment({actorId:user.id,sourceVersion:input.sourceVersion,explicitExternalConsent:input.explicitExternalConsent===true})}:{}),{headers});

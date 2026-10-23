@@ -6,6 +6,7 @@ import { validatePlan as validateLegacyPlan } from './fidelity-legacy.mjs';
 import { validatePlan as validateV2Plan } from './fidelity-v2.mjs';
 import { validatePlan as validateV3Plan } from './fidelity-v3.mjs';
 import { validatePlan as validateV4Plan } from './fidelity-v4.mjs';
+import { validatePlan as validateV5Plan } from './fidelity-v5.mjs';
 import { readFidelityArchive } from './fidelity-package';
 import { isFidelityExternalText, parseFidelityExternalResult, type ExternalReviewMetadata } from './fidelity-external';
 import { coalesceFidelityDecisions } from './fidelity-decision-ranges';
@@ -36,8 +37,8 @@ export async function prepareFidelityImport(name:string,bytes:Buffer,mode:"fidel
    if (!decisions.length) decisions=external.plan.decisions;
   }
   if(original){imported=await readPairedOriginal(original,external.source.text);}
-  if (['fidelity/1','fidelity/2','fidelity/3','fidelity/4'].includes(external.plan.contractVersion) && external.plan.contractVersion !== CONTRACT_VERSION) {
-   const validation=(external.plan.contractVersion === 'fidelity/1' ? validateLegacyPlan : external.plan.contractVersion === 'fidelity/2' ? validateV2Plan : external.plan.contractVersion === 'fidelity/3' ? validateV3Plan : validateV4Plan)(external.source,external.plan,{decisions});
+  if (['fidelity/1','fidelity/2','fidelity/3','fidelity/4','fidelity/5'].includes(external.plan.contractVersion) && external.plan.contractVersion !== CONTRACT_VERSION) {
+   const validation=(external.plan.contractVersion === 'fidelity/1' ? validateLegacyPlan : external.plan.contractVersion === 'fidelity/2' ? validateV2Plan : external.plan.contractVersion === 'fidelity/3' ? validateV3Plan : external.plan.contractVersion === 'fidelity/4' ? validateV4Plan : validateV5Plan)(external.source,external.plan,{decisions});
    if(!validation.ok)throw new Error('旧清洗包的来源或计划被修改，无法升级：'+validation.errors[0]?.message);
    candidate=undefined;
    imported.readingView.warnings.push('已核验旧清洗包，按新版规则重新识别集场；原文和已采用决定保留。');

@@ -82,6 +82,7 @@ test('short coordinate transport keeps the numeric endpoint and segment location
 
 test('existing content review locates an offscreen gap; real delta finish packs it and exports both repaired endpoints',async t=>{
  const f=fixture(),requests=[];
+ f.draft.units[0].shots[0].postproductionNotes=[{text:'人名条：甲；左下角淡入，停留2秒后淡出。',sourceRefs:['r1']}];
  // This is a source-grounded review observation, deliberately not an automatic semantic regex verdict.
  assert.deepEqual(validateDraft({draft:f.draft,source:f.source,settings,plan:f.plan,unitDirectionVersion:captureRules().unitDirectionVersion}).errors,[]);
  const issue={code:'CONTENT_CONTINUITY',coordinate:'p1-s2 → p1-s3',sourceRefs:['r1','r2'],detail:'铜环离画的画框边与向窗边的去向未交代；下镜已握住，源要求的左手接触被跳过。联修两端picture/transition与入镜camera。'};
@@ -111,6 +112,9 @@ test('existing content review locates an offscreen gap; real delta finish packs 
  assert.deepEqual(current.units[1],f.draft.units[2],'unmodified next-day unit remains byte-identical');
  for(const value of [handoff.outgoing.shot.picture,handoff.outgoing.shot.transition,handoff.incoming.shot.picture,handoff.incoming.shot.camera])assert.ok(assembled.assembly.text.includes(value));
  assert.doesNotMatch(assembled.assembly.text,/动作顺接|CONTENT_CONTINUITY|editingHandoffs|revisionNotes/);
+ assert.doesNotMatch(assembled.assembly.text,/人名条|后期|淡出/);
+ assert.match(assembled.assembly.postproductionText,/p1-u1.*p1-s1.*人名条：甲/s);
+ assert.deepEqual(current.units[0].shots[0].postproductionNotes,f.draft.units[0].shots[0].postproductionNotes,'package assembly, delta and capacity packing must retain editor metadata');
  const review=buildReviewPacket(assembled).text;assert.ok(review.includes('p1-s2 → p1-s3'));assert.ok(review.includes(handoff.incoming.shot.picture));assert.ok(review.includes('time_space_jump'));
  assert.equal(requests.filter(r=>r.stage==='finish').length,1,'no new review role or paid repair loop');
  const frozen=structuredClone(assembled);delete frozen.rulesSnapshot.editingHandoffVersion;assert.equal(buildReviewPacket(frozen).text.includes('切点取证'),false);

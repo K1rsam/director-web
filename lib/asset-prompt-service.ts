@@ -1,3 +1,5 @@
+import {requireSeasonProduction} from './season-scope-service';
+import {seasonAssetAllowed} from '../runtime/season-scope.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { PRODUCTION_CLI_MODEL, PRODUCTION_CLI_REASONING } from './production-model';
 import { readFile } from 'node:fs/promises';
@@ -44,6 +46,7 @@ export async function loadAssetPromptWorkspace(projectId: string,scope?:AssetPro
 }
 async function readAssetPromptWorkspace(projectId: string,scope?:AssetProductionScope): Promise<PromptWorkspace> {
   const input = await loadFoundationInputs(projectId);
+  const season=await requireSeasonProduction(projectId,scope?.episodeNumbers,'assets');
   const loaded = await loadFoundationDocument(prisma, projectId, input);
   const { document, needsContextEdit } = loaded;
   const [delivery, rows, direction] = await Promise.all([
@@ -72,16 +75,19 @@ async function readAssetPromptWorkspace(projectId: string,scope?:AssetProduction
         mode:item.preparation?.mode ?? 'UNRESOLVED',fromKey:item.preparation?.fromKey ?? (variant && item.preparation?.mode==='DERIVE'?base.key:undefined),
         description:base.description,note:[base.relationNote,variant&&'note' in item?item.note:'',item.preparation?.note,!variant&&base.variants.length?`以下状态另有子形象，不要混入基础形象：${base.variants.map(v=>v.name).join('、')}`:''].filter(Boolean).join('\n'),
         visualFacts:selected.facts,visualIssues,evidence,reasons:readiness.get(item.key)?.pendingReasons ?? ['尚未完成资产资料'],eligible:readiness.get(item.key)?.readyForImages ?? false,fingerprint:'',sceneRefs:item.sceneRefs};
+      if(season&&!seasonAssetAllowed(season.scope,entry,season.basis))continue;
       const {sceneRefs: _refs,...designEntry}=entry;
       entry.fingerprint=digest({entry:designEntry,visualProtocol:'AB-v1',designSkill:digest(designSkills[variant?1:0]),factsReady:Boolean(visual),decisions:selectAssetPromptDecisions(input.presentationConditions,entry),...(direction.projection?{seriesDirection:direction.projection.cardHash}:{})});
       assets.push(entry);
     }
   }
   const scoped=scope?await readAssetVisualFacts(projectId,true,scope):visual;
+  if(season){const keys=new Set(assets.map(asset=>asset.key));for(const key of Object.keys(records))if(!keys.has(key))delete records[key];for(const key of Object.keys(imageOptions))if(!keys.has(key))delete imageOptions[key];}
   return {projectId,title:input.project.title,style:input.project.style??'',stylePrefix:settings?.prefix??defaultStylePrefix(input.project.style??''),styleRevision:settings?.revision??0,seriesDirection:{status:direction.status,brief:direction.projection?.brief??null,...(direction.projection?{cardHash:direction.projection.cardHash}:{}),...(direction.projection?.systemPresentation?{systemPresentation:direction.projection.systemPresentation}:{})},visualFactsStatus:scoped?.complete===false?'MISSING':scoped?.status??'MISSING',visualFactIssues:scoped?.issues??[],assets,records,busy:delivery.busy,imageOptions,automation:automation?effectiveAutomationState(automation):undefined};
 }
 
 async function compareWrite(projectId: string, key: string, expectedRevision: number, value: PromptRecord | Setting) {
+  await requireSeasonProduction(projectId,undefined,'assets');
   const id=rowId(projectId,key), row=await prisma.sceneSnapshot.findUnique({where:{id}});
   if (!row) {
     if(expectedRevision!==0)throw new Error('内容已经更新，请刷新后重试。');
@@ -94,6 +100,17 @@ async function compareWrite(projectId: string, key: string, expectedRevision: nu
   }
 }
 
+/** Close this already-started request only; preserving paid evidence is never a new production approval. */
+async function closeFailedAttempt(projectId:string,key:string,running:PromptRecord,failed:PromptRecord,receipt:Record<string,unknown>){
+  await prisma.$transaction(async tx=>{
+    if(receipt.scopeHash!==null)await tx.sceneSnapshot.create({data:{id:'ap15_attempt_'+digest([projectId,key,running.requestId]).slice(0,40),projectId,sceneKey:'ASSET_PROMPT_ATTEMPT_V1',title:key,content:JSON.stringify({schema:'ASSET_PROMPT_ATTEMPT_V1',key,requestId:running.requestId,status:'FAILED',adopted:false,error:failed.error,rawOutput:failed.rawOutput,createdAt:new Date().toISOString(),...receipt})}});
+    const id=rowId(projectId,key),row=await tx.sceneSnapshot.findUnique({where:{id}}),current=row?JSON.parse(row.content) as PromptRecord:null;
+    // Never create a current design or overwrite a replacement request when closing an old attempt.
+    if(current?.status==='RUNNING'&&current.revision===running.revision&&current.requestId===running.requestId)await tx.sceneSnapshot.updateMany({where:{id,content:row!.content},data:{content:JSON.stringify(failed)}});
+  });
+  return failed;
+}
+
 export async function saveAssetStyle(projectId:string, prefix:string, revision:number) {
   if(typeof prefix!=='string'||prefix.length>6000)throw new Error('通用画风请控制在6000字以内。');
   await compareWrite(projectId,'$style',revision,{prefix,revision:revision+1});
@@ -101,12 +118,15 @@ export async function saveAssetStyle(projectId:string, prefix:string, revision:n
 }
 
 export async function saveAssetPrompt(projectId:string,key:string,revision:number,body:string) {
+  const season=await requireSeasonProduction(projectId,undefined,'assets');
   if(typeof body!=='string'||body.length>14000)throw new Error('提示词请控制在14000字以内。');
   const workspace=await loadAssetPromptWorkspace(projectId),asset=workspace.assets.find(a=>a.key===key);
   if(!asset)throw new Error('资产已不在当前目录中，请刷新。');
+  if(season&&!seasonAssetAllowed(season.scope,asset,season.basis))throw Object.assign(new Error('此形象没有本季实际集场用途；父身份不授予未来形态制作范围。'),{code:'SEASON_SCOPE',requestOutcome:'NOT_SENT'});
   const previous=workspace.records[key]??emptyPrompt(key);
   if(previous.status==='RUNNING')throw new Error('当前资产正在生成，请等待结果后再保存。');
   const referenceKey=asset.fromKey??(asset.variant?asset.baseKey:undefined);
+  if(season&&referenceKey&&!workspace.assets.some(item=>item.key===referenceKey&&seasonAssetAllowed(season.scope,item,season.basis)))throw Object.assign(new Error('来源形象没有本季实际用途，不能借父依赖保存新设计。'),{code:'SEASON_SCOPE',requestOutcome:'NOT_SENT'});
   // A manual rewrite has no verified mapping to the previous model's fact list.
   // Keep the design editable without laundering old AI provenance into descendants.
   const next:PromptRecord={...previous,previousDesignAudit:auditDesign(previous),body,facts:'',suggestions:'',rawOutput:undefined,requestId:undefined,workerPid:undefined,status:body.trim()?'READY':'EMPTY',revision:revision+1,origin:'MANUAL',fingerprint:asset.fingerprint,error:'',referenceKey,referenceRevision:referenceKey?workspace.records[referenceKey]?.revision:undefined,updatedAt:new Date().toISOString()};
@@ -114,8 +134,11 @@ export async function saveAssetPrompt(projectId:string,key:string,revision:numbe
 }
 
 export async function generateAssetPrompt(projectId:string,key:string,revision:number,runner=runRoleByProvider,scope?:AssetProductionScope) {
+  const season=await requireSeasonProduction(projectId,scope?.episodeNumbers,'assets');
+  const checkSeason=async()=>{const current=await requireSeasonProduction(projectId,scope?.episodeNumbers,'assets');if((current?.scopeHash??null)!==(season?.scopeHash??null))throw Object.assign(new Error('生成期间冻结季范围已变化，未采用旧范围结果。'),{code:'SEASON_CHANGED',requestOutcome:'NOT_SENT'});};
   const workspace=await loadAssetPromptWorkspace(projectId);
   let asset=workspace.assets.find(a=>a.key===key);
+  if(season&&(!asset||!seasonAssetAllowed(season.scope,asset,season.basis)))throw Object.assign(new Error('此形象没有本季实际用途，未生成设计／提示词。'),{code:'SEASON_SCOPE',requestOutcome:'NOT_SENT'});
   const scopedFacts=scope?await readAssetVisualFacts(projectId,false,scope):null;
   if(scope){const plan=await planEpisodeAssetProduction(projectId,scope.episodeNumbers);if(!plan.assetKeys.includes(key))throw new Error('此资产不在明确选集或必需来源形象范围内。');}
   if(workspace.busy)throw new Error('第一阶段仍在整理，请完成后再生成提示词。');
@@ -133,36 +156,39 @@ export async function generateAssetPrompt(projectId:string,key:string,revision:n
   if(dependencyKey&&(!reference?.body||reference.status!=='READY'||!referenceAsset||promptNeedsReview(referenceAsset,workspace.records,workspace.assets)))throw new Error('请先生成或保存基础／来源资产的提示词，再生成此变体。');
   const running:PromptRecord={...previous,status:'RUNNING',error:'',revision:revision+1,requestId:randomUUID(),workerPid:process.pid,updatedAt:new Date().toISOString()};
   await compareWrite(projectId,key,revision,running);
-  let rawOutput='';
+  let rawOutput='',dispatched=false;let returned:Awaited<ReturnType<typeof runRoleByProvider>>|undefined;
   try {
     const [project,systemPrompt,input]=await Promise.all([prisma.project.findUniqueOrThrow({where:{id:projectId}}),readFile(path.join(process.cwd(),asset.variant?'prompts/asset-image-derive-v1.md':'prompts/asset-image-design-v1.md'),'utf8'),loadFoundationInputs(projectId)]);
     const decisions=selectAssetPromptDecisions(input.presentationConditions,asset);
+    await checkSeason();
+    dispatched=true;
     const result=await runner({projectId,provider:resolveProvider(project.executionMode),role:{code:asset.variant?'A15_D':'A15',skill:'',systemPrompt,model:PRODUCTION_CLI_MODEL,reasoningEffort:PRODUCTION_CLI_REASONING},sessionMode:'ephemeral',
       prompt:JSON.stringify({asset:{key:asset.key,name:asset.name,type:asset.type,variant:asset.variant},...projectAssetDesignFacts(asset.visualFacts??[]),style:workspace.stylePrefix,...(workspace.seriesDirection?.status==='CONFIRMED'?{seriesDirection:workspace.seriesDirection.brief,...(workspace.seriesDirection.systemPresentation?{systemPresentation:workspace.seriesDirection.systemPresentation}:{})}:{}),decisions,referenceDesign:reference?{key:dependencyKey,body:reference.body}:null,evidencePolicy:'原文引用是事实依据，提取记录不是用户确认；资产名称只是目录标识。全剧方向仅约束表达气质，不是外貌或剧情事实。基础设计只补未限定的美术细节；变体仅依来源形象与明确版本事实写变化，不重新设计五官。未提取到外观不代表原文绝对没有；冲突留待核对，设计补足不得冒充剧本事实。系统呈现按叙事身份匹配本资产，不能串用另一系统的选择；纯声不强建虚构图片，旁观化身不升级为世界内人物。载体轮廓、配色、尺度和出现规则服从已确认选择与源文锁定，未定位资产对应关系时保留待核对。'})});
-    rawOutput=result.rawOutput??JSON.stringify(result.data);
+    returned=result;rawOutput=result.rawOutput??JSON.stringify(result.data);
     const content={...validatePromptOutput(result.data,key),facts:asset.evidence.map(e=>e.label+'\n'+e.text).join('\n\n')};
     const current=await loadAssetPromptWorkspace(projectId);
     if(current.styleRevision!==workspace.styleRevision||current.stylePrefix!==workspace.stylePrefix||current.style!==workspace.style)throw new Error('生成期间画风已更新，本次结果已保留，请核对后采用。');
     if(current.assets.find(a=>a.key===key)?.fingerprint!==asset.fingerprint)throw new Error('生成期间来源已更新，本次结果已保留，请核对后采用。');
     if(dependencyKey&&(current.records[dependencyKey]?.revision!==reference?.revision||!current.assets.find(a=>a.key===dependencyKey)||promptNeedsReview(current.assets.find(a=>a.key===dependencyKey)!,current.records,current.assets)))throw new Error('生成期间基础形象已修改或不可用，本次结果已保留，请核对后采用。');
     const next:PromptRecord={...running,...content,status:'READY',origin:'AI',fingerprint:asset.fingerprint,rawOutput,referenceKey:dependencyKey,referenceRevision:reference?.revision,revision:running.revision+1,updatedAt:new Date().toISOString()};
-    await compareWrite(projectId,key,running.revision,next);return next;
+    await checkSeason();await compareWrite(projectId,key,running.revision,next);return next;
   } catch(error) {
-    const captured=error as Error & {rawOutput?:string};
+    const captured=error as Error & {rawOutput?:string;requestOutcome?:string;usage?:unknown;stdout?:string;stderr?:string};
     const failed:PromptRecord={...running,status:'FAILED',error:captured.message||'生成失败',rawOutput:rawOutput||captured.rawOutput||'',revision:running.revision+1,updatedAt:new Date().toISOString()};
-    await compareWrite(projectId,key,running.revision,failed);return failed;
+    return closeFailedAttempt(projectId,key,running,failed,{scopeHash:season?.scopeHash??null,sourceVersion:season?.scope.sourceVersion??null,sourceFingerprint:asset.fingerprint,requestOutcome:returned?'RESPONDED':captured.requestOutcome??(dispatched?'UNKNOWN':'NOT_SENT'),usage:returned?.usage??captured.usage??null,stdout:returned?.stdout??captured.stdout??'',stderr:returned?.stderr??captured.stderr??''});
   }
 }
 
 /** Explicit scope entry. The full catalogue is read only as an index; only these keys enter generation. */
 export async function planEpisodeAssetProduction(projectId:string,episodeNumbers:number[],requestedAssetKeys?:string[],prepared?:{workspace:PromptWorkspace;input:Awaited<ReturnType<typeof loadFoundationInputs>>;production:Awaited<ReturnType<typeof readProductionScope>>}){
+ const season=await requireSeasonProduction(projectId,episodeNumbers,'assets');
  // Server-owned, operation-local snapshots only. No permission/source verdict is
  // cached; ordinary callers still perform fresh reads and dispatch rechecks.
  const [workspace,input,production]=prepared?[prepared.workspace,prepared.input,prepared.production]:await Promise.all([loadAssetPromptWorkspace(projectId),loadFoundationInputs(projectId),readProductionScope(projectId)]);
  const scope=normalizeAssetProductionScope({episodeNumbers},input.sourceIndex.episodes.filter(e=>isProductionEpisodeNumber(e.number,production)).map(e=>e.number));
  const actual=workspace.assets.filter(asset=>asset.episodes.some(n=>scope.episodeNumbers.includes(n))).map(asset=>asset.key);
  let keys=new Set(actual);const visiting=new Set<string>();
- const visit=(key:string)=>{if(visiting.has(key))throw new Error('资产来源存在循环，请先核对。');const asset=workspace.assets.find(a=>a.key===key);if(!asset)throw new Error('来源资产不存在，请先核对。');const parent=asset.fromKey??(asset.variant?asset.baseKey:undefined);if(!parent)return;visiting.add(key);if(!keys.has(parent)){keys.add(parent);visit(parent);}else if(visiting.has(parent))throw new Error('资产来源存在循环，请先核对。');visiting.delete(key);};
+ const visit=(key:string)=>{if(visiting.has(key))throw new Error('资产来源存在循环，请先核对。');const asset=workspace.assets.find(a=>a.key===key);if(!asset)throw new Error('来源资产不存在，请先核对。');if(season&&!seasonAssetAllowed(season.scope,asset,season.basis))throw Object.assign(new Error('父形象/未来服装形态缺少本季实际集场用途，不能借依赖派发新设计或生图。'),{code:'SEASON_SCOPE',requestOutcome:'NOT_SENT'});const parent=asset.fromKey??(asset.variant?asset.baseKey:undefined);if(!parent)return;visiting.add(key);if(!keys.has(parent)){keys.add(parent);visit(parent);}else if(visiting.has(parent))throw new Error('资产来源存在循环，请先核对。');visiting.delete(key);};
  actual.forEach(visit);
  if(requestedAssetKeys!==undefined){if(!Array.isArray(requestedAssetKeys)||requestedAssetKeys.some(key=>typeof key!=='string'||!keys.has(key)))throw new Error('请求资产越出明确选集及必要来源范围。');keys=new Set(requestedAssetKeys);requestedAssetKeys.forEach(visit);}
  return {scope:{...scope,assetKeys:[...keys]},assetKeys:[...keys],actualAssetKeys:actual.filter(key=>keys.has(key)),materialSourceOnlyKeys:[...keys].filter(key=>!actual.includes(key)),eligibleKeys:[...keys].filter(key=>workspace.assets.find(a=>a.key===key)?.eligible),sourceVersion:input.sourceVersion};
@@ -170,8 +196,9 @@ export async function planEpisodeAssetProduction(projectId:string,episodeNumbers
 
 /** Called only by an explicitly authorized production action; never by a read or preview. */
 export async function generateAssetPromptsForEpisodes(projectId:string,episodeNumbers:number[],options:{assetKeys?:string[];materialNeeds?:AssetMaterialNeed[];runner?:typeof runRoleByProvider;shouldContinue?:()=>Promise<boolean>}={}){
+ const season=await requireSeasonProduction(projectId,episodeNumbers,'assets');
  const plan=await planEpisodeAssetProduction(projectId,episodeNumbers,options.assetKeys),runner=options.runner??runRoleByProvider;
- const check=async()=>{if(options.shouldContinue&&!await options.shouldContinue())throw new Error('所选范围的后续资产任务已停止。');if((await loadFoundationInputs(projectId)).sourceVersion!==plan.sourceVersion)throw new Error('原文已更新，未继续后续资产任务。');};
+ const check=async()=>{if(options.shouldContinue&&!await options.shouldContinue())throw new Error('所选范围的后续资产任务已停止。');const current=await requireSeasonProduction(projectId,episodeNumbers,'assets');if((current?.scopeHash??null)!==(season?.scopeHash??null))throw Object.assign(new Error('本次资产材料任务冻结季范围已变化，未继续派发。'),{code:'SEASON_CHANGED',requestOutcome:'NOT_SENT'});if((await loadFoundationInputs(projectId)).sourceVersion!==plan.sourceVersion)throw new Error('原文已更新，未继续后续资产任务。');};
  await check();
  if(options.materialNeeds!==undefined){
   if(options.assetKeys===undefined)throw new Error('局部材料需求必须明确限定资产键，不默认扫描全库。');

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import {readSourceReadingState,projectSourceReadingIssues} from './source-reading-confirmation';
 import type { SourceStructure } from "@/lib/import-script";
 import { parseSourceText, type SourceBoundaryPlan } from "@/lib/source-parser";
 
@@ -29,11 +30,12 @@ export async function readSourcePreparation(projectId: string, db: Db = prisma):
   if (!project) throw new Error("Project not found.");
   const imported = await db.sceneSnapshot.findFirst({ where: { projectId, sceneKey: "SOURCE_IMPORT" }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
   const body = imported && importBody(imported.content, imported.metadata) ? importBody(imported.content, imported.metadata)! : null;
+  const readingState=await readSourceReadingState(projectId,db,imported??undefined);
   return {
     project,
     sourceImportId: body ? imported!.id : null,
     sourceText: body?.sourceText ?? null,
-    readIssues: body?.readIssues ?? [],
+    readIssues: projectSourceReadingIssues(body?.readIssues??[],readingState),
     sourceInputVersion: hash({ project: { title: project.title, style: project.style, aspectRatio: project.aspectRatio, executionMode: project.executionMode, ruleVersion: project.ruleVersion, archivedAt: project.archivedAt?.toISOString() ?? null }, sourceImport: imported ? { id: imported.id, content: imported.content, metadata: imported.metadata } : null, episodes: project.episodes.map((episode) => ({ number: episode.number, title: episode.title, content: episode.content })) })
   };
 }
@@ -113,7 +115,8 @@ async function hasDownstreamMaterial(episodeId: string, tx: Tx) {
 
 async function currentImportBody(projectId: string, db: Pick<PrismaClient, "sceneSnapshot">) {
   const snapshot = await db.sceneSnapshot.findFirst({ where: { projectId, sceneKey: "SOURCE_IMPORT" }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
-  return snapshot ? importBody(snapshot.content, snapshot.metadata) : null;
+  const body=snapshot?importBody(snapshot.content,snapshot.metadata):null;
+  return body&&snapshot?{...body,readIssues:projectSourceReadingIssues(body.readIssues,await readSourceReadingState(projectId,db,snapshot))}:null;
 }
 
 async function currentResolution(projectId: string, db: Pick<PrismaClient, "sceneSnapshot">, sourceImportId: string, sourceTextHash: string, sourceLength: number): Promise<{ structure: SourceStructure; plan?: SourceBoundaryPlan } | null> {

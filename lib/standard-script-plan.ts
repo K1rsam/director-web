@@ -1,6 +1,6 @@
 import {compileStandardScript, createSourceIndex, explicitSubtitles, StandardScriptError, standardScriptPlanVersion} from './standard-script';
 import type {AnnotationKind, Channel, SourceIndex, SourcePart, StandardScriptEntry, StandardScriptPlan} from './standard-script';
-import {explicitPerformanceCue,sourceHeadPerformanceCue,sourceVoiceHead,sourceUtteranceProperty,sourceRepeatedHeadPrefix,type InlinePerformanceVersion} from '../runtime/inline-performance.mjs';
+import {explicitPerformanceCue,sourceHeadPerformanceCue,sourceVoiceHead,sourceUtteranceProperty,sourceRepeatedHeadPrefix,sourceSplitCueRanges,type InlinePerformanceVersion} from '../runtime/inline-performance.mjs';
 
 export type StandardScriptDiagnostic = {line: number; code: string; message: string};
 export type StandardScriptSyntax = 'legacy' | 'current';
@@ -15,7 +15,7 @@ export type StandardScriptLine = {
 };
 type Range = {start: number; end: number};
 type Line = {number: number; start: number; content: string};
-type Head = {speaker: Range; cue?: Range; channelSource?: Range; channel: Channel; bodyStart: number};
+type Head = {speaker: Range; cue?: Range[]; channelSource?: Range; channel: Channel; bodyStart: number};
 const legacyEpisodeHeading = /^第[〇零一二三四五六七八九十百千万两\d]+集(?:[ \t:：]|$)/u;
 const legacySceneHeading = /^\d+[ \t]*-[ \t]*\d+(?:[ \t]|$)/u;
 const castHeading = /^(?:出场人物|人物|角色)[ \t]*[：:]/u;
@@ -36,10 +36,12 @@ const numberedRole = /^(?:(?:围观)?学生|路人|保镖|保安|侍卫|士兵|�
 // Source syntax may identify an incidental role without an asset entry. Keep
 // its entire label; position/indefinite qualifiers do not assert a named identity.
 const sourceRoleNoun = '学生|同学|考生|考官|主考官|路人|保镖|保安|侍卫|士兵|士卒|军士|谋士|斥候|密探|警察|警员|医生|护士|老师|教师|记者|店员|顾客|观众|村民|群众|工作人员|助理|闺蜜|监控员|领导|院长|校长|主任|秘书|负责人|主持人|裁判|门卫|司机|服务员|售货员|军官|指挥官|首领|族长|长老|掌门|弟子|同门|修士|大能';
+// Finite occupational/function nouns, never any arbitrary word ending in 者/主.
+const functionalRoleNoun = '征调者|征召者|应征者|应召者|受试者|参赛者|参与者|申请者|挑战者|目击者|幸存者|受害者|宿主|雇主|房主|船主|店主|班长|工兵|执勤官|伤员|道士|神祇';
 const sourceRoleQualifier = '围观|台上|台下|台边|场边|门口|门外|门内|后台|前排|后排|车内|身旁|身边|对面|路边|街边|楼上|楼下|远处|附近|现场|考场|大考|学院|医院|公司|警局|值班|当班|巡逻|随行|某|一名|一位|一个|一群|几名|几位|诸位|众|总|主|副';
 const sourceRole = new RegExp(`^(?:${sourceRoleQualifier}){0,2}(?:男|女)?(?:${sourceRoleNoun})(?:[甲乙丙丁戊己庚辛壬癸]|[一二三四五六七八九十百]+|\\d+|[A-Z])?$`, 'iu');
 const collectiveRole = /^(?:众人|众学生|众同学|众考生|众士兵|众群众|众工作人员|众修|诸修|[二三四五六七八九十两\d]+人)$/u;
-const incidentalRole = new RegExp(`^(\\p{Script=Han}{0,10})(?:${sourceRoleNoun}|观察者|队员|研究员|官员|新闻主持人|副官|老兵|男孩|女孩|网友|手下|府帅|主席|拘使|神将|守将|冥君|兵|君|将|百姓|神王|神兵|守卫|师生|生灵)(?:[甲乙丙丁戊己庚辛壬癸]|\\d+|[A-Z])?$`, 'iu');
+const incidentalRole = new RegExp(`^(\\p{Script=Han}{0,10})(?:${sourceRoleNoun}|${functionalRoleNoun}|观察者|队员|研究员|官员|新闻主持人|副官|老兵|男孩|女孩|网友|手下|府帅|主席|拘使|神将|守将|冥君|兵|君|将|百姓|神王|神兵|守卫|师生|生灵)(?:[甲乙丙丁戊己庚辛壬癸]|\\d+|[A-Z])?$`, 'iu');
 const noteQualifier = /备注|说明|资料|规则|设定|要求|接口|梗概|概要|大纲|指南|免责声明|格式|校验|解析/u;
 const screenTextHeading = /^(?:弹幕|字幕|屏幕文字)(?:（[^()（）\r\n]+）|\([^()（）\r\n]+\))?[\t \u00a0\u3000]*[:：]/u;
 const bracketScreenTextHead = /^(?:字幕|屏幕文字)[\t \u00a0\u3000]*【/u;
@@ -72,6 +74,16 @@ function castNames(text: string): string[] {
     if (/[、,，;；]/u.test(text[i])) {names.push(text.slice(start, i).trim()); start = i + 1;}
   }
   names.push(text.slice(start).trim()); return names;
+}
+
+function bracketSceneContext(text:string):boolean {
+  const match=/^\[([^\[\]\r\n:：△▲。.!！？?“”「」]{1,160})\][\t ]*$/u.exec(text);
+  if(!match)return false;
+  const fields=match[1].trim().split(/[\t \u00a0\u3000]+/u);
+  const time=(value:string)=>/^(?:日|夜|晨|昏|清晨|傍晚|凌晨|上午|下午|中午|深夜)$/u.test(value);
+  const side=(value:string)=>/^(?:内|外|内外)$/u.test(value);
+  return fields.length>=3&&fields.filter(time).length===1&&fields.filter(side).length===1
+    && fields.some((value,i)=>time(value)&&side(fields[i+1]??''));
 }
 
 /** Current syntax recognizes bounded explicit heads, never invents an asset or shortens the source name. */
@@ -135,15 +147,22 @@ function readHead(line: Line, knownSpeakers: Set<string>, syntax: StandardScript
   const speaker = trimRange(qualified ? identityRaw : match[1], line.start);
   if (compactRange||compactCue) speaker.end = compactCue?.start??speaker.start+compact!.speaker.length;
   const head: Head = {speaker, channel: audioRole ?? 'SPEECH', bodyStart};
+  const cueRanges=(cues:Array<{start:number;end:number}>,channel?:Range):Range[]|null=>{
+    if(!cues.length)return null;
+    if(channel&&channel.start>cues[0].start&&channel.end<cues.at(-1)!.end){
+      if(syntax==='legacy')return null;
+      return sourceSplitCueRanges(line.content,{start:channel.start-line.start,end:channel.end-line.start})?.map(range=>({start:range.start+line.start,end:range.end+line.start}))??null;
+    }
+    return [{start:cues[0].start,end:cues.at(-1)!.end}];
+  };
   if ((!qualified||external) && (match[2]?.trim() || compactRange || compactCue || external)) {
     if(compactCue&&tokens.some(token=>token.start>=metadataStart&&!/^(OS|VO)$/i.test(token.text)))return {line:line.number,code:'UNSUPPORTED_CUE_LAYOUT',message:'裸提示与括号提示分属两段，不能将括号标记混入单一表演字段。'};
     if (channels.length > 1) return {line: line.number, code: 'AMBIGUOUS_CHANNEL', message: '同一说者头含多个声道标记，需确认原文声道。'};
     if (channels.length) {
       const channel = channels[0]; head.channel = channel.text.toUpperCase() as Channel; head.channelSource = {start: channel.start, end: channel.end};
       const cues = tokens.filter(token => token !== channel);
-      if (cues.length && channel.start > cues[0].start && channel.end < cues.at(-1)!.end) return {line: line.number, code: 'UNSUPPORTED_CUE_LAYOUT', message: '声道插在两段提示之间，当前连续切片无法安全拆分提示。'};
-      if (cues.length) head.cue = {start: cues[0].start, end: cues.at(-1)!.end};
-    } else head.cue = compactCue ?? trimRange(match[2], metadataStart);
+      if(cues.length){const ranges=cueRanges(cues,channel);if(!ranges)return {line:line.number,code:'UNSUPPORTED_CUE_LAYOUT',message:'提示与声道无法对应唯一闭合源字段；原文保留待核对。'};head.cue=ranges;}
+    } else head.cue = [compactCue ?? trimRange(match[2], metadataStart)];
   }
   if (postTokens.length) {
     const cues = postTokens.filter(token => !postChannels.includes(token));
@@ -151,9 +170,9 @@ function readHead(line: Line, knownSpeakers: Set<string>, syntax: StandardScript
     if (head.cue && cues.length) return {line: line.number, code: 'AMBIGUOUS_POST_CUE', message: '前置与后置均含表演提示，当前格式不猜测两段提示的组合。'};
     if (postChannels.length) {
       const channel = postChannels[0]; head.channel = channel.text.toUpperCase() as Channel; head.channelSource = {start: channel.start, end: channel.end};
-      if (cues.length && channel.start > cues[0].start && channel.end < cues.at(-1)!.end) return {line: line.number, code: 'UNSUPPORTED_CUE_LAYOUT', message: '后置声道插在两段提示之间，不能用连续切片吞掉声道。'};
+      if(cues.length&&!cueRanges(cues,channel))return {line:line.number,code:'UNSUPPORTED_CUE_LAYOUT',message:'后置提示与声道无法对应唯一闭合源字段；原文保留待核对。'};
     }
-    if (cues.length) head.cue = {start: cues[0].start, end: cues.at(-1)!.end};
+    if (cues.length) head.cue = cueRanges(cues,postChannels[0])!;
     head.bodyStart = postEnd;
   }
   return head;
@@ -195,13 +214,29 @@ export function prepareStandardEpisode(text: string, sourceId: string, options: 
     const raw = unit.text.replace(/(?:\r\n|\r|\n)$/, ''), indent = /^[\t \uFEFF]*/.exec(raw)![0].length;
     return {number: i + 1, start: unit.start + indent, content: raw.slice(indent)};
   });
+  const episodeTitles=new Set<number>();
+  let preamble=false;
+  if(syntax==='current')for(const line of lines){
+    if(episodeHeading.test(line.content)){preamble=true;continue;}
+    if(!line.content.trim())continue;
+    const title=/^集名[\t ]*[:：][\t ]*(\S.*)$/u.exec(line.content);
+    if(preamble&&title&&title[1].length<=160&&!/[:：△▲]/u.test(title[1]))episodeTitles.add(line.number);
+    else preamble=false;
+  }
+  const structureKind=(line:Line)=>episodeHeading.test(line.content)?'EPISODE_HEADING' as const
+    :sceneHeading.test(line.content)||syntax==='current'&&bracketSceneContext(line.content)?'SCENE_HEADING' as const
+    :sceneMetadataHeading.test(line.content)||episodeTitles.has(line.number)||endMarker(line)||syntax==='current'&&/^\[闪回(?:开始|结束)\][\t ]*$/u.test(line.content)?'SCENE_METADATA' as const:null;
   const knownSpeakers = new Set((options.knownSpeakers ?? []).filter(name => typeof name === 'string' && name.trim()).map(name => name.trim()));
   const declaredSpeakers = new Set(knownSpeakers);
   for (const line of lines) {
     if (castHeading.test(line.content)) {
       const names = syntax === 'legacy' ? line.content.replace(castHeading, '').split(/[、,，;；]/).map(name => name.trim()) : castNames(line.content.replace(castHeading, ''));
       for (const name of names) {
-        if (validName(name)) {knownSpeakers.add(name); declaredSpeakers.add(name); continue;}
+        if (validName(name)) {
+          knownSpeakers.add(name); declaredSpeakers.add(name);
+          if(syntax==='current'&&name.endsWith('们')&&validName(name.slice(0,-1)))knownSpeakers.add(name.slice(0,-1));
+          continue;
+        }
         if (syntax === 'legacy') continue;
         const form = /^([^()（）]+)(?:（([^()（）]+)）|\(([^()（）]+)\))$/u.exec(name);
         if (!form || !validName(form[1].trim())) continue;
@@ -262,12 +297,12 @@ export function prepareStandardEpisode(text: string, sourceId: string, options: 
         layout:[...parts({start:start+s.start,end:start+s.labelStart}),...parts({start:start+s.labelEnd,end:start+s.bodyStart}),...parts({start:start+s.bodyEnd,end:start+s.end})]};
     });
     if(cursor<end)spoken.push(...parts({start:cursor,end}));
-    const fields=[head.speaker,head.cue,head.channelSource].filter((r):r is Range=>Boolean(r));
+    const fields=[head.speaker,...head.cue??[],head.channelSource].filter((r):r is Range=>Boolean(r));
     const original=mapped(first,last,{start,end},fields);
     return {id:original.id,unitIds:original.unitIds,target:'BODY',kind:'BODY_GROUP',parts:parts({start:index.units[first].start,end:index.units[last].end}),layout:[],children:[
-      {kind:'DIALOGUE',parts:spoken,layout:original.layout,speaker:parts(head.speaker),channel:head.channel,cue:head.cue?parts(head.cue):null,channelSource:head.channelSource?parts(head.channelSource):null},...captions]};
+      {kind:'DIALOGUE',parts:spoken,layout:original.layout,speaker:parts(head.speaker),channel:head.channel,cue:head.cue?head.cue.flatMap(parts):null,channelSource:head.channelSource?parts(head.channelSource):null},...captions]};
   };
-  const structural = (line: Line) => episodeHeading.test(line.content) || sceneHeading.test(line.content) || sceneMetadataHeading.test(line.content) || endMarker(line) || Boolean(annotationKind(line.content)) || typedMarker.test(line.content) || syntax==='current'&&(screenTextHeading.test(line.content)||bracketScreenTextHead.test(line.content)||omissionMarker.test(line.content)) || /^[△▲]/.test(line.content);
+  const structural = (line: Line) => structureKind(line) || Boolean(annotationKind(line.content)) || typedMarker.test(line.content) || syntax==='current'&&(screenTextHeading.test(line.content)||bracketScreenTextHead.test(line.content)||omissionMarker.test(line.content)) || /^[△▲]/.test(line.content);
   const error = (line: Line, code: string, message: string) => diagnostics.push({line: line.number, code, message});
   const inlineLabel = (prefix: string) => (syntax === 'current'
     ? /(?:^|[。.!！？?;；,，…][”’」』"']?|[ \t])((?:[A-Z][a-z]+(?:[ -][A-Z][a-z]+)+|[^。.!！？?;；,，:：()（） \t\u00a0\u3000]+)(?:[\t \u00a0\u3000]+(?:OS|VO))?(?:[（(][^()（）]*[）)])?(?:[\t \u00a0\u3000]*(?:OS|VO))?)[ \t]*$/iu
@@ -287,7 +322,7 @@ export function prepareStandardEpisode(text: string, sourceId: string, options: 
     const afterBoundary = inlineLabel(tail);
     if (!afterBoundary) return false;
     const name = afterBoundary.replace(/[（(][^()（）]*[）)]$/u, '').trim();
-    if(sourceUtteranceProperty(text.slice(head.speaker.start,head.speaker.end),name,head.cue?text.slice(head.cue.start,head.cue.end):''))return false;
+    if((syntax==='legacy'||name===afterBoundary.trim())&&sourceUtteranceProperty(text.slice(head.speaker.start,head.speaker.end),name,head.cue?.map(range=>text.slice(range.start,range.end)).join('')??''))return false;
     if (/[说问道答喊叫]$/.test(name) && /^[“‘「『"']/.test(line.content.slice(colon + 1).trimStart())) return false;
     if (syntax === 'current' && annotationKind(`${name}：`)) return true;
     return validName(name) && !sceneMetadataHeading.test(`${name}：`) && !annotationKind(`${name}：`);
@@ -322,11 +357,11 @@ export function prepareStandardEpisode(text: string, sourceId: string, options: 
       const start = i ? head.speaker.start : index.units[row].start, finish = heads[i + 1]?.speaker.start ?? index.units[row].end;
       const bodyFinish = finish - /[\t \r\n]*$/.exec(text.slice(start, finish))![0].length;
       if (head.bodyStart >= bodyFinish || head.bodyStart > end) return null;
-      const ranges = [head.speaker, head.cue, head.channelSource, {start: head.bodyStart, end: bodyFinish}].filter((r): r is Range => Boolean(r)).sort((a, b) => a.start - b.start);
+      const ranges = [head.speaker,...head.cue??[], head.channelSource, {start: head.bodyStart, end: bodyFinish}].filter((r): r is Range => Boolean(r)).sort((a, b) => a.start - b.start);
       const layout: SourcePart[] = []; let cursor = start;
       for (const range of ranges) {if (cursor < range.start) layout.push(...parts({start: cursor, end: range.start})); cursor = range.end;}
       if (cursor < finish) layout.push(...parts({start: cursor, end: finish}));
-      return {parts: parts({start: head.bodyStart, end: bodyFinish}), layout, speaker: parts(head.speaker), channel: head.channel, channelSource: head.channelSource ? parts(head.channelSource) : null, cue: head.cue ? parts(head.cue) : null};
+      return {parts: parts({start: head.bodyStart, end: bodyFinish}), layout, speaker: parts(head.speaker), channel: head.channel, channelSource: head.channelSource ? parts(head.channelSource) : null, cue: head.cue ? head.cue.flatMap(parts) : null};
     });
     if (dialogues.some(d => !d)) return null;
     return {id: `line-${row + 1}`, unitIds: [index.units[row].id], target: 'BODY', kind: 'DIALOGUE_GROUP', parts: parts({start: index.units[row].start, end: index.units[row].end}), layout: [], dialogues: dialogues.filter((d): d is NonNullable<typeof d> => Boolean(d))};
@@ -339,15 +374,15 @@ export function prepareStandardEpisode(text: string, sourceId: string, options: 
     }
     if (/^【作者资料】[ \t]*$/.test(line.content)) {
       let last = i;
-      while (last + 1 < lines.length && !episodeHeading.test(lines[last + 1].content) && !sceneHeading.test(lines[last + 1].content)) last++;
+      while (last + 1 < lines.length && !['EPISODE_HEADING','SCENE_HEADING'].includes(structureKind(lines[last+1])??'')) last++;
       plan.entries.push({target: 'ANNOTATION', kind: 'CREATIVE_GUIDANCE', ...mapped(i, last, {start: line.start, end: bodyEnd(last)})}); i = last + 1; continue;
     }
     if (syntax === 'current' && productionGuidance(line.content)) {
       plan.entries.push({target: 'ANNOTATION', kind: 'CREATIVE_GUIDANCE', ...mapped(i, i, {start: line.start, end})}); i++; continue;
     }
-    if (typedMarker.test(line.content) && !endMarker(line)) {error(line, 'UNKNOWN_TYPED_LINE', '未识别的显式类型标记，不能默认归为动作或对白。'); i++; continue;}
-    const structureKind = episodeHeading.test(line.content) ? 'EPISODE_HEADING' : sceneHeading.test(line.content) ? 'SCENE_HEADING' : sceneMetadataHeading.test(line.content) || endMarker(line) ? 'SCENE_METADATA' : null;
-    if (structureKind) {plan.entries.push({target: 'STRUCTURE', kind: structureKind, ...mapped(i, i, {start: line.start, end})}); i++; continue;}
+    const structure = structureKind(line);
+    if (structure) {plan.entries.push({target: 'STRUCTURE', kind: structure, ...mapped(i, i, {start: line.start, end})}); i++; continue;}
+    if (typedMarker.test(line.content)) {error(line, 'UNKNOWN_TYPED_LINE', '未识别的显式类型标记，不能默认归为动作或对白。'); i++; continue;}
     const annotation = annotationKind(line.content);
     if (annotation) {plan.entries.push({target: 'ANNOTATION', kind: annotation, ...mapped(i, i, {start: line.start, end})}); i++; continue;}
     if(syntax==='current'&&omissionMarker.test(line.content)){
@@ -411,7 +446,7 @@ export function prepareStandardEpisode(text: string, sourceId: string, options: 
       }
       if (last < 0) {
         // An explicit actor plus a post-colon direction, without any utterance, is a complete action line.
-        if (!blocked && syntax === 'current' && head.cue && head.channel === 'SPEECH' && !head.channelSource && line.content.search(/[:：]/) >= 0 && head.cue.start > line.start + line.content.search(/[:：]/)) {
+        if (!blocked && syntax === 'current' && head.cue && head.channel === 'SPEECH' && !head.channelSource && line.content.search(/[:：]/) >= 0 && head.cue[0].start > line.start + line.content.search(/[:：]/)) {
           plan.entries.push({target: 'BODY', kind: 'ACTION', ...mapped(i, i, {start: line.start, end})});
         } else if (!blocked) error(line, 'EMPTY_DIALOGUE', '说者头之后没有可归属的对白正文。');
         i++; continue;
@@ -426,8 +461,8 @@ export function prepareStandardEpisode(text: string, sourceId: string, options: 
           else error(line,'MIXED_DIALOGUE_ONSCREEN_TEXT','混合正文无法保真分型；原文保留。');
           i=last+1;continue;
         }
-        const fields = [head.speaker, head.cue, head.channelSource].filter((range): range is Range => Boolean(range));
-        plan.entries.push({target: 'BODY', kind: 'DIALOGUE', channel: head.channel, speaker: parts(head.speaker), cue: head.cue ? parts(head.cue) : null,
+        const fields = [head.speaker,...head.cue??[], head.channelSource].filter((range): range is Range => Boolean(range));
+        plan.entries.push({target: 'BODY', kind: 'DIALOGUE', channel: head.channel, speaker: parts(head.speaker), cue: head.cue ? head.cue.flatMap(parts) : null,
           channelSource: head.channelSource ? parts(head.channelSource) : null, ...mapped(i, last, {start, end: bodyEnd(last)}, fields)});
       }
       i = last + 1; continue;

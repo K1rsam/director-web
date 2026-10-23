@@ -1,6 +1,9 @@
+import {readSeasonState,requireSeasonProduction} from './season-scope-service';
+import {assertSeasonBinding,seasonCalibration} from '../runtime/season-scope.mjs';
 import {createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {readdir,readFile,lstat} from 'node:fs/promises';
+import {readFileSync} from 'node:fs';
 import path from 'node:path';
 import {withProductionBudgetContext,productionBudgetRoot,type ProductionBudgetContext} from './production-budget';
 import {prepareEpisodeReception} from './standard-script-reception';
@@ -13,15 +16,16 @@ import type {ProductionModelSelection} from '../runtime/production-policy.mjs';
 import {productionProgress} from './production-progress';
 
 type Row=Record<string,any>;
-export type ProductionChain={id:string;mode:'CHAIN'|'SINGLE';selectionRevision:number;selectedRuns:Record<string,string>;episodeNumbers:number[];selectionProtocol?:'per-episode-selection-v1';selectedRunRevisions?:Record<string,number>};
-export type ProductionWorkflow=ProductionChain&{schema:'PRODUCTION_WORKFLOW_V1';projectId:string;actorId:string;budgetId:string;budgetPolicy?:{version:string;episode:{maxCalls:number;maxTokens:number};warningTokens:number};sourceVersion:string;revision:number;criticalAssetKeys:string[];requestedAssetKeys:string[];paused:boolean;costAcknowledged:boolean;status:'READY'|'RUNNING'|'INTERRUPTED';activeAction:Row|null;receipts:Row[];qualityReviews:Row[];materialRequests:Row[];createdAt:string;updatedAt:string;delivery?:{version:'production-delivery-v1';enabled:boolean;result?:{identity:string;directory:string;reused:boolean;at:string}};parallel?:{version:'production-parallel-v1';waitPolicy?:'evidence-watch-v1';reconnectPolicy?:'wake-reconnect-v1';modelSelection?:ProductionModelSelection;enabled:boolean;executionTier:'standard'|'fast';runBudget?:{maxCalls:number;maxTokens:number};lanes:number[][];authorizedBy?:string;authorizedAt?:string;participatingRuns?:string[];worker?:Row;lastStop?:string|null}};
-export type ProductionWorkflowCommand=Row&{action:'create'|'advance'|'pause'|'resume'|'recover'|'select-run'|'quality-review'|'request-materials'|'configure-parallel'|'start-parallel'|'reconnect-parallel'|'boundary-evidence'|'boundary-review'|'configure-delivery'|'export-delivery';workflowId?:string;expectedRevision?:number};
+export type ProductionChain={season?:{scope:Row;scopeHash:string};id:string;mode:'CHAIN'|'SINGLE';selectionRevision:number;selectedRuns:Record<string,string>;episodeNumbers:number[];selectionProtocol?:'per-episode-selection-v1';selectedRunRevisions?:Record<string,number>;parallelism?:{version:'production-parallel-v2';laneCount:4|6}};
+export type ProductionWorkflow=ProductionChain&{schema:'PRODUCTION_WORKFLOW_V1';projectId:string;actorId:string;budgetId:string;budgetPolicy?:{version:string;episode:{maxCalls:number;maxTokens:number};warningTokens:number};sourceVersion:string;revision:number;criticalAssetKeys:string[];requestedAssetKeys:string[];paused:boolean;costAcknowledged:boolean;status:'READY'|'RUNNING'|'INTERRUPTED';activeAction:Row|null;receipts:Row[];qualityReviews:Row[];materialRequests:Row[];createdAt:string;updatedAt:string;delivery?:{version:'production-delivery-v1';enabled:boolean;seasonDelivery?:'preview'|'final';result?:{identity:string;directory:string;reused:boolean;at:string}};parallel?:{version:'production-parallel-v1'|'production-parallel-v2';laneCount?:4|6;waitPolicy?:'evidence-watch-v1';reconnectPolicy?:'wake-reconnect-v1';modelSelection?:ProductionModelSelection;enabled:boolean;executionTier:'standard'|'fast';runBudget?:{maxCalls:number;maxTokens:number};lanes:number[][];authorizedBy?:string;authorizedAt?:string;participatingRuns?:string[];worker?:Row;lastStop?:string|null}};
+export type ProductionWorkflowCommand=Row&{action:'create'|'advance'|'pause'|'resume'|'recover'|'select-run'|'quality-review'|'request-materials'|'configure-parallel'|'configure-repair-policy'|'start-parallel'|'reconnect-parallel'|'boundary-evidence'|'boundary-review'|'configure-delivery'|'export-delivery';workflowId?:string;expectedRevision?:number};
 export const productionWorkflowRoot=path.resolve(/*turbopackIgnore: true*/ process.env.DIRECTOR_PRODUCTION_WORKFLOW_DIR||path.join(process.cwd(),'.production-workflows'));
 const nativeRequire=createRequire(path.join(process.cwd(),'package.json'));
 const workflowRuntime=nativeRequire(path.join(process.cwd(),'runtime/production-workflow.mjs'));
 const {createStore}=nativeRequire(path.join(process.cwd(),'runtime/storyboard-v4/core/store.mjs'));
 const {productionBlock,freePreparationRecoveryCause}=nativeRequire(path.join(process.cwd(),'runtime/storyboard-v4/coordinator.mjs'));
 const {hasPendingSavedResponse}=nativeRequire(path.join(process.cwd(),'runtime/storyboard-v4/core/pipeline.mjs'));
+const {candidateResolvedBy}=nativeRequire(path.join(process.cwd(),'runtime/storyboard-v4/core/reference-role-review.mjs'));
 const maintenanceRuntime=nativeRequire(path.join(process.cwd(),'runtime/production-maintenance-state.mjs'));
 const maintenanceDataRoot=path.resolve(process.env.DIRECTOR_STORYBOARD_DATA_DIR||path.join(process.cwd(),'.storyboard-stage3-v2'));
 const runtimeMaintenance=async()=>(await maintenanceRuntime.loadRuntimeMaintenanceHost()).createRuntimeMaintenance({workflowDirectory:productionWorkflowRoot,dataRoot:maintenanceDataRoot,budgetDirectory:productionBudgetRoot});
@@ -29,14 +33,15 @@ const fail=(code:string,message:string,status=409):never=>{throw Object.assign(n
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 /** Bind real source/interpretation content, never a snapshot ID, timestamp or metadata revision. */
 export function productionWorkflowSourceVersion(input:Row):string{
- return digest({episodes:input.sourceVersion,background:(input.sourceContext?.background??[]).map((s:Row)=>s.text),unresolved:(input.sourceContext?.unresolved??[]).map((s:Row)=>s.text),interpretations:input.scriptInterpretationVersions??{}});
+ return digest({...(input.season?{seasonScopeHash:input.season.scopeHash}:{}),episodes:input.sourceVersion,background:(input.sourceContext?.background??[]).map((s:Row)=>s.text),unresolved:(input.sourceContext?.unresolved??[]).map((s:Row)=>s.text),interpretations:input.scriptInterpretationVersions??{}});
 }
 /** Zero materialized episodes is an honest P1 input state, not an invented empty SourceIndex. */
 export async function readProductionWorkflowInputs(projectId:string,options:{db?:PrismaClient}={}):Promise<Row>{
  const [source,foundation,context,database]=await Promise.all([import('./source-preparation'),import('./foundation-state'),import('./foundation-source'),import('./prisma')]);
  const db=options.db??database.prisma,raw=await source.readSourcePreparation(projectId,db);
  if(raw.project.episodes.length)return foundation.loadFoundationInputs(projectId,db);
- return {project:raw.project,sourceVersion:digest({unmaterializedOriginal:raw.sourceText}),sourceIndex:{episodes:[]},sourceContext:await context.loadFoundationSourceContext(projectId,db),
+ const seasonal=await readSeasonState(projectId,db);
+ return {seasonMode:seasonal.mode,project:raw.project,sourceVersion:digest({unmaterializedOriginal:raw.sourceText}),sourceIndex:{episodes:[]},sourceContext:await context.loadFoundationSourceContext(projectId,db),
   sourceUnmaterialized:true,sourcePreparation:{sourceInputVersion:raw.sourceInputVersion,hasOriginal:Boolean(raw.sourceText)}};
 }
 
@@ -97,17 +102,18 @@ export function createProductionWorkflowAdapters(actorId:string,services:Product
   const input=await services.readInputs(workflow.projectId);
   if(productionWorkflowSourceVersion(input)!==workflow.sourceVersion)fail('WORKFLOW_SOURCE_CHANGED','双源已变化，未套用旧裁决。');
   const current=await services.readStoryboard(id),from=current.production?.boundary?.seed?.fromEpisode,previousId=workflow.selectedRuns[from];
-  if(!previousId)fail('WORKFLOW_BOUNDARY_EVIDENCE','所选前集实际尾稿尚未齐备。');
-  const previous=await services.readStoryboard(previousId);
-  for(const run of [previous,current]){
+  const sourceOnly=from===null&&current.production?.boundary?.seed?.previousSource===null&&current.production?.boundaryCheck?.status==='NO_PREDECESSOR'&&workflow.episodeNumbers[0]===current.web.binding.episodeNumber;
+  if(!previousId&&!sourceOnly)fail('WORKFLOW_BOUNDARY_EVIDENCE','所选前集实际尾稿尚未齐备。');
+  const previous=previousId?await services.readStoryboard(previousId):null,pair=[previous,current].filter((run):run is Row=>run!==null);
+  for(const run of pair){
    const episode=await services.episode(workflow.projectId,run.web.binding.episodeNumber);
    if(!episode||episode.id!==run.web.binding.episodeId)fail('WORKFLOW_RUN_SCOPE','双源分集绑定已变化。');
    const view=await services.storyboardView(run,episode!);
    if(view.sourceStale||view.active||view.legacyReadOnly||view.preparation?.ready!==true)fail('WORKFLOW_BOUNDARY_EVIDENCE','先核对当前双源及已结回执。');
   }
-  const sources={previous:input.sourceIndex.episodes.find((e:Row)=>e.number===from)?.content,current:input.sourceIndex.episodes.find((e:Row)=>e.number===current.web.binding.episodeNumber)?.content};
+  const sources={previous:previous?input.sourceIndex.episodes.find((e:Row)=>e.number===from)?.content:null,current:input.sourceIndex.episodes.find((e:Row)=>e.number===current.web.binding.episodeNumber)?.content};
   const nativeEvidence:Row={};
-  if(services.readStoryboardAttempt)for(const run of [previous,current])for(const op of run.operations??[]){
+  if(services.readStoryboardAttempt)for(const run of pair)for(const op of run.operations??[]){
    const saved=await services.readStoryboardAttempt(op.attemptId),fingerprint=saved.request?digest([saved.request.promptHash,saved.request.instructionHash,saved.request.inputHash]):null;
    if(fingerprint&&fingerprint!==op.fingerprint)fail('WORKFLOW_BOUNDARY_EVIDENCE','保存 request 与当前入口/尾稿作业指纹不符。');
    nativeEvidence[op.attemptId]={fingerprint,hashes:saved.hashes??null,state:saved.receipt?.state??null,requestOutcome:saved.receipt?.requestOutcome??null};
@@ -138,7 +144,7 @@ export function createProductionWorkflowAdapters(actorId:string,services:Product
   const recoveryAttempts=newSettledResult?0:Number.isSafeInteger(recovery?.attempts)&&recovery.attempts>=0?recovery.attempts:recovery?2:0;
   const settled=operations.every(op=>op.status==='completed'||op.status==='failed'&&op.error?.requestOutcome==='NOT_SENT'||op.status==='unknown'&&op.cancelAcknowledgement?.acceptUnknownUsage===true&&Boolean(op.localSettledAt));
   const localBudgetStop=Boolean(run.web.budget&&(new Set(operations.map(op=>op.attemptId)).size>=run.web.budget.maxCalls||Number(view.usage?.knownTokens??view.usage?.totalTokens)>=run.web.budget.maxTokens));
-  const unresolvedPaid:Row[]=(run.candidates??[]).filter((candidate:Row)=>['needs_repair','needs_dependency_repair','stale'].includes(candidate.status)&&!candidate.resolvedBy);
+  const unresolvedPaid:Row[]=(run.candidates??[]).filter((candidate:Row)=>['needs_repair','needs_dependency_repair','stale'].includes(candidate.status)&&!candidateResolvedBy(run,candidate));
   // A queue pause can reject the already-scoped finish before provider dispatch.
   // Keep its paid candidate and let the bounded coordinator resume that same repair.
   const rejectedScopedRepair=run.web.error?.code==='WORKFLOW_PAUSED'&&prior?.stage==='finish'&&prior.error?.requestOutcome==='NOT_SENT'
@@ -214,7 +220,9 @@ export function createProductionWorkflowAdapters(actorId:string,services:Product
   const independentDirectionLimit=direction.status!=='CONFIRMED'&&!hasDirectionCandidate&&!direction.generationPlan.allowed?direction.generationPlan.reason:null;
   const directionSupplement=direction.status!=='CONFIRMED'&&!hasDirectionCandidate&&!direction.generation?.held&&direction.foundationPreparation?.status==='NEEDS_SUPPLEMENT'
    ? '第一阶段正确资料已保存，但方向候选待补。可手工完善，或明确发起额外方向分析；未自动重读全剧。' : null;
-  return {sourceVersion,availableEpisodes,canPrepareSource:!availableEpisodes.length&&stage1.action==='START',sourceConflicts,technicalIssues,
+  const actualRuns=workflow.episodeNumbers.flatMap(n=>{const id=workflow.selectedRuns[n];return id&&runs[id]?.textAdopted?[id]:[];});
+  const seasonTiming=input.season&&actualRuns.length?seasonCalibration(input.season.scope,input.season.basis,await Promise.all(actualRuns.map(id=>services.readStoryboard(id)))):null;
+  return {seasonMode:input.seasonMode??'legacy',...(input.season?{season:{scope:input.season.scope,scopeHash:input.season.scopeHash}}:{}),seasonTiming,sourceVersion,availableEpisodes,canPrepareSource:!availableEpisodes.length&&stage1.action==='START',sourceConflicts,technicalIssues,
    progress:productionProgress({...workflow,sourceVersion},stage1,runs,assetProgress),
    standard:{ready:issues.length===0&&workflow.episodeNumbers.every(n=>availableEpisodes.includes(n)),issues},
    stage1:{ready:Boolean(stage1.complete),busy:Boolean(stage1.busy),blocker:stage1Blocker,userConfirmation,taskId:stage1.task?.id??null,requiredChoices:requiredChoices.map((c:Row)=>({id:c.id,question:c.question}))},
@@ -227,15 +235,17 @@ export function createProductionWorkflowAdapters(actorId:string,services:Product
    if(!services.readStoryboardAttempt)fail('WORKFLOW_DELIVERY_EVIDENCE','此适配器没有原生回执读取入口。');
    if(workflow.episodeNumbers.some(n=>!workflow.selectedRuns[n]))fail('WORKFLOW_DELIVERY_NOT_READY','所选集数的采用稿尚未齐备，未导出或生成替代稿。');
    const input=await services.readInputs(workflow.projectId);
+   assertSeasonBinding(input.season?.scope??null,workflow.season,workflow.episodeNumbers);
    if(productionWorkflowSourceVersion(input)!==workflow.sourceVersion)fail('WORKFLOW_DELIVERY_STALE','交付时真实来源已变化。');
    const runs=await Promise.all(workflow.episodeNumbers.map(n=>services.readStoryboard(workflow.selectedRuns[n]))),views:Row={};
    for(const run of runs)views[run.id]=await readRun(run.id,workflow,undefined,run);
-   return nativeRequire(path.join(process.cwd(),'runtime/production-delivery.mjs')).buildProductionDelivery({workflow,runs,views,ledger,readAttempt:services.readStoryboardAttempt});
+   return nativeRequire(path.join(process.cwd(),'runtime/production-delivery.mjs')).buildProductionDelivery({workflow,runs,views,ledger,seasonBasis:input.season?.basis,readAttempt:services.readStoryboardAttempt});
   }:undefined,
   boundaryPacket,
   reviewBoundary:async(workflow:ProductionWorkflow,command:Row)=>{
    const packet=await boundaryPacket(workflow,command.runId);
    nativeRequire(path.join(process.cwd(),'runtime/production-boundary-review.mjs')).assertBoundaryPacket(packet,command.evidenceHash);
+   if(packet.version==='production-source-evidence-v1'&&command.sourceResolution?.kind!=='CANDIDATE_DIALOGUE_MAPPING')fail('WORKFLOW_SOURCE_REVIEW_SCOPE','本集证据只支持已批准对白映射恢复，不能用于跨集裁决或其它源修改。');
    if(command.sourceResolution!==undefined){
     if(!services.resolveStoryboardSource||!command.approval)fail('WORKFLOW_BOUNDARY_APPROVAL','源文裁决需要独立明确批准，不能用普通复核替代。');
     return services.resolveStoryboardSource!(command.runId,command.sourceResolution,{actorId,reference:command.approval.reference,answer:command.approval.answer});
@@ -266,6 +276,7 @@ export function createProductionWorkflowAdapters(actorId:string,services:Product
    const runner=async(request:any)=>{await check();if(!services.runRole)fail('WORKFLOW_RUNNER','执行适配器缺少模型入口。');return services.runRole!(request);};
    await check();
    const currentInput=await services.readInputs(workflow.projectId);
+   assertSeasonBinding(currentInput.season?.scope??null,workflow.season,workflow.episodeNumbers);
    if(productionWorkflowSourceVersion(currentInput)!==workflow.sourceVersion)fail('WORKFLOW_SOURCE_CHANGED','动作开始前源稿已变化，未发送新请求。');
    if(action.kind==='STAGE1'){
     const before=await services.readStage1(workflow.projectId);
@@ -296,7 +307,7 @@ export function createProductionWorkflowAdapters(actorId:string,services:Product
    if(action.kind==='STORYBOARD_CREATE'){
     const episode=await services.episode(workflow.projectId,action.episodeNumber);
     if(!episode)fail('WORKFLOW_EPISODE','找不到所选集原文。');
-    const productionChain:ProductionChain=workflowRuntime.productionWorkflowChain(workflow);
+    const productionChain:ProductionChain=workflowRuntime.productionWorkflowChain(workflow,{forDispatch:true});
     const run=await services.createStoryboard(episode!,{productionBudget:context.budget,productionChain,...workflow.budgetPolicy?.episode,...(workflow.parallel?.enabled?{modelSelection:workflow.parallel.modelSelection,executionTier:workflow.parallel.executionTier,...workflow.parallel.runBudget}:{} )});
     await context.bind({runId:run.id,episodeNumber:action.episodeNumber});await check();
     await services.startStoryboard(run.id);return {status:'RUN_STARTED',runId:run.id};
@@ -328,7 +339,7 @@ function parallelWorker(projectId:string,actorId:string){
 /** Server startup only: legacy/manual/configured records never grant autonomous model calls. */
 export async function restoreAuthorizedParallelProduction(){
  const maintenance=maintenanceRuntime.runtimeMaintenanceState(maintenanceDataRoot);
- if(maintenance&&!['RESUMED','ABORTED'].includes(maintenance.phase))return;
+ if(maintenance&&!['RESUMED','ABORTED','ISSUE_STOPPED'].includes(maintenance.phase))return;
  const files=await readdir(path.join(productionWorkflowRoot,'documents')).catch((e:NodeJS.ErrnoException)=>e.code==='ENOENT'?[]:Promise.reject(e));
  for(const file of files.filter(f=>/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}\.json$/.test(f))){
   const d=JSON.parse(await readFile(path.join(productionWorkflowRoot,'documents',file),'utf8')) as ProductionWorkflow;
@@ -346,12 +357,38 @@ export async function restoreAuthorizedParallelProduction(){
 }
 
 /** Every real kernel call, including mode=all, rechecks the current parallel authorization before budget reservation. */
-export async function assertParallelDispatchAuthorized(binding:Row,runId:string){
+const isPaidRepairRequest=(request?:Row)=>request?.paidRepair===true||Boolean(request?.issues?.length||request?.feedbackRepair);
+/** Synchronous final-send check. Preparation/queue awaits must not outlive a revoked repair permission. */
+export function paidRepairDispatchAllowed(binding:Row,runId:string,request:Row,expectedAuthorization?:string){
+ if(!isPaidRepairRequest(request)||!binding.productionChain?.id)return true;
+ const chain=binding.productionChain;
+ if(typeof chain.id!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(chain.id))return false;
+ try{
+  const workflow=JSON.parse(readFileSync(path.join(productionWorkflowRoot,'documents',chain.id+'.json'),'utf8'));
+  if(workflow.schema!=='PRODUCTION_WORKFLOW_V1'||workflow.projectId!==binding.projectId)return false;
+  workflowRuntime.assertPaidRepairPolicy(workflow);
+  if(expectedAuthorization!==undefined&&(workflow.parallel?.authorizedAt!==expectedAuthorization||!workflow.parallel?.participatingRuns?.includes(runId)))return false;
+  return !workflow.parallel?.participatingRuns?.includes(runId)||workflow.selectedRuns[binding.episodeNumber]===runId&&!workflow.paused&&workflow.parallel.enabled;
+ }catch{return false;}
+}
+export async function assertParallelDispatchAuthorized(binding:Row,runId:string,request?:Row){
  maintenanceRuntime.assertRuntimeAdmission(maintenanceDataRoot);
+ const seasonal=await requireSeasonProduction(binding.projectId,[binding.episodeNumber],'storyboard');
+ assertSeasonBinding(seasonal?.scope??null,binding.season,[binding.episodeNumber]);
+ if(seasonal)(await import('./storyboard-service')).assertStoryboardSeasonKernel(seasonal.scope);
  const chain=binding.productionChain;if(!chain?.id)return;
  let workflow:ProductionWorkflow;
  try{workflow=await createStore(productionWorkflowRoot).read(chain.id);}
- catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'&&chain.selectionProtocol!=='per-episode-selection-v1')return;throw error;}
+ catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){
+  if(isPaidRepairRequest(request))workflowRuntime.assertPaidRepairPolicy({});
+  if(chain.selectionProtocol!=='per-episode-selection-v1')return;
+ }throw error;}
+ if(workflow.projectId!==binding.projectId)fail('WORKFLOW_SCOPE','流程不属于当前项目。',403);
+ if(isPaidRepairRequest(request))workflowRuntime.assertPaidRepairPolicy(workflow);
+ if(chain.parallelism){
+  const configured=workflowRuntime.productionWorkflowChain(workflow).parallelism;
+  if(!workflow.parallel?.participatingRuns?.includes(runId)||JSON.stringify(configured)!==JSON.stringify(chain.parallelism))fail('WORKFLOW_PARALLEL_FROZEN','任务并行配置与原队列不匹配，未派发新请求。');
+ }
  if(!workflow.parallel?.participatingRuns?.includes(runId)){
   if(binding.executionTier==='fast')fail('WORKFLOW_RUN_BINDING','Fast任务没有四路参与登记，未发送新的请求。');
   return; // Free configuration must not interrupt old/manual standard tasks.
@@ -361,6 +398,7 @@ export async function assertParallelDispatchAuthorized(binding:Row,runId:string)
  const {prisma}=await import('./prisma'),actorId=workflow.parallel.authorizedBy;
  if(!actorId||!await retryDatabaseRead(()=>prisma.projectRole.findFirst({where:{projectId:binding.projectId,userId:actorId},select:{id:true}})))fail('WORKFLOW_FORBIDDEN','四路启动者的项目权限已失效，未发送新的请求。',403);
  if(productionWorkflowSourceVersion(await retryDatabaseRead(()=>readProductionWorkflowInputs(binding.projectId)))!==workflow.sourceVersion)fail('WORKFLOW_SOURCE_CHANGED','制作链源稿已变化，未发送新的请求；已保存稿和在途回包保留。');
+ return workflow.parallel.authorizedAt;
 }
 
 /** Registry only: no DB read, reconciliation, provider or background dispatch. */
@@ -395,7 +433,7 @@ export async function mutateProductionWorkflow(projectId:string,actorId:string,c
  if(typeof command.workflowId!=='string')fail('WORKFLOW_INPUT','缺少流程编号。',400);
  const workflow=await service.read(command.workflowId);if(workflow.projectId!==projectId)fail('WORKFLOW_SCOPE','流程不属于当前项目。',403);
  if(command.action==='pause')await (await runtimeMaintenance()).userPause({workflowId:workflow.id});
- else if(['advance','resume','start-parallel','configure-parallel','select-run'].includes(command.action))maintenanceRuntime.assertRuntimeAdmission(maintenanceDataRoot);
+ else if(['advance','resume','start-parallel','configure-parallel','select-run'].includes(command.action)||command.action==='reconnect-parallel'&&command.resumeReadyIssues===true)maintenanceRuntime.assertRuntimeAdmission(maintenanceDataRoot);
  const input={...command,actorId};
  if(command.action==='pause'||command.action==='start-parallel'||command.action==='reconnect-parallel'){
   const worker=parallelWorker(projectId,command.action==='reconnect-parallel'?workflow.parallel?.authorizedBy??actorId:actorId);
@@ -405,7 +443,8 @@ export async function mutateProductionWorkflow(projectId:string,actorId:string,c
     // Startup failed before tick could checkpoint it. Never leave a phantom
     // enabled queue; another process's live lease/authorization is not ours to stop.
     const newAuthorization=command.action==='start-parallel'&&(workflow.paused||!workflow.parallel?.enabled);
-    if(newAuthorization&&(error as NodeJS.ErrnoException).code!=='LEASE_BUSY')await service.recordParallelWorker(workflow.id,
+    const recoveredIssues=command.action==='reconnect-parallel'&&command.resumeReadyIssues===true&&!workflow.parallel?.enabled;
+    if((newAuthorization||recoveredIssues)&&(error as NodeJS.ErrnoException).code!=='LEASE_BUSY')await service.recordParallelWorker(workflow.id,
      {status:'INTERRUPTED',updatedAt:new Date().toISOString(),error:{code:'WORKFLOW_START_FAILED',message:'队列启动读取或执行者核对未完成，已停止新派发；保留原任务。'}},
      {stop:true,expectedAuthorization:view.workflow.parallel.authorizedAt,expectedWorker:view.workflow.parallel.worker??null}).catch(()=>{});
     throw error;
@@ -421,6 +460,7 @@ export async function mutateProductionWorkflow(projectId:string,actorId:string,c
   case 'quality-review':return service.recordQualityReview(command.workflowId,input);
   case 'request-materials':return service.requestMaterials(command.workflowId,input);
   case 'configure-parallel':return service.configureParallel(command.workflowId,input);
+  case 'configure-repair-policy':return service.configurePaidRepairPolicy(command.workflowId,input);
   case 'boundary-evidence':return service.boundaryEvidence(command.workflowId,input);
   case 'boundary-review':return service.reviewBoundary(command.workflowId,input);
   case 'configure-delivery':return service.configureDelivery(command.workflowId,input);

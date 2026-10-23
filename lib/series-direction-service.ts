@@ -17,6 +17,7 @@ import { buildSourceIndex, isRecord } from './project-foundation-contracts';
 import { FOUNDATION_DIRECTION_VERSION, FOUNDATION_DIRECTION_CONTENT_SCHEMA, foundationDirectionCoverage, directionDigest, readFoundationDirectionReceipt, type FoundationDirectionBasis, type FoundationDirectionReceipt, type FoundationDirectionWork } from './foundation-series-direction';
 import { validateSavedDeliveryAttempt, type DeliveryAttempt } from './foundation-delivery-call';
 import { assertSystemPresentationEvidence, SYSTEM_PRESENTATION_GUIDANCE } from './system-presentation';
+import {getFoundationDeliveryState} from './foundation-delivery';
 
 type Db = Prisma.TransactionClient;
 type Options = { db?: PrismaClient };
@@ -317,8 +318,9 @@ export async function getSeriesDirectionWorkspace(projectId: string, actorId: st
     const shared = sharedCandidate(draft, foundationBasis);
     const stored = await db.sceneSnapshot.findFirst({ where: { projectId, sceneKey: 'FOUNDATION_DOCUMENT' }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], select: { content: true } });
     const document = stored ? parse<Record<string, unknown>>(stored.content) : null;
-    const stage1Complete = document?.sourceVersion === foundationBasis.foundationSourceVersion && Array.isArray(document.editorialCoverage)
-      && foundationBasis.episodes.every(episode => (document.editorialCoverage as unknown[]).includes(episode.number));
+    const edited=Array.isArray(document?.sourceInterpretationAdoptions)?(await getFoundationDeliveryState(projectId,db)).effectiveEditorialCoverage:document?.editorialCoverage;
+    const stage1Complete = document?.sourceVersion === foundationBasis.foundationSourceVersion && Array.isArray(edited)
+      && foundationBasis.episodes.every(episode => edited.includes(episode.number));
     const status = shared ? 'CANDIDATE_READY' : !foundationBasis.enabled && !pointer.value.generationId ? 'EXISTING'
       : stage1Complete || foundationBasis.receipts.some(row => row.issue) || foundationBasis.blocker ? 'NEEDS_SUPPLEMENT'
         : foundationBasis.receipts.length ? 'READING' : 'PENDING_STAGE1';

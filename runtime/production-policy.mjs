@@ -3,6 +3,18 @@
 export const PRODUCTION_LIMIT_POLICY='production-limits-20261015-v1';
 export const DEFAULT_EPISODE_BUDGET=Object.freeze({maxCalls:8,maxTokens:600000});
 export const EPISODE_TOKEN_WARNING=500000;
+export const PRODUCTION_PARALLEL_VERSION='production-parallel-v2';
+export const PRODUCTION_LANE_COUNTS=Object.freeze([4,6]);
+export function productionLaneCount(value=4){
+ if(!PRODUCTION_LANE_COUNTS.includes(value))throw Object.assign(new Error('并行路数仅支持4或6。'),{code:'WORKFLOW_PARALLEL_CONFIG',requestOutcome:'NOT_SENT'});
+ return value;
+}
+export function productionParallelLaneCount(value){
+ if(value===undefined||value===null)return 4;
+ if(value.version==='production-parallel-v1'&&value.laneCount===undefined)return 4;
+ if(value.version===PRODUCTION_PARALLEL_VERSION&&PRODUCTION_LANE_COUNTS.includes(value.laneCount))return productionLaneCount(value.laneCount);
+ throw Object.assign(new Error('并行配置版本或路数无效。'),{code:'WORKFLOW_PARALLEL_CONFIG',requestOutcome:'NOT_SENT'});
+}
 // Explicit new-run opt-in. Missing selection keeps legacy requests under their old policy.
 export const PRODUCTION_MODELS=Object.freeze(['gpt-6.1-sol','gpt-6-sol','gpt-6-astra']);
 export const PRODUCTION_REASONING=Object.freeze(['low','medium','high','xhigh','max','ultra']);

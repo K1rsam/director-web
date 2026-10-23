@@ -24,12 +24,12 @@ function draft(request){
  const rows=request.source.sourceRows,dialogue=request.source.dialogue;
  return {schemaVersion:VERSION,units:rows.map((r,i)=>({id:`${request.stage}-${request.packageIds.join('-')}-${r.id}`,title:'对话',intent:{subject:'甲',change:'回应',landing:'释然',retain:['原话']},scene:'室内',props:[],participants:['甲','乙'],lighting:'柔光',initialState:'相望',exitState:'点头',shots:[{id:`s-${request.stage}-${request.packageIds.join('-')}-${r.id}`,duration:5,camera:'近景',picture:'人物说话',lighting:'柔光',sound:'人声',dialogueParts:dialogue.filter(q=>q.rowId===r.id).map(q=>({lineId:q.id,text:q.quote,presentation:'画内',delivery:'自然',voiceStart:0,voiceEnd:3})),transition:'切',sourceRefs:[r.id]}]})),fantasyRealization:[]};
 }
-async function fixture(fn,{runner}={}){
+async function fixture(fn,{runner,...hooks}={}){
  const dir=await mkdtemp(path.join(tmpdir(),'v4-coordinator-test-'));
  const calls=[];
  const authored=[];
  const modelRunner=runner||(async request=>{calls.push({stage:request.stage,ids:request.packageIds,mode:request.finishMode});const output=request.stage==='plan'?plan:request.finishMode==='delta'?{schemaVersion:DELTA_VERSION,baseDraftHash:request.baseDraftHash,retainedUnitIds:authored.flatMap(x=>x.units.filter(u=>request.packageIds.some(id=>u.id.includes(id))).map(u=>u.id)),replacements:[],revisionNotes:[],unresolved:[]}:draft(request);if(request.stage==='author')authored.push(output);return {output,raw:JSON.stringify(output),usage:{totalTokens:100},requestOutcome:'RESPONDED'};});
- const coordinator=createCoordinator({dataRoot:dir,modelRunner});
+ const coordinator=createCoordinator({dataRoot:dir,modelRunner,...hooks});
  try{await fn({coordinator,calls,dir,modelRunner});}finally{await coordinator.shutdown();await rm(dir,{recursive:true,force:true});}
 }
 test('next dispatches one request and all respects dependencies, then assembles',async()=>fixture(async({coordinator,calls})=>{
@@ -49,6 +49,45 @@ test('call budget is checked before each serial package',async()=>fixture(async(
  assert.equal(calls.length,2);
  assert.equal((await coordinator.read(d.id)).web.progress,'budget_stop');
 }));
+
+test('normal whole-episode delta assembly never asks for paid repair consent',async()=>{
+ let checks=0;await fixture(async({coordinator:c,calls})=>{
+  assert.equal(c.runtimeIdentity().paidRepairConsentVersion,'paid-repair-consent-v1');
+  const d=await c.create({source,settings,binding});await c.start(d.id);const done=await c.wait(d.id);
+  assert.equal(done.status,'text_ready_for_review');assert.equal(calls.at(-1).mode,'delta');assert.equal(checks,0);
+ },{beforePaidRepair:async()=>{checks++;return false;}});
+});
+
+test('unapproved paid repair preserves the bad response without an attempt, reservation or retry',async()=>{
+ const calls=[];let allowed=false;
+ await fixture(async({coordinator:c})=>{
+  const d=await c.create({source,settings,binding});await c.start(d.id);let held=await c.wait(d.id);
+  assert.deepEqual(calls,['plan','author']);assert.equal(held.web.error?.code,'PAID_REPAIR_NOT_AUTHORIZED');
+  assert.equal(held.operations.length,2);assert.equal(held.web.reserved,0);assert.equal(held.web.autoRepairs,0);
+  const bad=held.candidates.at(-1);assert.equal(bad.status,'needs_repair');assert.ok(bad.raw.includes('篡改'));
+  await c.start(d.id);held=await c.wait(d.id);assert.deepEqual(calls,['plan','author']);assert.equal(held.candidates.at(-1).id,bad.id);
+  allowed=true;await c.start(d.id);const done=await c.wait(d.id);
+  assert.equal(done.status,'text_ready_for_review');assert.equal(done.web.autoRepairs,1);assert.ok(done.candidates.find(x=>x.id===bad.id).resolvedBy);
+ },{beforePaidRepair:async()=>allowed,runner:async request=>{
+  calls.push(request.stage);const output=request.stage==='plan'?{...plan,workPackages:[{...plan.workPackages[0],sourceRefs:['r1','r2','r3']}],provisionalUnits:[{...plan.provisionalUnits[0],sourceRefs:['r1','r2','r3']}]}:draft(request);
+  if(request.stage==='author')output.units[0].shots[0].dialogueParts[0].text='篡改';
+  return {output,raw:JSON.stringify(output),usage:{totalTokens:10},requestOutcome:'RESPONDED'};
+ }});
+});
+
+test('dependency repair with empty validation errors still requires separate paid consent',async()=>{
+ let allowed=false;await fixture(async({coordinator:c,calls,dir})=>{
+  const d=await c.create({source,settings,binding});
+  for(let i=0;i<4;i++){await c.start(d.id,{mode:'next'});await c.wait(d.id);}
+  // This is the legitimate candidate shape produced by continuityRepairScope after draft validation passes.
+  await createStore(dir).update(d.id,r=>{const candidate=r.candidates.at(-1);candidate.status='needs_dependency_repair';candidate.requiredPackageIds=['p2','p3'];candidate.validation.errors=[];r.status='needs_dependency_repair';return r;});
+  const before=(await c.read(d.id)).operations.length;
+  await c.start(d.id,{mode:'next'});let held=await c.wait(d.id);
+  assert.equal(held.web.error?.code,'PAID_REPAIR_NOT_AUTHORIZED');assert.equal(held.operations.length,before);assert.equal(calls.length,before);
+  allowed=true;await c.start(d.id,{mode:'next'});held=await c.wait(d.id);
+  assert.equal(held.operations.at(-1).paidRepair,true);assert.equal(calls.length,before+1);
+ },{beforePaidRepair:async()=>allowed});
+});
 test('calibrated defaults affect only newly created budgets, not saved explicit limits',async()=>fixture(async({coordinator})=>{
  const fresh=await coordinator.create({source,settings,binding});
  assert.deepEqual(fresh.web.budget,{maxCalls:8,maxTokens:600000});
@@ -90,6 +129,22 @@ test('global model slots never exceed two across episodes',async()=>{
   release();await Promise.all(docs.map(d=>c.wait(d.id)));
   assert.equal(peak,2);
  }finally{release();clearTimeout(timer);await c.shutdown();await rm(dir,{recursive:true,force:true});}
+});
+
+for(const laneCount of [4,6])test(`six-slot host respects frozen ${laneCount}-lane requests and same-episode exclusion`,async()=>{
+ const dir=await mkdtemp(path.join(tmpdir(),'v4-six-slots-'));let c,release,timer,arrived,running=0,peak=0,calls=0;
+ const gate=new Promise(r=>release=r),full=new Promise(r=>arrived=r);
+ try{
+  c=createCoordinator({dataRoot:dir,maxConcurrent:6,modelRunner:async()=>{calls++;running++;peak=Math.max(peak,running);if(running===laneCount)arrived();await gate;running--;return {output:plan,usage:{totalTokens:10},requestOutcome:'RESPONDED'};}});
+  const frozen=laneCount===6?{productionChain:{id:'chain',mode:'CHAIN',parallelism:{version:'production-parallel-v2',laneCount:6}}}:{};
+  const docs=await Promise.all(Array.from({length:7},(_,i)=>c.create({source,settings,binding:{...binding,...frozen,episodeId:`e${i}`}})));
+  const duplicate=await c.create({source,settings,binding:{...binding,...frozen,episodeId:'e0'}});
+  await Promise.all(docs.map(d=>c.start(d.id,{mode:'next'})));await c.start(docs[0].id,{mode:'next'});
+  await assert.rejects(c.start(duplicate.id,{mode:'next'}),{code:'EPISODE_BUSY'});
+  await Promise.race([full,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('slots not filled')),10000);})]);
+  assert.equal(peak,laneCount);assert.equal(calls,laneCount);assert.equal(c.scheduling(docs[0].id).maxConcurrent,laneCount);
+  release();await Promise.all(docs.map(d=>c.wait(d.id)));assert.equal(calls,7);assert.equal(peak,laneCount);
+ }finally{release();clearTimeout(timer);await c?.shutdown();await rm(dir,{recursive:true,force:true});}
 });
 
 test('source version check prevents dispatch',async()=>{

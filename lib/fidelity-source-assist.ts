@@ -45,7 +45,7 @@ export async function prepareFidelitySourceAssisted(projectId:string,db:PrismaCl
     return !numeric||Number(numeric[1])===parseEpisodeNumber(s.sourceNumber??'');
    }).map(s=>s.sceneId));
    const explicit=result.segments.every(s=>!s.text.trim()||s.kind==='context'&&['explicit_context_heading','context_section'].includes(s.reason)
-    ||s.kind==='format'&&(['explicit_episode_heading'].includes(s.reason)&&episodeHeads.has(s.episodeId)||['explicit_scene_heading','continued_scene_metadata'].includes(s.reason)&&episodeHeads.has(s.episodeId)&&sceneHeads.has(s.sceneId))
+    ||s.kind==='format'&&(['explicit_episode_heading','explicit_episode_metadata'].includes(s.reason)&&episodeHeads.has(s.episodeId)||['explicit_scene_heading','continued_scene_metadata'].includes(s.reason)&&episodeHeads.has(s.episodeId)&&sceneHeads.has(s.sceneId))
     ||s.kind==='body'&&s.productionEligible&&!!s.episodeId&&!!s.sceneId&&episodeHeads.has(s.episodeId)&&sceneHeads.has(s.sceneId));
    const ready=!currentIssues.length&&!input.readIssues.length&&!pinned.sourceStructure.issues.length&&!pinned.sourceStructure.sections.some(s=>s.kind==='UNRESOLVED')
     &&!(pinned.readingView.kind==='DOCX'&&pinned.readingView.warnings.length)&&pinned.episodes.length>0&&explicit&&pinned.episodes.every(episode=>prepareEpisodeReception(episode,null).scriptReception.ready);
@@ -65,6 +65,22 @@ export async function prepareFidelitySourceAssisted(projectId:string,db:PrismaCl
   if(review.status==='COMPLETE'&&!review.completedRanges?.length)return done();
   let state:P1ReviewState={...review,reviewedSourceVersion:current.receipt.readingHash};
   let checkpoint=current;
+  // Old materialization cleared pendingDecisions. Recover only the same complete
+  // source-bound program checkpoint, never a manual/external classification.
+  let savedOwnership:FidelityDecision[]=[],ownershipProofId:string|undefined;
+  if(!state.pendingDecisions?.length&&state.runIds?.length){
+   const saved=await db.sceneSnapshot.findFirst({where:{projectId,sceneKey:'FIDELITY_IMPORT',title:{in:['P1原稿结构检查进度','P1局部结构补漏进度']}},orderBy:[{createdAt:'desc'},{id:'desc'}]});
+   if(saved){try{
+    const proof=JSON.parse(saved.content),metadata=JSON.parse(saved.metadata??'{}'),p=proof.p1Review;
+    if(proof.schema==='FIDELITY_RECEIPT_V1'&&proof.readingHash===current.receipt.readingHash&&proof.originalHash===current.receipt.originalHash
+     &&metadata.schema==='FIDELITY_RECEIPT_V1'&&metadata.sourceVersion===current.receipt.readingHash&&p?.reviewedSourceVersion===current.receipt.readingHash
+     &&isDeepStrictEqual(p.runIds,state.runIds)&&isDeepStrictEqual(p.completedRanges,state.completedRanges)&&Array.isArray(p.pendingDecisions)){
+      prepareFidelityReading(original,current.receipt.mode,p.pendingDecisions,current.receipt.originalHash,undefined,current.receipt.sourceBranchDecisions??[]);
+      savedOwnership=p.pendingDecisions;ownershipProofId=saved.id;
+    }
+   }catch{ /* Missing or invalid provenance cannot weaken an adopted decision. */ }}
+  }
+  const reconcileOwnership=(decisions:FidelityDecision[],extra:FidelityDecision[]=[])=>reconcileP1OwnershipDecisions(original.sourceText,decisions,{ownershipDecisions:[...savedOwnership,...(state.pendingDecisions??[]),...extra],protectedRanges:current.receipt.sourceBranchDecisions??[],proofSnapshotId:ownershipProofId});
   const reconcilePending=(extra:FidelityDecision[]=[],currentBatch?:{start:number;end:number})=>reconcileP1BatchContinuityDecisions(original.sourceText,{manualDecisions:current.receipt.decisions,pendingDecisions:[...(state.pendingDecisions??[]),...extra],completedRanges:state.completedRanges??[],...(currentBatch?{currentBatch}:{})});
   const rememberContinuity=(resolved:ReturnType<typeof reconcilePending>)=>{
    state={...state,pendingDecisions:resolved.decisions,
@@ -80,7 +96,7 @@ export async function prepareFidelitySourceAssisted(projectId:string,db:PrismaCl
     issues:result.validation.issues.filter(i=>i.start<bounds.end&&i.end>bounds.start).map(i=>({code:i.code,message:i.message,sectionKeys:blocks.filter(b=>b.start<i.end&&b.end>i.start).map(b=>b.id)})),baseline:result.episodes.filter(e=>e.start<bounds.end&&e.end>bounds.start).map(e=>({episodeNumber:e.sourceNumber,start:e.start,end:e.end}))};
    const validate=(value:unknown):SourceBoundaryPlan=>{
     const proposal=validateP1ReviewPlan(value,request);
-    prepareFidelityReading(original,current.receipt.mode,reconcileP1OwnershipDecisions(original.sourceText,coalesceFidelityDecisions(original.sourceText,[...current.receipt.decisions,...reconcilePending(proposal.decisions,bounds).decisions])).decisions,current.receipt.originalHash,undefined,current.receipt.sourceBranchDecisions??[]);
+    prepareFidelityReading(original,current.receipt.mode,reconcileOwnership(coalesceFidelityDecisions(original.sourceText,[...current.receipt.decisions,...reconcilePending(proposal.decisions,bounds).decisions]),proposal.decisions).decisions,current.receipt.originalHash,undefined,current.receipt.sourceBranchDecisions??[]);
     return value as SourceBoundaryPlan;
    };
    const response=await options.assist(request,validate);
@@ -96,7 +112,7 @@ export async function prepareFidelitySourceAssisted(projectId:string,db:PrismaCl
    });
    checkpoint=(await readFidelityReceipt(projectId,db))!;
   }
-  const reconciledDecisions=()=>reconcileP1OwnershipDecisions(original.sourceText,coalesceFidelityDecisions(original.sourceText,[...current.receipt.decisions,...(state.pendingDecisions??[])]));
+  const reconciledDecisions=()=>reconcileOwnership(coalesceFidelityDecisions(original.sourceText,[...current.receipt.decisions,...(state.pendingDecisions??[])]));
   const materialize=()=>{
    rememberContinuity(reconcilePending());
    const reconciled=reconciledDecisions();
@@ -136,7 +152,7 @@ export async function prepareFidelitySourceAssisted(projectId:string,db:PrismaCl
     if(JSON.stringify(projectP1ReviewRequest(request)).length<=24000){
     const validate=(value:unknown):SourceBoundaryPlan=>{
      const proposal=validateP1ReviewPlan(value,request);
-     prepareFidelityReading(original,current.receipt.mode,reconcileP1OwnershipDecisions(original.sourceText,coalesceFidelityDecisions(original.sourceText,[...current.receipt.decisions,...(state.pendingDecisions??[]),...proposal.decisions])).decisions,current.receipt.originalHash,undefined,current.receipt.sourceBranchDecisions??[]);
+     prepareFidelityReading(original,current.receipt.mode,reconcileOwnership(coalesceFidelityDecisions(original.sourceText,[...current.receipt.decisions,...(state.pendingDecisions??[]),...proposal.decisions]),proposal.decisions).decisions,current.receipt.originalHash,undefined,current.receipt.sourceBranchDecisions??[]);
      return value as SourceBoundaryPlan;
     };
     const response=await options.assist(request,validate),proposal=validateP1ReviewPlan(response.plan,request);

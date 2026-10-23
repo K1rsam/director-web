@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
-import {inlinePerformanceProjection,compactPerformanceHeadProjection,sourceVoiceProjection,sourceBarePerformanceProjection,sourceHeadPrefix,sourceUtteranceProperty,sourceRepeatedHeadPrefix,type InlinePerformance,type InlinePerformanceVersion} from '../runtime/inline-performance.mjs';
+import {inlinePerformanceProjection,compactPerformanceHeadProjection,sourceVoiceProjection,sourceBarePerformanceProjection,sourceHeadPrefix,sourceUtteranceProperty,sourceRepeatedHeadPrefix,sourceSplitCueRanges,sourceSplitCueParts,sourceSplitCueFields,type InlinePerformance,type InlinePerformanceVersion} from '../runtime/inline-performance.mjs';
+import {compileSourceRegroup,type SourceRegroupPlan,type CompiledSourceRegroupChild,type SourceRegroupApproval} from '../runtime/source-regroup.mjs';
 
 export type SourceUnit = {id: string; start: number; end: number; text: string};
 export type SourceIndex = {
@@ -8,7 +9,7 @@ export type SourceIndex = {
   sourceId: string; sourceVersion: string; offsetUnit: 'UTF16'; text: string; units: SourceUnit[];
 };
 export type SourcePart = {kind: 'SOURCE_SLICE' | 'SOURCE_SEPARATOR'; unitId: string; start: number; end: number};
-export type BodyKind = 'DIALOGUE' | 'DIALOGUE_GROUP' | 'BODY_GROUP' | 'ACTION' | 'SFX' | 'ONSCREEN_TEXT';
+export type BodyKind = 'DIALOGUE' | 'DIALOGUE_GROUP' | 'BODY_GROUP' | 'SOURCE_REGROUP' | 'ACTION' | 'SFX' | 'ONSCREEN_TEXT';
 export type Channel = 'SPEECH' | 'OS' | 'VO' | 'NARRATION' | 'SYSTEM';
 export type StructureKind = 'EPISODE_HEADING' | 'SCENE_HEADING' | 'SCENE_METADATA';
 export type AnnotationKind = 'CONTINUITY' | 'EMOTION_CLUE' | 'RELATIONSHIP_CONTEXT' | 'KNOWLEDGE_REVEAL' | 'SPACE_CONSTRAINT' | 'CREATIVE_GUIDANCE';
@@ -19,13 +20,14 @@ export type BodyChildPlan = {kind: 'DIALOGUE'} & DialoguePlan | {kind: 'ONSCREEN
 export type StandardScriptEntry =
   | TextPlan & {target: 'STRUCTURE'; kind: StructureKind}
   | TextPlan & {target: 'ANNOTATION'; kind: AnnotationKind}
-  | TextPlan & {target: 'BODY'; kind: Exclude<BodyKind, 'DIALOGUE' | 'DIALOGUE_GROUP' | 'BODY_GROUP'>}
+  | TextPlan & {target: 'BODY'; kind: Exclude<BodyKind, 'DIALOGUE' | 'DIALOGUE_GROUP' | 'BODY_GROUP' | 'SOURCE_REGROUP'>}
   | TextPlan & {target: 'BODY'; kind: 'DIALOGUE'} & DialoguePlan
   | TextPlan & {target: 'BODY'; kind: 'DIALOGUE_GROUP'; dialogues: DialoguePlan[]}
   | TextPlan & {target: 'BODY'; kind: 'BODY_GROUP'; children: BodyChildPlan[]}
+  | SourceRegroupPlan
   | EntryBase & {target: 'EXCLUDE'; category: 'BLANK' | 'SOURCE_METADATA'; reason: string};
 export type StandardScriptPlan = {
-  schemaVersion: 'STANDARD_SCRIPT_PLAN_V1' | 'STANDARD_SCRIPT_PLAN_V2' | 'STANDARD_SCRIPT_PLAN_V3' | 'STANDARD_SCRIPT_PLAN_V4' | 'STANDARD_SCRIPT_PLAN_V5'; sourceId: string; sourceVersion: string; entries: StandardScriptEntry[];
+  schemaVersion: 'STANDARD_SCRIPT_PLAN_V1' | 'STANDARD_SCRIPT_PLAN_V2' | 'STANDARD_SCRIPT_PLAN_V3' | 'STANDARD_SCRIPT_PLAN_V4' | 'STANDARD_SCRIPT_PLAN_V5' | 'STANDARD_SCRIPT_PLAN_V6'; sourceId: string; sourceVersion: string; entries: StandardScriptEntry[];
 };
 export type MappedText = {text: string; parts: SourcePart[]};
 export type CompiledDialogue = {text: string; textAssembly: {parts: SourcePart[]}; layout: SourcePart[]; speaker: MappedText; channel: Channel; channelSource: MappedText | null; cue: MappedText | null;performance?:InlinePerformance};
@@ -35,8 +37,9 @@ export type CompiledEntry = {
   sourceUnitIds: string[]; text: string; textAssembly: {parts: SourcePart[]}; layout: SourcePart[];
   speaker?: MappedText; channel?: Channel; channelSource?: MappedText | null; cue?: MappedText | null;
   dialogues?: CompiledDialogue[];
-  children?: CompiledBodyChild[];
+  children?: (CompiledBodyChild|CompiledSourceRegroupChild)[];
   performance?:InlinePerformance;
+  sourceRegroupVersion?:'source-regroup-v1';approval?:SourceRegroupApproval;
 };
 
 /** Only closed, unquoted explicit subtitle markers. Offsets are UTF16 in the supplied text. */
@@ -88,6 +91,7 @@ function compactSpeakerVoice(text: string, speaker: MappedText) {
   return sourceVoiceProjection(text,speaker);
 }
 function assertCompactVoice(text: string, speaker: MappedText, channelSource: MappedText | null | undefined, channel: Channel, path: string,cue?:MappedText|null,v5=false) {
+  if(!sourceSplitCueFields(text,speaker,cue,channelSource,channel))fail('SPLIT_CUE_FIELDS',path);
   const token = (v5?compactPerformanceHeadProjection(text,speaker.parts,cue?.parts,channelSource?.parts):null)??compactSpeakerVoice(text, speaker);
   if (token && (channel !== token.text.toUpperCase() || channelSource?.text !== token.text
     || channelSource.parts[0].start !== token.start || channelSource.parts.at(-1)!.end !== token.end)) fail('COMPACT_VOICE_FIELDS', path);
@@ -108,6 +112,7 @@ function entryPostCue(text: string, entry: StandardScriptEntry): boolean {
 }
 /** Version follows actual source-bound features, so manual edits cannot accidentally downgrade a retained post cue. */
 export function standardScriptPlanVersion(index: Pick<SourceIndex, 'text'>, entries: StandardScriptEntry[],options:{inlinePerformance?:boolean;inlinePerformanceVersion?:InlinePerformanceVersion}={}): StandardScriptPlan['schemaVersion'] {
+  if(entries.some(entry=>entry?.target==='BODY'&&entry.kind==='SOURCE_REGROUP'))return 'STANDARD_SCRIPT_PLAN_V6';
   const version=options.inlinePerformanceVersion===undefined?'inline-performance-v2':options.inlinePerformanceVersion;
   if(!['inline-performance-v1','inline-performance-v2'].includes(version))fail('UNSUPPORTED_PERFORMANCE_VERSION','options.inlinePerformanceVersion');
   if(options.inlinePerformance!==false&&entries.some(entry=>entry?.target==='BODY'&&(entry.kind==='DIALOGUE'?[entry]:entry.kind==='DIALOGUE_GROUP'?entry.dialogues:entry.kind==='BODY_GROUP'?entry.children.filter(c=>c.kind==='DIALOGUE'):[]).some(child=>inlinePerformanceProjection(index.text,child.parts,version)||version==='inline-performance-v2'&&compactPerformanceHeadProjection(index.text,child.speaker,child.cue,child.channelSource))))return version==='inline-performance-v2'?'STANDARD_SCRIPT_PLAN_V5':'STANDARD_SCRIPT_PLAN_V4';
@@ -147,8 +152,10 @@ function assertPostColonHeader(text: string, start: number, bodyStart: number, s
   const channels = tokens.filter(token => /^(OS|VO)$/i.test(token.text)), cues = tokens.filter(token => !channels.includes(token));
   if (channels.length > 1 || new Set(cues.map(token => token.slot)).size > 1) fail('POST_CUE_AMBIGUOUS', path);
   const cueRange = cues.length ? {start: cues[0].start, end: cues.at(-1)!.end} : null;
+  const splitCue=channels[0]&&sourceSplitCueRanges(text,channels[0]);
+  const exactCue=splitCue?sourceSplitCueParts(text,cue?.parts,channelSource?.parts)&&cue?.text===splitCue.map(range=>text.slice(range.start,range.end)).join(''):exact(cue,cueRange);
   const expectedChannel = channels[0]?.text.toUpperCase() ?? ({旁白:'NARRATION',画外音:'VO',系统音:'SYSTEM'} as Record<string, string>)[speaker.text] ?? 'SPEECH';
-  if (!exact(cue, cueRange) || !exact(channelSource, channels[0] ?? null) || channel !== expectedChannel) fail('POST_CUE_FIELDS', path);
+  if (!exactCue || !exact(channelSource, channels[0] ?? null) || channel !== expectedChannel) fail('POST_CUE_FIELDS', path);
 }
 
 /** A group child must be one closed utterance, never a way to hide another head or an action. */
@@ -191,13 +198,13 @@ export function createSourceIndex(text: string, sourceId: string): SourceIndex {
 export function compileStandardScript(index: SourceIndex, plan: StandardScriptPlan) {
   if (!index || typeof index.text !== 'string' || typeof index.sourceId !== 'string' || !isDeepStrictEqual(index, createSourceIndex(index.text, index.sourceId))) fail('SOURCE_INDEX_INTEGRITY', 'sourceIndex');
   shape(plan, ['schemaVersion', 'sourceId', 'sourceVersion', 'entries'], ['schemaVersion', 'sourceId', 'sourceVersion', 'entries'], 'plan');
-  if (!['STANDARD_SCRIPT_PLAN_V1', 'STANDARD_SCRIPT_PLAN_V2', 'STANDARD_SCRIPT_PLAN_V3','STANDARD_SCRIPT_PLAN_V4','STANDARD_SCRIPT_PLAN_V5'].includes(plan.schemaVersion)) fail('UNSUPPORTED_SCHEMA', 'plan.schemaVersion');
+  if (!['STANDARD_SCRIPT_PLAN_V1', 'STANDARD_SCRIPT_PLAN_V2', 'STANDARD_SCRIPT_PLAN_V3','STANDARD_SCRIPT_PLAN_V4','STANDARD_SCRIPT_PLAN_V5','STANDARD_SCRIPT_PLAN_V6'].includes(plan.schemaVersion)) fail('UNSUPPORTED_SCHEMA', 'plan.schemaVersion');
   if (plan.sourceId !== index.sourceId || plan.sourceVersion !== index.sourceVersion) fail('SOURCE_BINDING', 'plan.sourceVersion');
   if (!Array.isArray(plan.entries)) fail('INVALID_ARRAY', 'plan.entries');
   const grouped = plan.entries.some(entry => entry?.target === 'BODY' && entry.kind === 'DIALOGUE_GROUP');
   const mixed = plan.entries.some(entry => entry?.target === 'BODY' && entry.kind === 'BODY_GROUP');
   const postCues = plan.entries.some(entry => entryPostCue(index.text, entry)), v2 = grouped || postCues;
-  const v5=plan.schemaVersion==='STANDARD_SCRIPT_PLAN_V5',performance=v5||plan.schemaVersion==='STANDARD_SCRIPT_PLAN_V4';
+  const v6=plan.schemaVersion==='STANDARD_SCRIPT_PLAN_V6',v5=v6||plan.schemaVersion==='STANDARD_SCRIPT_PLAN_V5',performance=v5||plan.schemaVersion==='STANDARD_SCRIPT_PLAN_V4';
   const performanceVersion:InlinePerformanceVersion=v5?'inline-performance-v2':'inline-performance-v1';
   if (standardScriptPlanVersion(index, plan.entries,{inlinePerformance:performance,inlinePerformanceVersion:performanceVersion}) !== plan.schemaVersion) fail('UNSUPPORTED_SCHEMA', 'plan.schemaVersion');
   const units = new Map(index.units.map(unit => [unit.id, unit]));
@@ -217,6 +224,7 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
     if (entry.target === 'BODY' && entry.kind === 'DIALOGUE') keys.push('speaker', 'channel', 'channelSource', 'cue');
     if (entry.target === 'BODY' && entry.kind === 'DIALOGUE_GROUP') keys.push('dialogues');
     if (entry.target === 'BODY' && entry.kind === 'BODY_GROUP') keys.push('children');
+    if (entry.target === 'BODY' && entry.kind === 'SOURCE_REGROUP') keys.push('children','sourceRegroupVersion','approval');
     shape(entry, keys, entry.target === 'EXCLUDE' ? keys : [...base, 'kind', 'parts', 'layout'], path);
     nonempty(entry.id, `${path}.id`);
     if (ids.has(entry.id)) fail('DUPLICATE_ID', `${path}.id`);
@@ -236,6 +244,12 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
       const text = entry.unitIds.map(id => units.get(id)!.text).join('');
       if (entry.category === 'BLANK' && !/^\s*$/.test(text)) fail('NONBLANK_EXCLUSION', path);
       exclusions.push({id: entry.id, unitIds: [...entry.unitIds], category: entry.category, reason: entry.reason, text});
+      continue;
+    }
+    if(entry.target==='BODY'&&entry.kind==='SOURCE_REGROUP'){
+      if(!v6)fail('UNSUPPORTED_SCHEMA',path);
+      const output=compileSourceRegroup(index,entry,path);script.entries.push(output);
+      rendered.push(`【正文·SOURCE_REGROUP】\n${output.children.map(child=>child.kind==='ACTION'?`【动作】${child.text}`:`【说者】${child.speaker.text}\n【声道】${child.channel}\n${child.cue?`【提示】${child.cue.text}\n`:''}${child.text}`).join('\n\n')}`);
       continue;
     }
     if (entry.target === 'BODY') oneOf(entry.kind, ['DIALOGUE', 'DIALOGUE_GROUP', 'BODY_GROUP', 'ACTION', 'SFX', 'ONSCREEN_TEXT'], `${path}.kind`);
@@ -277,7 +291,7 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
       if (!output.speaker.text.trim()) fail('EMPTY_SPEAKER', `${path}.speaker`);
       output.channel = entry.channel;
       output.channelSource = entry.channelSource == null ? null : assemble(entry.channelSource, 'channelSource');
-      output.cue = entry.cue == null ? null : assemble(entry.cue, 'cue');
+      output.cue = entry.cue == null ? null : assemble(entry.cue, 'cue', false, consumed, sourceSplitCueParts(index.text,entry.cue,entry.channelSource));
       assertCompactVoice(index.text, output.speaker, output.channelSource, output.channel, path,output.cue,v5);
     }
     const textStart = text.parts[0].start, textEnd = text.parts[text.parts.length - 1].end;
@@ -297,7 +311,7 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
         if(child.kind==='DIALOGUE') {
           oneOf(child.channel,['SPEECH','OS','VO','NARRATION','SYSTEM'],`${childPath}.channel`);
           const speaker=assemble(child.speaker,`${field}.speaker`,false,childSpans);
-          const cue=child.cue==null?null:assemble(child.cue,`${field}.cue`,false,childSpans);
+          const cue=child.cue==null?null:assemble(child.cue,`${field}.cue`,false,childSpans,sourceSplitCueParts(index.text,child.cue,child.channelSource));
           const channelSource=child.channelSource==null?null:assemble(child.channelSource,`${field}.channelSource`,false,childSpans);
           assertCompactVoice(index.text,speaker,channelSource,child.channel,childPath,cue,v5);
           outputChild={kind:'DIALOGUE',text:body.text,textAssembly:{parts:body.parts},layout:childLayout.parts,speaker,cue,channelSource,channel:child.channel};
@@ -332,9 +346,9 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
         const header=/^\s*([^:：()（）]+?)(?:[（(]([^()（）]*)[）)])?(?:(?<=[）)])[\t \u00a0\u3000]*(OS|VO))?[ \t]*[:：][ \t\r\n]*$/iu.exec(index.text.slice(unitStart,a));
         const qualified=Boolean(header?.[2]&&!/^(?:OS|VO|旁白|画外音|内心独白|系统音)$/iu.test(header[2].trim())&&index.text.slice(unitStart,a).replace(/(?<=[）)])[\t \u00a0\u3000]*(?:OS|VO)[\t \u00a0\u3000]*(?=[:：])/iu,'').replace(/[:：][\s]*$/u,'').trim()===dialogue.speaker.text&&declaredSpeakerForm(index.text,dialogue.speaker.text));
         if(!header||!qualified&&header[1].trim()!==sourceHeadPrefix(index.text,dialogue.speaker,dialogue.cue,dialogue.channelSource))fail('BODY_GROUP_HEADER',path);
-        const fields=[dialogue.speaker,dialogue.cue,dialogue.channelSource].filter((f):f is MappedText=>Boolean(f)).sort((x,y)=>x.parts[0].start-y.parts[0].start);
+        const fields=[dialogue.speaker,dialogue.cue,dialogue.channelSource].filter((f):f is MappedText=>Boolean(f)).flatMap(f=>f.parts).sort((x,y)=>x.start-y.start);
         let edge=unitStart;
-        for(const f of fields){if(f.parts[0].start<edge||!(edge===unitStart?/^[\s\uFEFF]*$/:/^[\s()（）,，]*$/).test(index.text.slice(edge,f.parts[0].start)))fail('BODY_GROUP_HEADER',path);edge=f.parts.at(-1)!.end;}
+        for(const f of fields){if(f.start<edge||!(edge===unitStart?/^[\s\uFEFF]*$/:/^[\s()（）,，]*$/).test(index.text.slice(edge,f.start)))fail('BODY_GROUP_HEADER',path);edge=f.end;}
         if(edge>a||!/^[\t ()（）]*[:：][\t \r\n]*$/.test(index.text.slice(edge,a)))fail('BODY_GROUP_HEADER',path);
         const tokens=[...(compact&&!header[3]?[compact.text]:[]),...(header[3]?[header[3]]:[]),...(qualified?'':header[2]??'').split(/[,， \t]+/).filter(Boolean)],channels=tokens.filter(t=>/^(OS|VO)$/i.test(t));
         const expected=channels[0]?.toUpperCase()??({旁白:'NARRATION',画外音:'VO',系统音:'SYSTEM'} as Record<string,string>)[dialogue.speaker.text]??'SPEECH';
@@ -351,7 +365,7 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
         shape(child, ['parts', 'layout', 'speaker', 'channel', 'channelSource', 'cue'], ['parts', 'layout', 'speaker', 'channel'], childPath);
         oneOf(child.channel, ['SPEECH', 'OS', 'VO', 'NARRATION', 'SYSTEM'], `${childPath}.channel`);
         const body = assemble(child.parts, `${field}.parts`, false, spans), speaker = assemble(child.speaker, `${field}.speaker`, false, spans);
-        const cue = child.cue == null ? null : assemble(child.cue, `${field}.cue`, false, spans);
+        const cue = child.cue == null ? null : assemble(child.cue, `${field}.cue`, false, spans, sourceSplitCueParts(index.text,child.cue,child.channelSource));
         const channelSource = child.channelSource == null ? null : assemble(child.channelSource, `${field}.channelSource`, false, spans);
         const compact = assertCompactVoice(index.text, speaker, channelSource, child.channel, childPath,cue,v5);
         const childLayout = assemble(child.layout, `${field}.layout`, true, spans);
@@ -367,11 +381,11 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
         const qualified = Boolean(header?.[2] && !/^(?:OS|VO|旁白|画外音|内心独白|系统音)$/iu.test(header[2].trim())
           && index.text.slice(childStart, a).replace(/(?<=[）)])[\t \u00a0\u3000]*(?:OS|VO)[\t \u00a0\u3000]*(?=[:：])/iu,'').replace(/[:：][ \t]*$/u, '').trim() === speaker.text && declaredSpeakerForm(index.text, speaker.text));
         if (!header || !qualified && header[1].trim() !== sourceHeadPrefix(index.text,speaker,cue,channelSource) || !/^[\p{L}\p{N}·・ _.-]+(?:、[\p{L}\p{N}·・ _.-]+)*$/u.test(qualified ? header[1].trim() : speaker.text)) fail('DIALOGUE_GROUP_HEADER', childPath);
-        const prefixFields = [speaker, cue, channelSource].filter((f): f is MappedText => Boolean(f)).sort((x, y) => x.parts[0].start - y.parts[0].start);
+        const prefixFields = [speaker, cue, channelSource].filter((f): f is MappedText => Boolean(f)).flatMap(f=>f.parts).sort((x, y) => x.start - y.start);
         let edge = childStart;
         for (const f of prefixFields) {
-          if (f.parts[0].start < edge || !(edge === childStart ? /^[\s\uFEFF()（）【】\[\]]*$/ : /^[\s\uFEFF()（）【】\[\],，]*$/).test(index.text.slice(edge, f.parts[0].start))) fail('DIALOGUE_GROUP_HEADER', childPath);
-          edge = f.parts.at(-1)!.end;
+          if (f.start < edge || !(edge === childStart ? /^[\s\uFEFF()（）【】\[\]]*$/ : /^[\s\uFEFF()（）【】\[\],，]*$/).test(index.text.slice(edge, f.start))) fail('DIALOGUE_GROUP_HEADER', childPath);
+          edge = f.end;
         }
         if (edge > a || !/^[\t ()（）【】\[\]]*[:：][\t ]*$/.test(index.text.slice(edge, a))) fail('DIALOGUE_GROUP_HEADER', childPath);
         const tokens = [...(compact&&!header[3] ? [compact.text] : []), ...(header[3]?[header[3]]:[]), ...(qualified ? '' : header[2] ?? '').split(/[,， \t]+/).filter(Boolean)], channels = tokens.filter(token => /^(?:OS|VO)$/i.test(token));
@@ -391,13 +405,13 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
         assertPostColonHeader(index.text, unitStart, textStart, output.speaker, output.cue, output.channelSource, output.channel!, path);
         assertGroupUtterance(output.text, path,output.speaker.text,output.cue?.text);
       } else {
-      const fields = [output.speaker, output.cue, output.channelSource].filter((field): field is MappedText => Boolean(field)).sort((a, b) => a.parts[0].start - b.parts[0].start);
+      const fields = [output.speaker, output.cue, output.channelSource].filter((field): field is MappedText => Boolean(field)).flatMap(field=>field.parts).sort((a, b) => a.start - b.start);
       let edge = sourceRepeatedHeadPrefix(index.text,unitStart,output.speaker.parts[0].start,textStart) ? output.speaker.parts[0].start : unitStart;
       for (const field of fields) {
-        const gap = index.text.slice(edge, field.parts[0].start);
+        const gap = index.text.slice(edge, field.start);
         const allowed = edge === unitStart ? /^[\s\uFEFF()（）【】\[\]]*$/ : /^[\s\uFEFF()（）【】\[\],，]*$/;
-        if (field.parts[0].start < edge || !allowed.test(gap)) fail('DIALOGUE_PREFIX_BOUNDARY', `${path}.layout`);
-        edge = field.parts[field.parts.length - 1].end;
+        if (field.start < edge || !allowed.test(gap)) fail('DIALOGUE_PREFIX_BOUNDARY', `${path}.layout`);
+        edge = field.end;
       }
       const separator = index.text.slice(edge, textStart);
       if (edge > textStart || !/^[\t ()（）【】\[\]]*(?:[:：][\t \r\n]*|[\r\n][\t \r\n]*)$/.test(separator)) fail('DIALOGUE_TEXT_BOUNDARY', `${path}.layout`);
@@ -430,7 +444,7 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
   const sourceBinding = {sourceId: index.sourceId, sourceVersion: index.sourceVersion, indexerVersion: index.indexerVersion, sourceIndexDigest: digest(index)};
   const payload = {
     // ponytail: separate slice schema; full scenes/entities/assets and production adapters are not implemented.
-    schemaVersion: v5?'DIRECTOR_STANDARD_SCRIPT_SLICE_V5' as const:performance?'DIRECTOR_STANDARD_SCRIPT_SLICE_V4' as const:mixed ? 'DIRECTOR_STANDARD_SCRIPT_SLICE_V3' as const : v2 ? 'DIRECTOR_STANDARD_SCRIPT_SLICE_V2' as const : 'DIRECTOR_STANDARD_SCRIPT_SLICE_V1' as const, assemblerVersion: v5?'standard-script-compiler-v5':performance?'standard-script-compiler-v4':mixed ? 'standard-script-compiler-v3' : v2 ? 'standard-script-compiler-v2' : 'standard-script-compiler-v1',
+    schemaVersion: v6?'DIRECTOR_STANDARD_SCRIPT_SLICE_V6' as const:v5?'DIRECTOR_STANDARD_SCRIPT_SLICE_V5' as const:performance?'DIRECTOR_STANDARD_SCRIPT_SLICE_V4' as const:mixed ? 'DIRECTOR_STANDARD_SCRIPT_SLICE_V3' as const : v2 ? 'DIRECTOR_STANDARD_SCRIPT_SLICE_V2' as const : 'DIRECTOR_STANDARD_SCRIPT_SLICE_V1' as const, assemblerVersion: v6?'standard-script-compiler-v6':v5?'standard-script-compiler-v5':performance?'standard-script-compiler-v4':mixed ? 'standard-script-compiler-v3' : v2 ? 'standard-script-compiler-v2' : 'standard-script-compiler-v1',
     binding: {...sourceBinding, planDigest: digest(plan)}, script, annotations, exclusions,
     evidence: index.units.map(unit => ({...unit, sourceVersion: index.sourceVersion, offsetUnit: 'UTF16' as const})),
     fidelity: {assignments},
@@ -439,9 +453,9 @@ export function compileStandardScript(index: SourceIndex, plan: StandardScriptPl
   // Digest binds the canonical payload excluding packageId/receipt (no circular self-hash).
   const packageDigest = digest(payload);
   const receipt = {
-    schemaVersion: v5?'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V5' as const:performance?'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V4' as const:mixed ? 'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V3' as const : v2 ? 'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V2' as const : 'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V1' as const, status: 'MECHANICALLY_VERIFIED' as const,
+    schemaVersion: v6?'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V6' as const:v5?'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V5' as const:performance?'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V4' as const:mixed ? 'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V3' as const : v2 ? 'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V2' as const : 'STANDARD_SCRIPT_MECHANICAL_RECEIPT_V1' as const, status: 'MECHANICALLY_VERIFIED' as const,
     ...sourceBinding, planDigest: payload.binding.planDigest, packageDigest, readingTextDigest: digest(readingText), assemblerVersion: payload.assemblerVersion,
-    checks: {unitCoverage: 'VERIFIED', sourceOrder: 'VERIFIED', sourceSlices: 'VERIFIED', fieldBoundaries: 'VERIFIED', exclusionShape: 'VERIFIED', noTextPatches: 'VERIFIED', ...(grouped ? {dialogueGroups: 'VERIFIED'} : {}), ...(postCues ? {postColonCues:'VERIFIED'} : {}), ...(mixed ? {mixedBodyGroups:'VERIFIED'} : {}),...(performance?{inlinePerformance:'VERIFIED'}:{})},
+    checks: {unitCoverage: 'VERIFIED', sourceOrder: 'VERIFIED', sourceSlices: 'VERIFIED', fieldBoundaries: 'VERIFIED', exclusionShape: 'VERIFIED', noTextPatches: 'VERIFIED', ...(grouped ? {dialogueGroups: 'VERIFIED'} : {}), ...(postCues ? {postColonCues:'VERIFIED'} : {}), ...(mixed ? {mixedBodyGroups:'VERIFIED'} : {}),...(performance?{inlinePerformance:'VERIFIED'}:{}),...(v6?{sourceRegroup:'VERIFIED'}:{})},
     semantic: 'NOT_RUN' as const, acceptedForDispatch: false as const,
   };
   return {package: {...payload, packageId: `standard:${packageDigest}`, fidelity: {...payload.fidelity, receipt}}, readingText, receipt};

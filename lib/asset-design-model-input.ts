@@ -43,13 +43,14 @@ export function buildAssetProductionCards(packet: LightEpisodePacket, designs: A
     const sourceFacts: AssetProductionCard['sourceFacts'] = [];
     if (entry.use === 'ACTUAL_APPEARANCE') for (const fact of packet.facts.sourceFactIndex ?? []) {
       const ref = fact.evidence;
-      if (ref.domain !== 'EPISODE' || ref.episode !== packet.episode || ref.start < 0 || ref.end > packet.sourceText.length || fact.kind === 'FORMAT') continue;
+      if (ref.domain !== 'EPISODE' || ref.episode !== packet.episode || ref.start < 0 || ref.end > packet.sourceText.length || fact.kind === 'FORMAT'||fact.claim==='GUIDANCE') continue;
       const quote = packet.sourceText.slice(ref.start, ref.end);
       const named = names.some(name => fact.subjects.includes(name) || name.length > 1 && quote.includes(name));
       const sceneAction = entry.type === 'LOC' && fact.claim === 'SOURCE' && packet.scenes.some(scene => sceneKeys.includes(scene.sceneKey) && ref.start >= scene.sourceRange.start && ref.end <= scene.sourceRange.end);
       if (named || sceneAction) sourceFacts.push({id: fact.id, claim: fact.claim, quote, association: named ? 'ASSET_NAME' : 'SCENE_ACTION', evidence: {...ref}});
     }
     for (const fact of episodeVisualFacts(design?.visualFacts ?? [], packet.episode, packet.sourceText)) {
+      if(packet.facts.sourceFactIndex.some(item=>item.claim==='GUIDANCE'&&packet.sourceText.slice(item.evidence.start,item.evidence.end).includes(fact.quote)))continue;
       if (entry.use !== 'ACTUAL_APPEARANCE' || sourceFacts.some(item => item.quote.includes(fact.quote))) continue;
       // Keep the original quotation authoritative; extracted values are not additional facts.
       const quotedClaim=packet.facts.sourceFactIndex.some(item=>item.claim==='CHARACTER_CLAIM'&&(()=>{const text=packet.sourceText.slice(item.evidence.start,item.evidence.end).trim();return text&&(text.includes(fact.quote)||fact.quote.includes(text));})());

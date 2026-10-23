@@ -12,6 +12,6 @@ export function runtimeMaintenanceState(dataRoot){
 }
 export function assertRuntimeAdmission(dataRoot){
  const c=runtimeMaintenanceState(dataRoot);
- if(c&&(c.version!==RUNTIME_MAINTENANCE_VERSION||!['RESUMED','ABORTED'].includes(c.phase)))throw Object.assign(new Error('本机内核正在安全切换；已有回包保留，未准入新请求。'),{code:'RUNTIME_MAINTENANCE',requestOutcome:'NOT_SENT'});
+ if(c&&(c.version!==RUNTIME_MAINTENANCE_VERSION||!['RESUMED','ABORTED','ISSUE_STOPPED'].includes(c.phase)))throw Object.assign(new Error('本机内核正在安全切换；已有回包保留，未准入新请求。'),{code:'RUNTIME_MAINTENANCE',requestOutcome:'NOT_SENT'});
 }
 export function runtimeMaintenanceBridgeVersion(){return globalThis[Symbol.for('director.runtime-maintenance-bridge')]?.installed?RUNTIME_MAINTENANCE_VERSION:null;}

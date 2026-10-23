@@ -4,7 +4,15 @@ import {execFileSync} from 'node:child_process';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-const {verifyIdleLeaseAbsence,readCoordinatorLease}=await import('../scripts/safe-switch-3008.mjs');
+import {digest} from './storyboard-v4/core/shared.mjs';
+const {verifyIdleLeaseAbsence,readCoordinatorLease,verifyIssueStoppedWorker}=await import('../scripts/safe-switch-3008.mjs');
+test('the next maintenance preserves a historical stopped worker but requires exact loaded idle proof',()=>{
+ const worker={pid:111,token:'historical',status:'WAIT_ISSUES'},host={pid:123},state={phase:'ISSUE_STOPPED',safeToRetire:true,control:{phase:'ISSUE_STOPPED',workflowId:'flow',authorization:'auth',loadedPid:123,kernel:{pid:123},issueStoppedWorkerHash:digest(worker)}};
+ assert.equal(typeof verifyIssueStoppedWorker,'function','缺少等待态冷加载后历史worker的精确接续证明');
+ assert.equal(verifyIssueStoppedWorker(host,state,worker,'flow','auth').historicalWorkerPid,111);
+ for(const change of [s=>s.phase='RESUMED',s=>s.safeToRetire=false,s=>s.control.loadedPid=124,s=>s.control.kernel.pid=124,s=>s.control.workflowId='other',s=>s.control.authorization='other',s=>s.control.userPauseRequestedAt='now',s=>s.control.issueStoppedWorkerHash='changed']){const s=structuredClone(state);change(s);assert.throws(()=>verifyIssueStoppedWorker(host,s,worker,'flow','auth'));}
+ assert.throws(()=>verifyIssueStoppedWorker(host,state,{...worker,status:'RUNNING'},'flow','auth'));
+});
 test('only ENOENT proves lease absence; present falsy JSON and malformed leases never acquire absence evidence',async t=>{
  assert.equal(typeof readCoordinatorLease,'function','缺少严格租约存在性读取');
  const root=await mkdtemp(path.join(tmpdir(),'maintenance-lease-'));t.after(()=>rm(root,{recursive:true,force:true}));const file=path.join(root,'owner.json');
